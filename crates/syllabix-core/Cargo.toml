@@ -10,6 +10,16 @@ description = "Shared types, provider contracts, and in-memory conversation loop
 [dependencies]
 thiserror.workspace = true
 cpal.workspace = true
+sha2.workspace = true
+ureq.workspace = true
+url.workspace = true
+idna.workspace = true
+zeroize.workspace = true
+jobserver.workspace = true
+getrandom.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 coreaudio-sys.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true

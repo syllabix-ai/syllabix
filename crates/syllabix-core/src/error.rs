@@ -57,6 +57,13 @@ pub enum Error {
         /// Actionable, user-facing explanation (what failed and what to try).
         message: String,
     },
+
+    /// Model download, checksum, or cache lookup failed.
+    #[error("model cache: {message}")]
+    ModelCache {
+        /// Human-readable reason.
+        message: String,
+    },
 }
 
 impl Error {
@@ -75,7 +82,8 @@ impl Error {
             | Self::Cancelled
             | Self::Disconnected { .. }
             | Self::WorkerPanic { .. }
-            | Self::AudioDevice { .. } => 1,
+            | Self::AudioDevice { .. }
+            | Self::ModelCache { .. } => 1,
         }
     }
 }
@@ -120,6 +128,15 @@ mod tests {
             message: "No microphone found. Connect a mic and allow microphone access.".into(),
         };
         assert!(err.to_string().contains("No microphone found"));
+        assert_eq!(err.exit_code(), 1);
+    }
+
+    #[test]
+    fn model_cache_errors_name_the_layer() {
+        let err = Error::ModelCache {
+            message: "checksum mismatch for silero".into(),
+        };
+        assert_eq!(err.to_string(), "model cache: checksum mismatch for silero");
         assert_eq!(err.exit_code(), 1);
     }
 }
