@@ -8,7 +8,7 @@ This repository is the product. Founder docs live in [`syllabix-ai/syllabix_foun
 
 ```bash
 cargo run -p syllabix -- --help
-cargo run -p syllabix -- run    # exits 2 until local audio lands
+cargo run -p syllabix -- run    # exits 2 until the conversation loop lands
 ```
 
 ## Intended 3-minute path (not shipping yet)
@@ -32,12 +32,20 @@ There is no `serve`, `bench`, cloud provider, or API key in v0.
 
 ## Develop
 
-Requires Rust 1.83+.
+Requires Rust 1.83+. Linux contributors need ALSA headers (`libasound2-dev`) to compile native audio.
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+```
+
+CI records and plays a WAV fixture (no microphone). That path also soaks 30 minutes of *audio time* through bounded queues faster than real time.
+
+On a laptop with a mic and speakers:
+
+```bash
+cargo test -p syllabix-core --test audio_io hardware_record_and_play_if_devices_exist -- --ignored --nocapture
 ```
 
 ## License

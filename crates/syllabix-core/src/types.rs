@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 /// v0 capture/playback rate. Whisper, Silero, and Kokoro adapters share it.
 pub const DEFAULT_SAMPLE_RATE_HZ: u32 = 16_000;
 
-/// v0 is mono. Device conversion lands with native audio I/O.
+/// v0 is mono. Native I/O converts device layouts to this.
 pub const DEFAULT_CHANNELS: u16 = 1;
 
 /// ~32 ms at 16 kHz. Matches a typical Silero window without coupling to ONNX yet.

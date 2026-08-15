@@ -1,7 +1,9 @@
 //! Shared types and the in-memory conversation loop for Syllabix.
 //!
-//! Pull request 2 lands runtime contracts and a fake VAD → STT → LLM → TTS
-//! cascade. Native audio and real model adapters replace the fakes in later PRs.
+//! Pull request 3 adds native mic/speaker I/O (cpal), device selection, and
+//! sample-rate/channel conversion. Fake providers still stand in for models.
+
+pub mod audio;
 
 mod cancel;
 mod defaults;
@@ -19,7 +21,7 @@ pub use defaults::{
 pub use error::{Error, Result};
 pub use fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad, LlmCall};
 pub use pipeline::{run_loop, LoopConfig, LoopMode, LoopReport, PipelineStages};
-pub use providers::{AudioSink, Llm, Stt, Tts, Vad};
+pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
 pub use types::{
     AudioFrame, CompletedTurn, GenerationId, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript,

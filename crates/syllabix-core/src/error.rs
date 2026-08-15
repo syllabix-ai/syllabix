@@ -50,6 +50,13 @@ pub enum Error {
         /// Panic payload, stringified.
         message: String,
     },
+
+    /// Microphone or speaker is missing, busy, or refused by the OS.
+    #[error("{message}")]
+    AudioDevice {
+        /// Actionable, user-facing explanation (what failed and what to try).
+        message: String,
+    },
 }
 
 impl Error {
@@ -67,7 +74,8 @@ impl Error {
             | Self::Provider { .. }
             | Self::Cancelled
             | Self::Disconnected { .. }
-            | Self::WorkerPanic { .. } => 1,
+            | Self::WorkerPanic { .. }
+            | Self::AudioDevice { .. } => 1,
         }
     }
 }
@@ -103,6 +111,15 @@ mod tests {
         assert_eq!(Error::Cancelled.exit_code(), 1);
         let err = Error::Disconnected { stage: "tts" };
         assert_eq!(err.to_string(), "pipeline stage tts disconnected");
+        assert_eq!(err.exit_code(), 1);
+    }
+
+    #[test]
+    fn audio_device_errors_are_the_message() {
+        let err = Error::AudioDevice {
+            message: "No microphone found. Connect a mic and allow microphone access.".into(),
+        };
+        assert!(err.to_string().contains("No microphone found"));
         assert_eq!(err.exit_code(), 1);
     }
 }
