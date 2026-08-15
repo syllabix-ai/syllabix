@@ -1,0 +1,23 @@
+[package]
+name = "syllabix"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Local voice agent CLI"
+
+[[bin]]
+name = "syllabix"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+syllabix-core.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+clap.workspace = true
