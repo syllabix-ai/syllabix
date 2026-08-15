@@ -10,6 +10,34 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  coverage:
+    name: code coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Use the PR head so reported lines map to the submitted diff.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@1.83.0
+        with:
+          components: llvm-tools-preview
+      - name: Install ALSA headers
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      # cargo-llvm-cov 0.6.21 is the latest release compatible with Rust 1.83.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.6.21
+      - name: Run tests with coverage
+        run: cargo llvm-cov --workspace --cobertura --output-path coverage.xml
+      - name: Store coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-cobertura
+          path: coverage.xml
+          if-no-files-found: error
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
