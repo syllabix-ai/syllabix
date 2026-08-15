@@ -3,15 +3,22 @@
 //! The soak feeds 30 minutes of *audio time* through conversion + bounded queues.
 //! It is not a 30-minute wall-clock wait.
 
+#[cfg(target_os = "linux")]
+use std::ffi::OsString;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use syllabix_core::audio::probe_device_names;
 use syllabix_core::audio::{
-    live_buffer_ceiling_bytes, record_and_play_fixture, sine_i16, write_wav, FixtureCapture,
-    FrameSplitter, PcmConverter, PcmFormat, WavPcm, AUDIO_LIVE_BYTES_CEILING, FRAME_SPLITTER_MAX,
+    live_buffer_ceiling_bytes, record_and_play_fixture, select_input, select_output, sine_i16,
+    write_wav, DeviceInfo, DeviceInventory, FixtureCapture, FrameSplitter, PcmConverter, PcmFormat,
+    WavPcm, AUDIO_LIVE_BYTES_CEILING, FRAME_SPLITTER_MAX,
 };
 use syllabix_core::{bounded, AudioCapture, Cancel, QueueCaps, FRAME_SAMPLES};
 
@@ -22,6 +29,44 @@ fn fixture_wav() -> WavPcm {
             channels: 2,
         },
         samples: sine_i16(48_000, 2, 440.0, Duration::from_millis(250), 0.5),
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct AlsaNullDevice {
+    _lock: MutexGuard<'static, ()>,
+    prior_config: Option<OsString>,
+}
+
+#[cfg(target_os = "linux")]
+fn alsa_config_lock() -> &'static Mutex<()> {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(target_os = "linux")]
+impl AlsaNullDevice {
+    fn install() -> Self {
+        let lock = alsa_config_lock().lock().expect("ALSA config lock");
+        let prior_config = std::env::var_os("ALSA_CONFIG_PATH");
+        std::env::set_var(
+            "ALSA_CONFIG_PATH",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/alsa-null.conf"),
+        );
+        Self {
+            _lock: lock,
+            prior_config,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for AlsaNullDevice {
+    fn drop(&mut self) {
+        match &self.prior_config {
+            Some(value) => std::env::set_var("ALSA_CONFIG_PATH", value),
+            None => std::env::remove_var("ALSA_CONFIG_PATH"),
+        }
     }
 }
 
@@ -76,6 +121,47 @@ fn fixture_capture_trait_yields_ordered_frames() {
         n += 1;
     }
     assert!(n >= 7);
+}
+
+#[test]
+fn device_selection_uses_last_resort_devices() {
+    struct NoDefaults {
+        inputs: Vec<DeviceInfo>,
+        outputs: Vec<DeviceInfo>,
+    }
+
+    impl DeviceInventory for NoDefaults {
+        fn default_input(&self) -> Option<DeviceInfo> {
+            None
+        }
+
+        fn default_output(&self) -> Option<DeviceInfo> {
+            None
+        }
+
+        fn inputs(&self) -> Vec<DeviceInfo> {
+            self.inputs.clone()
+        }
+
+        fn outputs(&self) -> Vec<DeviceInfo> {
+            self.outputs.clone()
+        }
+    }
+
+    let inventory = NoDefaults {
+        inputs: vec![DeviceInfo {
+            name: "Stereo Mix".into(),
+            sample_rate_hz: 48_000,
+            channels: 2,
+        }],
+        outputs: vec![DeviceInfo {
+            name: "Fallback speakers".into(),
+            sample_rate_hz: 48_000,
+            channels: 2,
+        }],
+    };
+    assert_eq!(select_input(&inventory).unwrap().reason, "only-available");
+    assert_eq!(select_output(&inventory).unwrap().reason, "first-available");
 }
 
 /// 30 minutes of audio time, processed faster than real time.
@@ -223,6 +309,9 @@ fn simulated_thirty_minute_loop_stays_in_bounds() {
 
 #[test]
 fn native_open_fails_with_actionable_error_when_no_device() {
+    #[cfg(target_os = "linux")]
+    let _alsa_lock = alsa_config_lock().lock().expect("ALSA config lock");
+
     match syllabix_core::audio::NativeCapture::open() {
         Ok(cap) => {
             drop(cap);
@@ -240,6 +329,42 @@ fn native_open_fails_with_actionable_error_when_no_device() {
             );
         }
     }
+}
+
+/// Linux CI has no real audio hardware. The ALSA null plugin is a deterministic
+/// device that still drives cpal's stream callbacks and conversion path.
+#[cfg(target_os = "linux")]
+#[test]
+fn native_streams_work_with_alsa_null_device() {
+    let _alsa = AlsaNullDevice::install();
+    use syllabix_core::audio::{NativeCapture, NativePlayback};
+    use syllabix_core::{AudioSink, GenerationId, SynthesizedAudio, TurnId};
+
+    let (input, output) = probe_device_names().expect("null devices");
+    assert_eq!(input.reason, "os-default");
+    assert_eq!(output.reason, "os-default");
+
+    let mut playback = NativePlayback::open().expect("null speakers");
+    let mut capture = NativeCapture::open().expect("null microphone");
+    let cancel = Cancel::new();
+    let tone = sine_i16(16_000, 1, 440.0, Duration::from_millis(200), 0.3);
+    playback
+        .play(
+            SynthesizedAudio {
+                turn: TurnId(0),
+                generation: GenerationId(0),
+                index: 0,
+                samples: tone,
+                is_last: true,
+            },
+            &cancel,
+        )
+        .expect("play tone");
+    let frame = capture
+        .next_frame(&cancel)
+        .expect("read null microphone")
+        .expect("null microphone must emit a frame");
+    frame.validate().expect("v0 microphone frame");
 }
 
 /// Human + laptop: play a short tone and pull mic frames. Not run in CI.

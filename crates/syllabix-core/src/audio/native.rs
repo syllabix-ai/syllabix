@@ -573,9 +573,148 @@ pub fn probe_device_names() -> Result<(DeviceChoice, DeviceChoice)> {
 mod tests {
     use super::*;
 
+    fn idle_worker() -> StreamWorker {
+        StreamWorker {
+            thread: None,
+            stop: Arc::new((Mutex::new(false), Condvar::new())),
+        }
+    }
+
+    fn test_capture() -> NativeCapture {
+        let device_format = PcmFormat::v0();
+        NativeCapture {
+            _worker: idle_worker(),
+            ring: Arc::new(SampleRing::new(4_096)),
+            conv: PcmConverter::new(device_format, PcmFormat::v0()).expect("v0 converter"),
+            split: FrameSplitter::new(),
+            pending: Vec::new(),
+            device_name: "test microphone".into(),
+            device_format,
+        }
+    }
+
+    fn test_playback() -> NativePlayback {
+        let device_format = PcmFormat::v0();
+        NativePlayback {
+            _worker: idle_worker(),
+            ring: Arc::new(SampleRing::new(4_096)),
+            conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
+            device_name: "test speakers".into(),
+            device_format,
+        }
+    }
+
     #[test]
     fn backend_is_cpal() {
         assert_eq!(backend_name(), "cpal");
+    }
+
+    #[test]
+    fn cpal_errors_include_recovery_guidance() {
+        let error = map_cpal("device busy", "Could not open microphone");
+        let Error::AudioDevice { message } = error else {
+            panic!("expected an audio device error");
+        };
+        assert!(message.contains("device busy"));
+        assert!(message.contains("Close other apps"));
+        assert!(message.contains("microphone permission"));
+    }
+
+    #[test]
+    fn stream_worker_drop_signals_stop_without_a_thread() {
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let worker = StreamWorker {
+            thread: None,
+            stop: Arc::clone(&stop),
+        };
+        drop(worker);
+        assert!(*stop.0.lock().expect("stop state"));
+    }
+
+    #[test]
+    fn closed_stream_open_channel_is_actionable() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        drop(tx);
+        let err = match recv_open(rx) {
+            Err(err) => err,
+            Ok(_) => panic!("closed channel must fail"),
+        };
+        assert!(err
+            .to_string()
+            .contains("Audio thread exited before the device finished opening"));
+    }
+
+    #[test]
+    fn cpal_inventory_queries_are_safe_without_devices() {
+        let inventory = CpalInventory::new();
+        let _ = inventory.default_input();
+        let _ = inventory.default_output();
+        let _ = inventory.inputs();
+        let _ = inventory.outputs();
+    }
+
+    #[test]
+    fn capture_converts_ring_samples_and_respects_shutdown() {
+        let mut capture = test_capture();
+        let cancel = Cancel::new();
+        assert_eq!(capture.name(), "cpal");
+
+        let samples = vec![0.25; 1_024];
+        assert_eq!(capture.ring.try_push_slice(&samples), samples.len());
+        let first = capture
+            .next_frame(&cancel)
+            .expect("read test microphone")
+            .expect("frame");
+        first.validate().expect("v0 frame");
+        assert!(first.has_energy());
+
+        capture.ring.close();
+        let pending = capture
+            .next_frame(&cancel)
+            .expect("read pending test microphone")
+            .expect("pending frame");
+        pending.validate().expect("v0 pending frame");
+        assert_eq!(capture.next_frame(&cancel).expect("closed capture"), None);
+
+        cancel.shutdown();
+        assert!(matches!(capture.next_frame(&cancel), Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn playback_drops_stale_audio_and_writes_live_audio() {
+        let mut playback = test_playback();
+        let cancel = Cancel::new();
+        let audio = SynthesizedAudio {
+            turn: crate::types::TurnId(0),
+            generation: cancel.generation(),
+            index: 0,
+            samples: vec![1_024, -1_024],
+            is_last: true,
+        };
+        playback.play(audio.clone(), &cancel).expect("play audio");
+        let mut rendered = [0.0; 2];
+        assert_eq!(playback.ring.try_pop_slice(&mut rendered), 2);
+        assert!(rendered[0] > 0.0);
+        assert!(rendered[1] < 0.0);
+        let mut flush_tail = [0.0; 8];
+        assert!(playback.ring.try_pop_slice(&mut flush_tail) > 0);
+
+        cancel.cancel_generation();
+        playback.play(audio, &cancel).expect("drop stale audio");
+        assert_eq!(playback.ring.occupancy(), 0);
+
+        cancel.shutdown();
+        let stopped = SynthesizedAudio {
+            turn: crate::types::TurnId(0),
+            generation: cancel.generation(),
+            index: 1,
+            samples: vec![0],
+            is_last: true,
+        };
+        assert!(matches!(
+            playback.play(stopped, &cancel),
+            Err(Error::Cancelled)
+        ));
     }
 
     #[test]
