@@ -1,0 +1,598 @@
+//! cpal mic capture and speaker playback.
+//!
+//! `cpal::Stream` is not `Send` on Linux. The stream lives on a dedicated
+//! thread; capture/playback types only hold the sample ring and converters.
+
+use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, JoinHandle};
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
+
+use crate::audio::convert::{f32_to_i16, i16_to_f32, FrameSplitter, PcmConverter, PcmFormat};
+use crate::audio::devices::{
+    select_input, select_output, DeviceChoice, DeviceInfo, DeviceInventory,
+};
+use crate::audio::ring::{device_ring_capacity_samples, SampleRing};
+use crate::cancel::Cancel;
+use crate::error::{Error, Result};
+use crate::providers::{AudioCapture, AudioSink};
+use crate::types::{AudioFrame, SynthesizedAudio};
+
+/// Backend id for logs. The shipped loop uses this name once `run` is wired.
+pub fn backend_name() -> &'static str {
+    "cpal"
+}
+
+/// One selected cpal device and the stream config we will open.
+pub struct SelectedCpalDevice {
+    /// User-facing name.
+    pub name: String,
+    /// Why this device was chosen.
+    pub reason: &'static str,
+    /// Pipeline-facing format after conversion still uses [`PcmFormat::v0`].
+    pub device_format: PcmFormat,
+    sample_format: SampleFormat,
+    device: cpal::Device,
+    config: StreamConfig,
+}
+
+struct CpalInventory {
+    host: cpal::Host,
+}
+
+impl CpalInventory {
+    fn new() -> Self {
+        Self {
+            host: cpal::default_host(),
+        }
+    }
+
+    fn info_from_device(
+        device: &cpal::Device,
+        default: Option<SupportedStreamConfig>,
+    ) -> Option<DeviceInfo> {
+        let name = device.name().ok()?;
+        let cfg = default?;
+        Some(DeviceInfo {
+            name,
+            sample_rate_hz: cfg.sample_rate().0,
+            channels: cfg.channels(),
+        })
+    }
+}
+
+impl DeviceInventory for CpalInventory {
+    fn default_input(&self) -> Option<DeviceInfo> {
+        let device = self.host.default_input_device()?;
+        let cfg = device.default_input_config().ok();
+        Self::info_from_device(&device, cfg)
+    }
+
+    fn default_output(&self) -> Option<DeviceInfo> {
+        let device = self.host.default_output_device()?;
+        let cfg = device.default_output_config().ok();
+        Self::info_from_device(&device, cfg)
+    }
+
+    fn inputs(&self) -> Vec<DeviceInfo> {
+        let Ok(devices) = self.host.input_devices() else {
+            return Vec::new();
+        };
+        devices
+            .filter_map(|d| {
+                let cfg = d.default_input_config().ok();
+                Self::info_from_device(&d, cfg)
+            })
+            .collect()
+    }
+
+    fn outputs(&self) -> Vec<DeviceInfo> {
+        let Ok(devices) = self.host.output_devices() else {
+            return Vec::new();
+        };
+        devices
+            .filter_map(|d| {
+                let cfg = d.default_output_config().ok();
+                Self::info_from_device(&d, cfg)
+            })
+            .collect()
+    }
+}
+
+fn map_cpal(err: impl std::fmt::Display, what: &str) -> Error {
+    Error::AudioDevice {
+        message: format!(
+            "{what}: {err}. Close other apps using the device, then retry. If this is a laptop, check the OS sound panel and microphone permission."
+        ),
+    }
+}
+
+fn supported_to_config(cfg: SupportedStreamConfig) -> (PcmFormat, SampleFormat, StreamConfig) {
+    let sample_format = cfg.sample_format();
+    let device_format = PcmFormat {
+        sample_rate_hz: cfg.sample_rate().0,
+        channels: cfg.channels(),
+    };
+    let config: StreamConfig = cfg.into();
+    (device_format, sample_format, config)
+}
+
+fn open_input(choice: &DeviceChoice, host: &cpal::Host) -> Result<SelectedCpalDevice> {
+    let device = find_input(host, &choice.device.name)?;
+    let cfg = device
+        .default_input_config()
+        .map_err(|e| map_cpal(e, "Could not read microphone format"))?;
+    let (device_format, sample_format, config) = supported_to_config(cfg);
+    Ok(SelectedCpalDevice {
+        name: choice.device.name.clone(),
+        reason: choice.reason,
+        device_format,
+        sample_format,
+        device,
+        config,
+    })
+}
+
+fn open_output(choice: &DeviceChoice, host: &cpal::Host) -> Result<SelectedCpalDevice> {
+    let device = find_output(host, &choice.device.name)?;
+    let cfg = device
+        .default_output_config()
+        .map_err(|e| map_cpal(e, "Could not read speaker format"))?;
+    let (device_format, sample_format, config) = supported_to_config(cfg);
+    Ok(SelectedCpalDevice {
+        name: choice.device.name.clone(),
+        reason: choice.reason,
+        device_format,
+        sample_format,
+        device,
+        config,
+    })
+}
+
+fn find_input(host: &cpal::Host, name: &str) -> Result<cpal::Device> {
+    if let Some(dev) = host.default_input_device() {
+        if dev.name().ok().as_deref() == Some(name) {
+            return Ok(dev);
+        }
+    }
+    let devices = host
+        .input_devices()
+        .map_err(|e| map_cpal(e, "Could not list microphones"))?;
+    for dev in devices {
+        if dev.name().ok().as_deref() == Some(name) {
+            return Ok(dev);
+        }
+    }
+    Err(Error::AudioDevice {
+        message: format!(
+            "Microphone '{name}' disappeared before it could be opened. Reconnect it and retry."
+        ),
+    })
+}
+
+fn find_output(host: &cpal::Host, name: &str) -> Result<cpal::Device> {
+    if let Some(dev) = host.default_output_device() {
+        if dev.name().ok().as_deref() == Some(name) {
+            return Ok(dev);
+        }
+    }
+    let devices = host
+        .output_devices()
+        .map_err(|e| map_cpal(e, "Could not list speakers"))?;
+    for dev in devices {
+        if dev.name().ok().as_deref() == Some(name) {
+            return Ok(dev);
+        }
+    }
+    Err(Error::AudioDevice {
+        message: format!(
+            "Speakers '{name}' disappeared before they could be opened. Reconnect them and retry."
+        ),
+    })
+}
+
+/// Owns a cpal stream on a thread so [`NativeCapture`] / [`NativePlayback`] stay `Send`.
+struct StreamWorker {
+    thread: Option<JoinHandle<()>>,
+    stop: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl Drop for StreamWorker {
+    fn drop(&mut self) {
+        if let Ok(mut done) = self.stop.0.lock() {
+            *done = true;
+            self.stop.1.notify_all();
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+struct OpenedStream {
+    worker: StreamWorker,
+    name: String,
+    device_format: PcmFormat,
+    ring: Arc<SampleRing>,
+}
+
+fn spawn_input(choice: DeviceChoice) -> Result<OpenedStream> {
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let stop = Arc::new((Mutex::new(false), Condvar::new()));
+    let stop_thread = Arc::clone(&stop);
+    let thread = thread::Builder::new()
+        .name("syllabix-mic".into())
+        .spawn(move || {
+            let host = cpal::default_host();
+            let selected = match open_input(&choice, &host) {
+                Ok(s) => s,
+                Err(err) => {
+                    let _ = ready_tx.send(Err(err));
+                    return;
+                }
+            };
+            let cap = device_ring_capacity_samples(
+                selected.device_format.sample_rate_hz,
+                selected.device_format.channels,
+            )
+            .max(256);
+            let ring = Arc::new(SampleRing::new(cap));
+            let stream = match build_input_stream(&selected, Arc::clone(&ring)) {
+                Ok(s) => s,
+                Err(err) => {
+                    let _ = ready_tx.send(Err(err));
+                    return;
+                }
+            };
+            if let Err(err) = stream.play() {
+                let _ = ready_tx.send(Err(map_cpal(err, "Could not start the microphone")));
+                return;
+            }
+            let meta = (
+                selected.name.clone(),
+                selected.device_format,
+                Arc::clone(&ring),
+            );
+            let _ = ready_tx.send(Ok(meta));
+            let (lock, cv) = &*stop_thread;
+            let mut done = lock.lock().expect("stream stop");
+            while !*done {
+                done = cv.wait(done).expect("stream stop");
+            }
+            drop(stream);
+        })
+        .map_err(|err| Error::AudioDevice {
+            message: format!("Could not start the microphone thread: {err}"),
+        })?;
+    let (name, device_format, ring) = recv_open(ready_rx)?;
+    Ok(OpenedStream {
+        worker: StreamWorker {
+            thread: Some(thread),
+            stop,
+        },
+        name,
+        device_format,
+        ring,
+    })
+}
+
+fn spawn_output(choice: DeviceChoice) -> Result<OpenedStream> {
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let stop = Arc::new((Mutex::new(false), Condvar::new()));
+    let stop_thread = Arc::clone(&stop);
+    let thread = thread::Builder::new()
+        .name("syllabix-spk".into())
+        .spawn(move || {
+            let host = cpal::default_host();
+            let selected = match open_output(&choice, &host) {
+                Ok(s) => s,
+                Err(err) => {
+                    let _ = ready_tx.send(Err(err));
+                    return;
+                }
+            };
+            let cap = device_ring_capacity_samples(
+                selected.device_format.sample_rate_hz,
+                selected.device_format.channels,
+            )
+            .max(256);
+            let ring = Arc::new(SampleRing::new(cap));
+            let stream = match build_output_stream(&selected, Arc::clone(&ring)) {
+                Ok(s) => s,
+                Err(err) => {
+                    let _ = ready_tx.send(Err(err));
+                    return;
+                }
+            };
+            if let Err(err) = stream.play() {
+                let _ = ready_tx.send(Err(map_cpal(err, "Could not start the speakers")));
+                return;
+            }
+            let meta = (
+                selected.name.clone(),
+                selected.device_format,
+                Arc::clone(&ring),
+            );
+            let _ = ready_tx.send(Ok(meta));
+            let (lock, cv) = &*stop_thread;
+            let mut done = lock.lock().expect("stream stop");
+            while !*done {
+                done = cv.wait(done).expect("stream stop");
+            }
+            drop(stream);
+        })
+        .map_err(|err| Error::AudioDevice {
+            message: format!("Could not start the speaker thread: {err}"),
+        })?;
+    let (name, device_format, ring) = recv_open(ready_rx)?;
+    Ok(OpenedStream {
+        worker: StreamWorker {
+            thread: Some(thread),
+            stop,
+        },
+        name,
+        device_format,
+        ring,
+    })
+}
+
+fn recv_open(
+    rx: mpsc::Receiver<Result<(String, PcmFormat, Arc<SampleRing>)>>,
+) -> Result<(String, PcmFormat, Arc<SampleRing>)> {
+    rx.recv().map_err(|_| Error::AudioDevice {
+        message: "Audio thread exited before the device finished opening.".into(),
+    })?
+}
+
+/// Live microphone → v0 [`AudioFrame`]s.
+pub struct NativeCapture {
+    _worker: StreamWorker,
+    ring: Arc<SampleRing>,
+    conv: PcmConverter,
+    split: FrameSplitter,
+    pending: Vec<AudioFrame>,
+    /// Selected device name.
+    pub device_name: String,
+    /// Device PCM layout before conversion.
+    pub device_format: PcmFormat,
+}
+
+impl NativeCapture {
+    /// Open the selected default (or first usable) input device.
+    pub fn open() -> Result<Self> {
+        let inv = CpalInventory::new();
+        let choice = select_input(&inv)?;
+        let opened = spawn_input(choice)?;
+        Ok(Self {
+            conv: PcmConverter::new(opened.device_format, PcmFormat::v0())?,
+            split: FrameSplitter::new(),
+            pending: Vec::new(),
+            device_name: opened.name,
+            device_format: opened.device_format,
+            ring: opened.ring,
+            _worker: opened.worker,
+        })
+    }
+}
+
+impl Drop for NativeCapture {
+    fn drop(&mut self) {
+        self.ring.close();
+    }
+}
+
+impl AudioCapture for NativeCapture {
+    fn name(&self) -> &'static str {
+        backend_name()
+    }
+
+    fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<AudioFrame>> {
+        loop {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            if !self.pending.is_empty() {
+                return Ok(Some(self.pending.remove(0)));
+            }
+            let mut buf = [0.0f32; 2048];
+            let n = self.ring.pop_slice_cancellable(&mut buf, cancel)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            let converted = self.conv.push(&buf[..n]);
+            let i16s = f32_to_i16(&converted);
+            self.pending = self.split.push(&i16s)?;
+        }
+    }
+}
+
+/// Live speakers. Implements [`AudioSink`].
+pub struct NativePlayback {
+    _worker: StreamWorker,
+    ring: Arc<SampleRing>,
+    conv: PcmConverter,
+    /// Selected device name.
+    pub device_name: String,
+    /// Device PCM layout after conversion.
+    pub device_format: PcmFormat,
+}
+
+impl NativePlayback {
+    /// Open the selected default (or first usable) output device.
+    pub fn open() -> Result<Self> {
+        let inv = CpalInventory::new();
+        let choice = select_output(&inv)?;
+        let opened = spawn_output(choice)?;
+        Ok(Self {
+            conv: PcmConverter::new(PcmFormat::v0(), opened.device_format)?,
+            device_name: opened.name,
+            device_format: opened.device_format,
+            ring: opened.ring,
+            _worker: opened.worker,
+        })
+    }
+}
+
+impl Drop for NativePlayback {
+    fn drop(&mut self) {
+        self.ring.close();
+    }
+}
+
+impl AudioSink for NativePlayback {
+    fn play(&mut self, audio: SynthesizedAudio, cancel: &Cancel) -> Result<()> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        if cancel.is_stale(audio.generation) {
+            return Ok(());
+        }
+        let f32s = i16_to_f32(&audio.samples);
+        let mut device_pcm = self.conv.push(&f32s);
+        if audio.is_last {
+            device_pcm.extend(self.conv.flush());
+        }
+        self.ring.push_slice_cancellable(&device_pcm, cancel)
+    }
+}
+
+fn build_input_stream(selected: &SelectedCpalDevice, ring: Arc<SampleRing>) -> Result<Stream> {
+    let err_fn = |err| {
+        eprintln!("syllabix microphone error: {err}");
+    };
+    match selected.sample_format {
+        SampleFormat::F32 => selected
+            .device
+            .build_input_stream(
+                &selected.config,
+                move |data: &[f32], _| {
+                    let _ = ring.try_push_slice(data);
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| map_cpal(e, "Could not open the microphone")),
+        SampleFormat::I16 => selected
+            .device
+            .build_input_stream(
+                &selected.config,
+                move |data: &[i16], _| {
+                    let converted = i16_to_f32(data);
+                    let _ = ring.try_push_slice(&converted);
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| map_cpal(e, "Could not open the microphone")),
+        SampleFormat::U16 => selected
+            .device
+            .build_input_stream(
+                &selected.config,
+                move |data: &[u16], _| {
+                    let converted: Vec<f32> = data
+                        .iter()
+                        .map(|s| (f32::from(*s) / f32::from(u16::MAX)) * 2.0 - 1.0)
+                        .collect();
+                    let _ = ring.try_push_slice(&converted);
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| map_cpal(e, "Could not open the microphone")),
+        other => Err(Error::AudioDevice {
+            message: format!(
+                "Microphone sample format {other} is not supported. Connect a standard input device."
+            ),
+        }),
+    }
+}
+
+fn build_output_stream(selected: &SelectedCpalDevice, ring: Arc<SampleRing>) -> Result<Stream> {
+    let err_fn = |err| {
+        eprintln!("syllabix speaker error: {err}");
+    };
+    match selected.sample_format {
+        SampleFormat::F32 => selected
+            .device
+            .build_output_stream(
+                &selected.config,
+                move |data: &mut [f32], _| {
+                    let _ = ring.try_pop_slice(data);
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| map_cpal(e, "Could not open the speakers")),
+        SampleFormat::I16 => selected
+            .device
+            .build_output_stream(
+                &selected.config,
+                move |data: &mut [i16], _| {
+                    let mut f = vec![0.0f32; data.len()];
+                    let _ = ring.try_pop_slice(&mut f);
+                    let i = f32_to_i16(&f);
+                    data.copy_from_slice(&i);
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| map_cpal(e, "Could not open the speakers")),
+        SampleFormat::U16 => selected
+            .device
+            .build_output_stream(
+                &selected.config,
+                move |data: &mut [u16], _| {
+                    let mut f = vec![0.0f32; data.len()];
+                    let _ = ring.try_pop_slice(&mut f);
+                    for (slot, sample) in data.iter_mut().zip(f.iter()) {
+                        let scaled = (sample.clamp(-1.0, 1.0) + 1.0) * 0.5 * f32::from(u16::MAX);
+                        *slot = scaled.round() as u16;
+                    }
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| map_cpal(e, "Could not open the speakers")),
+        other => Err(Error::AudioDevice {
+            message: format!(
+                "Speaker sample format {other} is not supported. Connect a standard output device."
+            ),
+        }),
+    }
+}
+
+/// Probe whether the host can name a default input and output (no stream).
+pub fn probe_device_names() -> Result<(DeviceChoice, DeviceChoice)> {
+    let inv = CpalInventory::new();
+    Ok((select_input(&inv)?, select_output(&inv)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_is_cpal() {
+        assert_eq!(backend_name(), "cpal");
+    }
+
+    #[test]
+    fn missing_hardware_error_is_actionable() {
+        // CI has no guaranteed mic. Opening may fail; the message must tell a human what to do.
+        match NativeCapture::open() {
+            Ok(_) => {}
+            Err(Error::AudioDevice { message }) => {
+                assert!(
+                    message.contains("microphone")
+                        || message.contains("Microphone")
+                        || message.contains("permission")
+                        || message.contains("device"),
+                    "{message}"
+                );
+            }
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+    }
+}

@@ -16,6 +16,7 @@ mod linux {
         "libdl.so",
         "librt.so",
         "libgcc_s.so",
+        "libasound.so",
     ];
 
     fn allowed(soname: &str) -> bool {

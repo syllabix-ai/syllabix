@@ -59,3 +59,14 @@ pub trait AudioSink: Send {
     /// Play or collect one chunk. Must check `cancel`.
     fn play(&mut self, audio: SynthesizedAudio, cancel: &Cancel) -> Result<()>;
 }
+
+/// Microphone (or fixture) source. Yields v0 PCM frames.
+pub trait AudioCapture: Send {
+    /// Config / backend name (`cpal`, `fixture`).
+    fn name(&self) -> &'static str;
+
+    /// Next 16 kHz mono frame, or `Ok(None)` at end of a fixture.
+    ///
+    /// Must return [`crate::Error::Cancelled`] when `cancel` is shut down.
+    fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<AudioFrame>>;
+}

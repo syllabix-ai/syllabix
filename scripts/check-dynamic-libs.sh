@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fail if the syllabix executable links unexpected shared libraries.
-# Expected on glibc Linux: libc family + libgcc_s + the dynamic loader.
+# Expected on glibc Linux: libc family + libgcc_s + the dynamic loader + ALSA
+# (cpal, declared in PR 3).
 set -euo pipefail
 
 bin="${1:-}"
@@ -22,7 +23,7 @@ if grep -q "statically linked" <<<"${output}"; then
   exit 0
 fi
 
-allowed='^(linux-vdso\.so|ld-linux|ld-linux-x86-64\.so|ld-linux-aarch64\.so|libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so)'
+allowed='^(linux-vdso\.so|ld-linux|ld-linux-x86-64\.so|ld-linux-aarch64\.so|libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so|libasound\.so)'
 
 while read -r line; do
   [[ -z "${line}" ]] && continue
