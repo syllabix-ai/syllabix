@@ -14,6 +14,7 @@ mod pipeline;
 mod providers;
 mod queue;
 mod types;
+mod vad;
 
 pub use cancel::Cancel;
 pub use defaults::{
@@ -32,3 +33,4 @@ pub use types::{
     AudioFrame, CompletedTurn, GenerationId, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript,
     TurnId, Utterance, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
+pub use vad::{SileroVad, END_SILENCE_FRAMES, SPEECH_THRESHOLD};

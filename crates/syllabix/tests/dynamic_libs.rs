@@ -1,6 +1,7 @@
 // Linux-only: the launch merge gate requires no undeclared dynamic runtime
 // dependencies on the shipped executable. Later native links (ONNX, whisper,
-// llama) must be added here explicitly or statically.
+// llama) must be added here explicitly or statically. ONNX Runtime requires
+// the declared C++ standard library.
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -16,6 +17,7 @@ mod linux {
         "libdl.so",
         "librt.so",
         "libgcc_s.so",
+        "libstdc++.so",
         "libasound.so",
     ];
 
