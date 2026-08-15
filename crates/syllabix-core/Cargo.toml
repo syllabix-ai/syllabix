@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Shared types and errors for the Syllabix CLI runtime"
+description = "Shared types, provider contracts, and in-memory conversation loop"
 
 [dependencies]
 thiserror.workspace = true
