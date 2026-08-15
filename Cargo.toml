@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = ["crates/syllabix", "crates/syllabix-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/syllabix-ai/syllabix"
+rust-version = "1.83"
+
+[workspace.dependencies]
+# Pin below crates.io "requires Rust 1.85" so CI and this image stay on 1.83.
+clap = { version = "=4.5.23", features = ["derive"] }
+thiserror = "=2.0.11"
+tracing = "=0.1.41"
+tracing-subscriber = { version = "=0.3.19", features = ["env-filter"] }
+syllabix-core = { path = "crates/syllabix-core" }
+assert_cmd = "=2.0.16"
+predicates = "=3.1.2"
