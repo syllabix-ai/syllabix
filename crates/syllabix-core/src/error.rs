@@ -16,6 +16,40 @@ pub enum Error {
     /// Filesystem or stdio failure.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    /// Audio frame does not match the v0 PCM contract.
+    #[error("invalid audio: {message}")]
+    InvalidAudio {
+        /// Human-readable reason.
+        message: String,
+    },
+
+    /// A provider returned a recoverable failure.
+    #[error("{provider} failed: {message}")]
+    Provider {
+        /// Provider label (`silero`, `whisper.cpp`, …).
+        provider: &'static str,
+        /// Human-readable reason.
+        message: String,
+    },
+
+    /// Shutdown or generation cancel interrupted in-flight work.
+    #[error("conversation cancelled")]
+    Cancelled,
+
+    /// A pipeline stage exited while another stage still needed it.
+    #[error("pipeline stage {stage} disconnected")]
+    Disconnected {
+        /// Stage name (`vad`, `stt`, `llm`, `tts`, `sink`, `frames`).
+        stage: &'static str,
+    },
+
+    /// A worker thread panicked.
+    #[error("pipeline worker panicked: {message}")]
+    WorkerPanic {
+        /// Panic payload, stringified.
+        message: String,
+    },
 }
 
 impl Error {
@@ -28,7 +62,12 @@ impl Error {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::NotImplemented { .. } => 2,
-            Self::Io(_) => 1,
+            Self::Io(_)
+            | Self::InvalidAudio { .. }
+            | Self::Provider { .. }
+            | Self::Cancelled
+            | Self::Disconnected { .. }
+            | Self::WorkerPanic { .. } => 1,
         }
     }
 }
@@ -55,6 +94,15 @@ mod tests {
     fn io_errors_wrap_transparently() {
         let err = Error::from(io::Error::new(io::ErrorKind::NotFound, "missing"));
         assert_eq!(err.to_string(), "missing");
+        assert_eq!(err.exit_code(), 1);
+    }
+
+    #[test]
+    fn cancelled_and_disconnected_are_process_failures() {
+        assert_eq!(Error::Cancelled.to_string(), "conversation cancelled");
+        assert_eq!(Error::Cancelled.exit_code(), 1);
+        let err = Error::Disconnected { stage: "tts" };
+        assert_eq!(err.to_string(), "pipeline stage tts disconnected");
         assert_eq!(err.exit_code(), 1);
     }
 }
