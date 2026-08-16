@@ -88,7 +88,7 @@ impl FakeVad {
     }
 }
 
-/// Maps an utterance to `turn-{id:03}`.
+/// Maps an utterance to `turn-{id:03}`. Kept for the 30-turn in-memory tests.
 pub struct FakeStt;
 
 impl Default for FakeStt {

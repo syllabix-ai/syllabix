@@ -8,6 +8,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  SYLLABIX_CACHE_DIR: ${{ github.workspace }}/.syllabix-cache
 
 jobs:
   coverage:
@@ -23,8 +24,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.83.0
         with:
           components: llvm-tools-preview
-      - name: Install ALSA headers
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - name: Install ALSA headers and CMake
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+      - name: Use vendored whisper.cpp bindings
+        run: echo "WHISPER_DONT_GENERATE_BINDINGS=1" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.syllabix-cache
+          key: syllabix-models-v1-${{ runner.os }}-whisper-small
       # cargo-llvm-cov 0.6.21 is the latest release compatible with Rust 1.83.
       - uses: taiki-e/install-action@v2
         with:
@@ -56,8 +63,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.83.0
         with:
           components: clippy
-      - name: Install ALSA headers
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - name: Install ALSA headers and CMake
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+      - name: Use vendored whisper.cpp bindings
+        run: echo "WHISPER_DONT_GENERATE_BINDINGS=1" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -85,9 +94,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.83.0
         with:
           targets: ${{ matrix.target }}${{ matrix.extra_target != '' && format(',{0}', matrix.extra_target) || '' }}
-      - name: Install ALSA headers
+      - name: Install ALSA headers and CMake
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+      - name: Install CMake
+        if: runner.os == 'macOS'
+        run: brew install cmake
+      - name: Use vendored whisper.cpp bindings
+        if: runner.os != 'Windows'
+        run: echo "WHISPER_DONT_GENERATE_BINDINGS=1" >> "$GITHUB_ENV"
+      - name: Install LLVM for whisper-rs bindgen
+        if: runner.os == 'Windows'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18.1.8"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.syllabix-cache
+          key: syllabix-models-v1-${{ matrix.name }}-whisper-small
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
