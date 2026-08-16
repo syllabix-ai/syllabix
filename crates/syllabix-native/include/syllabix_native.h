@@ -23,12 +23,14 @@ void syllabix_llama_backend_free(void);
 struct whisper_context *syllabix_whisper_load(const char *path);
 void syllabix_whisper_free(struct whisper_context *ctx);
 
-/* 0 = ok, 1 = cancelled, -1 = error. `out` is a UTF-8 buffer of `out_cap` bytes. */
+/* 0 = ok, 1 = cancelled, -1 = error. `out` is a UTF-8 buffer of `out_cap` bytes.
+ * `language` is a whisper.cpp language id (`en`). NULL means `en`. */
 int syllabix_whisper_decode(
     struct whisper_context *ctx,
     const float *pcm,
     int n_samples,
     int n_threads,
+    const char *language,
     bool (*abort_cb)(void *user),
     void *abort_user,
     char *out,

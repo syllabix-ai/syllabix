@@ -133,6 +133,8 @@ pub struct BuiltinDefaults {
     pub llm_model: &'static str,
     /// TTS provider.
     pub tts: TtsProvider,
+    /// STT language code (`en`). YAML may set this; v0 allows only `en`.
+    pub language: &'static str,
     /// Capture/playback sample rate.
     pub sample_rate_hz: u32,
     /// Capture/playback channels.
@@ -154,6 +156,7 @@ impl BuiltinDefaults {
             llm: LlmProvider::LlamaCpp,
             llm_model: "llama-3.2-1b",
             tts: TtsProvider::Kokoro,
+            language: "en",
             sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
             channels: DEFAULT_CHANNELS,
             frame_samples: FRAME_SAMPLES,
@@ -182,6 +185,7 @@ mod tests {
         assert_eq!(d.llm.as_str(), "llama.cpp");
         assert_eq!(d.llm_model, "llama-3.2-1b");
         assert_eq!(d.tts.as_str(), "kokoro");
+        assert_eq!(d.language, "en");
         assert_eq!(d.sample_rate_hz, 16_000);
         assert_eq!(d.channels, 1);
         assert_eq!(d.queues, QueueCaps::v0());

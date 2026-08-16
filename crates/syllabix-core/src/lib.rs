@@ -9,10 +9,12 @@ pub mod audio;
 pub mod models;
 
 mod cancel;
+mod config;
 mod defaults;
 mod error;
 mod fake;
 mod g2p;
+mod live;
 mod llm;
 mod memory;
 mod pipeline;
@@ -26,6 +28,7 @@ mod types;
 mod vad;
 
 pub use cancel::Cancel;
+pub use config::{AgentConfig, CONFIG_FILE_NAME};
 pub use defaults::{
     BuiltinDefaults, LlmProvider, QueueCaps, SttModel, SttProvider, TtsProvider, VadProvider,
 };
@@ -35,6 +38,7 @@ pub use fake::{
     FakeTts, FakeVad, LlmCall,
 };
 pub use g2p::{english_to_ipa, english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
+pub use live::run_live;
 pub use llm::{
     LlamaLlm, LLAMA_1B_ASSET, LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS, LLAMA_N_CTX,
     LLAMA_N_PREDICT, VOICE_SYSTEM_PROMPT,
@@ -44,7 +48,9 @@ pub use models::{
     cache_root, format_progress_line, BlockedFetcher, Fetcher, HttpFetcher, Manifest, ModelAsset,
     ModelCache, ModelLayer, NoProgress, Progress, StderrProgress,
 };
-pub use pipeline::{run_loop, run_loop_captured, LoopConfig, LoopMode, LoopReport, PipelineStages};
+pub use pipeline::{
+    run_loop, run_loop_captured, LoopConfig, LoopEvent, LoopMode, LoopReport, PipelineStages,
+};
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
 pub use real::load_real_providers;
@@ -58,7 +64,8 @@ pub use tts::{
 };
 pub use types::{
     AudioFrame, CompletedTurn, GenerationId, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript,
-    TurnId, Utterance, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    TurnId, TurnTimings, Utterance, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ,
+    FRAME_SAMPLES,
 };
 pub use vad::{SileroVad, END_SILENCE_FRAMES, SPEECH_THRESHOLD};
 

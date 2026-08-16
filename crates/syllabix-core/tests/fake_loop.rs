@@ -19,6 +19,7 @@ fn run_with(
         LoopConfig {
             defaults: BuiltinDefaults::v0(),
             mode,
+            events: None,
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -205,10 +206,7 @@ fn six_turns_config_helper_is_the_native_gate() {
 #[test]
 fn provider_error_in_stt_skips_the_turn_and_keeps_going() {
     let report = run_loop(
-        LoopConfig {
-            defaults: BuiltinDefaults::v0(),
-            mode: LoopMode::UntilInputEnds,
-        },
+        LoopConfig::default(),
         PipelineStages {
             vad: FakeVad::new(),
             stt: FailOnceStt::default(),
@@ -230,10 +228,7 @@ fn provider_error_in_stt_skips_the_turn_and_keeps_going() {
 #[test]
 fn provider_error_in_llm_skips_the_turn_and_keeps_going() {
     let report = run_loop(
-        LoopConfig {
-            defaults: BuiltinDefaults::v0(),
-            mode: LoopMode::UntilInputEnds,
-        },
+        LoopConfig::default(),
         PipelineStages {
             vad: FakeVad::new(),
             stt: FakeStt,
@@ -255,10 +250,7 @@ fn provider_error_in_llm_skips_the_turn_and_keeps_going() {
 #[test]
 fn provider_error_in_tts_skips_the_turn_and_keeps_going() {
     let report = run_loop(
-        LoopConfig {
-            defaults: BuiltinDefaults::v0(),
-            mode: LoopMode::UntilInputEnds,
-        },
+        LoopConfig::default(),
         PipelineStages {
             vad: FakeVad::new(),
             stt: FakeStt,

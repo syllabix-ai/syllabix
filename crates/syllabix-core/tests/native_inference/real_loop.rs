@@ -6,9 +6,9 @@ use std::io::Cursor;
 use sha2::{Digest, Sha256};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames, DrainingPlayback, FixtureCapture, PcmFormat},
-    process_rss_bytes, run_loop_captured, BuiltinDefaults, Cancel, HttpFetcher, LoopConfig,
-    LoopMode, ModelCache, PipelineStages, SileroVad, StderrProgress, END_SILENCE_FRAMES,
-    FRAME_SAMPLES, LOOP_RSS_GROWTH_CEILING_BYTES,
+    process_rss_bytes, run_loop_captured, Cancel, HttpFetcher, LoopConfig, ModelCache,
+    PipelineStages, SileroVad, StderrProgress, END_SILENCE_FRAMES, FRAME_SAMPLES,
+    LOOP_RSS_GROWTH_CEILING_BYTES,
 };
 
 use crate::hex;
@@ -77,10 +77,7 @@ fn six_real_turns_complete_within_queue_and_memory_bounds() {
     let capture = FixtureCapture::from_frames(six_turn_frames());
 
     let report = run_loop_captured(
-        LoopConfig {
-            defaults: BuiltinDefaults::v0(),
-            mode: LoopMode::UntilInputEnds,
-        },
+        LoopConfig::default(),
         PipelineStages {
             vad,
             stt: n.stt.clone(),

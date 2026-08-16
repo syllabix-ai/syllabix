@@ -13,7 +13,7 @@ use crate::providers::Stt;
 use crate::types::{Transcript, Utterance};
 use crate::Cancel;
 
-/// v0 STT language. YAML language selection lands in a later PR.
+/// v0 STT language. YAML may select this code; only `en` is accepted.
 pub const STT_LANGUAGE: &str = "en";
 
 /// Manifest id for whisper.cpp `small`.
@@ -23,6 +23,7 @@ pub const WHISPER_SMALL_ASSET: &str = "whisper-small";
 pub struct WhisperStt {
     decoder: Arc<Mutex<Box<dyn Decoder>>>,
     model: SttModel,
+    language: String,
 }
 
 impl Clone for WhisperStt {
@@ -30,6 +31,7 @@ impl Clone for WhisperStt {
         Self {
             decoder: Arc::clone(&self.decoder),
             model: self.model,
+            language: self.language.clone(),
         }
     }
 }
@@ -41,6 +43,7 @@ impl WhisperStt {
         Ok(Self {
             decoder: Arc::new(Mutex::new(Box::new(decoder))),
             model,
+            language: STT_LANGUAGE.to_string(),
         })
     }
 
@@ -62,6 +65,24 @@ impl WhisperStt {
         Self::from_model_path(path, SttModel::Small)
     }
 
+    /// STT language code (`en`).
+    pub fn language(&self) -> &str {
+        &self.language
+    }
+
+    /// Set the yaml language. v0 accepts only [`STT_LANGUAGE`].
+    pub fn with_language(mut self, language: impl Into<String>) -> Result<Self> {
+        let language = language.into();
+        if language != STT_LANGUAGE {
+            return Err(Error::Config {
+                field: "pipeline.stt.language".into(),
+                message: format!("unsupported value {language:?} (allowed: {STT_LANGUAGE})"),
+            });
+        }
+        self.language = language;
+        Ok(self)
+    }
+
     /// Configured whisper.cpp model id (`small`).
     pub fn model(&self) -> SttModel {
         self.model
@@ -72,6 +93,7 @@ impl WhisperStt {
         Self {
             decoder: Arc::new(Mutex::new(decoder)),
             model,
+            language: STT_LANGUAGE.to_string(),
         }
     }
 }
@@ -103,7 +125,7 @@ impl Stt for WhisperStt {
             .decoder
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .decode(&audio, cancel)?;
+            .decode(&audio, &self.language, cancel)?;
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
@@ -115,7 +137,7 @@ impl Stt for WhisperStt {
 }
 
 trait Decoder: Send {
-    fn decode(&mut self, pcm: &[f32], cancel: &Cancel) -> Result<String>;
+    fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<String>;
 }
 
 struct WhisperDecoder {
@@ -133,14 +155,19 @@ impl WhisperDecoder {
 }
 
 impl Decoder for WhisperDecoder {
-    fn decode(&mut self, pcm: &[f32], cancel: &Cancel) -> Result<String> {
+    fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<String> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
         let abort_user = cancel as *const Cancel as *mut c_void;
         match unsafe {
-            self.ctx
-                .decode(pcm, thread_count(), Some(abort_on_shutdown), abort_user)
+            self.ctx.decode(
+                pcm,
+                thread_count(),
+                language,
+                Some(abort_on_shutdown),
+                abort_user,
+            )
         } {
             Ok(text) => {
                 if cancel.is_shutdown() {
@@ -228,7 +255,7 @@ mod tests {
     }
 
     impl Decoder for ScriptedDecoder {
-        fn decode(&mut self, _pcm: &[f32], cancel: &Cancel) -> Result<String> {
+        fn decode(&mut self, _pcm: &[f32], _language: &str, cancel: &Cancel) -> Result<String> {
             if !self.delay.is_zero() {
                 let start = std::time::Instant::now();
                 while start.elapsed() < self.delay {
@@ -283,8 +310,24 @@ mod tests {
         );
         assert_eq!(stt.name(), "whisper.cpp");
         assert_eq!(stt.model().as_str(), "small");
-        assert_eq!(STT_LANGUAGE, "en");
+        assert_eq!(stt.language(), STT_LANGUAGE);
         assert_eq!(WHISPER_SMALL_ASSET, "whisper-small");
+        let err = match stt.with_language("fr") {
+            Err(err) => err,
+            Ok(_) => panic!("non-en language must fail"),
+        };
+        assert!(err.to_string().contains("pipeline.stt.language"));
+        let ok = WhisperStt::with_decoder(
+            Box::new(ScriptedDecoder {
+                replies: vec!["hello".into()],
+                delay: Duration::ZERO,
+                calls: Arc::new(Mutex::new(0)),
+            }),
+            SttModel::Small,
+        )
+        .with_language(STT_LANGUAGE)
+        .expect("en");
+        assert_eq!(ok.language(), STT_LANGUAGE);
     }
 
     #[test]

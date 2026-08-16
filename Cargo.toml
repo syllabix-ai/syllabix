@@ -31,6 +31,12 @@ zeroize = "=1.8.1"
 # jobserver 0.1.33+ pulls getrandom 0.3/0.4 (edition 2024) on Windows.
 jobserver = "=0.1.32"
 getrandom = "=0.2.17"
+# Pins stay on crates that parse on Rust 1.83 (no edition 2024).
+serde = { version = "=1.0.217", features = ["derive"] }
+serde_yaml = "=0.9.34"
+# ratatui 0.26 + crossterm 0.27 stay on 1.83; 0.29 pulls newer MSRV crates.
+crossterm = "=0.27.0"
+ratatui = { version = "=0.26.3", default-features = false, features = ["crossterm"] }
 # One CPU-only ggml, shared by whisper.cpp and llama.cpp. GPU/Metal/CUDA
 # stay off so the binary keeps the declared dynamic-library set.
 syllabix-native = { path = "crates/syllabix-native" }

@@ -19,14 +19,14 @@ if ! symbols="$(nm -P --defined-only "${bin}" 2>/dev/null)"; then
   symbols="$(nm -P "${bin}")"
 fi
 
-if grep -E '^llama_iso_' <<<"${symbols}" >/dev/null; then
+if grep -E '^_?llama_iso_' <<<"${symbols}" >/dev/null; then
   echo "forbidden post-build llama_iso_* symbols present" >&2
   exit 1
 fi
 
 count_global() {
   local name="$1"
-  grep -E "^${name} [Tt] " <<<"${symbols}" | wc -l | tr -d ' ' || true
+  grep -E "^_?${name} [Tt] " <<<"${symbols}" | wc -l | tr -d ' ' || true
 }
 
 ggml_new="$(count_global ggml_new_tensor)"

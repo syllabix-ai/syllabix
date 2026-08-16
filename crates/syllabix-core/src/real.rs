@@ -14,9 +14,10 @@ pub fn load_real_providers(
     fetcher: &dyn Fetcher,
     progress: &mut dyn Progress,
     cancel: &Cancel,
+    language: &str,
 ) -> Result<(SileroVad, WhisperStt, LlamaLlm, KokoroTts)> {
     let vad = SileroVad::from_cache(cache, fetcher, progress, cancel)?;
-    let stt = WhisperStt::from_cache(cache, fetcher, progress, cancel)?;
+    let stt = WhisperStt::from_cache(cache, fetcher, progress, cancel)?.with_language(language)?;
     let llm = LlamaLlm::from_cache(cache, fetcher, progress, cancel)?;
     let tts = KokoroTts::from_cache(cache, fetcher, progress, cancel)?;
     Ok((vad, stt, llm, tts))
@@ -52,6 +53,7 @@ mod tests {
             &crate::models::BlockedFetcher::default(),
             &mut NoProgress,
             &Cancel::new(),
+            crate::STT_LANGUAGE,
         ) {
             Err(err) => err,
             Ok(_) => panic!("empty manifest should fail"),

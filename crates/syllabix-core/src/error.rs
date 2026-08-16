@@ -64,6 +64,15 @@ pub enum Error {
         /// Human-readable reason.
         message: String,
     },
+
+    /// `syllabix.yaml` failed to parse or validate.
+    #[error("{field}: {message}")]
+    Config {
+        /// Field path (`pipeline.stt.language`) or file path.
+        field: String,
+        /// Human-readable reason.
+        message: String,
+    },
 }
 
 impl Error {
@@ -91,7 +100,8 @@ impl Error {
             | Self::Disconnected { .. }
             | Self::WorkerPanic { .. }
             | Self::AudioDevice { .. }
-            | Self::ModelCache { .. } => 1,
+            | Self::ModelCache { .. }
+            | Self::Config { .. } => 1,
         }
     }
 }
@@ -164,5 +174,20 @@ mod tests {
             message: "missing".into(),
         }
         .is_turn_recoverable());
+        assert!(!Error::Config {
+            field: "pipeline.stt.language".into(),
+            message: "missing field".into(),
+        }
+        .is_turn_recoverable());
+    }
+
+    #[test]
+    fn config_errors_name_the_field() {
+        let err = Error::Config {
+            field: "pipeline.stt.language".into(),
+            message: "missing field".into(),
+        };
+        assert_eq!(err.to_string(), "pipeline.stt.language: missing field");
+        assert_eq!(err.exit_code(), 1);
     }
 }

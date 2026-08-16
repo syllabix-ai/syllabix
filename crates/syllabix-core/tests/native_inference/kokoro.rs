@@ -6,9 +6,9 @@
 
 use syllabix_core::{
     audio::FrameSplitter, run_loop, scripted_frames, transcript_words, word_match_ratio,
-    BlockedFetcher, BuiltinDefaults, Cancel, CollectingSink, FakeLlm, FakeStt, FakeVad,
-    GenerationId, LoopConfig, LoopMode, ModelCache, PipelineStages, StderrProgress, Stt,
-    TokenChunk, Tts, TurnId, Utterance, KOKORO_ASSET, KOKORO_VOICE_ASSET, TTS_ASR_MIN_WORD_MATCH,
+    BlockedFetcher, Cancel, CollectingSink, FakeLlm, FakeStt, FakeVad, GenerationId, LoopConfig,
+    ModelCache, PipelineStages, StderrProgress, Stt, TokenChunk, Tts, TurnId, Utterance,
+    KOKORO_ASSET, KOKORO_VOICE_ASSET, TTS_ASR_MIN_WORD_MATCH,
 };
 
 use crate::native;
@@ -117,10 +117,7 @@ fn kokoro_replaces_fake_tts_in_the_loop() {
     let n = native();
     let frames = scripted_frames(1, 2, 1);
     let report = run_loop(
-        LoopConfig {
-            defaults: BuiltinDefaults::v0(),
-            mode: LoopMode::UntilInputEnds,
-        },
+        LoopConfig::default(),
         PipelineStages {
             vad: FakeVad::new(),
             stt: FakeStt,

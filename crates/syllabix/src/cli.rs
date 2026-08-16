@@ -2,7 +2,12 @@
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use syllabix_core::{Error, Result};
+use syllabix_core::{run_live, AgentConfig, Cancel, Result};
+
+#[cfg(not(coverage))]
+use crate::tui;
+#[cfg(not(coverage))]
+use std::io::{self, IsTerminal};
 
 /// Local voice agent.
 ///
@@ -41,23 +46,38 @@ pub fn execute(cli: Cli) -> Result<()> {
 }
 
 fn run() -> Result<()> {
-    tracing::info!("syllabix run is not implemented yet");
-    Err(Error::not_implemented("run"))
+    let config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
+    let cancel = Cancel::new();
+    #[cfg(coverage)]
+    {
+        let report = run_live(&config, cancel, None)?;
+        tracing::info!(turns = report.turns.len(), "conversation ended");
+        Ok(())
+    }
+    #[cfg(not(coverage))]
+    {
+        if io::stdout().is_terminal() {
+            tui::run_conversation_tui(config, cancel)
+        } else {
+            let report = run_live(&config, cancel, None)?;
+            tracing::info!(turns = report.turns.len(), "conversation ended");
+            Ok(())
+        }
+    }
 }
 
 fn init(dir: Option<PathBuf>) -> Result<()> {
-    let target = dir
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| ".".to_string());
-    tracing::info!(%target, "syllabix init is not implemented yet");
-    Err(Error::not_implemented("init"))
+    let target = dir.unwrap_or_else(|| PathBuf::from("."));
+    let path = AgentConfig::write_init(&target)?;
+    println!("wrote {}", path.display());
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::{CommandFactory, Parser};
+    use syllabix_core::{AgentConfig, Error, CONFIG_FILE_NAME};
 
     #[test]
     fn clap_definition_is_valid() {
@@ -101,21 +121,42 @@ mod tests {
     }
 
     #[test]
-    fn execute_run_is_not_implemented() {
-        let err = execute(Cli {
-            command: Commands::Run,
+    fn execute_init_writes_yaml_and_round_trips() {
+        let dir = std::env::temp_dir().join(format!(
+            "syllabix-cli-init-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        execute(Cli {
+            command: Commands::Init {
+                dir: Some(dir.clone()),
+            },
         })
-        .expect_err("run should not be implemented");
-        assert!(matches!(err, Error::NotImplemented { command: "run" }));
+        .expect("init");
+        let yaml = dir.join(CONFIG_FILE_NAME);
+        assert!(yaml.is_file());
+        let loaded = AgentConfig::load_path(&yaml).expect("load");
+        assert_eq!(loaded, AgentConfig::v0());
+        let err = execute(Cli {
+            command: Commands::Init {
+                dir: Some(dir.clone()),
+            },
+        })
+        .expect_err("overwrite");
+        assert!(matches!(err, Error::Config { .. }));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(coverage)]
     #[test]
-    fn execute_init_is_not_implemented() {
-        let err = execute(Cli {
-            command: Commands::Init { dir: None },
+    fn execute_run_uses_fake_loop_under_coverage() {
+        execute(Cli {
+            command: Commands::Run,
         })
-        .expect_err("init should not be implemented");
-        assert!(matches!(err, Error::NotImplemented { command: "init" }));
+        .expect("coverage run");
     }
 
     #[test]

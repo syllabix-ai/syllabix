@@ -4,10 +4,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use syllabix_core::{
-    run_loop, scripted_frames, BlockedFetcher, BuiltinDefaults, Cancel, CollectingSink, FakeStt,
-    FakeTts, FakeVad, HistoryTurn, LlamaLlm, Llm, LoopConfig, LoopMode, ModelCache, PipelineStages,
-    StderrProgress, TokenChunk, Transcript, TurnId, LLAMA_1B_ASSET, LLAMA_CANCEL_TIMEOUT,
-    VOICE_SYSTEM_PROMPT,
+    run_loop, scripted_frames, BlockedFetcher, Cancel, CollectingSink, FakeStt, FakeTts, FakeVad,
+    HistoryTurn, LlamaLlm, Llm, LoopConfig, ModelCache, PipelineStages, StderrProgress, TokenChunk,
+    Transcript, TurnId, LLAMA_1B_ASSET, LLAMA_CANCEL_TIMEOUT, VOICE_SYSTEM_PROMPT,
 };
 
 use crate::native;
@@ -143,10 +142,7 @@ fn llama_replaces_fake_llm_in_the_loop() {
     log.lock().expect("clear").clear();
     let frames = scripted_frames(1, 2, 1);
     let report = run_loop(
-        LoopConfig {
-            defaults: BuiltinDefaults::v0(),
-            mode: LoopMode::UntilInputEnds,
-        },
+        LoopConfig::default(),
         PipelineStages {
             vad: FakeVad::new(),
             stt: FakeStt,

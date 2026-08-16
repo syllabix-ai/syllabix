@@ -8,10 +8,11 @@ This repository is the product. Founder docs live in [`syllabix-ai/syllabix_foun
 
 ```bash
 cargo run -p syllabix -- --help
-cargo run -p syllabix -- run    # exits 2 until `run` is wired to the loop
+cargo run -p syllabix -- init     # optional syllabix.yaml
+cargo run -p syllabix -- run      # zero-config mic + speakers; headphones until AEC
 ```
 
-## Intended 3-minute path (not shipping yet)
+## Intended 3-minute path (Release binary not shipping yet)
 
 ```bash
 curl -L https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-$(uname -s)-$(uname -m) -o syllabix
@@ -19,16 +20,16 @@ chmod +x syllabix
 ./syllabix run
 ```
 
-GitHub Releases are not published yet. Do not expect a spoken reply from this checkout.
+GitHub Releases are not published yet. From this checkout, `cargo run -p syllabix -- run` talks on a machine with a microphone and speakers. First run fetches model weights into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`. Headphones are recommended until echo control lands; self-interrupt on open speakers is expected.
 
 ## CLI
 
 | Command | Now | Launch |
 | --- | --- | --- |
-| `syllabix run` | Not implemented | Zero-config local mic/speaker conversation |
-| `syllabix init [dir]` | Not implemented | Optional `syllabix.yaml` scaffold |
+| `syllabix run` | Zero-config local mic/speaker conversation + TUI timings | Same; AEC and barge-in come next |
+| `syllabix init [dir]` | Optional `syllabix.yaml` scaffold | Same |
 
-There is no `serve`, `bench`, cloud provider, or API key in v0.
+There is no `serve`, `bench`, cloud provider, or API key in v0. `run` does not require yaml. If `syllabix.yaml` is present, it must name the v0 on-device stack and `language: en`.
 
 ## Develop
 
@@ -42,13 +43,14 @@ cargo test --workspace
 # `cargo llvm-cov --workspace --fail-under-lines 85` skips native inference (`cfg(coverage)`). Run `cargo test` for Whisper/Llama/Kokoro.
 ```
 
-Model weights are not in git. A versioned manifest lists Silero, whisper.cpp `small`, llama-3.2-1b, and Kokoro. The cache writes into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`, verifies SHA-256, and reuses files offline. `syllabix run` does not fetch yet.
+Model weights are not in git. A versioned manifest lists Silero, whisper.cpp `small`, llama-3.2-1b, and Kokoro. The cache writes into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`, verifies SHA-256, and reuses files offline. `syllabix run` fills that cache on first launch.
 
-CI records and plays a WAV fixture (no microphone). That path also soaks 30 minutes of *audio time* through bounded queues faster than real time. A six-turn native loop test runs Silero → whisper.cpp → llama.cpp → Kokoro through fixture capture/playback. `syllabix run` still exits until that loop is attached to the CLI. The first STT/LLM/TTS/VAD test run fetches weights into the model cache.
+CI records and plays a WAV fixture (no microphone). That path also soaks 30 minutes of *audio time* through bounded queues faster than real time. A six-turn native loop test runs Silero → whisper.cpp → llama.cpp → Kokoro through fixture capture/playback. The first STT/LLM/TTS/VAD test run fetches weights into the model cache.
 
 On a laptop with a mic and speakers:
 
 ```bash
+cargo run -p syllabix -- run
 cargo test -p syllabix-core --test audio_io hardware_record_and_play_if_devices_exist -- --ignored --nocapture
 ```
 

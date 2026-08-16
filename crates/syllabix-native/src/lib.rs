@@ -40,6 +40,7 @@ mod ffi {
             pcm: *const f32,
             n_samples: c_int,
             n_threads: c_int,
+            language: *const c_char,
             abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
             abort_user: *mut c_void,
             out: *mut c_char,
@@ -120,16 +121,20 @@ impl WhisperContext {
 
     /// # Safety
     /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
+    /// `language` is a whisper.cpp id (`en`) and must remain valid UTF-8 without interior NULs.
     pub unsafe fn decode(
         &mut self,
         pcm: &[f32],
         n_threads: i32,
+        language: &str,
         abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
         abort_user: *mut c_void,
     ) -> Result<String, DecodeError> {
         if pcm.is_empty() {
             return Err(DecodeError::Failed("no samples".into()));
         }
+        let lang = CString::new(language)
+            .map_err(|_| DecodeError::Failed("language contains NUL".into()))?;
         let mut out = vec![0u8; 32 * 1024];
         let _ggml = ggml_lock();
         let rc = unsafe {
@@ -138,6 +143,7 @@ impl WhisperContext {
                 pcm.as_ptr(),
                 pcm.len() as c_int,
                 n_threads,
+                lang.as_ptr(),
                 abort,
                 abort_user,
                 out.as_mut_ptr().cast::<c_char>(),
