@@ -8,8 +8,6 @@
 
 use std::fs;
 use std::io::Cursor;
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -17,10 +15,11 @@ use sha2::{Digest, Sha256};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames},
     contains_words_in_order, run_loop, word_match_ratio, BlockedFetcher, BuiltinDefaults, Cancel,
-    CollectingSink, FakeLlm, FakeTts, FakeVad, HttpFetcher, LoopConfig, LoopMode, ModelCache,
-    PipelineStages, StderrProgress, Stt, SttModel, TurnId, Utterance, WhisperStt,
-    LIBRISPEECH_MIN_WORD_MATCH,
+    CollectingSink, FakeLlm, FakeTts, FakeVad, LoopConfig, LoopMode, ModelCache, PipelineStages,
+    StderrProgress, Stt, TurnId, Utterance, LIBRISPEECH_MIN_WORD_MATCH,
 };
+
+use crate::{hex, native};
 
 struct RecordedFixture {
     file: &'static str,
@@ -98,17 +97,6 @@ fn fixture_bytes(file: &str) -> Vec<u8> {
     fs::read(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
 }
 
-fn hex(bytes: impl AsRef<[u8]>) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let bytes = bytes.as_ref();
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xf) as usize] as char);
-    }
-    out
-}
-
 fn fixture_utterance(fixture: &RecordedFixture) -> Utterance {
     let bytes = fixture_bytes(fixture.file);
     assert_eq!(
@@ -132,36 +120,6 @@ fn fixture_utterance(fixture: &RecordedFixture) -> Utterance {
     }
 }
 
-fn stt_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn whisper_model_path() -> PathBuf {
-    static PATH: OnceLock<PathBuf> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let cache = ModelCache::v0();
-        let asset = cache
-            .manifest()
-            .asset("whisper-small")
-            .expect("whisper-small asset");
-        cache
-            .resolve(
-                asset,
-                &HttpFetcher,
-                &mut StderrProgress::new(),
-                &Cancel::new(),
-            )
-            .expect("resolve whisper.cpp small")
-    })
-    .clone()
-}
-
-fn load_whisper() -> WhisperStt {
-    WhisperStt::from_model_path(whisper_model_path(), SttModel::Small)
-        .expect("load whisper.cpp small")
-}
-
 #[test]
 fn fixture_hashes_are_stable() {
     for fixture in RECORDED_FIXTURES {
@@ -177,11 +135,11 @@ fn fixture_hashes_are_stable() {
 
 #[test]
 fn recorded_fixtures_match_documented_transcripts() {
-    let _guard = stt_lock();
-    let mut stt = load_whisper();
+    let mut n = native();
     for fixture in RECORDED_FIXTURES {
         let utterance = fixture_utterance(fixture);
-        let transcript = stt
+        let transcript = n
+            .stt
             .transcribe(&utterance, &Cancel::new())
             .unwrap_or_else(|err| panic!("{} stt: {err}", fixture.file));
         let ratio = word_match_ratio(&transcript.text, fixture.expected);
@@ -210,7 +168,7 @@ fn recorded_fixtures_match_documented_transcripts() {
 
 #[test]
 fn whisper_replaces_fake_stt_in_the_loop() {
-    let _guard = stt_lock();
+    let n = native();
     let utterance = fixture_utterance(&JFK);
     let frames = utterance.frames.clone();
     let report = run_loop(
@@ -220,7 +178,7 @@ fn whisper_replaces_fake_stt_in_the_loop() {
         },
         PipelineStages {
             vad: FakeVad::new(),
-            stt: load_whisper(),
+            stt: n.stt.clone(),
             llm: FakeLlm::new(),
             tts: FakeTts,
             sink: CollectingSink::default(),
@@ -246,17 +204,16 @@ fn whisper_replaces_fake_stt_in_the_loop() {
 }
 
 #[test]
-fn cancel_aborts_native_decode_and_drop_releases_context() {
-    let _guard = stt_lock();
+fn cancel_aborts_native_decode_and_context_stays_usable() {
+    let mut n = native();
     let utterance = fixture_utterance(&JFK);
-    let mut stt = load_whisper();
     let cancel = Cancel::new();
     let cancel_thread = cancel.clone();
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(40));
         cancel_thread.shutdown();
     });
-    let result = stt.transcribe(&utterance, &cancel);
+    let result = n.stt.transcribe(&utterance, &cancel);
     match result {
         Err(syllabix_core::Error::Cancelled) => {}
         Ok(transcript) => {
@@ -265,6 +222,9 @@ fn cancel_aborts_native_decode_and_drop_releases_context() {
         }
         Err(err) => panic!("unexpected STT error: {err}"),
     }
-    drop(stt);
-    let _again = load_whisper();
+    let again = n
+        .stt
+        .transcribe(&utterance, &Cancel::new())
+        .expect("whisper context remains usable after cancel");
+    assert!(contains_words_in_order(&again.text, JFK.expected));
 }

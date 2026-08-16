@@ -2,6 +2,7 @@
 
 use std::os::raw::c_void;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use syllabix_native::{DecodeError, WhisperContext};
 
@@ -20,8 +21,17 @@ pub const WHISPER_SMALL_ASSET: &str = "whisper-small";
 
 /// In-process whisper.cpp adapter. Loads the v0 `small` GGML weights.
 pub struct WhisperStt {
-    decoder: Box<dyn Decoder>,
+    decoder: Arc<Mutex<Box<dyn Decoder>>>,
     model: SttModel,
+}
+
+impl Clone for WhisperStt {
+    fn clone(&self) -> Self {
+        Self {
+            decoder: Arc::clone(&self.decoder),
+            model: self.model,
+        }
+    }
 }
 
 impl WhisperStt {
@@ -29,7 +39,7 @@ impl WhisperStt {
     pub fn from_model_path(path: impl AsRef<Path>, model: SttModel) -> Result<Self> {
         let decoder = WhisperDecoder::load(path.as_ref())?;
         Ok(Self {
-            decoder: Box::new(decoder),
+            decoder: Arc::new(Mutex::new(Box::new(decoder))),
             model,
         })
     }
@@ -59,7 +69,10 @@ impl WhisperStt {
 
     #[cfg(test)]
     fn with_decoder(decoder: Box<dyn Decoder>, model: SttModel) -> Self {
-        Self { decoder, model }
+        Self {
+            decoder: Arc::new(Mutex::new(decoder)),
+            model,
+        }
     }
 }
 
@@ -86,7 +99,11 @@ impl Stt for WhisperStt {
             });
         }
         let audio: Vec<f32> = pcm.iter().map(|s| *s as f32 / 32768.0).collect();
-        let text = self.decoder.decode(&audio, cancel)?;
+        let text = self
+            .decoder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .decode(&audio, cancel)?;
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
