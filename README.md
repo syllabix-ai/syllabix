@@ -8,7 +8,7 @@ This repository is the product. Founder docs live in [`syllabix-ai/syllabix_foun
 
 ```bash
 cargo run -p syllabix -- --help
-cargo run -p syllabix -- run    # exits 2 until the conversation loop lands
+cargo run -p syllabix -- run    # exits 2 until `run` is wired to the loop
 ```
 
 ## Intended 3-minute path (not shipping yet)
@@ -43,7 +43,7 @@ cargo test --workspace
 
 Model weights are not in git. A versioned manifest lists Silero, whisper.cpp `small`, llama-3.2-1b, and Kokoro. The cache writes into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`, verifies SHA-256, and reuses files offline. `syllabix run` does not fetch yet.
 
-CI records and plays a WAV fixture (no microphone). That path also soaks 30 minutes of *audio time* through bounded queues faster than real time. whisper.cpp `small` and llama.cpp `Llama-3.2-1B-Instruct-Q4_K_M` stay in-process; Kokoro runs through the same ONNX Runtime as Silero. The first STT/LLM/TTS test run fetches weights into the model cache.
+CI records and plays a WAV fixture (no microphone). That path also soaks 30 minutes of *audio time* through bounded queues faster than real time. A six-turn native loop test runs Silero → whisper.cpp → llama.cpp → Kokoro through fixture capture/playback. `syllabix run` still exits until that loop is attached to the CLI. The first STT/LLM/TTS/VAD test run fetches weights into the model cache.
 
 On a laptop with a mic and speakers:
 

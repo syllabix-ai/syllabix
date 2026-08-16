@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::cancel::Cancel;
 use crate::defaults::{BuiltinDefaults, QueueCaps};
 use crate::error::{Error, Result};
-use crate::providers::{AudioSink, Llm, Stt, Tts, Vad};
+use crate::providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 use crate::queue::{bounded, BoundedSender, QueueReport};
 use crate::types::{
     AudioFrame, CompletedTurn, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId,
@@ -38,11 +38,19 @@ pub struct LoopConfig {
 }
 
 impl LoopConfig {
-    /// 30-turn merge-gate fixture.
+    /// 30-turn in-memory fake merge-gate fixture.
     pub fn thirty_turns() -> Self {
         Self {
             defaults: BuiltinDefaults::v0(),
             mode: LoopMode::StopAfterTurns(30),
+        }
+    }
+
+    /// Native end-to-end merge-gate fixture (six real provider turns).
+    pub fn six_turns() -> Self {
+        Self {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::StopAfterTurns(6),
         }
     }
 }
@@ -69,6 +77,8 @@ pub struct LoopReport {
     pub tasks_still_running: usize,
     /// Whether shutdown was requested before natural completion.
     pub cancelled: bool,
+    /// Turns dropped after a recoverable provider error.
+    pub skipped_turns: usize,
 }
 
 struct TurnAcc {
@@ -85,6 +95,7 @@ struct Shared {
     live_tasks: Arc<AtomicUsize>,
     fail: Mutex<Option<Error>>,
     completed: AtomicUsize,
+    skipped: AtomicUsize,
 }
 
 impl Shared {
@@ -94,7 +105,12 @@ impl Shared {
             live_tasks: Arc::new(AtomicUsize::new(0)),
             fail: Mutex::new(None),
             completed: AtomicUsize::new(0),
+            skipped: AtomicUsize::new(0),
         })
+    }
+
+    fn note_skip(&self) {
+        self.skipped.fetch_add(1, Ordering::SeqCst);
     }
 
     fn fail(&self, err: Error, cancel: &Cancel) {
@@ -198,6 +214,27 @@ pub struct PipelineStages<V, S, L, T, K> {
     pub sink: K,
 }
 
+/// Frame iterator presented as [`AudioCapture`] for the capture worker.
+struct IterCapture<I> {
+    iter: I,
+}
+
+impl<I> AudioCapture for IterCapture<I>
+where
+    I: Iterator<Item = AudioFrame> + Send,
+{
+    fn name(&self) -> &'static str {
+        "fixture"
+    }
+
+    fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<AudioFrame>> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        Ok(self.iter.next())
+    }
+}
+
 /// Run the cascade on an in-memory frame iterator. Blocks until every worker joins.
 pub fn run_loop<V, S, L, T, K, I>(
     config: LoopConfig,
@@ -213,6 +250,31 @@ where
     K: AudioSink + 'static,
     I: IntoIterator<Item = AudioFrame> + Send + 'static,
     I::IntoIter: Send + 'static,
+{
+    run_loop_captured(
+        config,
+        stages,
+        IterCapture {
+            iter: frames.into_iter(),
+        },
+        cancel,
+    )
+}
+
+/// Run the cascade from an [`AudioCapture`] source (fixture or native mic).
+pub fn run_loop_captured<V, S, L, T, K, C>(
+    config: LoopConfig,
+    stages: PipelineStages<V, S, L, T, K>,
+    capture: C,
+    cancel: Cancel,
+) -> Result<LoopReport>
+where
+    V: Vad + 'static,
+    S: Stt + 'static,
+    L: Llm + 'static,
+    T: Tts + 'static,
+    K: AudioSink + 'static,
+    C: AudioCapture + 'static,
 {
     let PipelineStages {
         vad,
@@ -236,9 +298,8 @@ where
         let cancel = cancel.clone();
         let shared = Arc::clone(&shared);
         let live = Arc::clone(&shared.live_tasks);
-        let iter = frames.into_iter();
         joins.push(spawn("syllabix-capture", live, move || {
-            capture_loop(iter, frame_tx, &cancel, &shared)
+            capture_loop(capture, frame_tx, &cancel, &shared)
         }));
     }
 
@@ -333,6 +394,7 @@ where
         tasks_exited: task_count,
         tasks_still_running,
         cancelled: cancel.is_shutdown(),
+        skipped_turns: shared.skipped.load(Ordering::SeqCst),
     })
 }
 
@@ -368,17 +430,29 @@ fn ignore_cancel(result: Result<()>, shared: &Shared, cancel: &Cancel) {
     }
 }
 
-fn capture_loop<I>(frames: I, tx: BoundedSender<AudioFrame>, cancel: &Cancel, shared: &Shared)
-where
-    I: Iterator<Item = AudioFrame>,
-{
-    for frame in frames {
+fn capture_loop<C: AudioCapture>(
+    mut capture: C,
+    tx: BoundedSender<AudioFrame>,
+    cancel: &Cancel,
+    shared: &Shared,
+) {
+    loop {
         if cancel.is_shutdown() {
             return;
         }
-        ignore_cancel(tx.send_cancellable(frame, cancel), shared, cancel);
-        if cancel.is_shutdown() {
-            return;
+        match capture.next_frame(cancel) {
+            Ok(Some(frame)) => {
+                ignore_cancel(tx.send_cancellable(frame, cancel), shared, cancel);
+                if cancel.is_shutdown() {
+                    return;
+                }
+            }
+            Ok(None) => return,
+            Err(Error::Cancelled) => return,
+            Err(err) => {
+                shared.fail(err, cancel);
+                return;
+            }
         }
     }
 }
@@ -445,6 +519,9 @@ fn stt_loop<S: Stt>(
                         return;
                     }
                 }
+                Err(err) if err.is_turn_recoverable() => {
+                    shared.note_skip();
+                }
                 Err(err) => {
                     shared.fail(err, cancel);
                     return;
@@ -490,6 +567,9 @@ fn llm_loop<L: Llm>(
                         }
                         // Generation cancel: keep listening so the next user turn is preserved.
                     }
+                    Err(err) if err.is_turn_recoverable() => {
+                        shared.note_skip();
+                    }
                     Err(err) => {
                         shared.fail(err, cancel);
                         return;
@@ -532,6 +612,9 @@ fn tts_loop<T: Tts>(
                         if cancel.is_shutdown() {
                             return;
                         }
+                    }
+                    Err(err) if err.is_turn_recoverable() => {
+                        shared.note_skip();
                     }
                     Err(err) => {
                         shared.fail(err, cancel);
@@ -636,6 +719,12 @@ mod tests {
         assert_eq!(report.turns[0].token_count, report.turns[0].audio_chunks);
         assert_eq!(report.tasks_exited, 6);
         assert_eq!(report.tasks_still_running, 0);
+        assert_eq!(report.skipped_turns, 0);
         assert!(report.queues.within_capacity());
+    }
+
+    #[test]
+    fn six_turns_config_stops_after_six() {
+        assert_eq!(LoopConfig::six_turns().mode, LoopMode::StopAfterTurns(6));
     }
 }

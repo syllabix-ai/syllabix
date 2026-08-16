@@ -72,6 +72,14 @@ impl Error {
         Self::NotImplemented { command }
     }
 
+    /// Provider failures skip the current turn and keep the loop running.
+    ///
+    /// Invalid audio, disconnects, panics, cache errors, and device errors
+    /// still shut the conversation down.
+    pub fn is_turn_recoverable(&self) -> bool {
+        matches!(self, Self::Provider { .. })
+    }
+
     /// Process exit code for this error.
     pub fn exit_code(&self) -> i32 {
         match self {
@@ -138,5 +146,23 @@ mod tests {
         };
         assert_eq!(err.to_string(), "model cache: checksum mismatch for silero");
         assert_eq!(err.exit_code(), 1);
+    }
+
+    #[test]
+    fn provider_errors_are_turn_recoverable() {
+        let err = Error::Provider {
+            provider: "whisper.cpp",
+            message: "decode failed".into(),
+        };
+        assert!(err.is_turn_recoverable());
+        assert!(!Error::Cancelled.is_turn_recoverable());
+        assert!(!Error::InvalidAudio {
+            message: "bad frame".into(),
+        }
+        .is_turn_recoverable());
+        assert!(!Error::ModelCache {
+            message: "missing".into(),
+        }
+        .is_turn_recoverable());
     }
 }
