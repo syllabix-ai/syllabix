@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Linux stand-in for .github/workflows/ci.yml (GitHub Actions is unavailable).
+# Order matches DEVELOPMENT.md: cheap/fail-fast first; native inference last.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${root}"
@@ -11,10 +12,6 @@ cargo fmt --all -- --check
 
 echo "== clippy =="
 cargo clippy --workspace --all-targets -- -D warnings
-
-echo "== test =="
-# Native inference (whisper/llama/kokoro/six-turn) runs here once.
-cargo test --workspace
 
 echo "== release build =="
 cargo build --workspace --release
@@ -28,10 +25,14 @@ chmod +x scripts/check-one-ggml.sh
 scripts/check-one-ggml.sh target/release/syllabix
 
 if command -v cargo-llvm-cov >/dev/null 2>&1 || cargo llvm-cov --version >/dev/null 2>&1; then
-  echo "== coverage (unit tests; native_inference skipped via cfg coverage) =="
-  cargo llvm-cov --workspace --cobertura --output-path coverage.xml
+  echo "== coverage (no whisper.cpp / llama.cpp / Kokoro weights) =="
+  cargo llvm-cov --workspace --fail-under-lines 85 --cobertura --output-path coverage.xml
 else
   echo "cargo-llvm-cov not installed; skip coverage (CI used cargo-llvm-cov@0.6.21)"
 fi
+
+echo "== test =="
+# Native inference (whisper/llama/kokoro/six-turn) runs here once.
+cargo test --workspace
 
 echo "linux CI stand-in passed"

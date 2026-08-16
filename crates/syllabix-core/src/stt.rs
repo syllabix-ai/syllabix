@@ -454,6 +454,72 @@ mod tests {
     }
 
     #[test]
+    fn word_match_ratio_is_one_when_expected_is_empty() {
+        assert_eq!(word_match_ratio("anything", &[]), 1.0);
+        assert_eq!(transcript_words("12 abc-DEF!").as_slice(), ["abc", "def"]);
+    }
+
+    #[test]
+    fn empty_pcm_is_rejected_before_decode() {
+        let calls = Arc::new(Mutex::new(0));
+        let mut stt = WhisperStt::with_decoder(
+            Box::new(ScriptedDecoder {
+                replies: vec!["should not run".into()],
+                delay: Duration::ZERO,
+                calls: Arc::clone(&calls),
+            }),
+            SttModel::Small,
+        );
+        let utterance = Utterance {
+            turn: TurnId(0),
+            frames: vec![AudioFrame {
+                seq: 0,
+                sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
+                channels: DEFAULT_CHANNELS,
+                samples: vec![],
+            }],
+        };
+        let err = stt.transcribe(&utterance, &Cancel::new()).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Provider {
+                provider: "whisper.cpp",
+                ..
+            }
+        ));
+        assert!(err.to_string().contains("no samples"));
+        assert_eq!(*calls.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn clone_shares_the_scripted_decoder() {
+        let calls = Arc::new(Mutex::new(0));
+        let stt = WhisperStt::with_decoder(
+            Box::new(ScriptedDecoder {
+                replies: vec!["one".into(), "two".into()],
+                delay: Duration::ZERO,
+                calls: Arc::clone(&calls),
+            }),
+            SttModel::Small,
+        );
+        let mut a = stt.clone();
+        let mut b = stt;
+        assert_eq!(
+            a.transcribe(&speech_utterance(0, 1), &Cancel::new())
+                .unwrap()
+                .text,
+            "one"
+        );
+        assert_eq!(
+            b.transcribe(&speech_utterance(1, 1), &Cancel::new())
+                .unwrap()
+                .text,
+            "two"
+        );
+        assert_eq!(*calls.lock().unwrap(), 2);
+    }
+
+    #[test]
     fn librispeech_gate_allows_numeral_for_number_word() {
         let spoken = "She has been dead these 20 years.";
         let expected = ["she", "has", "been", "dead", "these", "twenty", "years"];

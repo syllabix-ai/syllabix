@@ -233,4 +233,22 @@ mod tests {
         assert_eq!(ready, vec!["See Dr. Smith at 3.14 please.".to_string()]);
         assert!(buf.is_empty());
     }
+
+    #[test]
+    fn splits_questions_and_keeps_plus_lists() {
+        let spoken = strip_markdown_for_speech("+ item\n\nWhat now?");
+        assert!(spoken.to_ascii_lowercase().contains("item"));
+        assert!(spoken.contains('?'));
+        let mut buf = String::from("Ready? Go!");
+        assert_eq!(
+            take_sentences(&mut buf, false),
+            vec!["Ready?".to_string(), "Go!".to_string()]
+        );
+    }
+
+    #[test]
+    fn incomplete_markdown_link_is_left_as_text() {
+        let spoken = strip_markdown_for_speech("[label](https://x.test and [open");
+        assert!(spoken.contains("label") || spoken.contains('['));
+    }
 }

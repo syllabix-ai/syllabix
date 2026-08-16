@@ -1,8 +1,8 @@
 //! Native inference suite (whisper.cpp, llama.cpp, Kokoro, six-turn loop).
 //!
 //! One integration binary so Whisper/Llama/Kokoro load once per `cargo test`
-//! process. `cargo llvm-cov` sets `--cfg coverage` and skips these modules; the
-//! 85% unit-coverage floor is restored in a follow-up PR.
+//! process. `cargo llvm-cov` sets `--cfg coverage` and skips weight loads;
+//! a fake loop still runs so this binary is not a coverage hole.
 
 #[cfg(not(coverage))]
 mod kokoro;
@@ -62,4 +62,28 @@ pub(crate) fn native() -> MutexGuard<'static, Native> {
 
 #[cfg(coverage)]
 #[test]
-fn native_inference_skipped_under_llvm_cov() {}
+fn native_weights_are_not_loaded_under_llvm_cov() {
+    use syllabix_core::{
+        run_loop, scripted_frames, BuiltinDefaults, Cancel, CollectingSink, FakeLlm, FakeStt,
+        FakeTts, FakeVad, LoopConfig, LoopMode, PipelineStages,
+    };
+
+    let report = run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm: FakeLlm::new(),
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(1, 2, 1),
+        Cancel::new(),
+    )
+    .expect("coverage fake loop");
+    assert_eq!(report.turns.len(), 1);
+    assert_eq!(report.tasks_still_running, 0);
+}

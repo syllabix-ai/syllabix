@@ -315,4 +315,82 @@ mod tests {
         assert!(matches!(err, Error::InvalidAudio { .. }));
         assert!(err.to_string().contains("512 samples"));
     }
+
+    #[test]
+    fn name_matches_v0_and_reset_clears_turn() {
+        struct ReplayScorer {
+            values: Vec<f32>,
+            index: usize,
+        }
+        impl ProbabilityScorer for ReplayScorer {
+            fn score(&mut self, _frame: &AudioFrame) -> Result<f32> {
+                let value = self.values[self.index];
+                self.index += 1;
+                Ok(value)
+            }
+            fn reset(&mut self) {
+                self.index = 0;
+            }
+        }
+        let mut vad = SileroVad::with_scorer(Box::new(ReplayScorer {
+            values: vec![0.9, 0.9],
+            index: 0,
+        }));
+        assert_eq!(vad.name(), "silero");
+        assert_eq!(
+            vad.push_frame(frame(0)).unwrap(),
+            vec![VadEvent::SpeechStart { turn: TurnId(0) }]
+        );
+        vad.reset();
+        assert_eq!(
+            vad.push_frame(frame(1)).unwrap(),
+            vec![VadEvent::SpeechStart { turn: TurnId(0) }]
+        );
+    }
+
+    #[test]
+    fn missing_model_file_is_a_provider_error() {
+        let err = match SileroVad::from_model_path("/no/such/silero_vad.onnx") {
+            Err(err) => err,
+            Ok(_) => panic!("missing model path should fail"),
+        };
+        assert!(matches!(
+            err,
+            Error::Provider {
+                provider: "silero",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn from_cache_requires_silero_asset() {
+        let root = std::env::temp_dir().join(format!(
+            "syllabix-vad-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let cache = crate::models::ModelCache::new(
+            root,
+            crate::models::Manifest {
+                version: 1,
+                assets: vec![],
+            },
+        );
+        let err = match SileroVad::from_cache(
+            &cache,
+            &crate::models::BlockedFetcher::default(),
+            &mut crate::models::NoProgress,
+            &Cancel::new(),
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("empty manifest should fail"),
+        };
+        assert!(matches!(err, Error::ModelCache { .. }));
+        assert!(err.to_string().contains("silero"));
+    }
 }

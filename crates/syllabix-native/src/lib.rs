@@ -320,4 +320,33 @@ mod tests {
             "unexpected llama system info: {info}"
         );
     }
+
+    #[test]
+    fn missing_whisper_weights_do_not_load() {
+        let err = match WhisperContext::load("/no/such/ggml-small.bin") {
+            Err(err) => err,
+            Ok(_) => panic!("missing whisper weights should fail"),
+        };
+        assert!(err.contains("failed to load whisper.cpp"));
+    }
+
+    #[test]
+    fn missing_llama_weights_do_not_load() {
+        let err = match LlamaContext::load("/no/such/model.gguf", 2048, 1) {
+            Err(err) => err,
+            Ok(_) => panic!("missing llama weights should fail"),
+        };
+        assert!(err.contains("failed to load llama.cpp"));
+    }
+
+    #[test]
+    fn decode_and_generate_errors_are_distinct() {
+        assert_ne!(DecodeError::Cancelled, DecodeError::Failed("x".into()));
+        assert_ne!(LlamaError::Cancelled, LlamaError::Failed("x".into()));
+        let msg = ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        };
+        assert_eq!(msg.role, "user");
+    }
 }

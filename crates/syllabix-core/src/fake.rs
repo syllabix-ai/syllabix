@@ -418,7 +418,7 @@ pub fn scripted_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::Vad;
+    use crate::providers::{AudioSink, Stt, Vad};
 
     #[test]
     fn vad_emits_start_and_end_per_turn() {
@@ -467,5 +467,50 @@ mod tests {
         };
         let t = stt.transcribe(&utterance, &cancel).unwrap();
         assert_eq!(t.text, "turn-007");
+    }
+
+    #[test]
+    fn fake_stt_rejects_empty_utterance_and_shutdown() {
+        let mut stt = FakeStt;
+        let cancel = Cancel::new();
+        let err = stt
+            .transcribe(
+                &Utterance {
+                    turn: TurnId(0),
+                    frames: vec![],
+                },
+                &cancel,
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Provider { .. }));
+        cancel.shutdown();
+        let frames = scripted_frames(1, 1, 0);
+        let err = stt
+            .transcribe(
+                &Utterance {
+                    turn: TurnId(1),
+                    frames,
+                },
+                &cancel,
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Cancelled));
+    }
+
+    #[test]
+    fn collecting_sink_records_chunks_until_cancel() {
+        let mut sink = CollectingSink::default();
+        let cancel = Cancel::new();
+        let audio = SynthesizedAudio {
+            turn: TurnId(0),
+            generation: cancel.generation(),
+            index: 0,
+            samples: vec![1, 2],
+            is_last: true,
+        };
+        sink.play(audio.clone(), &cancel).unwrap();
+        assert_eq!(sink.chunks.len(), 1);
+        cancel.shutdown();
+        assert!(matches!(sink.play(audio, &cancel), Err(Error::Cancelled)));
     }
 }

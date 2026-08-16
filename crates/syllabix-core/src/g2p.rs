@@ -518,4 +518,44 @@ mod tests {
         assert!(cmu_map().contains_key("hello"));
         assert!(cmu_map().contains_key("world"));
     }
+
+    #[test]
+    fn digits_and_apostrophe_s_are_spoken() {
+        let ipa = english_to_ipa("cat's 42-piece");
+        assert!(!ipa.is_empty(), "{ipa}");
+        let ids = english_to_kokoro_ids("cat's 42-piece").unwrap();
+        assert!(!ids.is_empty());
+    }
+
+    #[test]
+    fn letter_to_sound_covers_common_clusters() {
+        let ipa = english_to_ipa("tioning shthphqueeoo xyz");
+        assert!(!ipa.is_empty(), "{ipa}");
+        assert!(english_to_kokoro_ids("tioning").is_ok());
+    }
+
+    #[test]
+    fn dictionary_words_cover_varied_arpa_phones() {
+        for word in [
+            "choice", "the", "measure", "think", "sing", "out", "boy", "ship", "vision", "quick",
+            "zero",
+        ] {
+            let ipa = english_to_ipa(word);
+            assert!(!ipa.is_empty(), "{word} -> {ipa}");
+        }
+    }
+
+    #[test]
+    fn overlong_phoneme_sequence_is_a_provider_error() {
+        let long = "hello ".repeat(400);
+        let err = english_to_kokoro_ids(&long).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Provider {
+                provider: "kokoro",
+                ..
+            }
+        ));
+        assert!(err.to_string().contains("exceeds"));
+    }
 }
