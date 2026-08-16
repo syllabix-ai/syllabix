@@ -1,38 +1,16 @@
 //! Merge gate for PR 11: llama.cpp GGUF load, greedy stream, history, cancel.
 
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use syllabix_core::{
     run_loop, scripted_frames, BlockedFetcher, BuiltinDefaults, Cancel, CollectingSink, FakeStt,
-    FakeTts, FakeVad, HistoryTurn, HttpFetcher, LlamaLlm, Llm, LoopConfig, LoopMode, ModelCache,
-    PipelineStages, StderrProgress, TokenChunk, Transcript, TurnId, LLAMA_1B_ASSET,
-    LLAMA_CANCEL_TIMEOUT, VOICE_SYSTEM_PROMPT,
+    FakeTts, FakeVad, HistoryTurn, LlamaLlm, Llm, LoopConfig, LoopMode, ModelCache, PipelineStages,
+    StderrProgress, TokenChunk, Transcript, TurnId, LLAMA_1B_ASSET, LLAMA_CANCEL_TIMEOUT,
+    VOICE_SYSTEM_PROMPT,
 };
 
-fn llama_lock() -> std::sync::MutexGuard<'static, LlamaLlm> {
-    static CELL: OnceLock<Mutex<LlamaLlm>> = OnceLock::new();
-    CELL.get_or_init(|| {
-        let cache = ModelCache::v0();
-        let asset = cache
-            .manifest()
-            .asset(LLAMA_1B_ASSET)
-            .expect("llama-3.2-1b asset");
-        let path: PathBuf = cache
-            .resolve(
-                asset,
-                &HttpFetcher,
-                &mut StderrProgress::new(),
-                &Cancel::new(),
-            )
-            .expect("resolve Llama-3.2-1B-Instruct-Q4_K_M.gguf");
-        Mutex::new(LlamaLlm::from_model_path(path).expect("load Q4_K_M GGUF"))
-    })
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
+use crate::native;
 
 fn collect(
     llm: &mut LlamaLlm,
@@ -54,14 +32,14 @@ fn joined(chunks: &[TokenChunk]) -> String {
 
 #[test]
 fn q4_km_gguf_loads_without_segfault() {
-    let mut llm = llama_lock();
-    assert_eq!(llm.name(), "llama.cpp");
+    let mut n = native();
+    assert_eq!(n.llm.name(), "llama.cpp");
     assert!(VOICE_SYSTEM_PROMPT.contains("spoken"));
     let user = Transcript {
         turn: TurnId(0),
         text: "Say the word hello.".into(),
     };
-    let chunks = collect(&mut llm, &[], &user, &Cancel::new()).expect("generate after load");
+    let chunks = collect(&mut n.llm, &[], &user, &Cancel::new()).expect("generate after load");
     assert!(!chunks.is_empty(), "must stream at least one token chunk");
     assert!(
         chunks.last().expect("last").is_last,
@@ -75,12 +53,12 @@ fn q4_km_gguf_loads_without_segfault() {
 
 #[test]
 fn deterministic_fixture_streams_a_reply() {
-    let mut llm = llama_lock();
+    let mut n = native();
     let user = Transcript {
         turn: TurnId(1),
         text: "Reply with the single word ping.".into(),
     };
-    let chunks = collect(&mut llm, &[], &user, &Cancel::new()).expect("stream");
+    let chunks = collect(&mut n.llm, &[], &user, &Cancel::new()).expect("stream");
     let text = joined(&chunks);
     assert!(
         !text.trim().is_empty(),
@@ -98,12 +76,12 @@ fn deterministic_fixture_streams_a_reply() {
 
 #[test]
 fn generate_preserves_configured_turn_history() {
-    let mut llm = llama_lock();
+    let mut n = native();
     let first = Transcript {
         turn: TurnId(0),
         text: "My favorite color is teal.".into(),
     };
-    let first_chunks = collect(&mut llm, &[], &first, &Cancel::new()).expect("turn 1");
+    let first_chunks = collect(&mut n.llm, &[], &first, &Cancel::new()).expect("turn 1");
     let assistant: String = joined(&first_chunks);
     let history = vec![HistoryTurn {
         user: first.clone(),
@@ -113,9 +91,9 @@ fn generate_preserves_configured_turn_history() {
         turn: TurnId(1),
         text: "What color did I say?".into(),
     };
-    let log = llm.call_log();
+    let log = n.llm.call_log();
     log.lock().expect("clear").clear();
-    let second_chunks = collect(&mut llm, &history, &second, &Cancel::new()).expect("turn 2");
+    let second_chunks = collect(&mut n.llm, &history, &second, &Cancel::new()).expect("turn 2");
     assert!(!joined(&second_chunks).trim().is_empty());
     let calls = log.lock().expect("calls");
     assert_eq!(calls.len(), 1);
@@ -129,7 +107,7 @@ fn generate_preserves_configured_turn_history() {
 
 #[test]
 fn cancel_aborts_native_generate_within_timeout() {
-    let mut llm = llama_lock();
+    let mut n = native();
     let user = Transcript {
         turn: TurnId(0),
         text: "Tell a very long story about a river, a mountain, and a forest, with many details."
@@ -142,7 +120,7 @@ fn cancel_aborts_native_generate_within_timeout() {
         cancel_thread.shutdown();
     });
     let started = Instant::now();
-    let result = collect(&mut llm, &[], &user, &cancel);
+    let result = collect(&mut n.llm, &[], &user, &cancel);
     let elapsed = started.elapsed();
     assert!(
         elapsed <= LLAMA_CANCEL_TIMEOUT,
@@ -160,8 +138,8 @@ fn cancel_aborts_native_generate_within_timeout() {
 
 #[test]
 fn llama_replaces_fake_llm_in_the_loop() {
-    let llm = llama_lock();
-    let log = llm.call_log();
+    let n = native();
+    let log = n.llm.call_log();
     log.lock().expect("clear").clear();
     let frames = scripted_frames(1, 2, 1);
     let report = run_loop(
@@ -172,7 +150,7 @@ fn llama_replaces_fake_llm_in_the_loop() {
         PipelineStages {
             vad: FakeVad::new(),
             stt: FakeStt,
-            llm: llm.clone(),
+            llm: n.llm.clone(),
             tts: FakeTts,
             sink: CollectingSink::default(),
         },
@@ -199,7 +177,7 @@ fn llama_replaces_fake_llm_in_the_loop() {
 
 #[test]
 fn populated_cache_reuses_the_gguf_offline() {
-    let _llm = llama_lock();
+    let _n = native();
     let cached = ModelCache::v0();
     let asset = cached.manifest().asset(LLAMA_1B_ASSET).unwrap();
     cached

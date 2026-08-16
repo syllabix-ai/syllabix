@@ -1,7 +1,9 @@
 //! Shared types and the in-memory conversation loop for Syllabix.
 //!
 //! Pull request 13 runs Silero → whisper.cpp → llama.cpp → Kokoro → fixture
-//! playback. Fake providers remain in the 30-turn in-memory tests.
+//! playback. Fake providers remain in the 30-turn in-memory tests. Native
+//! inference tests share one binary (`native_inference`) and are skipped under
+//! `cargo llvm-cov` (`cfg(coverage)`).
 
 pub mod audio;
 pub mod models;
