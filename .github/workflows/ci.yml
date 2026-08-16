@@ -29,7 +29,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v1-${{ runner.os }}-whisper-small-llama-3.2-1b
+          key: syllabix-models-v1-${{ runner.os }}-whisper-small-llama-3.2-1b-kokoro-v1
       # cargo-llvm-cov 0.6.21 is the latest release compatible with Rust 1.83.
       - uses: taiki-e/install-action@v2
         with:
@@ -99,7 +99,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v1-${{ matrix.name }}-whisper-small-llama-3.2-1b
+          key: syllabix-models-v1-${{ matrix.name }}-whisper-small-llama-3.2-1b-kokoro-v1
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}

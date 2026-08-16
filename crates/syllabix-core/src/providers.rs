@@ -49,9 +49,15 @@ pub trait Tts: Send {
     /// Config name (`kokoro`).
     fn name(&self) -> &'static str;
 
-    /// Synthesize `text` as one audio chunk. Pipeline calls this per streamed token.
-    fn synthesize_chunk(&mut self, token: &TokenChunk, cancel: &Cancel)
-        -> Result<SynthesizedAudio>;
+    /// Synthesize buffered tokens. May return no chunks until a sentence ends.
+    ///
+    /// Pipeline calls this per streamed token. The last chunk of a generation
+    /// must set `is_last = true` so the loop can complete the turn.
+    fn synthesize_chunk(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+    ) -> Result<Vec<SynthesizedAudio>>;
 }
 
 /// Playback sink. Native speakers replace the collecting sink in a later PR.

@@ -520,11 +520,13 @@ fn tts_loop<T: Tts>(
                     continue;
                 }
                 match tts.synthesize_chunk(&token, cancel) {
-                    Ok(audio) => {
-                        if cancel.is_stale(audio.generation) {
-                            continue;
+                    Ok(chunks) => {
+                        for audio in chunks {
+                            if cancel.is_stale(audio.generation) {
+                                continue;
+                            }
+                            ignore_cancel(tx.send_cancellable(audio, cancel), shared, cancel);
                         }
-                        ignore_cancel(tx.send_cancellable(audio, cancel), shared, cancel);
                     }
                     Err(Error::Cancelled) => {
                         if cancel.is_shutdown() {

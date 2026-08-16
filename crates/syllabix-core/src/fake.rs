@@ -222,7 +222,7 @@ impl Tts for FakeTts {
         &mut self,
         token: &TokenChunk,
         cancel: &Cancel,
-    ) -> Result<SynthesizedAudio> {
+    ) -> Result<Vec<SynthesizedAudio>> {
         if cancel.is_stale(token.generation) {
             return Err(Error::Cancelled);
         }
@@ -230,13 +230,13 @@ impl Tts for FakeTts {
         if samples.is_empty() {
             samples.push(1);
         }
-        Ok(SynthesizedAudio {
+        Ok(vec![SynthesizedAudio {
             turn: token.turn,
             generation: token.generation,
             index: token.index,
             samples,
             is_last: token.is_last,
-        })
+        }])
     }
 }
 
