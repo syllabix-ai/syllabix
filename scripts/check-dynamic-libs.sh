@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fail if the syllabix executable links unexpected shared libraries.
-# Expected on glibc Linux: libc family + libgcc_s + libstdc++ (ONNX Runtime),
-# the dynamic loader, and ALSA (cpal, declared in PR 3).
+# Expected on glibc Linux: libc family + libgcc_s + libstdc++ (ONNX Runtime
+# and statically linked whisper.cpp), the dynamic loader, and ALSA (cpal).
 set -euo pipefail
 
 bin="${1:-}"

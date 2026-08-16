@@ -32,7 +32,7 @@ There is no `serve`, `bench`, cloud provider, or API key in v0.
 
 ## Develop
 
-Requires Rust 1.83+. Linux contributors need ALSA headers (`libasound2-dev`) to compile native audio.
+Requires Rust 1.83+, CMake, and a C++ compiler (whisper.cpp is compiled into the binary). Linux contributors also need ALSA headers (`libasound2-dev`). Windows contributors need LLVM so `whisper-rs` can generate MSVC bindings (`LIBCLANG_PATH` pointing at `clang`).
 
 ```bash
 cargo fmt --all -- --check
@@ -42,7 +42,7 @@ cargo test --workspace
 
 Model weights are not in git. A versioned manifest lists Silero, whisper.cpp `small`, llama-3.2-1b, and Kokoro. The cache writes into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`, verifies SHA-256, and reuses files offline. `syllabix run` does not fetch yet.
 
-CI records and plays a WAV fixture (no microphone). That path also soaks 30 minutes of *audio time* through bounded queues faster than real time.
+CI records and plays a WAV fixture (no microphone). That path also soaks 30 minutes of *audio time* through bounded queues faster than real time. whisper.cpp `small` is compiled into the binary; the first STT test run fetches `ggml-small.bin` into the model cache.
 
 On a laptop with a mic and speakers:
 

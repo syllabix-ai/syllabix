@@ -18,6 +18,7 @@ zeroize.workspace = true
 jobserver.workspace = true
 getrandom.workspace = true
 ort = "=2.0.0-rc.9"
+whisper-rs.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 coreaudio-sys.workspace = true

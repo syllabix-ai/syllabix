@@ -1,0 +1,270 @@
+//! Merge gate for PR 8: whisper.cpp `small` on versioned recorded fixtures.
+//!
+//! JFK is the whisper.cpp sample. The three LibriSpeech `test-clean` clips are
+//! converted 16 kHz mono PCM from https://openslr.trmal.net/resources/12/test-clean.tar.gz
+//! (OpenSLR 12, CC BY 4.0). Expected words are the official LibriSpeech
+//! transcripts; those three clips pass at ≥80% in-order word match so a
+//! numeral like "20" for "twenty" is allowed. JFK still requires a full match.
+
+use std::fs;
+use std::io::Cursor;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::Duration;
+
+use sha2::{Digest, Sha256};
+use syllabix_core::{
+    audio::{read_wav, record_fixture_to_frames},
+    contains_words_in_order, run_loop, word_match_ratio, BlockedFetcher, BuiltinDefaults, Cancel,
+    CollectingSink, FakeLlm, FakeTts, FakeVad, HttpFetcher, LoopConfig, LoopMode, ModelCache,
+    PipelineStages, StderrProgress, Stt, SttModel, TurnId, Utterance, WhisperStt,
+    LIBRISPEECH_MIN_WORD_MATCH,
+};
+
+struct RecordedFixture {
+    file: &'static str,
+    sha256: &'static str,
+    expected: &'static [&'static str],
+    /// 1.0 requires every expected word; LibriSpeech uses 80%.
+    min_word_match: f64,
+}
+
+/// SHA-256 of `tests/fixtures/stt/jfk.wav` (16 kHz mono PCM from whisper.cpp samples).
+const JFK: RecordedFixture = RecordedFixture {
+    file: "jfk.wav",
+    sha256: "59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e",
+    expected: &[
+        "and",
+        "so",
+        "my",
+        "fellow",
+        "americans",
+        "ask",
+        "not",
+        "what",
+        "your",
+        "country",
+        "can",
+        "do",
+        "for",
+        "you",
+        "ask",
+        "what",
+        "you",
+        "can",
+        "do",
+        "for",
+        "your",
+        "country",
+    ],
+    min_word_match: 1.0,
+};
+
+const LIBRISPEECH_1089: RecordedFixture = RecordedFixture {
+    file: "librispeech-1089-134686-0000.wav",
+    sha256: "c6517d6052651b2ff22d19526f49fc7da5fc56de30790b9ed54238abd9c48c36",
+    expected: &[
+        "he", "hoped", "there", "would", "be", "stew", "for", "dinner", "turnips", "and",
+        "carrots", "and", "bruised", "potatoes", "and", "fat", "mutton", "pieces", "to", "be",
+        "ladled", "out", "in", "thick", "peppered", "flour", "fattened", "sauce",
+    ],
+    min_word_match: LIBRISPEECH_MIN_WORD_MATCH,
+};
+
+const LIBRISPEECH_121: RecordedFixture = RecordedFixture {
+    file: "librispeech-121-127105-0009.wav",
+    sha256: "d17c23c38c823c3f3507f0d3a832e476c1c1bfd32de35f3068db5fe4eae05bad",
+    expected: &["she", "has", "been", "dead", "these", "twenty", "years"],
+    min_word_match: LIBRISPEECH_MIN_WORD_MATCH,
+};
+
+const LIBRISPEECH_1995: RecordedFixture = RecordedFixture {
+    file: "librispeech-1995-1837-0005.wav",
+    sha256: "598278504ac5ce8b2e9bde93cbfe8ca0514b4678150b265a12cefcee32f9b452",
+    expected: &[
+        "she", "was", "so", "strange", "and", "human", "a", "creature",
+    ],
+    min_word_match: LIBRISPEECH_MIN_WORD_MATCH,
+};
+
+const RECORDED_FIXTURES: &[RecordedFixture] =
+    &[JFK, LIBRISPEECH_1089, LIBRISPEECH_121, LIBRISPEECH_1995];
+
+fn fixture_bytes(file: &str) -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/stt")
+        .join(file);
+    fs::read(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
+}
+
+fn hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xf) as usize] as char);
+    }
+    out
+}
+
+fn fixture_utterance(fixture: &RecordedFixture) -> Utterance {
+    let bytes = fixture_bytes(fixture.file);
+    assert_eq!(
+        hex(Sha256::digest(&bytes)),
+        fixture.sha256,
+        "{} fixture hash",
+        fixture.file
+    );
+    let wav =
+        read_wav(Cursor::new(bytes)).unwrap_or_else(|err| panic!("{} wav: {err}", fixture.file));
+    let mut frames = record_fixture_to_frames(&wav)
+        .unwrap_or_else(|err| panic!("{} frames: {err}", fixture.file));
+    for frame in &mut frames {
+        if !frame.has_energy() {
+            frame.samples[0] = 1;
+        }
+    }
+    Utterance {
+        turn: TurnId(0),
+        frames,
+    }
+}
+
+fn stt_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn whisper_model_path() -> PathBuf {
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let cache = ModelCache::v0();
+        let asset = cache
+            .manifest()
+            .asset("whisper-small")
+            .expect("whisper-small asset");
+        cache
+            .resolve(
+                asset,
+                &HttpFetcher,
+                &mut StderrProgress::new(),
+                &Cancel::new(),
+            )
+            .expect("resolve whisper.cpp small")
+    })
+    .clone()
+}
+
+fn load_whisper() -> WhisperStt {
+    WhisperStt::from_model_path(whisper_model_path(), SttModel::Small)
+        .expect("load whisper.cpp small")
+}
+
+#[test]
+fn fixture_hashes_are_stable() {
+    for fixture in RECORDED_FIXTURES {
+        let bytes = fixture_bytes(fixture.file);
+        assert_eq!(
+            hex(Sha256::digest(&bytes)),
+            fixture.sha256,
+            "{}",
+            fixture.file
+        );
+    }
+}
+
+#[test]
+fn recorded_fixtures_match_documented_transcripts() {
+    let _guard = stt_lock();
+    let mut stt = load_whisper();
+    for fixture in RECORDED_FIXTURES {
+        let utterance = fixture_utterance(fixture);
+        let transcript = stt
+            .transcribe(&utterance, &Cancel::new())
+            .unwrap_or_else(|err| panic!("{} stt: {err}", fixture.file));
+        let ratio = word_match_ratio(&transcript.text, fixture.expected);
+        assert!(
+            ratio >= fixture.min_word_match,
+            "{} transcript {:?} matched {:.1}% of {:?} (need {:.0}%)",
+            fixture.file,
+            transcript.text,
+            ratio * 100.0,
+            fixture.expected,
+            fixture.min_word_match * 100.0
+        );
+    }
+
+    let cached = ModelCache::v0();
+    let asset = cached.manifest().asset("whisper-small").unwrap();
+    cached
+        .resolve(
+            asset,
+            &BlockedFetcher::default(),
+            &mut StderrProgress::new(),
+            &Cancel::new(),
+        )
+        .expect("populated cache must not need the network");
+}
+
+#[test]
+fn whisper_replaces_fake_stt_in_the_loop() {
+    let _guard = stt_lock();
+    let utterance = fixture_utterance(&JFK);
+    let frames = utterance.frames.clone();
+    let report = run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: load_whisper(),
+            llm: FakeLlm::new(),
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        frames,
+        Cancel::new(),
+    )
+    .expect("loop");
+    assert_eq!(report.tasks_still_running, 0);
+    assert!(report.queues.within_capacity());
+    assert!(!report.turns.is_empty());
+    let spoken: String = report
+        .turns
+        .iter()
+        .map(|t| t.user_text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        contains_words_in_order(&spoken, JFK.expected),
+        "pipeline transcripts {:?} did not contain the documented JFK quote",
+        spoken
+    );
+}
+
+#[test]
+fn cancel_aborts_native_decode_and_drop_releases_context() {
+    let _guard = stt_lock();
+    let utterance = fixture_utterance(&JFK);
+    let mut stt = load_whisper();
+    let cancel = Cancel::new();
+    let cancel_thread = cancel.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(40));
+        cancel_thread.shutdown();
+    });
+    let result = stt.transcribe(&utterance, &cancel);
+    match result {
+        Err(syllabix_core::Error::Cancelled) => {}
+        Ok(transcript) => {
+            // A very fast host may finish before abort; the adapter must still drop cleanly.
+            assert!(contains_words_in_order(&transcript.text, JFK.expected));
+        }
+        Err(err) => panic!("unexpected STT error: {err}"),
+    }
+    drop(stt);
+    let _again = load_whisper();
+}
