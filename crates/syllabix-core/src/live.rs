@@ -40,15 +40,13 @@ fn run_live_inner(
         &cancel,
         &config.language,
     )?;
-    let capture = NativeCapture::open()?;
-    let sink = NativePlayback::open()?;
+    let (sink, echo_reference) = NativePlayback::open_with_echo()?;
+    let capture = NativeCapture::open_with_echo(echo_reference)?;
     eprintln!(
         "mic: {}  speaker: {}  agent: {}",
         capture.device_name, sink.device_name, config.name
     );
-    eprintln!(
-        "Headphones recommended until echo control. Self-interrupt on open speakers is expected."
-    );
+    eprintln!("echo: AEC3 on by default; automatic calibration starts with speaker playback");
     run_loop_captured(
         LoopConfig {
             defaults: BuiltinDefaults::v0(),

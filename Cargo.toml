@@ -7,10 +7,10 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/syllabix-ai/syllabix"
-rust-version = "1.83"
+rust-version = "1.91"
 
 [workspace.dependencies]
-# Pin below crates.io "requires Rust 1.85" so CI and this image stay on 1.83.
+# Keep the dependency graph deterministic across the target matrix.
 clap = { version = "=4.5.23", features = ["derive"] }
 thiserror = "=2.0.11"
 tracing = "=0.1.41"
@@ -19,7 +19,8 @@ syllabix-core = { path = "crates/syllabix-core" }
 assert_cmd = "=2.0.16"
 predicates = "=3.1.2"
 cpal = "=0.15.3"
-# 0.2.18 requires edition 2024 (Rust 1.85+); macOS CI stays on 1.83.
+sonora = "=0.2.0"
+# Keep the CoreAudio bindings aligned with cpal 0.15.
 coreaudio-sys = "=0.2.16"
 # rustls-backed HTTP so the binary does not pick up libssl.
 # ureq 2.12 + url 2.5.4 pull idna 1.x / edition 2024, which Cargo 1.83 cannot parse.
@@ -31,10 +32,10 @@ zeroize = "=1.8.1"
 # jobserver 0.1.33+ pulls getrandom 0.3/0.4 (edition 2024) on Windows.
 jobserver = "=0.1.32"
 getrandom = "=0.2.17"
-# Pins stay on crates that parse on Rust 1.83 (no edition 2024).
+# Exact serialization pins keep generated config stable.
 serde = { version = "=1.0.217", features = ["derive"] }
 serde_yaml = "=0.9.34"
-# ratatui 0.26 + crossterm 0.27 stay on 1.83; 0.29 pulls newer MSRV crates.
+# ratatui 0.26 + crossterm 0.27 are the established v0 TUI pair.
 crossterm = "=0.27.0"
 ratatui = { version = "=0.26.3", default-features = false, features = ["crossterm"] }
 # One CPU-only ggml, shared by whisper.cpp and llama.cpp. GPU/Metal/CUDA

@@ -113,7 +113,7 @@ fn parse_fmt(chunk: &[u8]) -> Result<(PcmFormat, u16)> {
 }
 
 fn parse_pcm16(data: &[u8]) -> Result<Vec<i16>> {
-    if data.len() % 2 != 0 {
+    if !data.len().is_multiple_of(2) {
         return Err(Error::InvalidAudio {
             message: "WAV data chunk is not 16-bit aligned".into(),
         });

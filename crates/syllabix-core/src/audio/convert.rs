@@ -133,7 +133,7 @@ impl PcmConverter {
     pub fn flush(&mut self) -> Vec<f32> {
         if !self.partial_frame.is_empty() {
             let ch = self.src.channels as usize;
-            while self.partial_frame.len() % ch != 0 {
+            while !self.partial_frame.len().is_multiple_of(ch) {
                 self.partial_frame.push(0.0);
             }
             let tail = std::mem::take(&mut self.partial_frame);

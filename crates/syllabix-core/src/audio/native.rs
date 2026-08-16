@@ -14,6 +14,7 @@ use crate::audio::convert::{f32_to_i16, i16_to_f32, FrameSplitter, PcmConverter,
 use crate::audio::devices::{
     select_input, select_output, DeviceChoice, DeviceInfo, DeviceInventory,
 };
+use crate::audio::echo::{EchoCalibration, EchoController, EchoReference};
 use crate::audio::ring::{device_ring_capacity_samples, SampleRing};
 use crate::cancel::Cancel;
 use crate::error::{Error, Result};
@@ -216,7 +217,10 @@ struct OpenedStream {
     name: String,
     device_format: PcmFormat,
     ring: Arc<SampleRing>,
+    echo_ring: Option<Arc<SampleRing>>,
 }
+
+type OpenedStreamMetadata = (String, PcmFormat, Arc<SampleRing>, Option<Arc<SampleRing>>);
 
 fn spawn_input(choice: DeviceChoice) -> Result<OpenedStream> {
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -254,6 +258,7 @@ fn spawn_input(choice: DeviceChoice) -> Result<OpenedStream> {
                 selected.name.clone(),
                 selected.device_format,
                 Arc::clone(&ring),
+                None,
             );
             let _ = ready_tx.send(Ok(meta));
             let (lock, cv) = &*stop_thread;
@@ -266,7 +271,7 @@ fn spawn_input(choice: DeviceChoice) -> Result<OpenedStream> {
         .map_err(|err| Error::AudioDevice {
             message: format!("Could not start the microphone thread: {err}"),
         })?;
-    let (name, device_format, ring) = recv_open(ready_rx)?;
+    let (name, device_format, ring, echo_ring) = recv_open(ready_rx)?;
     Ok(OpenedStream {
         worker: StreamWorker {
             thread: Some(thread),
@@ -275,10 +280,11 @@ fn spawn_input(choice: DeviceChoice) -> Result<OpenedStream> {
         name,
         device_format,
         ring,
+        echo_ring,
     })
 }
 
-fn spawn_output(choice: DeviceChoice) -> Result<OpenedStream> {
+fn spawn_output(choice: DeviceChoice, tap_render: bool) -> Result<OpenedStream> {
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let stop = Arc::new((Mutex::new(false), Condvar::new()));
     let stop_thread = Arc::clone(&stop);
@@ -299,7 +305,12 @@ fn spawn_output(choice: DeviceChoice) -> Result<OpenedStream> {
             )
             .max(256);
             let ring = Arc::new(SampleRing::new(cap));
-            let stream = match build_output_stream(&selected, Arc::clone(&ring)) {
+            let echo_ring = tap_render.then(|| Arc::new(SampleRing::new(cap)));
+            let stream = match build_output_stream(
+                &selected,
+                Arc::clone(&ring),
+                echo_ring.as_ref().map(Arc::clone),
+            ) {
                 Ok(s) => s,
                 Err(err) => {
                     let _ = ready_tx.send(Err(err));
@@ -314,6 +325,7 @@ fn spawn_output(choice: DeviceChoice) -> Result<OpenedStream> {
                 selected.name.clone(),
                 selected.device_format,
                 Arc::clone(&ring),
+                echo_ring.as_ref().map(Arc::clone),
             );
             let _ = ready_tx.send(Ok(meta));
             let (lock, cv) = &*stop_thread;
@@ -326,7 +338,7 @@ fn spawn_output(choice: DeviceChoice) -> Result<OpenedStream> {
         .map_err(|err| Error::AudioDevice {
             message: format!("Could not start the speaker thread: {err}"),
         })?;
-    let (name, device_format, ring) = recv_open(ready_rx)?;
+    let (name, device_format, ring, echo_ring) = recv_open(ready_rx)?;
     Ok(OpenedStream {
         worker: StreamWorker {
             thread: Some(thread),
@@ -335,12 +347,11 @@ fn spawn_output(choice: DeviceChoice) -> Result<OpenedStream> {
         name,
         device_format,
         ring,
+        echo_ring,
     })
 }
 
-fn recv_open(
-    rx: mpsc::Receiver<Result<(String, PcmFormat, Arc<SampleRing>)>>,
-) -> Result<(String, PcmFormat, Arc<SampleRing>)> {
+fn recv_open(rx: mpsc::Receiver<Result<OpenedStreamMetadata>>) -> Result<OpenedStreamMetadata> {
     rx.recv().map_err(|_| Error::AudioDevice {
         message: "Audio thread exited before the device finished opening.".into(),
     })?
@@ -351,6 +362,8 @@ pub struct NativeCapture {
     _worker: StreamWorker,
     ring: Arc<SampleRing>,
     conv: PcmConverter,
+    echo: Option<EchoController>,
+    echo_status: EchoCalibration,
     split: FrameSplitter,
     pending: Vec<AudioFrame>,
     /// Selected device name.
@@ -362,11 +375,23 @@ pub struct NativeCapture {
 impl NativeCapture {
     /// Open the selected default (or first usable) input device.
     pub fn open() -> Result<Self> {
+        Self::open_inner(None)
+    }
+
+    /// Open the microphone with full-duplex AEC fed by the speaker callback.
+    pub fn open_with_echo(reference: EchoReference) -> Result<Self> {
+        Self::open_inner(Some(reference))
+    }
+
+    fn open_inner(reference: Option<EchoReference>) -> Result<Self> {
         let inv = CpalInventory::new();
         let choice = select_input(&inv)?;
         let opened = spawn_input(choice)?;
+        let echo = reference.map(EchoController::new).transpose()?;
         Ok(Self {
             conv: PcmConverter::new(opened.device_format, PcmFormat::v0())?,
+            echo,
+            echo_status: EchoCalibration::WaitingForPlayback,
             split: FrameSplitter::new(),
             pending: Vec::new(),
             device_name: opened.name,
@@ -402,8 +427,36 @@ impl AudioCapture for NativeCapture {
                 return Ok(None);
             }
             let converted = self.conv.push(&buf[..n]);
-            let i16s = f32_to_i16(&converted);
+            let clean = if let Some(echo) = &mut self.echo {
+                let clean = echo.process_capture(&converted)?;
+                let status = echo.calibration();
+                if status != self.echo_status {
+                    report_echo_status(status);
+                    self.echo_status = status;
+                }
+                clean
+            } else {
+                converted
+            };
+            let i16s = f32_to_i16(&clean);
             self.pending = self.split.push(&i16s)?;
+        }
+    }
+}
+
+fn report_echo_status(status: EchoCalibration) {
+    match status {
+        EchoCalibration::WaitingForPlayback => {}
+        EchoCalibration::Calibrating => {
+            eprintln!("echo: calibrating automatically; microphone remains open");
+        }
+        EchoCalibration::Active => {
+            eprintln!("echo: active");
+        }
+        EchoCalibration::Degraded => {
+            eprintln!(
+                "echo: speaker reference lost; microphone remains open. Use headphones if self-echo occurs."
+            );
         }
     }
 }
@@ -412,6 +465,7 @@ impl AudioCapture for NativeCapture {
 pub struct NativePlayback {
     _worker: StreamWorker,
     ring: Arc<SampleRing>,
+    echo_ring: Option<Arc<SampleRing>>,
     conv: PcmConverter,
     /// Selected device name.
     pub device_name: String,
@@ -422,22 +476,46 @@ pub struct NativePlayback {
 impl NativePlayback {
     /// Open the selected default (or first usable) output device.
     pub fn open() -> Result<Self> {
+        Self::open_inner(false).map(|(playback, _)| playback)
+    }
+
+    /// Open speakers and tap the exact rendered PCM for full-duplex AEC.
+    pub fn open_with_echo() -> Result<(Self, EchoReference)> {
+        let (playback, reference) = Self::open_inner(true)?;
+        Ok((
+            playback,
+            reference.expect("render tap requested but not constructed"),
+        ))
+    }
+
+    fn open_inner(tap_render: bool) -> Result<(Self, Option<EchoReference>)> {
         let inv = CpalInventory::new();
         let choice = select_output(&inv)?;
-        let opened = spawn_output(choice)?;
-        Ok(Self {
-            conv: PcmConverter::new(PcmFormat::v0(), opened.device_format)?,
-            device_name: opened.name,
-            device_format: opened.device_format,
-            ring: opened.ring,
-            _worker: opened.worker,
-        })
+        let opened = spawn_output(choice, tap_render)?;
+        let reference = opened
+            .echo_ring
+            .as_ref()
+            .map(|ring| EchoReference::new(Arc::clone(ring), opened.device_format));
+        Ok((
+            Self {
+                conv: PcmConverter::new(PcmFormat::v0(), opened.device_format)?,
+                device_name: opened.name,
+                device_format: opened.device_format,
+                ring: opened.ring,
+                echo_ring: opened.echo_ring,
+                _worker: opened.worker,
+            },
+            reference,
+        ))
     }
 }
 
 impl Drop for NativePlayback {
     fn drop(&mut self) {
         self.ring.close();
+        if let Some(ring) = &self.echo_ring {
+            ring.close();
+        }
     }
 }
 
@@ -509,7 +587,11 @@ fn build_input_stream(selected: &SelectedCpalDevice, ring: Arc<SampleRing>) -> R
     }
 }
 
-fn build_output_stream(selected: &SelectedCpalDevice, ring: Arc<SampleRing>) -> Result<Stream> {
+fn build_output_stream(
+    selected: &SelectedCpalDevice,
+    ring: Arc<SampleRing>,
+    echo_ring: Option<Arc<SampleRing>>,
+) -> Result<Stream> {
     let err_fn = |err| {
         eprintln!("syllabix speaker error: {err}");
     };
@@ -520,6 +602,9 @@ fn build_output_stream(selected: &SelectedCpalDevice, ring: Arc<SampleRing>) -> 
                 &selected.config,
                 move |data: &mut [f32], _| {
                     let _ = ring.try_pop_slice(data);
+                    if let Some(reference) = &echo_ring {
+                        let _ = reference.try_push_slice(data);
+                    }
                 },
                 err_fn,
                 None,
@@ -534,6 +619,9 @@ fn build_output_stream(selected: &SelectedCpalDevice, ring: Arc<SampleRing>) -> 
                     let _ = ring.try_pop_slice(&mut f);
                     let i = f32_to_i16(&f);
                     data.copy_from_slice(&i);
+                    if let Some(reference) = &echo_ring {
+                        let _ = reference.try_push_slice(&f);
+                    }
                 },
                 err_fn,
                 None,
@@ -549,6 +637,9 @@ fn build_output_stream(selected: &SelectedCpalDevice, ring: Arc<SampleRing>) -> 
                     for (slot, sample) in data.iter_mut().zip(f.iter()) {
                         let scaled = (sample.clamp(-1.0, 1.0) + 1.0) * 0.5 * f32::from(u16::MAX);
                         *slot = scaled.round() as u16;
+                    }
+                    if let Some(reference) = &echo_ring {
+                        let _ = reference.try_push_slice(&f);
                     }
                 },
                 err_fn,
@@ -586,6 +677,8 @@ mod tests {
             _worker: idle_worker(),
             ring: Arc::new(SampleRing::new(4_096)),
             conv: PcmConverter::new(device_format, PcmFormat::v0()).expect("v0 converter"),
+            echo: None,
+            echo_status: EchoCalibration::WaitingForPlayback,
             split: FrameSplitter::new(),
             pending: Vec::new(),
             device_name: "test microphone".into(),
@@ -598,6 +691,7 @@ mod tests {
         NativePlayback {
             _worker: idle_worker(),
             ring: Arc::new(SampleRing::new(4_096)),
+            echo_ring: None,
             conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
             device_name: "test speakers".into(),
             device_format,

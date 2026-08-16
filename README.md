@@ -9,7 +9,7 @@ This repository is the product. Founder docs live in [`syllabix-ai/syllabix_foun
 ```bash
 cargo run -p syllabix -- --help
 cargo run -p syllabix -- init     # optional syllabix.yaml
-cargo run -p syllabix -- run      # zero-config mic + speakers; headphones until AEC
+cargo run -p syllabix -- run      # zero-config mic + speakers with full-duplex AEC
 ```
 
 ## Intended 3-minute path (Release binary not shipping yet)
@@ -20,20 +20,20 @@ chmod +x syllabix
 ./syllabix run
 ```
 
-GitHub Releases are not published yet. From this checkout, `cargo run -p syllabix -- run` talks on a machine with a microphone and speakers. First run fetches model weights into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`. Headphones are recommended until echo control lands; self-interrupt on open speakers is expected.
+GitHub Releases are not published yet. From this checkout, `cargo run -p syllabix -- run` talks on a machine with a microphone and speakers. First run fetches model weights into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`. WebRTC AEC3 echo control is on by default and calibrates automatically from the samples sent to the speakers while the microphone stays open. If the terminal reports a lost speaker reference or the laptop still self-interrupts, use headphones and include the device names from the startup line in a bug report.
 
 ## CLI
 
 | Command | Now | Launch |
 | --- | --- | --- |
-| `syllabix run` | Zero-config local mic/speaker conversation + TUI timings | Same; AEC and barge-in come next |
+| `syllabix run` | Zero-config local mic/speaker conversation, full-duplex AEC, and TUI timings | Same; barge-in comes next |
 | `syllabix init [dir]` | Optional `syllabix.yaml` scaffold | Same |
 
 There is no `serve`, `bench`, cloud provider, or API key in v0. `run` does not require yaml. If `syllabix.yaml` is present, it must name the v0 on-device stack and `language: en`.
 
 ## Develop
 
-Requires Rust 1.83+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share one CPU `ggml` compiled into the binary. Linux contributors also need ALSA headers (`libasound2-dev`).
+Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share one CPU `ggml` compiled into the binary. Linux contributors also need ALSA headers (`libasound2-dev`).
 
 ```bash
 cargo fmt --all -- --check
@@ -54,6 +54,14 @@ cargo run -p syllabix -- run
 cargo test -p syllabix-core --test audio_io hardware_record_and_play_if_devices_exist -- --ignored --nocapture
 ```
 
+PR 17's echo gate needs a quiet laptop with its built-in microphone and speakers selected. Do not wear headphones or speak during this command. It allows 10 seconds for automatic calibration, then plays the versioned speech fixture continuously for 1 minute and requires Silero to detect zero false user turns:
+
+```bash
+cargo test -p syllabix-core --test audio_io hardware_aec_1_minute_playback_has_zero_false_turns -- --ignored --exact --nocapture
+```
+
+The microphone remains open throughout the test. Muting capture during playback does not pass this gate.
+
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
