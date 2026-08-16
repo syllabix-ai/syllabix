@@ -43,7 +43,7 @@ cargo test --workspace
 
 Model weights are not in git. A versioned manifest lists Silero, whisper.cpp `small`, llama-3.2-1b, and Kokoro. The cache writes into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`, verifies SHA-256, and reuses files offline. `syllabix run` does not fetch yet.
 
-CI records and plays a WAV fixture (no microphone). That path also soaks 30 minutes of *audio time* through bounded queues faster than real time. whisper.cpp `small` is compiled into the binary; the first STT test run fetches `ggml-small.bin` into the model cache.
+CI records and plays a WAV fixture (no microphone). That path also soaks 30 minutes of *audio time* through bounded queues faster than real time. whisper.cpp `small` and llama.cpp `Llama-3.2-1B-Instruct-Q4_K_M` are compiled into the binary; the first STT/LLM test run fetches weights into the model cache.
 
 On a laptop with a mic and speakers:
 
