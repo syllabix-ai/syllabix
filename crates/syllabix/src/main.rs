@@ -4,6 +4,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 fn main() {
+    let _linked = syllabix_core::ensure_shared_ggml_frontends();
     let cli = cli::Cli::parse();
     init_tracing();
 

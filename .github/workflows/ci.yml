@@ -26,8 +26,6 @@ jobs:
           components: llvm-tools-preview
       - name: Install ALSA headers and CMake
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
-      - name: Use vendored whisper.cpp bindings
-        run: echo "WHISPER_DONT_GENERATE_BINDINGS=1" >> "$GITHUB_ENV"
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
@@ -65,8 +63,6 @@ jobs:
           components: clippy
       - name: Install ALSA headers and CMake
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
-      - name: Use vendored whisper.cpp bindings
-        run: echo "WHISPER_DONT_GENERATE_BINDINGS=1" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -100,14 +96,6 @@ jobs:
       - name: Install CMake
         if: runner.os == 'macOS'
         run: brew install cmake
-      - name: Use vendored whisper.cpp bindings
-        if: runner.os != 'Windows'
-        run: echo "WHISPER_DONT_GENERATE_BINDINGS=1" >> "$GITHUB_ENV"
-      - name: Install LLVM for whisper-rs bindgen
-        if: runner.os == 'Windows'
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "18.1.8"
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
@@ -127,3 +115,8 @@ jobs:
         run: |
           chmod +x scripts/check-dynamic-libs.sh
           scripts/check-dynamic-libs.sh "target/${{ matrix.target }}/release/syllabix"
+      - name: Check one shared ggml
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x scripts/check-one-ggml.sh
+          scripts/check-one-ggml.sh "target/${{ matrix.target }}/release/syllabix"

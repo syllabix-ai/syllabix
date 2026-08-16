@@ -1,10 +1,9 @@
 //! In-process whisper.cpp speech-to-text for completed VAD utterances.
 
+use std::os::raw::c_void;
 use std::path::Path;
 
-use whisper_rs::{
-    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperError,
-};
+use syllabix_native::{DecodeError, WhisperContext};
 
 use crate::defaults::{BuiltinDefaults, SttModel};
 use crate::error::{Error, Result};
@@ -86,8 +85,7 @@ impl Stt for WhisperStt {
                 message: "utterance has no samples".into(),
             });
         }
-        let mut audio = vec![0.0f32; pcm.len()];
-        whisper_rs::convert_integer_to_float_audio(&pcm, &mut audio).map_err(whisper_error)?;
+        let audio: Vec<f32> = pcm.iter().map(|s| *s as f32 / 32768.0).collect();
         let text = self.decoder.decode(&audio, cancel)?;
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
@@ -109,14 +107,10 @@ struct WhisperDecoder {
 
 impl WhisperDecoder {
     fn load(path: &Path) -> Result<Self> {
-        hush_whisper_logs();
-        let path = path.to_str().ok_or_else(|| Error::Provider {
+        let ctx = WhisperContext::load(path).map_err(|message| Error::Provider {
             provider: "whisper.cpp",
-            message: format!("model path is not valid UTF-8: {}", path.display()),
+            message,
         })?;
-        let mut params = WhisperContextParameters::default();
-        params.use_gpu(false);
-        let ctx = WhisperContext::new_with_params(path, params).map_err(whisper_error)?;
         Ok(Self { ctx })
     }
 }
@@ -126,56 +120,29 @@ impl Decoder for WhisperDecoder {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
-        let mut state = self.ctx.create_state().map_err(whisper_error)?;
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some(STT_LANGUAGE));
-        params.set_translate(false);
-        params.set_no_context(true);
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        params.set_suppress_nst(true);
-        params.set_n_threads(thread_count());
-        unsafe {
-            params.set_abort_callback(Some(abort_on_shutdown));
-            params.set_abort_callback_user_data(cancel as *const Cancel as *mut std::ffi::c_void);
-        }
-        match state.full(params, pcm) {
-            Ok(_) => {}
-            Err(_) if cancel.is_shutdown() => return Err(Error::Cancelled),
-            Err(err) => return Err(whisper_error(err)),
-        }
-        if cancel.is_shutdown() {
-            return Err(Error::Cancelled);
-        }
-        let mut text = String::new();
-        for index in 0..state.full_n_segments() {
-            let Some(segment) = state.get_segment(index) else {
-                continue;
-            };
-            let piece = segment.to_str_lossy().map_err(whisper_error)?;
-            let piece = piece.trim();
-            if piece.is_empty() {
-                continue;
+        let abort_user = cancel as *const Cancel as *mut c_void;
+        match unsafe {
+            self.ctx
+                .decode(pcm, thread_count(), Some(abort_on_shutdown), abort_user)
+        } {
+            Ok(text) => {
+                if cancel.is_shutdown() {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(text)
+                }
             }
-            if !text.is_empty() {
-                text.push(' ');
-            }
-            text.push_str(piece);
+            Err(DecodeError::Cancelled) => Err(Error::Cancelled),
+            Err(DecodeError::Failed(_)) if cancel.is_shutdown() => Err(Error::Cancelled),
+            Err(DecodeError::Failed(message)) => Err(Error::Provider {
+                provider: "whisper.cpp",
+                message,
+            }),
         }
-        drop(state);
-        Ok(text)
     }
 }
 
-fn hush_whisper_logs() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(whisper_rs::install_logging_hooks);
-}
-
-unsafe extern "C" fn abort_on_shutdown(user_data: *mut std::ffi::c_void) -> bool {
+unsafe extern "C" fn abort_on_shutdown(user_data: *mut c_void) -> bool {
     if user_data.is_null() {
         return false;
     }
@@ -187,13 +154,6 @@ fn thread_count() -> i32 {
     std::thread::available_parallelism()
         .map(|n| n.get().min(4) as i32)
         .unwrap_or(1)
-}
-
-fn whisper_error(error: WhisperError) -> Error {
-    Error::Provider {
-        provider: "whisper.cpp",
-        message: error.to_string(),
-    }
 }
 
 /// Lowercase alphabetic words in `text`, in order. Used by the fixture merge gate.

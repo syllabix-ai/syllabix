@@ -1,8 +1,8 @@
 //! Shared types and the in-memory conversation loop for Syllabix.
 //!
-//! Pull request 8 adds the in-process whisper.cpp `small` STT adapter. Fake
-//! STT remains available for the 30-turn in-memory pipeline tests until the
-//! all-real loop lands.
+//! Pull request 10 links whisper.cpp and llama.cpp to one shared `ggml`.
+//! There is no GGUF generate path yet (PR 11). Fake STT remains available
+//! for the 30-turn in-memory pipeline tests until the all-real loop lands.
 
 pub mod audio;
 pub mod models;
@@ -40,3 +40,18 @@ pub use types::{
     TurnId, Utterance, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 pub use vad::{SileroVad, END_SILENCE_FRAMES, SPEECH_THRESHOLD};
+
+/// Force-link both native frontends into `syllabix` (PR 10). No GGUF load.
+pub fn ensure_shared_ggml_frontends() -> bool {
+    syllabix_native::frontends_linked()
+}
+
+#[cfg(test)]
+mod shared_ggml_tests {
+    #[test]
+    fn llama_and_whisper_frontends_share_one_ggml() {
+        assert!(super::ensure_shared_ggml_frontends());
+        let info = syllabix_native::llama_system_info();
+        assert!(!info.is_empty(), "llama.cpp frontend must be linked");
+    }
+}
