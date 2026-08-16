@@ -1,8 +1,8 @@
 //! Shared types and the in-memory conversation loop for Syllabix.
 //!
-//! Pull request 10 links whisper.cpp and llama.cpp to one shared `ggml`.
-//! There is no GGUF generate path yet (PR 11). Fake STT remains available
-//! for the 30-turn in-memory pipeline tests until the all-real loop lands.
+//! Pull request 11 adds the in-process llama.cpp GGUF adapter on the shared
+//! `ggml` from PR 10. Fake LLM remains in the 30-turn in-memory pipeline
+//! tests until the all-real loop lands.
 
 pub mod audio;
 pub mod models;
@@ -11,6 +11,7 @@ mod cancel;
 mod defaults;
 mod error;
 mod fake;
+mod llm;
 mod pipeline;
 mod providers;
 mod queue;
@@ -24,6 +25,10 @@ pub use defaults::{
 };
 pub use error::{Error, Result};
 pub use fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad, LlmCall};
+pub use llm::{
+    LlamaLlm, LLAMA_1B_ASSET, LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS, LLAMA_N_CTX,
+    LLAMA_N_PREDICT, VOICE_SYSTEM_PROMPT,
+};
 pub use models::{
     cache_root, format_progress_line, BlockedFetcher, Fetcher, HttpFetcher, Manifest, ModelAsset,
     ModelCache, ModelLayer, NoProgress, Progress, StderrProgress,
@@ -41,7 +46,7 @@ pub use types::{
 };
 pub use vad::{SileroVad, END_SILENCE_FRAMES, SPEECH_THRESHOLD};
 
-/// Force-link both native frontends into `syllabix` (PR 10). No GGUF load.
+/// Force-link both native frontends into `syllabix` (PR 10).
 pub fn ensure_shared_ggml_frontends() -> bool {
     syllabix_native::frontends_linked()
 }
