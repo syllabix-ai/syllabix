@@ -2,7 +2,16 @@
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::Path;
-use std::sync::Once;
+use std::sync::{Mutex, MutexGuard, Once, OnceLock};
+
+/// Whisper and Llama share one `ggml`. Concurrent `whisper_full` / `llama_decode`
+/// in the pipeline (STT of turn N+1 overlapping LLM of turn N) is not safe.
+fn ggml_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[allow(dead_code)]
 mod ffi {
@@ -101,6 +110,7 @@ impl WhisperContext {
             .to_str()
             .ok_or_else(|| format!("model path is not valid UTF-8: {}", path.display()))?;
         let c_path = CString::new(path).map_err(|_| "model path contains an interior NUL")?;
+        let _ggml = ggml_lock();
         let raw = unsafe { ffi::syllabix_whisper_load(c_path.as_ptr()) };
         if raw.is_null() {
             return Err(format!("failed to load whisper.cpp model at {path}"));
@@ -121,6 +131,7 @@ impl WhisperContext {
             return Err(DecodeError::Failed("no samples".into()));
         }
         let mut out = vec![0u8; 32 * 1024];
+        let _ggml = ggml_lock();
         let rc = unsafe {
             ffi::syllabix_whisper_decode(
                 self.raw,
@@ -147,6 +158,7 @@ impl WhisperContext {
 impl Drop for WhisperContext {
     fn drop(&mut self) {
         if !self.raw.is_null() {
+            let _ggml = ggml_lock();
             unsafe { ffi::syllabix_whisper_free(self.raw) };
             self.raw = std::ptr::null_mut();
         }
@@ -170,6 +182,7 @@ impl LlamaContext {
             .to_str()
             .ok_or_else(|| format!("model path is not valid UTF-8: {}", path.display()))?;
         let c_path = CString::new(path).map_err(|_| "model path contains an interior NUL")?;
+        let _ggml = ggml_lock();
         let raw = unsafe { ffi::syllabix_llama_load(c_path.as_ptr(), n_ctx, n_threads) };
         if raw.is_null() {
             return Err(format!("failed to load llama.cpp GGUF at {path}"));
@@ -212,6 +225,7 @@ impl LlamaContext {
         let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
 
         let mut sink = TokenSink { on_piece };
+        let _ggml = ggml_lock();
         let rc = unsafe {
             ffi::syllabix_llama_generate(
                 self.raw,
@@ -237,6 +251,7 @@ impl LlamaContext {
 impl Drop for LlamaContext {
     fn drop(&mut self) {
         if !self.raw.is_null() {
+            let _ggml = ggml_lock();
             unsafe { ffi::syllabix_llama_free(self.raw) };
             self.raw = std::ptr::null_mut();
         }

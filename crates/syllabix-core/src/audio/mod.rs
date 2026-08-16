@@ -18,7 +18,8 @@ pub use devices::{
     input_privacy_hint, select_input, select_output, DeviceChoice, DeviceInfo, DeviceInventory,
 };
 pub use fixture::{
-    play_fixture_to_device_pcm, record_fixture_to_frames, FixtureCapture, FixturePlayback,
+    play_fixture_to_device_pcm, record_fixture_to_frames, DrainStats, DrainingPlayback,
+    FixtureCapture, FixturePlayback,
 };
 pub use native::{
     backend_name, probe_device_names, NativeCapture, NativePlayback, SelectedCpalDevice,

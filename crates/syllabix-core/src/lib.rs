@@ -1,8 +1,7 @@
 //! Shared types and the in-memory conversation loop for Syllabix.
 //!
-//! Pull request 12 adds the in-process Kokoro ONNX TTS adapter and Markdown
-//! speech cleanup. Fake TTS remains in the 30-turn in-memory pipeline tests
-//! until the all-real loop lands.
+//! Pull request 13 runs Silero → whisper.cpp → llama.cpp → Kokoro → fixture
+//! playback. Fake providers remain in the 30-turn in-memory tests.
 
 pub mod audio;
 pub mod models;
@@ -13,9 +12,11 @@ mod error;
 mod fake;
 mod g2p;
 mod llm;
+mod memory;
 mod pipeline;
 mod providers;
 mod queue;
+mod real;
 mod speech_text;
 mod stt;
 mod tts;
@@ -27,19 +28,24 @@ pub use defaults::{
     BuiltinDefaults, LlmProvider, QueueCaps, SttModel, SttProvider, TtsProvider, VadProvider,
 };
 pub use error::{Error, Result};
-pub use fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad, LlmCall};
+pub use fake::{
+    scripted_frames, CollectingSink, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt,
+    FakeTts, FakeVad, LlmCall,
+};
 pub use g2p::{english_to_ipa, english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
 pub use llm::{
     LlamaLlm, LLAMA_1B_ASSET, LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS, LLAMA_N_CTX,
     LLAMA_N_PREDICT, VOICE_SYSTEM_PROMPT,
 };
+pub use memory::{process_rss_bytes, LOOP_RSS_GROWTH_CEILING_BYTES};
 pub use models::{
     cache_root, format_progress_line, BlockedFetcher, Fetcher, HttpFetcher, Manifest, ModelAsset,
     ModelCache, ModelLayer, NoProgress, Progress, StderrProgress,
 };
-pub use pipeline::{run_loop, LoopConfig, LoopMode, LoopReport, PipelineStages};
+pub use pipeline::{run_loop, run_loop_captured, LoopConfig, LoopMode, LoopReport, PipelineStages};
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
+pub use real::load_real_providers;
 pub use speech_text::{strip_markdown_for_speech, take_sentences};
 pub use stt::{
     contains_words_in_order, transcript_words, word_match_ratio, WhisperStt,

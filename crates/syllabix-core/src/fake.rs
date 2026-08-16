@@ -119,6 +119,38 @@ impl Stt for FakeStt {
     }
 }
 
+/// First `transcribe` returns a provider error; later calls use [`FakeStt`].
+pub struct FailOnceStt {
+    inner: FakeStt,
+    remaining: u32,
+}
+
+impl Default for FailOnceStt {
+    fn default() -> Self {
+        Self {
+            inner: FakeStt,
+            remaining: 1,
+        }
+    }
+}
+
+impl Stt for FailOnceStt {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn transcribe(&mut self, utterance: &Utterance, cancel: &Cancel) -> Result<Transcript> {
+        if self.remaining > 0 {
+            self.remaining -= 1;
+            return Err(Error::Provider {
+                provider: self.name(),
+                message: "scripted stt failure".into(),
+            });
+        }
+        self.inner.transcribe(utterance, cancel)
+    }
+}
+
 /// Echo LLM: streams `echo:` + user text as individual characters, then a terminator.
 pub struct FakeLlm {
     delay_per_token: Duration,
@@ -204,6 +236,51 @@ impl Llm for FakeLlm {
     }
 }
 
+/// First `generate` returns a provider error; later calls use [`FakeLlm`].
+pub struct FailOnceLlm {
+    inner: FakeLlm,
+    remaining: u32,
+}
+
+impl FailOnceLlm {
+    /// Fail the first generate, then echo.
+    pub fn new() -> Self {
+        Self {
+            inner: FakeLlm::new(),
+            remaining: 1,
+        }
+    }
+}
+
+impl Default for FailOnceLlm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Llm for FailOnceLlm {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn generate(
+        &mut self,
+        history: &[HistoryTurn],
+        user: &Transcript,
+        cancel: &Cancel,
+        on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
+    ) -> Result<()> {
+        if self.remaining > 0 {
+            self.remaining -= 1;
+            return Err(Error::Provider {
+                provider: self.name(),
+                message: "scripted llm failure".into(),
+            });
+        }
+        self.inner.generate(history, user, cancel, on_token)
+    }
+}
+
 /// Each token becomes a tiny PCM chunk (UTF-8 bytes as samples).
 pub struct FakeTts;
 
@@ -237,6 +314,42 @@ impl Tts for FakeTts {
             samples,
             is_last: token.is_last,
         }])
+    }
+}
+
+/// Fails every chunk of the first turn, then uses [`FakeTts`].
+pub struct FailOnceTts {
+    inner: FakeTts,
+    failed_turn: Option<TurnId>,
+}
+
+impl Default for FailOnceTts {
+    fn default() -> Self {
+        Self {
+            inner: FakeTts,
+            failed_turn: None,
+        }
+    }
+}
+
+impl Tts for FailOnceTts {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn synthesize_chunk(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+    ) -> Result<Vec<SynthesizedAudio>> {
+        if self.failed_turn.is_none() || self.failed_turn == Some(token.turn) {
+            self.failed_turn = Some(token.turn);
+            return Err(Error::Provider {
+                provider: self.name(),
+                message: "scripted tts failure".into(),
+            });
+        }
+        self.inner.synthesize_chunk(token, cancel)
     }
 }
 

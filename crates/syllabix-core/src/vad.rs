@@ -8,9 +8,7 @@ use crate::defaults::BuiltinDefaults;
 use crate::error::{Error, Result};
 use crate::models::{Fetcher, ModelCache, Progress};
 use crate::providers::Vad;
-use crate::types::{
-    AudioFrame, TurnId, Utterance, VadEvent, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
-};
+use crate::types::{AudioFrame, TurnId, Utterance, VadEvent, FRAME_SAMPLES};
 use crate::Cancel;
 
 /// Silero probability at or above which a frame begins or continues speech.
@@ -77,6 +75,11 @@ impl SileroVad {
         self.scorer.score(frame)
     }
 
+    /// Test helper: Silero probability for one v0 frame.
+    pub fn debug_probability(&mut self, frame: &AudioFrame) -> Result<f32> {
+        self.probability(frame)
+    }
+
     fn start(&mut self, frame: AudioFrame) -> VadEvent {
         let turn = TurnId(self.next_turn);
         self.next_turn += 1;
@@ -86,11 +89,18 @@ impl SileroVad {
 
     fn finish(&mut self) -> Option<VadEvent> {
         self.silence_frames = 0;
-        self.current
+        let event = self
+            .current
             .take()
             .map(|(turn, frames)| VadEvent::SpeechEnd {
                 utterance: Utterance { turn, frames },
-            })
+            });
+        if event.is_some() {
+            // Recurrent hangover otherwise suppresses the next user turn
+            // (identical or similar speech stays below 0.5).
+            self.scorer.reset();
+        }
+        event
     }
 }
 
@@ -127,8 +137,19 @@ impl Vad for SileroVad {
     }
 }
 
+impl SileroVad {
+    /// Clear recurrent state and any in-flight utterance.
+    pub fn reset(&mut self) {
+        self.scorer.reset();
+        self.next_turn = 0;
+        self.current = None;
+        self.silence_frames = 0;
+    }
+}
+
 trait ProbabilityScorer: Send {
     fn score(&mut self, frame: &AudioFrame) -> Result<f32>;
+    fn reset(&mut self);
 }
 
 struct OrtScorer {
@@ -173,23 +194,25 @@ impl OrtScorer {
 
 impl ProbabilityScorer for OrtScorer {
     fn score(&mut self, frame: &AudioFrame) -> Result<f32> {
+        // silero_vad.onnx (v6.2.1) scores 256-sample 8 kHz windows. v0 frames
+        // are 512 samples at 16 kHz; pair-average to the native window.
         let audio: Vec<f32> = frame
             .samples
-            .iter()
-            .map(|sample| f32::from(*sample) / 32_768.0)
+            .chunks_exact(2)
+            .map(|pair| (f32::from(pair[0]) + f32::from(pair[1])) / (2.0 * 32_768.0))
             .collect();
         let outputs = self
             .session
             .run(
                 ort::inputs![
-                    "input" => ([1_usize, FRAME_SAMPLES], audio),
+                    "input" => ([1_usize, 256], audio),
                     "state" => ([2_usize, 1, 128], self.state.clone()),
-                    "sr" => ([1_usize], vec![DEFAULT_SAMPLE_RATE_HZ as i64]),
+                    "sr" => ((), vec![8_000_i64]),
                 ]
                 .map_err(ort_error)?,
             )
             .map_err(ort_error)?;
-        let probability = outputs[0]
+        let probability = outputs["output"]
             .try_extract_tensor::<f32>()
             .map_err(ort_error)?
             .first()
@@ -198,13 +221,17 @@ impl ProbabilityScorer for OrtScorer {
                 provider: "silero",
                 message: "ONNX output probability was empty".into(),
             })?;
-        self.state = outputs[1]
+        self.state = outputs["stateN"]
             .try_extract_tensor::<f32>()
             .map_err(ort_error)?
             .iter()
             .copied()
             .collect();
         Ok(probability)
+    }
+
+    fn reset(&mut self) {
+        self.state = vec![0.0; 2 * 128];
     }
 }
 
@@ -226,6 +253,10 @@ mod tests {
     impl ProbabilityScorer for ScriptedScorer {
         fn score(&mut self, _frame: &AudioFrame) -> Result<f32> {
             Ok(self.0.remove(0))
+        }
+
+        fn reset(&mut self) {
+            self.0.clear();
         }
     }
 

@@ -4,8 +4,9 @@ use std::thread;
 use std::time::Duration;
 
 use syllabix_core::{
-    run_loop, scripted_frames, BuiltinDefaults, Cancel, CollectingSink, FakeLlm, FakeStt, FakeTts,
-    FakeVad, LoopConfig, LoopMode, PipelineStages, QueueCaps, TurnId,
+    run_loop, scripted_frames, BuiltinDefaults, Cancel, CollectingSink, FailOnceLlm, FailOnceStt,
+    FailOnceTts, FakeLlm, FakeStt, FakeTts, FakeVad, LoopConfig, LoopMode, PipelineStages,
+    QueueCaps, TurnId,
 };
 
 fn run_with(
@@ -193,4 +194,84 @@ fn thirty_turns_config_helper_matches_launch_defaults() {
     let cfg = LoopConfig::thirty_turns();
     assert_eq!(cfg.mode, LoopMode::StopAfterTurns(30));
     assert_eq!(cfg.defaults.llm_model, "llama-3.2-1b");
+}
+
+#[test]
+fn six_turns_config_helper_is_the_native_gate() {
+    let cfg = LoopConfig::six_turns();
+    assert_eq!(cfg.mode, LoopMode::StopAfterTurns(6));
+}
+
+#[test]
+fn provider_error_in_stt_skips_the_turn_and_keeps_going() {
+    let report = run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FailOnceStt::default(),
+            llm: FakeLlm::new(),
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(2, 2, 1),
+        Cancel::new(),
+    )
+    .expect("recoverable stt");
+    assert_eq!(report.tasks_still_running, 0);
+    assert!(report.skipped_turns >= 1);
+    assert_eq!(report.turns.len(), 1);
+    assert_eq!(report.turns[0].user_text, "turn-001");
+    assert!(report.queues.within_capacity());
+}
+
+#[test]
+fn provider_error_in_llm_skips_the_turn_and_keeps_going() {
+    let report = run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm: FailOnceLlm::new(),
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(2, 2, 1),
+        Cancel::new(),
+    )
+    .expect("recoverable llm");
+    assert_eq!(report.tasks_still_running, 0);
+    assert!(report.skipped_turns >= 1);
+    assert_eq!(report.turns.len(), 1);
+    assert_eq!(report.turns[0].user_text, "turn-001");
+    assert_eq!(report.turns[0].assistant_text, "echo:turn-001");
+}
+
+#[test]
+fn provider_error_in_tts_skips_the_turn_and_keeps_going() {
+    let report = run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm: FakeLlm::new(),
+            tts: FailOnceTts::default(),
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(2, 2, 1),
+        Cancel::new(),
+    )
+    .expect("recoverable tts");
+    assert_eq!(report.tasks_still_running, 0);
+    assert!(report.skipped_turns >= 1);
+    assert_eq!(report.turns.len(), 1);
+    assert_eq!(report.turns[0].id, TurnId(1));
 }
