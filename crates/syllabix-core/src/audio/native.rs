@@ -400,6 +400,11 @@ impl NativeCapture {
             _worker: opened.worker,
         })
     }
+
+    /// Live AEC controller, if this capture was opened with a speaker tap.
+    pub fn echo_mut(&mut self) -> Option<&mut EchoController> {
+        self.echo.as_mut()
+    }
 }
 
 impl Drop for NativeCapture {

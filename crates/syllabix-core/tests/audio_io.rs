@@ -6,6 +6,7 @@
 #[cfg(target_os = "linux")]
 use std::ffi::OsString;
 use std::io::Cursor;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
@@ -16,9 +17,10 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use syllabix_core::audio::probe_device_names;
 use syllabix_core::audio::{
-    live_buffer_ceiling_bytes, record_and_play_fixture, select_input, select_output, sine_i16,
-    write_wav, DeviceInfo, DeviceInventory, FixtureCapture, FrameSplitter, PcmConverter, PcmFormat,
-    WavPcm, AUDIO_LIVE_BYTES_CEILING, FRAME_SPLITTER_MAX,
+    f32_to_i16, i16_to_f32, live_buffer_ceiling_bytes, record_and_play_fixture, select_input,
+    select_output, sine_i16, write_wav, DeviceInfo, DeviceInventory, EchoController, EchoRecording,
+    EchoReference, FixtureCapture, FrameSplitter, PcmConverter, PcmFormat, SampleRing, WavPcm,
+    AEC_FRAME_SAMPLES, AUDIO_LIVE_BYTES_CEILING, FRAME_SPLITTER_MAX,
 };
 use syllabix_core::{bounded, AudioCapture, Cancel, QueueCaps, FRAME_SAMPLES};
 
@@ -439,6 +441,19 @@ fn hardware_aec_1_minute_playback_has_zero_false_turns() {
 
     let (mut playback, reference) = NativePlayback::open_with_echo().expect("speakers with AEC");
     let mut capture = NativeCapture::open_with_echo(reference).expect("microphone with AEC");
+    capture
+        .echo_mut()
+        .expect("AEC controller")
+        .enable_recording();
+    eprintln!(
+        "AEC hardware gate: input={} ({} Hz {} ch) output={} ({} Hz {} ch)",
+        capture.device_name,
+        capture.device_format.sample_rate_hz,
+        capture.device_format.channels,
+        playback.device_name,
+        playback.device_format.sample_rate_hz,
+        playback.device_format.channels
+    );
     let cancel = Cancel::new();
     let playing = Arc::new(AtomicBool::new(true));
     let playing_worker = Arc::clone(&playing);
@@ -471,6 +486,7 @@ fn hardware_aec_1_minute_playback_has_zero_false_turns() {
     let deadline = measurement_start + MEASUREMENT;
     let mut measuring = false;
     let mut false_starts = 0_u64;
+    let mut speech_starts: Vec<String> = Vec::new();
     while Instant::now() < deadline {
         let Some(frame) = capture.next_frame(&cancel).expect("AEC microphone frame") else {
             panic!("microphone ended during hardware AEC gate");
@@ -481,20 +497,266 @@ fn hardware_aec_1_minute_playback_has_zero_false_turns() {
             eprintln!("AEC calibrated; starting 1-minute false-turn measurement");
         }
         if measuring {
-            false_starts += vad
+            let hits = vad
                 .push_frame(frame)
                 .expect("Silero on AEC capture")
                 .iter()
                 .filter(|event| matches!(event, VadEvent::SpeechStart { .. }))
                 .count() as u64;
+            if hits > 0 {
+                let at = started.elapsed().as_secs_f32();
+                speech_starts.push(format!("{at:.3}s"));
+                false_starts += hits;
+            }
         }
     }
 
     playing.store(false, Ordering::SeqCst);
     cancel.shutdown();
     playback_worker.join().expect("playback worker");
-    assert_eq!(
-        false_starts, 0,
-        "agent playback caused {false_starts} false Silero turns"
+    let rec = capture.echo_mut().expect("AEC controller").recording();
+    let dump_dir = write_aec_debug_dump(&rec, &speech_starts, false_starts);
+    eprintln!(
+        "AEC dump {} calibration={:?} estimated_delay_ms={:?} aec_delay_ms={:?} far_end_blocks={} holds={} false_starts={false_starts} starts={speech_starts:?}",
+        dump_dir.display(),
+        rec.calibration,
+        rec.estimated_delay_ms,
+        rec.aec_delay_ms,
+        rec.far_end_blocks,
+        rec.render_starved_holds,
     );
+    assert_eq!(
+        false_starts,
+        0,
+        "agent playback caused {false_starts} false Silero turns; dumps in {}",
+        dump_dir.display()
+    );
+}
+
+fn aec_debug_dir() -> PathBuf {
+    std::env::var("SYLLABIX_AEC_DEBUG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/aec-debug")
+        })
+}
+
+fn write_mono16k_wav(path: &Path, samples: &[f32]) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create AEC dump dir");
+    }
+    let wav = WavPcm {
+        format: PcmFormat {
+            sample_rate_hz: 16_000,
+            channels: 1,
+        },
+        samples: f32_to_i16(samples),
+    };
+    let file = std::fs::File::create(path)
+        .unwrap_or_else(|err| panic!("create {}: {err}", path.display()));
+    write_wav(file, &wav).expect("write AEC wav");
+}
+
+fn write_aec_debug_dump(
+    rec: &EchoRecording,
+    speech_starts: &[String],
+    false_starts: u64,
+) -> PathBuf {
+    let dir = aec_debug_dir();
+    std::fs::create_dir_all(&dir).expect("create AEC dump dir");
+    write_mono16k_wav(&dir.join("render.wav"), &rec.render);
+    write_mono16k_wav(&dir.join("capture.wav"), &rec.capture);
+    write_mono16k_wav(&dir.join("clean.wav"), &rec.clean);
+    let sidecar = format!(
+        "{{\n  \"calibration\": \"{:?}\",\n  \"estimated_delay_ms\": {},\n  \"aec_delay_ms\": {},\n  \"far_end_blocks\": {},\n  \"render_starved_holds\": {},\n  \"false_starts\": {false_starts},\n  \"speech_starts\": [{}],\n  \"render_samples\": {},\n  \"capture_samples\": {},\n  \"clean_samples\": {}\n}}\n",
+        rec.calibration,
+        rec.estimated_delay_ms
+            .map(|ms| ms.to_string())
+            .unwrap_or_else(|| "null".into()),
+        rec.aec_delay_ms
+            .map(|ms| ms.to_string())
+            .unwrap_or_else(|| "null".into()),
+        rec.far_end_blocks,
+        rec.render_starved_holds,
+        speech_starts
+            .iter()
+            .map(|s| format!("\"{s}\""))
+            .collect::<Vec<_>>()
+            .join(", "),
+        rec.render.len(),
+        rec.capture.len(),
+        rec.clean.len(),
+    );
+    std::fs::write(dir.join("sidecar.json"), sidecar).expect("write AEC sidecar");
+    dir
+}
+
+fn load_vad_speech_f32() -> Vec<f32> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vad/speech.wav");
+    let wav = syllabix_core::audio::read_wav(
+        std::fs::File::open(&path).unwrap_or_else(|err| panic!("open {}: {err}", path.display())),
+    )
+    .expect("read speech.wav");
+    let frames = syllabix_core::audio::record_fixture_to_frames(&wav).expect("speech frames");
+    let samples: Vec<i16> = frames.into_iter().flat_map(|frame| frame.samples).collect();
+    i16_to_f32(&samples)
+}
+
+/// Scripted laptop: speech fixture as far-end, 80 ms delayed leak into the mic.
+/// Silero must not treat the cancelled echo as a user turn.
+#[test]
+fn delayed_speech_fixture_is_cancelled_before_silero() {
+    const DELAY: usize = AEC_FRAME_SAMPLES * 8;
+    const ADAPT_LOOPS: usize = 8;
+    const MEASURE_LOOPS: usize = 2;
+
+    let speech = load_vad_speech_f32();
+    assert!(
+        speech.len() > AEC_FRAME_SAMPLES * 20,
+        "speech.wav too short"
+    );
+    let ring = Arc::new(SampleRing::new(AEC_FRAME_SAMPLES * 8));
+    let mut echo =
+        EchoController::new(EchoReference::new(Arc::clone(&ring), PcmFormat::v0())).expect("echo");
+    let mut history = std::collections::VecDeque::from(vec![0.0f32; DELAY]);
+    let mut measure_clean = Vec::new();
+    for loop_idx in 0..(ADAPT_LOOPS + MEASURE_LOOPS) {
+        let mut offset = 0usize;
+        while offset + AEC_FRAME_SAMPLES <= speech.len() {
+            let render = &speech[offset..offset + AEC_FRAME_SAMPLES];
+            assert_eq!(ring.try_push_slice(render), render.len());
+            for sample in render {
+                history.push_back(sample * 0.55);
+            }
+            let capture: Vec<f32> = history.drain(..AEC_FRAME_SAMPLES).collect();
+            let clean = echo
+                .process_capture(&capture)
+                .expect("cancel delayed speech");
+            if loop_idx >= ADAPT_LOOPS {
+                measure_clean.extend(clean);
+            }
+            offset += AEC_FRAME_SAMPLES;
+        }
+    }
+
+    let starts = silero_speech_starts(&measure_clean);
+    assert_eq!(
+        starts, 0,
+        "AEC left delayed speech.wav loud enough for {starts} Silero turns"
+    );
+}
+
+fn load_mono16k_f32(path: &Path) -> Vec<f32> {
+    let wav = syllabix_core::audio::read_wav(
+        std::fs::File::open(path).unwrap_or_else(|err| panic!("open {}: {err}", path.display())),
+    )
+    .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+    assert_eq!(wav.format.sample_rate_hz, 16_000);
+    assert_eq!(wav.format.channels, 1);
+    i16_to_f32(&wav.samples)
+}
+
+fn silero_speech_starts(samples: &[f32]) -> u64 {
+    use syllabix_core::{HttpFetcher, ModelCache, SileroVad, StderrProgress, Vad, VadEvent};
+
+    let mut vad = SileroVad::from_cache(
+        &ModelCache::v0(),
+        &HttpFetcher,
+        &mut StderrProgress::new(),
+        &Cancel::new(),
+    )
+    .expect("load Silero");
+    let mut splitter = FrameSplitter::new();
+    let mut starts = 0_u64;
+    let mut frames = splitter.push(&f32_to_i16(samples)).expect("frames");
+    frames.extend(splitter.flush().expect("flush"));
+    for frame in frames {
+        starts += vad
+            .push_frame(frame)
+            .expect("silero")
+            .iter()
+            .filter(|event| matches!(event, VadEvent::SpeechStart { .. }))
+            .count() as u64;
+    }
+    starts
+}
+
+/// Kokoro far-end, 80 ms delayed leak, no microphone.
+#[test]
+fn delayed_kokoro_fixture_is_cancelled_before_silero() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/aec/kokoro_farend.wav");
+    let speech = load_mono16k_f32(&path);
+    assert!(
+        speech.len() > AEC_FRAME_SAMPLES * 20,
+        "kokoro fixture too short"
+    );
+
+    const DELAY: usize = AEC_FRAME_SAMPLES * 8;
+    const ADAPT_LOOPS: usize = 6;
+    const MEASURE_LOOPS: usize = 2;
+
+    let ring = Arc::new(SampleRing::new(AEC_FRAME_SAMPLES * 8));
+    let mut echo =
+        EchoController::new(EchoReference::new(Arc::clone(&ring), PcmFormat::v0())).expect("echo");
+    let mut history = std::collections::VecDeque::from(vec![0.0f32; DELAY]);
+    let mut measure_clean = Vec::new();
+    for loop_idx in 0..(ADAPT_LOOPS + MEASURE_LOOPS) {
+        let mut offset = 0usize;
+        while offset + AEC_FRAME_SAMPLES <= speech.len() {
+            let render = &speech[offset..offset + AEC_FRAME_SAMPLES];
+            assert_eq!(ring.try_push_slice(render), render.len());
+            for sample in render {
+                history.push_back(sample * 0.55);
+            }
+            let capture: Vec<f32> = history.drain(..AEC_FRAME_SAMPLES).collect();
+            let clean = echo.process_capture(&capture).expect("cancel kokoro echo");
+            if loop_idx >= ADAPT_LOOPS {
+                measure_clean.extend(clean);
+            }
+            offset += AEC_FRAME_SAMPLES;
+        }
+    }
+    let starts = silero_speech_starts(&measure_clean);
+    assert_eq!(
+        starts, 0,
+        "AEC left delayed Kokoro loud enough for {starts} Silero turns"
+    );
+}
+
+/// One-shot: synthesize the versioned Kokoro far-end fixture (loads ONNX; not CI).
+#[test]
+#[ignore]
+fn generate_kokoro_aec_farend_fixture() {
+    use syllabix_core::{
+        GenerationId, HttpFetcher, KokoroTts, ModelCache, StderrProgress, TokenChunk, Tts, TurnId,
+    };
+
+    let mut tts = KokoroTts::from_cache(
+        &ModelCache::v0(),
+        &HttpFetcher,
+        &mut StderrProgress::new(),
+        &Cancel::new(),
+    )
+    .expect("load Kokoro");
+    let token = TokenChunk {
+        turn: TurnId(0),
+        generation: GenerationId(0),
+        index: 0,
+        text: "The children played outside in the garden after lunch.".into(),
+        is_last: true,
+    };
+    let chunks = tts
+        .synthesize_chunk(&token, &Cancel::new())
+        .expect("synthesize Kokoro far-end");
+    let mut samples = Vec::new();
+    for chunk in chunks {
+        samples.extend(i16_to_f32(&chunk.samples));
+    }
+    assert!(
+        samples.len() > 16_000,
+        "Kokoro far-end must be longer than one second"
+    );
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/aec/kokoro_farend.wav");
+    write_mono16k_wav(&path, &samples);
+    eprintln!("wrote {} ({} samples)", path.display(), samples.len());
 }

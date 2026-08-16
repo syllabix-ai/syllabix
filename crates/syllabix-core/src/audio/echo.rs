@@ -9,7 +9,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use sonora::config::EchoCanceller;
+use sonora::config::{EchoCanceller, HighPassFilter};
 use sonora::{AudioProcessing, Config, StreamConfig};
 
 use crate::audio::convert::{PcmConverter, PcmFormat};
@@ -22,6 +22,12 @@ pub const AEC_FRAME_SAMPLES: usize = DEFAULT_SAMPLE_RATE_HZ as usize / 100;
 const MAX_PENDING_BLOCKS: usize = 50;
 const MAX_PENDING_SAMPLES: usize = AEC_FRAME_SAMPLES * MAX_PENDING_BLOCKS;
 const PLAYBACK_ENERGY_FLOOR: f32 = 1.0e-7;
+/// Hold capture at most this long while a partial speaker reference is in flight.
+const MAX_CAPTURE_HOLD_SAMPLES: usize = AEC_FRAME_SAMPLES * 8;
+/// Cross-correlation window before applying a one-shot delay hint (500 ms).
+const DELAY_ESTIMATE_SAMPLES: usize = AEC_FRAME_SAMPLES * 50;
+/// Search 0..=300 ms of acoustic delay between the render tap and the mic.
+const DELAY_SEARCH_SAMPLES: usize = AEC_FRAME_SAMPLES * 30;
 
 /// Read-only render tap shared by the speaker callback and capture worker.
 pub struct EchoReference {
@@ -30,7 +36,8 @@ pub struct EchoReference {
 }
 
 impl EchoReference {
-    pub(crate) fn new(ring: Arc<SampleRing>, device_format: PcmFormat) -> Self {
+    /// Wrap a speaker-callback tap. `device_format` is the PCM layout in the ring.
+    pub fn new(ring: Arc<SampleRing>, device_format: PcmFormat) -> Self {
         Self {
             ring,
             device_format,
@@ -56,6 +63,25 @@ pub enum EchoCalibration {
     Degraded,
 }
 
+/// Time-aligned 16 kHz mono dump of one AEC session (debug / fixtures).
+#[derive(Debug, Clone)]
+pub struct EchoRecording {
+    /// Speaker-callback reference after conversion to 16 kHz mono.
+    pub render: Vec<f32>,
+    /// Microphone capture before AEC, 16 kHz mono.
+    pub capture: Vec<f32>,
+    /// AEC output fed to Silero / ASR, 16 kHz mono.
+    pub clean: Vec<f32>,
+    /// Times capture was held waiting for a partial render block.
+    pub render_starved_holds: u64,
+    /// One-shot cross-correlation delay hint applied to AEC3, if any.
+    pub estimated_delay_ms: Option<i32>,
+    /// Last AEC3 instantaneous delay statistic.
+    pub aec_delay_ms: Option<i32>,
+    pub calibration: EchoCalibration,
+    pub far_end_blocks: u64,
+}
+
 /// Sonora AEC3 wrapper operating on the existing 16 kHz capture/ASR stream.
 pub struct EchoController {
     processor: AudioProcessing,
@@ -64,10 +90,19 @@ pub struct EchoController {
     render_pending: VecDeque<f32>,
     capture_pending: VecDeque<f32>,
     clean_pending: VecDeque<f32>,
-    silent_render: Vec<f32>,
     last_dropped_samples: u64,
     far_end_blocks: u64,
+    render_starved_holds: u64,
     calibration: EchoCalibration,
+    recording: bool,
+    rec_render: Vec<f32>,
+    rec_capture: Vec<f32>,
+    rec_clean: Vec<f32>,
+    delay_render: Vec<f32>,
+    delay_capture: Vec<f32>,
+    delay_applied: bool,
+    estimated_delay_ms: Option<i32>,
+    last_render_block: Vec<f32>,
 }
 
 impl EchoController {
@@ -76,6 +111,7 @@ impl EchoController {
         let stream = StreamConfig::new(DEFAULT_SAMPLE_RATE_HZ, 1);
         let config = Config {
             echo_canceller: Some(EchoCanceller::default()),
+            high_pass_filter: Some(HighPassFilter::default()),
             ..Default::default()
         };
         let mut processor = AudioProcessing::builder()
@@ -84,11 +120,10 @@ impl EchoController {
             .render_config(stream)
             .echo_detector(true)
             .build();
-        // The reference is tapped at the output callback, so queueing delay is
-        // already excluded. AEC3 estimates the remaining acoustic-path delay.
-        processor
-            .set_stream_delay_ms(0)
-            .map_err(|err| echo_error("set stream delay", err))?;
+        // The reference is tapped at the output callback, so software queueing
+        // delay is already excluded. AEC3 still needs the acoustic/DAC delay.
+        // 0 is the starting hint; a one-shot cross-correlation updates it.
+        let _ = processor.set_stream_delay_ms(0);
         let render_converter = PcmConverter::new(reference.device_format, PcmFormat::v0())?;
         let last_dropped_samples = reference.dropped_samples();
         Ok(Self {
@@ -98,23 +133,60 @@ impl EchoController {
             render_pending: VecDeque::with_capacity(MAX_PENDING_SAMPLES),
             capture_pending: VecDeque::with_capacity(AEC_FRAME_SAMPLES * 4),
             clean_pending: VecDeque::with_capacity(AEC_FRAME_SAMPLES * 4),
-            silent_render: vec![0.0; AEC_FRAME_SAMPLES],
             last_dropped_samples,
             far_end_blocks: 0,
+            render_starved_holds: 0,
             calibration: EchoCalibration::WaitingForPlayback,
+            recording: false,
+            rec_render: Vec::new(),
+            rec_capture: Vec::new(),
+            rec_clean: Vec::new(),
+            delay_render: Vec::new(),
+            delay_capture: Vec::new(),
+            delay_applied: false,
+            estimated_delay_ms: None,
+            last_render_block: vec![0.0; AEC_FRAME_SAMPLES],
         })
+    }
+
+    /// Keep 16 kHz render/capture/clean PCM for a debug dump.
+    pub fn enable_recording(&mut self) {
+        self.recording = true;
+    }
+
+    /// Snapshot of recorded PCM and AEC diagnostics.
+    pub fn recording(&self) -> EchoRecording {
+        EchoRecording {
+            render: self.rec_render.clone(),
+            capture: self.rec_capture.clone(),
+            clean: self.rec_clean.clone(),
+            render_starved_holds: self.render_starved_holds,
+            estimated_delay_ms: self.estimated_delay_ms,
+            aec_delay_ms: self.processor.statistics().delay_ms,
+            calibration: self.calibration,
+            far_end_blocks: self.far_end_blocks,
+        }
     }
 
     /// Process arbitrary-length 16 kHz mono capture samples.
     ///
     /// Output is emitted only in complete 10 ms blocks; callers retain their
     /// existing frame splitter for the 512-sample ASR capture contract.
+    ///
+    /// Render is pushed into AEC3 as soon as a 10 ms speaker block exists.
+    /// Capture is not paired with invented silence when the mic is briefly
+    /// ahead of the speaker callback.
     pub fn process_capture(&mut self, capture: &[f32]) -> Result<Vec<f32>> {
         self.capture_pending.extend(capture.iter().copied());
-        self.drain_render_reference();
+        self.drain_and_process_render()?;
 
         while self.capture_pending.len() >= AEC_FRAME_SAMPLES {
-            self.process_one_block()?;
+            if self.should_hold_capture() {
+                self.render_starved_holds += 1;
+                break;
+            }
+            self.drain_and_process_render()?;
+            self.process_one_capture_block()?;
         }
 
         Ok(self.clean_pending.drain(..).collect())
@@ -128,6 +200,28 @@ impl EchoController {
     /// Number of non-silent 10 ms speaker blocks observed.
     pub fn far_end_blocks(&self) -> u64 {
         self.far_end_blocks
+    }
+
+    fn drain_and_process_render(&mut self) -> Result<()> {
+        self.drain_render_reference();
+        while self.render_pending.len() >= AEC_FRAME_SAMPLES {
+            let render = self
+                .render_pending
+                .drain(..AEC_FRAME_SAMPLES)
+                .collect::<Vec<_>>();
+            self.process_render_block(&render)?;
+        }
+        Ok(())
+    }
+
+    fn should_hold_capture(&self) -> bool {
+        if self.capture_pending.len() >= MAX_CAPTURE_HOLD_SAMPLES {
+            return false;
+        }
+        if self.render_pending.len() >= AEC_FRAME_SAMPLES {
+            return false;
+        }
+        !self.render_pending.is_empty() || self.reference.ring.occupancy() > 0
     }
 
     fn drain_render_reference(&mut self) {
@@ -152,15 +246,8 @@ impl EchoController {
         }
     }
 
-    fn process_one_block(&mut self) -> Result<()> {
-        let render = if self.render_pending.len() >= AEC_FRAME_SAMPLES {
-            self.render_pending
-                .drain(..AEC_FRAME_SAMPLES)
-                .collect::<Vec<_>>()
-        } else {
-            self.silent_render.clone()
-        };
-        if mean_square(&render) > PLAYBACK_ENERGY_FLOOR {
+    fn process_render_block(&mut self, render: &[f32]) -> Result<()> {
+        if mean_square(render) > PLAYBACK_ENERGY_FLOOR {
             self.far_end_blocks += 1;
             if self.calibration == EchoCalibration::WaitingForPlayback {
                 self.calibration = EchoCalibration::Calibrating;
@@ -169,24 +256,66 @@ impl EchoController {
 
         let mut render_output = vec![0.0; AEC_FRAME_SAMPLES];
         self.processor
-            .process_render_f32(&[&render], &mut [&mut render_output])
+            .process_render_f32(&[render], &mut [&mut render_output])
             .map_err(|err| echo_error("process speaker reference", err))?;
 
+        self.last_render_block = render.to_vec();
+        if !self.delay_applied && self.calibration == EchoCalibration::Calibrating {
+            self.delay_render.extend_from_slice(render);
+        }
+        Ok(())
+    }
+
+    fn process_one_capture_block(&mut self) -> Result<()> {
         let capture = self
             .capture_pending
             .drain(..AEC_FRAME_SAMPLES)
             .collect::<Vec<_>>();
+        if !self.delay_applied && self.calibration == EchoCalibration::Calibrating {
+            self.delay_capture.extend_from_slice(&capture);
+            self.maybe_apply_delay_estimate()?;
+        }
+
         let mut clean = vec![0.0; AEC_FRAME_SAMPLES];
         self.processor
             .process_capture_f32(&[&capture], &mut [&mut clean])
             .map_err(|err| echo_error("process microphone capture", err))?;
-        self.clean_pending.extend(clean);
+        self.clean_pending.extend(clean.iter().copied());
+
+        if self.recording {
+            self.rec_render.extend_from_slice(&self.last_render_block);
+            self.rec_capture.extend_from_slice(&capture);
+            self.rec_clean.extend_from_slice(&clean);
+        }
 
         if self.calibration == EchoCalibration::Calibrating
-            && self.processor.statistics().delay_ms.is_some()
+            && (self.delay_applied || self.processor.statistics().delay_ms.is_some())
         {
             self.calibration = EchoCalibration::Active;
         }
+        Ok(())
+    }
+
+    fn maybe_apply_delay_estimate(&mut self) -> Result<()> {
+        if self.delay_applied {
+            return Ok(());
+        }
+        if self.delay_render.len() < DELAY_ESTIMATE_SAMPLES
+            || self.delay_capture.len() < DELAY_ESTIMATE_SAMPLES
+        {
+            return Ok(());
+        }
+        let lag = best_delay_lag(
+            &self.delay_render,
+            &self.delay_capture,
+            DELAY_SEARCH_SAMPLES,
+        );
+        let delay_ms = (lag as i32 * 1000) / DEFAULT_SAMPLE_RATE_HZ as i32;
+        let _ = self.processor.set_stream_delay_ms(delay_ms);
+        self.estimated_delay_ms = Some(delay_ms);
+        self.delay_applied = true;
+        self.delay_render.clear();
+        self.delay_capture.clear();
         Ok(())
     }
 }
@@ -196,6 +325,29 @@ fn mean_square(samples: &[f32]) -> f32 {
         return 0.0;
     }
     samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32
+}
+
+/// Lag (in samples) that best aligns delayed capture with render.
+fn best_delay_lag(render: &[f32], capture: &[f32], max_lag: usize) -> usize {
+    let mut best_lag = 0usize;
+    let mut best_score = f32::MIN;
+    let max_lag = max_lag.min(capture.len().saturating_sub(AEC_FRAME_SAMPLES));
+    for lag in 0..=max_lag {
+        let n = render.len().min(capture.len().saturating_sub(lag));
+        if n < AEC_FRAME_SAMPLES * 10 {
+            break;
+        }
+        let mut acc = 0.0f32;
+        for i in 0..n {
+            acc += render[i] * capture[i + lag];
+        }
+        let score = acc / n as f32;
+        if score > best_score {
+            best_score = score;
+            best_lag = lag;
+        }
+    }
+    best_lag
 }
 
 fn echo_error(action: &str, err: sonora::Error) -> Error {
@@ -329,5 +481,57 @@ mod tests {
                 (n * 0.109).sin() * 0.18
             })
             .collect()
+    }
+
+    #[test]
+    fn capture_without_playback_does_not_feed_silent_render() {
+        let (_ring, reference) = reference(PcmFormat::v0(), AEC_FRAME_SAMPLES * 4);
+        let mut echo = EchoController::new(reference).expect("echo");
+        echo.enable_recording();
+        let clean = echo
+            .process_capture(&speech_like_block(0))
+            .expect("near-end only");
+        assert_eq!(clean.len(), AEC_FRAME_SAMPLES);
+        let rec = echo.recording();
+        assert_eq!(rec.render.len(), rec.capture.len());
+        assert!(
+            rec.render.iter().all(|s| *s == 0.0),
+            "idle speakers must not enqueue invented far-end into AEC3"
+        );
+        assert_eq!(echo.far_end_blocks(), 0);
+    }
+
+    #[test]
+    fn partial_render_block_holds_capture() {
+        let (ring, reference) = reference(PcmFormat::v0(), AEC_FRAME_SAMPLES * 4);
+        let mut echo = EchoController::new(reference).expect("echo");
+        let half = vec![0.2; AEC_FRAME_SAMPLES / 2];
+        assert_eq!(ring.try_push_slice(&half), half.len());
+        let clean = echo
+            .process_capture(&speech_like_block(0))
+            .expect("wait for rest of render");
+        assert!(
+            clean.is_empty(),
+            "must not pair capture with a half render block"
+        );
+        assert_eq!(ring.try_push_slice(&half), half.len());
+        let clean = echo.process_capture(&[]).expect("complete render");
+        assert_eq!(clean.len(), AEC_FRAME_SAMPLES);
+        assert_eq!(echo.far_end_blocks(), 1);
+    }
+
+    #[test]
+    fn cross_correlation_finds_eighty_ms_acoustic_delay() {
+        let render: Vec<f32> = (0..AEC_FRAME_SAMPLES * 80)
+            .map(|n| ((n as f32) * 0.071).sin() * 0.3)
+            .collect();
+        let delay = AEC_FRAME_SAMPLES * 8;
+        let mut capture = vec![0.0; delay];
+        capture.extend(render.iter().map(|s| s * 0.5));
+        let lag = super::best_delay_lag(&render, &capture, AEC_FRAME_SAMPLES * 30);
+        assert!(
+            (lag as i32 - delay as i32).abs() <= 2,
+            "expected ~{delay} samples, got {lag}"
+        );
     }
 }
