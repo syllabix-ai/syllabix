@@ -344,8 +344,8 @@ fn native_streams_work_with_alsa_null_device() {
     assert_eq!(input.reason, "os-default");
     assert_eq!(output.reason, "os-default");
 
-    let mut playback = NativePlayback::open().expect("null speakers");
-    let mut capture = NativeCapture::open().expect("null microphone");
+    let (mut playback, reference) = NativePlayback::open_with_echo().expect("null speakers");
+    let mut capture = NativeCapture::open_with_echo(reference).expect("null microphone");
     let cancel = Cancel::new();
     let tone = sine_i16(16_000, 1, 440.0, Duration::from_millis(200), 0.3);
     playback
@@ -367,15 +367,15 @@ fn native_streams_work_with_alsa_null_device() {
     frame.validate().expect("v0 microphone frame");
 }
 
-/// Human + laptop: play a short tone and pull mic frames. Not run in CI.
+/// Human + laptop: play a short tone through AEC and pull mic frames. Not run in CI.
 #[test]
 #[ignore]
 fn hardware_record_and_play_if_devices_exist() {
     use syllabix_core::audio::{NativeCapture, NativePlayback};
     use syllabix_core::{AudioSink, GenerationId, SynthesizedAudio, TurnId};
 
-    let mut playback = NativePlayback::open().expect("speakers");
-    let mut capture = NativeCapture::open().expect("microphone");
+    let (mut playback, reference) = NativePlayback::open_with_echo().expect("speakers");
+    let mut capture = NativeCapture::open_with_echo(reference).expect("microphone");
     let cancel = Cancel::new();
     let tone = sine_i16(16_000, 1, 440.0, Duration::from_millis(200), 0.3);
     playback
@@ -396,4 +396,105 @@ fn hardware_record_and_play_if_devices_exist() {
         .expect("mic frame")
         .expect("expected at least one frame");
     frame.validate().expect("v0 mic frame");
+}
+
+/// PR 17 hardware gate: a quiet laptop must not turn its own speaker into a user turn.
+///
+/// Run in a quiet room with the normal laptop microphone and speakers selected.
+/// Do not wear headphones and do not speak during the measurement.
+#[test]
+#[ignore]
+fn hardware_aec_1_minute_playback_has_zero_false_turns() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+
+    use syllabix_core::audio::{read_wav, record_fixture_to_frames, NativeCapture, NativePlayback};
+    use syllabix_core::{
+        AudioSink, GenerationId, HttpFetcher, ModelCache, SileroVad, StderrProgress,
+        SynthesizedAudio, TurnId, Vad, VadEvent,
+    };
+
+    const CALIBRATION: Duration = Duration::from_secs(10);
+    const MEASUREMENT: Duration = Duration::from_secs(60);
+
+    let mut vad = SileroVad::from_cache(
+        &ModelCache::v0(),
+        &HttpFetcher,
+        &mut StderrProgress::new(),
+        &Cancel::new(),
+    )
+    .expect("load Silero for hardware AEC gate");
+    let fixture_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vad/speech.wav");
+    let wav = read_wav(
+        std::fs::File::open(&fixture_path)
+            .unwrap_or_else(|err| panic!("open {}: {err}", fixture_path.display())),
+    )
+    .expect("read speaker fixture");
+    let playback_samples = record_fixture_to_frames(&wav)
+        .expect("convert speaker fixture")
+        .into_iter()
+        .flat_map(|frame| frame.samples)
+        .collect::<Vec<_>>();
+
+    let (mut playback, reference) = NativePlayback::open_with_echo().expect("speakers with AEC");
+    let mut capture = NativeCapture::open_with_echo(reference).expect("microphone with AEC");
+    let cancel = Cancel::new();
+    let playing = Arc::new(AtomicBool::new(true));
+    let playing_worker = Arc::clone(&playing);
+    let playback_cancel = cancel.clone();
+    let playback_worker = thread::spawn(move || {
+        let mut index = 0_u32;
+        while playing_worker.load(Ordering::SeqCst) {
+            let result = playback.play(
+                SynthesizedAudio {
+                    turn: TurnId(0),
+                    generation: GenerationId(0),
+                    index,
+                    samples: playback_samples.clone(),
+                    is_last: true,
+                },
+                &playback_cancel,
+            );
+            if let Err(err) = result {
+                if playback_cancel.is_shutdown() {
+                    break;
+                }
+                panic!("continuous agent playback: {err}");
+            }
+            index = index.wrapping_add(1);
+        }
+    });
+
+    let started = Instant::now();
+    let measurement_start = started + CALIBRATION;
+    let deadline = measurement_start + MEASUREMENT;
+    let mut measuring = false;
+    let mut false_starts = 0_u64;
+    while Instant::now() < deadline {
+        let Some(frame) = capture.next_frame(&cancel).expect("AEC microphone frame") else {
+            panic!("microphone ended during hardware AEC gate");
+        };
+        if !measuring && Instant::now() >= measurement_start {
+            vad.reset();
+            measuring = true;
+            eprintln!("AEC calibrated; starting 1-minute false-turn measurement");
+        }
+        if measuring {
+            false_starts += vad
+                .push_frame(frame)
+                .expect("Silero on AEC capture")
+                .iter()
+                .filter(|event| matches!(event, VadEvent::SpeechStart { .. }))
+                .count() as u64;
+        }
+    }
+
+    playing.store(false, Ordering::SeqCst);
+    cancel.shutdown();
+    playback_worker.join().expect("playback worker");
+    assert_eq!(
+        false_starts, 0,
+        "agent playback caused {false_starts} false Silero turns"
+    );
 }
