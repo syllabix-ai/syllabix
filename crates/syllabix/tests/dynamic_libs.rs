@@ -1,7 +1,7 @@
 // Linux-only: the launch merge gate requires no undeclared dynamic runtime
-// dependencies on the shipped executable. Native links (ONNX, whisper.cpp)
-// must be static or listed here. ONNX Runtime requires the declared C++
-// standard library; whisper.cpp is statically linked.
+// dependencies on the shipped executable. Native links (ONNX, one ggml,
+// whisper.cpp, llama.cpp) must be static or listed here. ONNX Runtime
+// requires the declared C++ standard library.
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -59,6 +59,24 @@ mod linux {
         assert!(
             unexpected.is_empty(),
             "undeclared dynamic dependencies {unexpected:?}\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn debug_binary_has_one_ggml() {
+        let bin = cargo_bin("syllabix");
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/check-one-ggml.sh");
+        let output = Command::new("bash")
+            .arg(&script)
+            .arg(&bin)
+            .output()
+            .expect("check-one-ggml.sh");
+        assert!(
+            output.status.success(),
+            "one-ggml check failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }
