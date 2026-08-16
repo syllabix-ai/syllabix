@@ -447,4 +447,138 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].is_last);
     }
+
+    #[test]
+    fn stale_generation_resets_and_cancels() {
+        let mut tts = KokoroTts::with_engine(Box::new(ScriptedEngine::new()));
+        tts.synthesize_chunk(&token("Hello. ", 0, false), &Cancel::new())
+            .unwrap();
+        let cancel = Cancel::new();
+        cancel.cancel_generation();
+        let err = tts
+            .synthesize_chunk(&token("World.", 1, true), &cancel)
+            .unwrap_err();
+        assert!(matches!(err, Error::Cancelled));
+    }
+
+    #[test]
+    fn name_matches_v0_and_clone_drops_buffer() {
+        let mut tts = KokoroTts::with_engine(Box::new(ScriptedEngine::new()));
+        assert_eq!(tts.name(), "kokoro");
+        tts.synthesize_chunk(&token("Hello ", 0, false), &Cancel::new())
+            .unwrap();
+        let mut cloned = tts.clone();
+        let chunks = cloned
+            .synthesize_chunk(&token("world.", 0, true), &Cancel::new())
+            .unwrap();
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn missing_onnx_path_is_a_provider_error() {
+        let err = match KokoroTts::from_paths("/no/such/kokoro.onnx", "/no/such/af_heart.bin") {
+            Err(err) => err,
+            Ok(_) => panic!("missing onnx path should fail"),
+        };
+        assert!(matches!(
+            err,
+            Error::Provider {
+                provider: "kokoro",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn load_voice_rejects_wrong_size() {
+        let dir = std::env::temp_dir().join(format!(
+            "syllabix-voice-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("af_heart.bin");
+        std::fs::write(&path, [0u8; 16]).unwrap();
+        let err = load_voice(&path).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Provider {
+                provider: "kokoro",
+                ..
+            }
+        ));
+        assert!(err.to_string().contains("bytes"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_voice_reads_fixed_style_table() {
+        let dir = std::env::temp_dir().join(format!(
+            "syllabix-voice-ok-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("af_heart.bin");
+        std::fs::write(&path, vec![0u8; VOICE_BYTES]).unwrap();
+        let rows = load_voice(&path).unwrap();
+        assert_eq!(rows.len(), VOICE_ROWS);
+        assert_eq!(rows[0].len(), STYLE_DIM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn phoneme_windows_split_overlong_sentences() {
+        let windows = phoneme_windows(&"hello ".repeat(400)).unwrap();
+        assert!(
+            windows.len() > 1,
+            "expected word-level split, got {windows:?}"
+        );
+        assert!(windows.iter().all(|w| !w.is_empty()));
+    }
+
+    #[test]
+    fn resample_24k_to_16k_keeps_energy() {
+        let native: Vec<f32> = (0..240).map(|i| (i as f32 / 24.0).sin()).collect();
+        let pcm = resample_to_v0(&native);
+        assert!(!pcm.is_empty());
+        assert!(pcm.iter().any(|s| *s != 0));
+    }
+
+    #[test]
+    fn from_cache_requires_kokoro_assets() {
+        let root = std::env::temp_dir().join(format!(
+            "syllabix-tts-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let cache = crate::models::ModelCache::new(
+            root,
+            crate::models::Manifest {
+                version: 1,
+                assets: vec![],
+            },
+        );
+        let err = match KokoroTts::from_cache(
+            &cache,
+            &crate::models::BlockedFetcher::default(),
+            &mut crate::models::NoProgress,
+            &Cancel::new(),
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("empty manifest should fail"),
+        };
+        assert!(matches!(err, Error::ModelCache { .. }));
+        assert!(err.to_string().contains("kokoro"));
+    }
 }

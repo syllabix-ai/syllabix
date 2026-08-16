@@ -727,4 +727,35 @@ mod tests {
     fn six_turns_config_stops_after_six() {
         assert_eq!(LoopConfig::six_turns().mode, LoopMode::StopAfterTurns(6));
     }
+
+    #[test]
+    fn shutdown_before_capture_exits_without_turns() {
+        let cancel = Cancel::new();
+        cancel.shutdown();
+        let report = run_loop(
+            LoopConfig {
+                defaults: BuiltinDefaults::v0(),
+                mode: LoopMode::UntilInputEnds,
+            },
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: FakeStt,
+                llm: FakeLlm::new(),
+                tts: FakeTts,
+                sink: CollectingSink::default(),
+            },
+            scripted_frames(3, 2, 1),
+            cancel,
+        )
+        .expect("cancelled loop");
+        assert!(report.cancelled);
+        assert_eq!(report.tasks_still_running, 0);
+        assert_eq!(report.tasks_exited, 6);
+        assert!(report.turns.is_empty());
+    }
+
+    #[test]
+    fn default_loop_config_runs_until_input_ends() {
+        assert_eq!(LoopConfig::default().mode, LoopMode::UntilInputEnds);
+    }
 }

@@ -447,6 +447,57 @@ mod tests {
     }
 
     #[test]
+    fn empty_engine_still_emits_a_last_token() {
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec![],
+            delay: Duration::ZERO,
+            last_messages: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let mut chunks = Vec::new();
+        llm.generate(&[], &user(0, "hi"), &Cancel::new(), &mut |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].is_last);
+        assert!(chunks[0].text.is_empty());
+    }
+
+    #[test]
+    fn stale_generation_during_callback_cancels() {
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["a".into(), "b".into()],
+            delay: Duration::ZERO,
+            last_messages: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let cancel = Cancel::new();
+        let err = llm.generate(&[], &user(0, "hi"), &cancel, &mut |chunk| {
+            if chunk.index == 0 {
+                cancel.cancel_generation();
+            }
+            Ok(())
+        });
+        assert!(matches!(err, Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn clone_shares_call_log() {
+        let llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["ok".into()],
+            delay: Duration::ZERO,
+            last_messages: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let log = llm.call_log();
+        let mut cloned = llm.clone();
+        cloned
+            .generate(&[], &user(0, "ping"), &Cancel::new(), &mut |_| Ok(()))
+            .unwrap();
+        assert_eq!(log.lock().unwrap().len(), 1);
+        assert_eq!(log.lock().unwrap()[0].user_text, "ping");
+    }
+
+    #[test]
     fn from_cache_requires_llama_asset() {
         let root = std::env::temp_dir().join(format!(
             "syllabix-llm-missing-{}-{}",
