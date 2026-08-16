@@ -54,13 +54,13 @@ cargo run -p syllabix -- run
 cargo test -p syllabix-core --test audio_io hardware_record_and_play_if_devices_exist -- --ignored --nocapture
 ```
 
-PR 17's echo gate needs a quiet laptop with its built-in microphone and speakers selected. Do not wear headphones or speak during this command. It allows 10 seconds for automatic calibration, then plays the versioned speech fixture continuously for 1 minute and requires Silero to detect zero false user turns:
+PR 18's echo gate needs a quiet laptop with its built-in microphone and speakers selected. Do not wear headphones or speak during this command. It allows 10 seconds for automatic calibration, then plays the versioned speech fixture continuously for 1 minute and requires Silero to detect zero false user turns:
 
 ```bash
 cargo test -p syllabix-core --test audio_io hardware_aec_1_minute_playback_has_zero_false_turns -- --ignored --exact --nocapture
 ```
 
-The microphone remains open throughout the test. Muting capture during playback does not pass this gate.
+The microphone remains open throughout the test. Muting capture during playback does not pass this gate. The test writes `render.wav`, `capture.wav`, `clean.wav`, and `sidecar.json` to `$SYLLABIX_AEC_DEBUG_DIR` or `target/aec-debug`.
 
 ## License
 

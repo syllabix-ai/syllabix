@@ -18,7 +18,7 @@ pub use convert::{
 pub use devices::{
     input_privacy_hint, select_input, select_output, DeviceChoice, DeviceInfo, DeviceInventory,
 };
-pub use echo::{EchoCalibration, EchoController, EchoReference, AEC_FRAME_SAMPLES};
+pub use echo::{EchoCalibration, EchoController, EchoRecording, EchoReference, AEC_FRAME_SAMPLES};
 pub use fixture::{
     play_fixture_to_device_pcm, record_fixture_to_frames, DrainStats, DrainingPlayback,
     FixtureCapture, FixturePlayback,
