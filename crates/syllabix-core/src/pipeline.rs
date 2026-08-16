@@ -2,10 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::cancel::Cancel;
 use crate::defaults::{BuiltinDefaults, QueueCaps};
@@ -14,7 +14,7 @@ use crate::providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 use crate::queue::{bounded, BoundedSender, QueueReport};
 use crate::types::{
     AudioFrame, CompletedTurn, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId,
-    Utterance, VadEvent,
+    TurnTimings, Utterance, VadEvent,
 };
 
 const POLL: Duration = Duration::from_millis(5);
@@ -28,6 +28,34 @@ pub enum LoopMode {
     StopAfterTurns(usize),
 }
 
+/// Live transcript and latency events for the `run` TUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoopEvent {
+    /// User STT text for a turn.
+    User {
+        /// Turn id.
+        turn: TurnId,
+        /// Transcript.
+        text: String,
+    },
+    /// Assistant token text (delta).
+    Assistant {
+        /// Turn id.
+        turn: TurnId,
+        /// Token piece.
+        text: String,
+        /// Last token of the generation.
+        is_last: bool,
+    },
+    /// Turn finished playback; clocks for the TUI footer.
+    Timings {
+        /// Turn id.
+        turn: TurnId,
+        /// STT / TTFT / TTFB / total.
+        timings: TurnTimings,
+    },
+}
+
 /// Configuration for one in-memory run.
 #[derive(Debug, Clone)]
 pub struct LoopConfig {
@@ -35,6 +63,8 @@ pub struct LoopConfig {
     pub defaults: BuiltinDefaults,
     /// Stop condition.
     pub mode: LoopMode,
+    /// Optional TUI / log subscriber.
+    pub events: Option<Sender<LoopEvent>>,
 }
 
 impl LoopConfig {
@@ -43,6 +73,7 @@ impl LoopConfig {
         Self {
             defaults: BuiltinDefaults::v0(),
             mode: LoopMode::StopAfterTurns(30),
+            events: None,
         }
     }
 
@@ -51,6 +82,7 @@ impl LoopConfig {
         Self {
             defaults: BuiltinDefaults::v0(),
             mode: LoopMode::StopAfterTurns(6),
+            events: None,
         }
     }
 }
@@ -60,6 +92,7 @@ impl Default for LoopConfig {
         Self {
             defaults: BuiltinDefaults::v0(),
             mode: LoopMode::UntilInputEnds,
+            events: None,
         }
     }
 }
@@ -88,6 +121,12 @@ struct TurnAcc {
     audio_chunks: usize,
     text_done: bool,
     audio_done: bool,
+    utterance_at: Option<Instant>,
+    stt_at: Option<Instant>,
+    llm_at: Option<Instant>,
+    first_token_at: Option<Instant>,
+    first_audio_at: Option<Instant>,
+    last_audio_at: Option<Instant>,
 }
 
 struct Shared {
@@ -96,17 +135,25 @@ struct Shared {
     fail: Mutex<Option<Error>>,
     completed: AtomicUsize,
     skipped: AtomicUsize,
+    events: Option<Sender<LoopEvent>>,
 }
 
 impl Shared {
-    fn new() -> Arc<Self> {
+    fn new(events: Option<Sender<LoopEvent>>) -> Arc<Self> {
         Arc::new(Self {
             turns: Mutex::new(BTreeMap::new()),
             live_tasks: Arc::new(AtomicUsize::new(0)),
             fail: Mutex::new(None),
             completed: AtomicUsize::new(0),
             skipped: AtomicUsize::new(0),
+            events,
         })
+    }
+
+    fn emit(&self, event: LoopEvent) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(event);
+        }
     }
 
     fn note_skip(&self) {
@@ -125,29 +172,73 @@ impl Shared {
         self.fail.lock().expect("fail mutex").take()
     }
 
-    fn note_user(&self, turn: TurnId, text: String) {
+    fn mark_utterance(&self, turn: TurnId, at: Instant) {
         let mut map = self.turns.lock().expect("turn accumulator");
         let entry = map.entry(turn).or_insert_with(TurnAcc::new);
-        entry.user_text = Some(text);
-    }
-
-    fn note_token(&self, chunk: &TokenChunk) {
-        let mut map = self.turns.lock().expect("turn accumulator");
-        let entry = map.entry(chunk.turn).or_insert_with(TurnAcc::new);
-        entry.assistant_text.push_str(&chunk.text);
-        entry.token_count += 1;
-        if chunk.is_last {
-            entry.text_done = true;
+        if entry.utterance_at.is_none() {
+            entry.utterance_at = Some(at);
         }
     }
 
-    fn note_audio(&self, chunk: &SynthesizedAudio) -> usize {
+    fn note_user(&self, turn: TurnId, text: String, at: Instant) {
+        {
+            let mut map = self.turns.lock().expect("turn accumulator");
+            let entry = map.entry(turn).or_insert_with(TurnAcc::new);
+            entry.user_text = Some(text.clone());
+            entry.stt_at = Some(at);
+        }
+        self.emit(LoopEvent::User { turn, text });
+    }
+
+    fn mark_llm_start(&self, turn: TurnId, at: Instant) {
         let mut map = self.turns.lock().expect("turn accumulator");
-        let entry = map.entry(chunk.turn).or_insert_with(TurnAcc::new);
-        entry.audio_chunks += 1;
-        if chunk.is_last {
-            entry.audio_done = true;
-            drop(map);
+        let entry = map.entry(turn).or_insert_with(TurnAcc::new);
+        if entry.llm_at.is_none() {
+            entry.llm_at = Some(at);
+        }
+    }
+
+    fn note_token(&self, chunk: &TokenChunk, at: Instant) {
+        {
+            let mut map = self.turns.lock().expect("turn accumulator");
+            let entry = map.entry(chunk.turn).or_insert_with(TurnAcc::new);
+            entry.assistant_text.push_str(&chunk.text);
+            entry.token_count += 1;
+            if entry.first_token_at.is_none() {
+                entry.first_token_at = Some(at);
+            }
+            if chunk.is_last {
+                entry.text_done = true;
+            }
+        }
+        self.emit(LoopEvent::Assistant {
+            turn: chunk.turn,
+            text: chunk.text.clone(),
+            is_last: chunk.is_last,
+        });
+    }
+
+    fn note_audio(&self, chunk: &SynthesizedAudio, at: Instant) -> usize {
+        let timings = {
+            let mut map = self.turns.lock().expect("turn accumulator");
+            let entry = map.entry(chunk.turn).or_insert_with(TurnAcc::new);
+            entry.audio_chunks += 1;
+            if entry.first_audio_at.is_none() {
+                entry.first_audio_at = Some(at);
+            }
+            if chunk.is_last {
+                entry.audio_done = true;
+                entry.last_audio_at = Some(at);
+                entry.timings()
+            } else {
+                None
+            }
+        };
+        if let Some(timings) = timings {
+            self.emit(LoopEvent::Timings {
+                turn: chunk.turn,
+                timings,
+            });
             return self.completed.fetch_add(1, Ordering::SeqCst) + 1;
         }
         self.completed.load(Ordering::SeqCst)
@@ -163,6 +254,7 @@ impl Shared {
                 assistant_text: acc.assistant_text.clone(),
                 token_count: acc.token_count,
                 audio_chunks: acc.audio_chunks,
+                timings: acc.timings().unwrap_or_default(),
             })
             .collect()
     }
@@ -177,7 +269,28 @@ impl TurnAcc {
             audio_chunks: 0,
             text_done: false,
             audio_done: false,
+            utterance_at: None,
+            stt_at: None,
+            llm_at: None,
+            first_token_at: None,
+            first_audio_at: None,
+            last_audio_at: None,
         }
+    }
+
+    fn timings(&self) -> Option<TurnTimings> {
+        let t0 = self.utterance_at?;
+        let stt_at = self.stt_at.unwrap_or(t0);
+        let llm_at = self.llm_at.unwrap_or(stt_at);
+        let first_token = self.first_token_at.unwrap_or(llm_at);
+        let first_audio = self.first_audio_at.unwrap_or(first_token);
+        let last_audio = self.last_audio_at.unwrap_or(first_audio);
+        Some(TurnTimings {
+            stt: stt_at.saturating_duration_since(t0),
+            ttft: first_token.saturating_duration_since(llm_at),
+            ttfb: first_audio.saturating_duration_since(llm_at),
+            total: last_audio.saturating_duration_since(t0),
+        })
     }
 }
 
@@ -290,7 +403,7 @@ where
     let (tok_tx, tok_rx, tok_stats) = bounded("tokens", caps.tokens);
     let (aud_tx, aud_rx, aud_stats) = bounded("audio", caps.audio);
 
-    let shared = Shared::new();
+    let shared = Shared::new(config.events.clone());
     let mut joins: Vec<JoinHandle<()>> = Vec::new();
 
     // Capture → VAD
@@ -509,24 +622,27 @@ fn stt_loop<S: Stt>(
 ) {
     loop {
         match rx.recv_cancellable(cancel) {
-            Ok(Some(utterance)) => match stt.transcribe(&utterance, cancel) {
-                Ok(transcript) => {
-                    shared.note_user(transcript.turn, transcript.text.clone());
-                    ignore_cancel(tx.send_cancellable(transcript, cancel), shared, cancel);
-                }
-                Err(Error::Cancelled) => {
-                    if cancel.is_shutdown() {
+            Ok(Some(utterance)) => {
+                shared.mark_utterance(utterance.turn, Instant::now());
+                match stt.transcribe(&utterance, cancel) {
+                    Ok(transcript) => {
+                        shared.note_user(transcript.turn, transcript.text.clone(), Instant::now());
+                        ignore_cancel(tx.send_cancellable(transcript, cancel), shared, cancel);
+                    }
+                    Err(Error::Cancelled) => {
+                        if cancel.is_shutdown() {
+                            return;
+                        }
+                    }
+                    Err(err) if err.is_turn_recoverable() => {
+                        shared.note_skip();
+                    }
+                    Err(err) => {
+                        shared.fail(err, cancel);
                         return;
                     }
                 }
-                Err(err) if err.is_turn_recoverable() => {
-                    shared.note_skip();
-                }
-                Err(err) => {
-                    shared.fail(err, cancel);
-                    return;
-                }
-            },
+            }
             Ok(None) => return,
             Err(Error::Cancelled) => return,
             Err(err) => {
@@ -549,12 +665,13 @@ fn llm_loop<L: Llm>(
         match rx.recv_cancellable(cancel) {
             Ok(Some(user)) => {
                 let mut assistant = String::new();
+                shared.mark_llm_start(user.turn, Instant::now());
                 let gen_result = llm.generate(&history, &user, cancel, &mut |chunk| {
                     if cancel.is_stale(chunk.generation) {
                         return Err(Error::Cancelled);
                     }
                     assistant.push_str(&chunk.text);
-                    shared.note_token(&chunk);
+                    shared.note_token(&chunk, Instant::now());
                     tx.send_cancellable(chunk, cancel)
                 });
                 match gen_result {
@@ -648,7 +765,7 @@ fn sink_loop<K: AudioSink>(
                 let is_last = audio.is_last;
                 match sink.play(audio.clone(), cancel) {
                     Ok(()) => {
-                        let completed = shared.note_audio(&audio);
+                        let completed = shared.note_audio(&audio, Instant::now());
                         if is_last {
                             maybe_stop_after(mode, completed, cancel);
                         }
@@ -691,10 +808,7 @@ mod tests {
     fn run_turns(n: usize) -> LoopReport {
         let frames = scripted_frames(n, 2, 1);
         run_loop(
-            LoopConfig {
-                defaults: BuiltinDefaults::v0(),
-                mode: LoopMode::UntilInputEnds,
-            },
+            LoopConfig::default(),
             PipelineStages {
                 vad: FakeVad::new(),
                 stt: FakeStt,
@@ -717,10 +831,59 @@ mod tests {
         assert_eq!(report.turns[0].assistant_text, "echo:turn-000");
         assert!(report.turns[0].token_count > 0);
         assert_eq!(report.turns[0].token_count, report.turns[0].audio_chunks);
+        let timings = report.turns[0].timings;
+        assert!(timings.total >= timings.stt);
+        assert!(timings.total >= timings.ttft);
+        assert!(timings.total >= timings.ttfb);
         assert_eq!(report.tasks_exited, 6);
         assert_eq!(report.tasks_still_running, 0);
         assert_eq!(report.skipped_turns, 0);
         assert!(report.queues.within_capacity());
+    }
+
+    #[test]
+    fn loop_emits_user_assistant_and_timing_events() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let report = run_loop(
+            LoopConfig {
+                events: Some(tx),
+                ..LoopConfig::default()
+            },
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: FakeStt,
+                llm: FakeLlm::new(),
+                tts: FakeTts,
+                sink: CollectingSink::default(),
+            },
+            scripted_frames(1, 2, 1),
+            Cancel::new(),
+        )
+        .expect("loop");
+        assert_eq!(report.turns.len(), 1);
+        let events: Vec<LoopEvent> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                LoopEvent::User {
+                    text,
+                    ..
+                } if text == "turn-000"
+            )),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LoopEvent::Assistant { .. })),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LoopEvent::Timings { .. })),
+            "{events:?}"
+        );
     }
 
     #[test]
@@ -733,10 +896,7 @@ mod tests {
         let cancel = Cancel::new();
         cancel.shutdown();
         let report = run_loop(
-            LoopConfig {
-                defaults: BuiltinDefaults::v0(),
-                mode: LoopMode::UntilInputEnds,
-            },
+            LoopConfig::default(),
             PipelineStages {
                 vad: FakeVad::new(),
                 stt: FakeStt,

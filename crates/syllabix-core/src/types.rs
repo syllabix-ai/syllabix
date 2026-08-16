@@ -1,6 +1,7 @@
 //! Audio-frame, utterance, transcript, token-stream, and synthesized-audio types.
 
 use crate::error::{Error, Result};
+use std::time::Duration;
 
 /// v0 capture/playback rate. Whisper, Silero, and Kokoro adapters share it.
 pub const DEFAULT_SAMPLE_RATE_HZ: u32 = 16_000;
@@ -169,6 +170,43 @@ pub struct CompletedTurn {
     pub token_count: usize,
     /// Number of TTS chunks played (including the last marker chunk).
     pub audio_chunks: usize,
+    /// Stage clocks for the TUI latency line.
+    pub timings: TurnTimings,
+}
+
+/// Per-turn clocks shown in the `run` TUI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TurnTimings {
+    /// Utterance ready → transcript.
+    pub stt: Duration,
+    /// LLM start → first token.
+    pub ttft: Duration,
+    /// LLM start → first audio chunk played.
+    pub ttfb: Duration,
+    /// Utterance ready → last audio chunk played.
+    pub total: Duration,
+}
+
+impl TurnTimings {
+    /// One-line TUI footer: `STT 120ms  TTFT 80ms  TTFB 210ms  total 1.10s`.
+    pub fn format_line(&self) -> String {
+        format!(
+            "STT {}  TTFT {}  TTFB {}  total {}",
+            format_duration(self.stt),
+            format_duration(self.ttft),
+            format_duration(self.ttfb),
+            format_duration(self.total)
+        )
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    let millis = duration.as_secs_f64() * 1000.0;
+    if millis < 1000.0 {
+        format!("{millis:.0}ms")
+    } else {
+        format!("{:.2}s", duration.as_secs_f64())
+    }
 }
 
 #[cfg(test)]
@@ -203,5 +241,17 @@ mod tests {
             ],
         };
         assert_eq!(utterance.pcm(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn timings_line_uses_ms_under_one_second() {
+        let line = TurnTimings {
+            stt: Duration::from_millis(12),
+            ttft: Duration::from_millis(80),
+            ttfb: Duration::from_millis(210),
+            total: Duration::from_millis(1100),
+        }
+        .format_line();
+        assert_eq!(line, "STT 12ms  TTFT 80ms  TTFB 210ms  total 1.10s");
     }
 }

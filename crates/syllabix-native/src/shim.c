@@ -77,6 +77,7 @@ int syllabix_whisper_decode(
     const float *pcm,
     int n_samples,
     int n_threads,
+    const char *language,
     bool (*abort_cb)(void *user),
     void *abort_user,
     char *out,
@@ -93,7 +94,7 @@ int syllabix_whisper_decode(
     struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     params.strategy = WHISPER_SAMPLING_GREEDY;
     params.greedy.best_of = 1;
-    params.language = "en";
+    params.language = language != NULL ? language : "en";
     params.translate = false;
     params.no_context = true;
     params.print_special = false;

@@ -64,15 +64,12 @@ pub(crate) fn native() -> MutexGuard<'static, Native> {
 #[test]
 fn native_weights_are_not_loaded_under_llvm_cov() {
     use syllabix_core::{
-        run_loop, scripted_frames, BuiltinDefaults, Cancel, CollectingSink, FakeLlm, FakeStt,
-        FakeTts, FakeVad, LoopConfig, LoopMode, PipelineStages,
+        run_loop, scripted_frames, Cancel, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad,
+        LoopConfig, PipelineStages,
     };
 
     let report = run_loop(
-        LoopConfig {
-            defaults: BuiltinDefaults::v0(),
-            mode: LoopMode::UntilInputEnds,
-        },
+        LoopConfig::default(),
         PipelineStages {
             vad: FakeVad::new(),
             stt: FakeStt,

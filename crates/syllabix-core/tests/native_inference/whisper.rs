@@ -14,9 +14,9 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames},
-    contains_words_in_order, run_loop, word_match_ratio, BlockedFetcher, BuiltinDefaults, Cancel,
-    CollectingSink, FakeLlm, FakeTts, FakeVad, LoopConfig, LoopMode, ModelCache, PipelineStages,
-    StderrProgress, Stt, TurnId, Utterance, LIBRISPEECH_MIN_WORD_MATCH,
+    contains_words_in_order, run_loop, word_match_ratio, BlockedFetcher, Cancel, CollectingSink,
+    FakeLlm, FakeTts, FakeVad, LoopConfig, ModelCache, PipelineStages, StderrProgress, Stt, TurnId,
+    Utterance, LIBRISPEECH_MIN_WORD_MATCH,
 };
 
 use crate::{hex, native};
@@ -172,10 +172,7 @@ fn whisper_replaces_fake_stt_in_the_loop() {
     let utterance = fixture_utterance(&JFK);
     let frames = utterance.frames.clone();
     let report = run_loop(
-        LoopConfig {
-            defaults: BuiltinDefaults::v0(),
-            mode: LoopMode::UntilInputEnds,
-        },
+        LoopConfig::default(),
         PipelineStages {
             vad: FakeVad::new(),
             stt: n.stt.clone(),
