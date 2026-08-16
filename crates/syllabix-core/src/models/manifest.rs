@@ -131,7 +131,7 @@ fn asset(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::defaults::SttModel;
+    use crate::defaults::{LlmModel, SttModel};
 
     #[test]
     fn v0_lists_every_launch_layer() {
@@ -152,6 +152,7 @@ mod tests {
         assert_eq!(m.asset("kokoro-voice").unwrap().layer, ModelLayer::Tts);
         assert!(m.asset("missing").is_none());
         assert_eq!(SttModel::Small.as_str(), "small");
+        assert_eq!(LlmModel::Llama32_1b.as_str(), "llama-3.2-1b");
         for asset in &m.assets {
             assert_eq!(asset.sha256.len(), 64);
             assert!(asset.size_bytes > 0);

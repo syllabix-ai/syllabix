@@ -1,7 +1,8 @@
 // Linux-only: the launch merge gate requires no undeclared dynamic runtime
-// dependencies on the shipped executable. Native links (ONNX, whisper.cpp)
-// must be static or listed here. ONNX Runtime requires the declared C++
-// standard library; whisper.cpp is statically linked.
+// dependencies on the shipped executable. Native links (ONNX, whisper.cpp,
+// llama.cpp) must be static or listed here. ONNX Runtime requires the
+// declared C++ standard library; whisper.cpp and llama.cpp are statically
+// linked without OpenMP.
 
 #[cfg(target_os = "linux")]
 mod linux {

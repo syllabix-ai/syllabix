@@ -2,6 +2,10 @@
 resolver = "2"
 members = ["crates/syllabix", "crates/syllabix-core"]
 
+# Isolate llama.cpp's ggml symbols so they do not collide with whisper.cpp.
+[patch.crates-io]
+llama-cpp-sys-2 = { path = "vendor/llama-cpp-sys-2" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -34,3 +38,7 @@ getrandom = "=0.2.17"
 # CPU-only whisper.cpp. GPU/Metal/CUDA stay off so the binary keeps the
 # declared dynamic-library set (libc, libstdc++, ALSA).
 whisper-rs = { version = "=0.15.1", default-features = false }
+# CPU-only llama.cpp. Default features pull OpenMP (`libgomp`); keep them off.
+# Metal is still auto-enabled by the crate on macOS Apple Silicon.
+llama-cpp-2 = { version = "=0.1.154", default-features = false }
+encoding_rs = "=0.8.35"

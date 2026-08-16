@@ -100,6 +100,22 @@ impl LlmProvider {
     }
 }
 
+/// llama.cpp GGUF id for v0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmModel {
+    /// Llama-3.2-1B-Instruct Q4_K_M.
+    Llama32_1b,
+}
+
+impl LlmModel {
+    /// Config / log / manifest id.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Llama32_1b => "llama-3.2-1b",
+        }
+    }
+}
+
 /// The only v0 TTS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsProvider {
@@ -192,6 +208,7 @@ mod tests {
         assert_eq!(VadProvider::Silero.as_str(), "silero");
         assert_eq!(SttProvider::WhisperCpp.as_str(), "whisper.cpp");
         assert_eq!(LlmProvider::LlamaCpp.as_str(), "llama.cpp");
+        assert_eq!(LlmModel::Llama32_1b.as_str(), "llama-3.2-1b");
         assert_eq!(TtsProvider::Kokoro.as_str(), "kokoro");
     }
 }
