@@ -1467,15 +1467,45 @@ fn isolate_ggml_symbols(out_dir: &Path, build_dir: &Path, target_os: &TargetOs) 
     }
     std::fs::write(&map_path, body).expect("write ggml isolate map");
     let objcopy = find_tool(&["llvm-objcopy", "objcopy", "llvm-objcopy.exe"]);
-    let ar = find_tool(&["llvm-ar", "ar", "llvm-ar.exe"]);
+    // Rewrite the complete archive. This also updates undefined references in
+    // llama's objects; extracting members by name is unsafe because CMake may
+    // emit duplicate member names such as `llama.cpp.o`.
     for archive in &archives {
-        rewrite_archive_members(archive, &ar, &objcopy, &map_path);
+        let status = Command::new(&objcopy)
+            .arg(format!("--redefine-syms={}", map_path.display()))
+            .arg(archive)
+            .status()
+            .unwrap_or_else(|err| panic!("run {objcopy} on {}: {err}", archive.display()));
+        assert!(
+            status.success(),
+            "{objcopy} --redefine-syms failed on {}",
+            archive.display()
+        );
+    }
+    // Cargo consumes CMake's installed archives from this directory. Apply the
+    // map there explicitly as well, rather than relying on CMake's auxiliary
+    // build-tree copies being selected by the archive scan above.
+    for entry in glob(out_dir.join("lib").join("*.a").to_str().unwrap())
+        .expect("glob installed llama static archives")
+    {
+        let archive = entry.expect("read installed llama static archive");
+        let status = Command::new(&objcopy)
+            .arg(format!("--redefine-syms={}", map_path.display()))
+            .arg(&archive)
+            .status()
+            .unwrap_or_else(|err| panic!("run {objcopy} on {}: {err}", archive.display()));
+        assert!(
+            status.success(),
+            "{objcopy} --redefine-syms failed on {}",
+            archive.display()
+        );
     }
     // CMake also leaves copies under `build/`. Drop them so rustc cannot
     // pick an archive whose ggml symbols were never rewritten.
     let _ = std::fs::remove_dir_all(out_dir.join("build"));
 }
 
+#[allow(dead_code)]
 fn rewrite_archive_members(archive: &Path, ar: &str, objcopy: &str, map_path: &Path) {
     let listing = Command::new(ar)
         .arg("t")
