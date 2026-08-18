@@ -12,6 +12,7 @@ use crate::defaults::{BuiltinDefaults, QueueCaps};
 use crate::error::{Error, Result};
 use crate::providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 use crate::queue::{bounded, BoundedSender, QueueReport};
+use crate::turn_debug::TurnDebug;
 use crate::types::{
     AudioFrame, CompletedTurn, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId,
     TurnTimings, Utterance, VadEvent,
@@ -65,6 +66,8 @@ pub struct LoopConfig {
     pub mode: LoopMode,
     /// Optional TUI / log subscriber.
     pub events: Option<Sender<LoopEvent>>,
+    /// Opt-in per-turn WAV + sidecar writer. None means default `run` writes nothing.
+    pub turn_debug: Option<TurnDebug>,
 }
 
 impl LoopConfig {
@@ -74,6 +77,7 @@ impl LoopConfig {
             defaults: BuiltinDefaults::v0(),
             mode: LoopMode::StopAfterTurns(30),
             events: None,
+            turn_debug: None,
         }
     }
 
@@ -83,6 +87,7 @@ impl LoopConfig {
             defaults: BuiltinDefaults::v0(),
             mode: LoopMode::StopAfterTurns(6),
             events: None,
+            turn_debug: None,
         }
     }
 }
@@ -93,6 +98,7 @@ impl Default for LoopConfig {
             defaults: BuiltinDefaults::v0(),
             mode: LoopMode::UntilInputEnds,
             events: None,
+            turn_debug: None,
         }
     }
 }
@@ -136,10 +142,11 @@ struct Shared {
     completed: AtomicUsize,
     skipped: AtomicUsize,
     events: Option<Sender<LoopEvent>>,
+    turn_debug: Option<TurnDebug>,
 }
 
 impl Shared {
-    fn new(events: Option<Sender<LoopEvent>>) -> Arc<Self> {
+    fn new(events: Option<Sender<LoopEvent>>, turn_debug: Option<TurnDebug>) -> Arc<Self> {
         Arc::new(Self {
             turns: Mutex::new(BTreeMap::new()),
             live_tasks: Arc::new(AtomicUsize::new(0)),
@@ -147,6 +154,7 @@ impl Shared {
             completed: AtomicUsize::new(0),
             skipped: AtomicUsize::new(0),
             events,
+            turn_debug,
         })
     }
 
@@ -156,8 +164,13 @@ impl Shared {
         }
     }
 
-    fn note_skip(&self) {
+    fn note_skip(&self, turn: TurnId, cancel: &Cancel) {
         self.skipped.fetch_add(1, Ordering::SeqCst);
+        if let Some(debug) = &self.turn_debug {
+            if let Err(err) = debug.skip(turn) {
+                self.fail(err, cancel);
+            }
+        }
     }
 
     fn fail(&self, err: Error, cancel: &Cancel) {
@@ -187,6 +200,9 @@ impl Shared {
             entry.user_text = Some(text.clone());
             entry.stt_at = Some(at);
         }
+        if let Some(debug) = &self.turn_debug {
+            debug.note_stt(turn, &text);
+        }
         self.emit(LoopEvent::User { turn, text });
     }
 
@@ -210,6 +226,11 @@ impl Shared {
             if chunk.is_last {
                 entry.text_done = true;
             }
+            if chunk.is_last {
+                if let Some(debug) = &self.turn_debug {
+                    debug.note_llm(chunk.turn, entry.assistant_text.clone());
+                }
+            }
         }
         self.emit(LoopEvent::Assistant {
             turn: chunk.turn,
@@ -218,7 +239,10 @@ impl Shared {
         });
     }
 
-    fn note_audio(&self, chunk: &SynthesizedAudio, at: Instant) -> usize {
+    fn note_audio(&self, chunk: &SynthesizedAudio, at: Instant, cancel: &Cancel) -> usize {
+        if let Some(debug) = &self.turn_debug {
+            debug.note_tts(chunk.turn, &chunk.samples);
+        }
         let timings = {
             let mut map = self.turns.lock().expect("turn accumulator");
             let entry = map.entry(chunk.turn).or_insert_with(TurnAcc::new);
@@ -235,6 +259,11 @@ impl Shared {
             }
         };
         if let Some(timings) = timings {
+            if let Some(debug) = &self.turn_debug {
+                if let Err(err) = debug.complete(chunk.turn, timings) {
+                    self.fail(err, cancel);
+                }
+            }
             self.emit(LoopEvent::Timings {
                 turn: chunk.turn,
                 timings,
@@ -403,7 +432,7 @@ where
     let (tok_tx, tok_rx, tok_stats) = bounded("tokens", caps.tokens);
     let (aud_tx, aud_rx, aud_stats) = bounded("audio", caps.audio);
 
-    let shared = Shared::new(config.events.clone());
+    let shared = Shared::new(config.events.clone(), config.turn_debug.clone());
     let mut joins: Vec<JoinHandle<()>> = Vec::new();
 
     // Capture → VAD
@@ -494,6 +523,9 @@ where
             other => return Err(other),
         }
     }
+    if let Some(debug) = &config.turn_debug {
+        debug.finish_open()?;
+    }
 
     Ok(LoopReport {
         turns: shared.finished_turns(),
@@ -577,33 +609,62 @@ fn vad_loop<V: Vad>(
     cancel: &Cancel,
     shared: &Shared,
 ) {
-    let emit =
-        |events: Vec<VadEvent>, tx: &BoundedSender<Utterance>, cancel: &Cancel| -> Result<()> {
-            for event in events {
-                if let VadEvent::SpeechEnd { utterance } = event {
-                    tx.send_cancellable(utterance, cancel)?;
+    let mut active: Option<TurnId> = None;
+    let emit = |events: Vec<VadEvent>,
+                tx: &BoundedSender<Utterance>,
+                cancel: &Cancel,
+                active: &mut Option<TurnId>,
+                frame: Option<&AudioFrame>|
+     -> Result<()> {
+        for event in &events {
+            if let VadEvent::SpeechStart { turn } = event {
+                *active = Some(*turn);
+                if let Some(debug) = &shared.turn_debug {
+                    debug.start_turn(*turn);
                 }
             }
-            Ok(())
-        };
+        }
+        if let (Some(debug), Some(frame), Some(turn)) = (&shared.turn_debug, frame, *active) {
+            debug.note_frame(turn, &frame.samples, frame.capture_pcm.as_deref());
+        }
+        for event in events {
+            if let VadEvent::SpeechEnd { utterance } = event {
+                if let Some(debug) = &shared.turn_debug {
+                    debug.note_utterance(&utterance);
+                }
+                *active = None;
+                tx.send_cancellable(utterance, cancel)?;
+            }
+        }
+        Ok(())
+    };
 
     loop {
         if cancel.is_shutdown() {
             return;
         }
         match rx.recv_timeout(POLL) {
-            Ok(frame) => match vad.push_frame(frame) {
-                Ok(events) => ignore_cancel(emit(events, &tx, cancel), shared, cancel),
-                Err(Error::Cancelled) => return,
-                Err(err) => {
-                    shared.fail(err, cancel);
-                    return;
+            Ok(frame) => {
+                let tap = shared.turn_debug.as_ref().map(|_| frame.clone());
+                match vad.push_frame(frame) {
+                    Ok(events) => ignore_cancel(
+                        emit(events, &tx, cancel, &mut active, tap.as_ref()),
+                        shared,
+                        cancel,
+                    ),
+                    Err(Error::Cancelled) => return,
+                    Err(err) => {
+                        shared.fail(err, cancel);
+                        return;
+                    }
                 }
-            },
+            }
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => {
                 match vad.flush() {
-                    Ok(events) => ignore_cancel(emit(events, &tx, cancel), shared, cancel),
+                    Ok(events) => {
+                        ignore_cancel(emit(events, &tx, cancel, &mut active, None), shared, cancel)
+                    }
                     Err(Error::Cancelled) => {}
                     Err(err) => shared.fail(err, cancel),
                 }
@@ -635,7 +696,7 @@ fn stt_loop<S: Stt>(
                         }
                     }
                     Err(err) if err.is_turn_recoverable() => {
-                        shared.note_skip();
+                        shared.note_skip(utterance.turn, cancel);
                     }
                     Err(err) => {
                         shared.fail(err, cancel);
@@ -679,13 +740,16 @@ fn llm_loop<L: Llm>(
                         history.push(HistoryTurn { user, assistant });
                     }
                     Err(Error::Cancelled) => {
+                        if let Some(debug) = &shared.turn_debug {
+                            debug.note_llm(user.turn, assistant);
+                        }
                         if cancel.is_shutdown() {
                             return;
                         }
                         // Generation cancel: keep listening so the next user turn is preserved.
                     }
                     Err(err) if err.is_turn_recoverable() => {
-                        shared.note_skip();
+                        shared.note_skip(user.turn, cancel);
                     }
                     Err(err) => {
                         shared.fail(err, cancel);
@@ -731,7 +795,7 @@ fn tts_loop<T: Tts>(
                         }
                     }
                     Err(err) if err.is_turn_recoverable() => {
-                        shared.note_skip();
+                        shared.note_skip(token.turn, cancel);
                     }
                     Err(err) => {
                         shared.fail(err, cancel);
@@ -765,7 +829,7 @@ fn sink_loop<K: AudioSink>(
                 let is_last = audio.is_last;
                 match sink.play(audio.clone(), cancel) {
                     Ok(()) => {
-                        let completed = shared.note_audio(&audio, Instant::now());
+                        let completed = shared.note_audio(&audio, Instant::now(), cancel);
                         if is_last {
                             maybe_stop_after(mode, completed, cancel);
                         }

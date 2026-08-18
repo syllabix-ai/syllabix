@@ -10,6 +10,7 @@ This repository is the product. Founder docs live in [`syllabix-ai/syllabix_foun
 cargo run -p syllabix -- --help
 cargo run -p syllabix -- init     # optional syllabix.yaml
 cargo run -p syllabix -- run      # zero-config mic + speakers with full-duplex AEC
+cargo run -p syllabix -- run --turn-debug   # optional per-turn WAVs + sidecar
 ```
 
 ## Intended 3-minute path (Release binary not shipping yet)
@@ -26,7 +27,8 @@ GitHub Releases are not published yet. From this checkout, `cargo run -p syllabi
 
 | Command | Now | Launch |
 | --- | --- | --- |
-| `syllabix run` | Zero-config local mic/speaker conversation, full-duplex AEC, and TUI timings | Same; barge-in comes next |
+| `syllabix run` | Zero-config local mic/speaker conversation, full-duplex AEC, and TUI timings | Same; barge-in comes after turn debug |
+| `syllabix run --turn-debug [dir]` | Opt-in. Writes `capture.wav` / `clean.wav` / `utterance.wav` / `tts.wav` and `turn.json` per turn under `dir`, `$SYLLABIX_TURN_DEBUG_DIR`, or `target/turn-debug`. Default `run` writes nothing. | Same |
 | `syllabix init [dir]` | Optional `syllabix.yaml` scaffold | Same |
 
 There is no `serve`, `bench`, cloud provider, or API key in v0. `run` does not require yaml. If `syllabix.yaml` is present, it must name the v0 on-device stack and `language: en`.
@@ -61,6 +63,12 @@ cargo test -p syllabix-core --test audio_io hardware_aec_1_minute_playback_has_z
 ```
 
 The microphone remains open throughout the test. Muting capture during playback does not pass this gate. The test writes `render.wav`, `capture.wav`, `clean.wav`, and `sidecar.json` to `$SYLLABIX_AEC_DEBUG_DIR` or `target/aec-debug`.
+
+To dump a live conversation for diagnosis (listen to `utterance.wav` against STT text and `tts.wav` against the LLM reply):
+
+```bash
+cargo run -p syllabix --release -- run --turn-debug target/turn-debug
+```
 
 ## License
 

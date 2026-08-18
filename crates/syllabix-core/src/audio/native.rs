@@ -366,6 +366,8 @@ pub struct NativeCapture {
     echo_status: EchoCalibration,
     split: FrameSplitter,
     pending: Vec<AudioFrame>,
+    pcm_tap: bool,
+    capture_leftover: Vec<i16>,
     /// Selected device name.
     pub device_name: String,
     /// Device PCM layout before conversion.
@@ -394,6 +396,8 @@ impl NativeCapture {
             echo_status: EchoCalibration::WaitingForPlayback,
             split: FrameSplitter::new(),
             pending: Vec::new(),
+            pcm_tap: false,
+            capture_leftover: Vec::new(),
             device_name: opened.name,
             device_format: opened.device_format,
             ring: opened.ring,
@@ -404,6 +408,34 @@ impl NativeCapture {
     /// Live AEC controller, if this capture was opened with a speaker tap.
     pub fn echo_mut(&mut self) -> Option<&mut EchoController> {
         self.echo.as_mut()
+    }
+
+    /// Align pre-AEC PCM with each clean frame for `--turn-debug`.
+    pub fn enable_pcm_tap(&mut self) {
+        self.pcm_tap = true;
+        if let Some(echo) = &mut self.echo {
+            echo.enable_debug_tap();
+        }
+    }
+
+    fn attach_capture_pcm(
+        &mut self,
+        mut frames: Vec<AudioFrame>,
+        capture: &[i16],
+    ) -> Vec<AudioFrame> {
+        if !self.pcm_tap {
+            return frames;
+        }
+        self.capture_leftover.extend_from_slice(capture);
+        for frame in &mut frames {
+            let n = frame.samples.len();
+            if self.capture_leftover.len() >= n {
+                frame.capture_pcm = Some(self.capture_leftover.drain(..n).collect());
+            } else {
+                frame.capture_pcm = Some(frame.samples.clone());
+            }
+        }
+        frames
     }
 }
 
@@ -432,19 +464,36 @@ impl AudioCapture for NativeCapture {
                 return Ok(None);
             }
             let converted = self.conv.push(&buf[..n]);
-            let clean = if let Some(echo) = &mut self.echo {
+            let (clean, capture_i16) = if let Some(echo) = &mut self.echo {
                 let clean = echo.process_capture(&converted)?;
                 let status = echo.calibration();
                 if status != self.echo_status {
                     report_echo_status(status);
                     self.echo_status = status;
                 }
-                clean
+                let capture_i16 = if self.pcm_tap {
+                    let (pre, post) = echo.take_debug_tap();
+                    if pre.len() == post.len() && post.len() == clean.len() {
+                        f32_to_i16(&pre)
+                    } else {
+                        f32_to_i16(&clean)
+                    }
+                } else {
+                    Vec::new()
+                };
+                (clean, capture_i16)
             } else {
-                converted
+                let clean = converted;
+                let capture_i16 = if self.pcm_tap {
+                    f32_to_i16(&clean)
+                } else {
+                    Vec::new()
+                };
+                (clean, capture_i16)
             };
             let i16s = f32_to_i16(&clean);
-            self.pending = self.split.push(&i16s)?;
+            let frames = self.split.push(&i16s)?;
+            self.pending = self.attach_capture_pcm(frames, &capture_i16);
         }
     }
 }
@@ -686,6 +735,8 @@ mod tests {
             echo_status: EchoCalibration::WaitingForPlayback,
             split: FrameSplitter::new(),
             pending: Vec::new(),
+            pcm_tap: false,
+            capture_leftover: Vec::new(),
             device_name: "test microphone".into(),
             device_format,
         }
@@ -766,6 +817,7 @@ mod tests {
             .expect("frame");
         first.validate().expect("v0 frame");
         assert!(first.has_energy());
+        assert!(first.capture_pcm.is_none());
 
         capture.ring.close();
         let pending = capture
@@ -777,6 +829,17 @@ mod tests {
 
         cancel.shutdown();
         assert!(matches!(capture.next_frame(&cancel), Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn pcm_tap_duplicates_clean_as_capture_without_aec() {
+        let mut capture = test_capture();
+        capture.enable_pcm_tap();
+        let cancel = Cancel::new();
+        let samples = vec![0.5; 1_024];
+        assert_eq!(capture.ring.try_push_slice(&samples), samples.len());
+        let first = capture.next_frame(&cancel).expect("read").expect("frame");
+        assert_eq!(first.capture_pcm.as_deref(), Some(first.samples.as_slice()));
     }
 
     #[test]

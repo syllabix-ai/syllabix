@@ -520,6 +520,7 @@ mod tests {
                 sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
                 channels: DEFAULT_CHANNELS,
                 samples: vec![],
+                capture_pcm: None,
             }],
         };
         let err = stt.transcribe(&utterance, &Cancel::new()).unwrap_err();

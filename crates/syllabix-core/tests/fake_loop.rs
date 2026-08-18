@@ -4,9 +4,10 @@ use std::thread;
 use std::time::Duration;
 
 use syllabix_core::{
+    audio::{read_wav, PcmFormat},
     run_loop, scripted_frames, BuiltinDefaults, Cancel, CollectingSink, FailOnceLlm, FailOnceStt,
     FailOnceTts, FakeLlm, FakeStt, FakeTts, FakeVad, LoopConfig, LoopMode, PipelineStages,
-    QueueCaps, TurnId,
+    QueueCaps, TurnDebug, TurnId, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
 fn run_with(
@@ -20,6 +21,7 @@ fn run_with(
             defaults: BuiltinDefaults::v0(),
             mode,
             events: None,
+            turn_debug: None,
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -266,4 +268,177 @@ fn provider_error_in_tts_skips_the_turn_and_keeps_going() {
     assert!(report.skipped_turns >= 1);
     assert_eq!(report.turns.len(), 1);
     assert_eq!(report.turns[0].id, TurnId(1));
+}
+
+fn unique_debug_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "syllabix-fake-turn-debug-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+#[test]
+fn default_loop_writes_no_turn_debug_files() {
+    let dir = unique_debug_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let report = run_with(
+        scripted_frames(1, 2, 1),
+        FakeLlm::new(),
+        Cancel::new(),
+        LoopMode::UntilInputEnds,
+    );
+    assert_eq!(report.turns.len(), 1);
+    assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn turn_debug_one_turn_writes_wavs_and_does_not_change_reply() {
+    let dir = unique_debug_dir();
+    let debug = TurnDebug::open(&dir).unwrap();
+    let report = run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: Some(debug),
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm: FakeLlm::new(),
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(1, 2, 1),
+        Cancel::new(),
+    )
+    .expect("debug loop");
+    assert_eq!(report.turns.len(), 1);
+    assert_eq!(report.turns[0].user_text, "turn-000");
+    assert_eq!(report.turns[0].assistant_text, "echo:turn-000");
+
+    let turn_dir = dir.join("turn-000");
+    for name in [
+        "capture.wav",
+        "clean.wav",
+        "utterance.wav",
+        "tts.wav",
+        "turn.json",
+    ] {
+        assert!(turn_dir.join(name).is_file(), "missing {name}");
+    }
+    let capture = read_wav(std::io::Cursor::new(
+        std::fs::read(turn_dir.join("capture.wav")).unwrap(),
+    ))
+    .unwrap();
+    let clean = read_wav(std::io::Cursor::new(
+        std::fs::read(turn_dir.join("clean.wav")).unwrap(),
+    ))
+    .unwrap();
+    let utterance = read_wav(std::io::Cursor::new(
+        std::fs::read(turn_dir.join("utterance.wav")).unwrap(),
+    ))
+    .unwrap();
+    let tts = read_wav(std::io::Cursor::new(
+        std::fs::read(turn_dir.join("tts.wav")).unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(capture.format, PcmFormat::v0());
+    assert_eq!(clean.samples, capture.samples);
+    assert_eq!(capture.samples.len(), FRAME_SAMPLES * 3);
+    assert_eq!(utterance.samples.len(), FRAME_SAMPLES * 2);
+    assert!(utterance.samples.iter().all(|s| *s == 1));
+    let expected_tts: Vec<i16> = "echo:turn-000".bytes().map(i16::from).collect();
+    assert_eq!(tts.samples, expected_tts);
+    assert_eq!(tts.format.sample_rate_hz, DEFAULT_SAMPLE_RATE_HZ);
+    let sidecar = std::fs::read_to_string(turn_dir.join("turn.json")).unwrap();
+    assert!(sidecar.contains("\"outcome\": \"completed\""));
+    assert!(sidecar.contains("\"stt_text\": \"turn-000\""));
+    assert!(sidecar.contains("\"llm_text\": \"echo:turn-000\""));
+    assert!(sidecar.contains("\"tts_speak_text\": \"echo:turn-000\""));
+    assert!(sidecar.contains("\"capture_frames\": 3"));
+    assert!(sidecar.contains("\"utterance_frames\": 2"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn turn_debug_skipped_stt_still_writes() {
+    let dir = unique_debug_dir();
+    let debug = TurnDebug::open(&dir).unwrap();
+    let report = run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: Some(debug),
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FailOnceStt::default(),
+            llm: FakeLlm::new(),
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(2, 2, 1),
+        Cancel::new(),
+    )
+    .expect("skip debug");
+    assert!(report.skipped_turns >= 1);
+    let skipped = std::fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
+    assert!(skipped.contains("skipped"));
+    let completed = std::fs::read_to_string(dir.join("turn-001").join("turn.json")).unwrap();
+    assert!(completed.contains("completed"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn turn_debug_cancel_writes_partial_turn() {
+    let dir = unique_debug_dir();
+    let debug = TurnDebug::open(&dir).unwrap();
+    let llm = FakeLlm::with_delay(Duration::from_millis(20));
+    let calls = llm.call_log();
+    let cancel = Cancel::new();
+    let watcher = cancel.clone();
+    thread::spawn(move || loop {
+        if calls.lock().map(|c| c.len()).unwrap_or(0) >= 1 {
+            thread::sleep(Duration::from_millis(15));
+            watcher.cancel_generation();
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    });
+    let report = run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: Some(debug),
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm,
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(2, 2, 1),
+        cancel,
+    )
+    .expect("cancelled debug");
+    assert!(dir.join("turn-000").join("turn.json").is_file());
+    let first = std::fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
+    assert!(
+        first.contains("cancelled") || first.contains("completed"),
+        "{first}"
+    );
+    assert!(
+        report.turns.iter().any(|t| t.id.0 == 1),
+        "second turn must survive generation cancel"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }
