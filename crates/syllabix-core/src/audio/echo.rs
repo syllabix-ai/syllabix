@@ -103,6 +103,9 @@ pub struct EchoController {
     delay_applied: bool,
     estimated_delay_ms: Option<i32>,
     last_render_block: Vec<f32>,
+    tap_enabled: bool,
+    tap_capture: Vec<f32>,
+    tap_clean: Vec<f32>,
 }
 
 impl EchoController {
@@ -146,12 +149,28 @@ impl EchoController {
             delay_applied: false,
             estimated_delay_ms: None,
             last_render_block: vec![0.0; AEC_FRAME_SAMPLES],
+            tap_enabled: false,
+            tap_capture: Vec::new(),
+            tap_clean: Vec::new(),
         })
     }
 
     /// Keep 16 kHz render/capture/clean PCM for a debug dump.
     pub fn enable_recording(&mut self) {
         self.recording = true;
+    }
+
+    /// Record aligned pre-AEC / post-AEC blocks for `--turn-debug` without a session dump.
+    pub fn enable_debug_tap(&mut self) {
+        self.tap_enabled = true;
+    }
+
+    /// Drain capture/clean blocks produced since the last take. Lengths match.
+    pub fn take_debug_tap(&mut self) -> (Vec<f32>, Vec<f32>) {
+        (
+            std::mem::take(&mut self.tap_capture),
+            std::mem::take(&mut self.tap_clean),
+        )
     }
 
     /// Snapshot of recorded PCM and AEC diagnostics.
@@ -286,6 +305,10 @@ impl EchoController {
             self.rec_render.extend_from_slice(&self.last_render_block);
             self.rec_capture.extend_from_slice(&capture);
             self.rec_clean.extend_from_slice(&clean);
+        }
+        if self.tap_enabled {
+            self.tap_capture.extend_from_slice(&capture);
+            self.tap_clean.extend_from_slice(&clean);
         }
 
         if self.calibration == EchoCalibration::Calibrating
@@ -533,5 +556,20 @@ mod tests {
             (lag as i32 - delay as i32).abs() <= 2,
             "expected ~{delay} samples, got {lag}"
         );
+    }
+
+    #[test]
+    fn debug_tap_matches_processed_capture_and_clean() {
+        let (_ring, reference) = reference(PcmFormat::v0(), AEC_FRAME_SAMPLES * 4);
+        let mut echo = EchoController::new(reference).expect("echo");
+        echo.enable_debug_tap();
+        let input = speech_like_block(0);
+        let clean = echo.process_capture(&input).expect("clean");
+        let (pre, post) = echo.take_debug_tap();
+        assert_eq!(pre.len(), post.len());
+        assert_eq!(post, clean);
+        let (pre2, post2) = echo.take_debug_tap();
+        assert!(pre2.is_empty());
+        assert!(post2.is_empty());
     }
 }

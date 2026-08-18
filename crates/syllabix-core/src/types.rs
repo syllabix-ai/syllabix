@@ -31,6 +31,8 @@ pub struct AudioFrame {
     pub channels: u16,
     /// Interleaved PCM16 samples.
     pub samples: Vec<i16>,
+    /// Pre-AEC PCM for `--turn-debug`, same length as `samples` when present.
+    pub capture_pcm: Option<Vec<i16>>,
 }
 
 impl AudioFrame {
@@ -41,6 +43,7 @@ impl AudioFrame {
             sample_rate_hz,
             channels,
             samples,
+            capture_pcm: None,
         };
         frame.validate()?;
         Ok(frame)

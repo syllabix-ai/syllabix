@@ -4,12 +4,14 @@ use syllabix_core::{LoopEvent, TurnId};
 
 /// Rolling transcript shown in the TUI.
 #[derive(Debug, Default)]
+#[cfg_attr(coverage, allow(dead_code))]
 pub struct TranscriptUi {
     lines: Vec<String>,
     current_agent: Option<(TurnId, String)>,
     latency: String,
 }
 
+#[cfg_attr(coverage, allow(dead_code))]
 impl TranscriptUi {
     /// Apply one pipeline event.
     pub fn apply(&mut self, event: LoopEvent) {
@@ -98,12 +100,16 @@ mod live_terminal {
         }
     }
 
-    pub fn run_conversation_tui(config: AgentConfig, cancel: Cancel) -> Result<()> {
+    pub fn run_conversation_tui(
+        config: AgentConfig,
+        cancel: Cancel,
+        turn_debug: Option<syllabix_core::TurnDebug>,
+    ) -> Result<()> {
         let (event_tx, event_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let loop_cancel = cancel.clone();
         thread::spawn(move || {
-            let result = run_live(&config, loop_cancel, Some(event_tx));
+            let result = run_live(&config, loop_cancel, Some(event_tx), turn_debug);
             let _ = done_tx.send(result);
         });
 

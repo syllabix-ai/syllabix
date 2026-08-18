@@ -24,6 +24,7 @@ mod real;
 mod speech_text;
 mod stt;
 mod tts;
+mod turn_debug;
 mod types;
 mod vad;
 
@@ -61,6 +62,10 @@ pub use stt::{
 };
 pub use tts::{
     KokoroTts, KOKORO_ASSET, KOKORO_NATIVE_RATE_HZ, KOKORO_VOICE_ASSET, TTS_ASR_MIN_WORD_MATCH,
+};
+pub use turn_debug::{
+    prepare_turn_debug_dir, resolve_turn_debug_dir, TurnDebug, TurnOutcome, DEFAULT_TURN_DEBUG_DIR,
+    TURN_DEBUG_DIR_ENV,
 };
 pub use types::{
     AudioFrame, CompletedTurn, GenerationId, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript,

@@ -6,6 +6,7 @@ use crate::cancel::Cancel;
 use crate::config::AgentConfig;
 use crate::error::Result;
 use crate::pipeline::{LoopEvent, LoopReport};
+use crate::turn_debug::TurnDebug;
 
 /// Load weights, open default devices, and run until shutdown or capture ends.
 ///
@@ -15,8 +16,9 @@ pub fn run_live(
     config: &AgentConfig,
     cancel: Cancel,
     events: Option<Sender<LoopEvent>>,
+    turn_debug: Option<TurnDebug>,
 ) -> Result<LoopReport> {
-    run_live_inner(config, cancel, events)
+    run_live_inner(config, cancel, events, turn_debug)
 }
 
 #[cfg(not(coverage))]
@@ -24,6 +26,7 @@ fn run_live_inner(
     config: &AgentConfig,
     cancel: Cancel,
     events: Option<Sender<LoopEvent>>,
+    turn_debug: Option<TurnDebug>,
 ) -> Result<LoopReport> {
     use crate::audio::{NativeCapture, NativePlayback};
     use crate::models::{HttpFetcher, ModelCache, StderrProgress};
@@ -41,7 +44,10 @@ fn run_live_inner(
         &config.language,
     )?;
     let (sink, echo_reference) = NativePlayback::open_with_echo()?;
-    let capture = NativeCapture::open_with_echo(echo_reference)?;
+    let mut capture = NativeCapture::open_with_echo(echo_reference)?;
+    if turn_debug.is_some() {
+        capture.enable_pcm_tap();
+    }
     eprintln!(
         "mic: {}  speaker: {}  agent: {}",
         capture.device_name, sink.device_name, config.name
@@ -52,6 +58,7 @@ fn run_live_inner(
             defaults: BuiltinDefaults::v0(),
             mode: LoopMode::UntilInputEnds,
             events,
+            turn_debug,
         },
         PipelineStages {
             vad,
@@ -70,6 +77,7 @@ fn run_live_inner(
     config: &AgentConfig,
     cancel: Cancel,
     events: Option<Sender<LoopEvent>>,
+    turn_debug: Option<TurnDebug>,
 ) -> Result<LoopReport> {
     use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
     use crate::pipeline::{run_loop, LoopConfig, PipelineStages};
@@ -78,6 +86,7 @@ fn run_live_inner(
     run_loop(
         LoopConfig {
             events,
+            turn_debug,
             ..LoopConfig::default()
         },
         PipelineStages {
@@ -104,9 +113,28 @@ mod tests {
     #[cfg(coverage)]
     #[test]
     fn coverage_run_live_completes_a_fake_turn() {
-        let report =
-            super::run_live(&AgentConfig::v0(), crate::Cancel::new(), None).expect("fake live");
+        let report = super::run_live(&AgentConfig::v0(), crate::Cancel::new(), None, None)
+            .expect("fake live");
         assert_eq!(report.turns.len(), 1);
         assert_eq!(report.tasks_still_running, 0);
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_run_live_turn_debug_writes_without_devices() {
+        let dir = std::env::temp_dir().join(format!(
+            "syllabix-live-turn-debug-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let debug = crate::TurnDebug::open(&dir).expect("open");
+        let report = super::run_live(&AgentConfig::v0(), crate::Cancel::new(), None, Some(debug))
+            .expect("fake live debug");
+        assert_eq!(report.turns.len(), 1);
+        assert!(dir.join("turn-000").join("turn.json").is_file());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

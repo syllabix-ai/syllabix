@@ -9,7 +9,7 @@ fn main() {
     let _linked = syllabix_core::ensure_shared_ggml_frontends();
     let cli = cli::Cli::parse();
     let default_filter = match cli.command {
-        cli::Commands::Run => "warn",
+        cli::Commands::Run { .. } => "warn",
         cli::Commands::Init { .. } => "info",
     };
     init_tracing(default_filter);
