@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames},
     BlockedFetcher, Cancel, HttpFetcher, ModelCache, SileroVad, StderrProgress, Vad, VadEvent,
-    END_SILENCE_FRAMES,
+    END_SILENCE_FRAMES, MIN_SPEECH, MIN_SPEECH_FRAMES,
 };
 
 struct VadFixture {
@@ -135,6 +135,24 @@ fn populated_cache_reuses_silero_offline() {
 }
 
 #[test]
-fn end_silence_is_ten_frames() {
-    assert_eq!(END_SILENCE_FRAMES, 10);
+fn turn_timing_matches_launch_params() {
+    assert_eq!(MIN_SPEECH, std::time::Duration::from_millis(100));
+    assert_eq!(END_SILENCE_FRAMES, 11);
+    assert_eq!(MIN_SPEECH_FRAMES, 4);
+}
+
+#[test]
+fn speech_fixture_has_speech_frames() {
+    let mut vad = silero_lock();
+    vad.reset();
+    let mut above = 0_u32;
+    for frame in fixture_frames(&SPEECH) {
+        if vad.debug_probability(&frame).expect("score") >= 0.5 {
+            above += 1;
+        }
+    }
+    assert!(
+        above >= MIN_SPEECH_FRAMES as u32,
+        "8 kHz Silero scored {above} speech frames on speech.wav (need >={MIN_SPEECH_FRAMES})"
+    );
 }

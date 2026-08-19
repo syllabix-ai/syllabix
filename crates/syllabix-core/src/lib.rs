@@ -36,7 +36,7 @@ pub use defaults::{
 pub use error::{Error, Result};
 pub use fake::{
     scripted_frames, CollectingSink, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt,
-    FakeTts, FakeVad, LlmCall,
+    FakeTts, FakeVad, LlmCall, ScriptedStt,
 };
 pub use g2p::{english_to_ipa, english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
 pub use live::run_live;
@@ -50,7 +50,8 @@ pub use models::{
     ModelCache, ModelLayer, NoProgress, Progress, StderrProgress,
 };
 pub use pipeline::{
-    run_loop, run_loop_captured, LoopConfig, LoopEvent, LoopMode, LoopReport, PipelineStages,
+    is_blank_stt, run_loop, run_loop_captured, LoopConfig, LoopEvent, LoopMode, LoopReport,
+    PipelineStages,
 };
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
@@ -72,7 +73,10 @@ pub use types::{
     TurnId, TurnTimings, Utterance, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ,
     FRAME_SAMPLES,
 };
-pub use vad::{SileroVad, END_SILENCE_FRAMES, SPEECH_THRESHOLD};
+pub use vad::{
+    SileroVad, END_SILENCE, END_SILENCE_FRAMES, FRAME_DURATION, MIN_SPEECH, MIN_SPEECH_FRAMES,
+    SPEECH_THRESHOLD,
+};
 
 /// Force-link both native frontends into `syllabix` (PR 10).
 pub fn ensure_shared_ggml_frontends() -> bool {

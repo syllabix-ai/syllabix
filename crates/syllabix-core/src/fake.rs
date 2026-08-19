@@ -119,6 +119,53 @@ impl Stt for FakeStt {
     }
 }
 
+/// Returns queued hypotheses in order. Used to test empty-STT skip.
+pub struct ScriptedStt {
+    texts: Vec<String>,
+    index: usize,
+}
+
+impl ScriptedStt {
+    /// One hypothesis per completed VAD utterance, in order.
+    pub fn new(texts: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            texts: texts.into_iter().map(Into::into).collect(),
+            index: 0,
+        }
+    }
+}
+
+impl Stt for ScriptedStt {
+    fn name(&self) -> &'static str {
+        BuiltinDefaults::v0().stt.as_str()
+    }
+
+    fn transcribe(&mut self, utterance: &Utterance, cancel: &Cancel) -> Result<Transcript> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        if utterance.frames.is_empty() {
+            return Err(Error::Provider {
+                provider: self.name(),
+                message: "utterance has no frames".into(),
+            });
+        }
+        let text = self
+            .texts
+            .get(self.index)
+            .cloned()
+            .ok_or_else(|| Error::Provider {
+                provider: self.name(),
+                message: "scripted stt exhausted".into(),
+            })?;
+        self.index += 1;
+        Ok(Transcript {
+            turn: utterance.turn,
+            text,
+        })
+    }
+}
+
 /// First `transcribe` returns a provider error; later calls use [`FakeStt`].
 pub struct FailOnceStt {
     inner: FakeStt,
@@ -495,6 +542,32 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
+    }
+
+    #[test]
+    fn scripted_stt_returns_queued_hypotheses() {
+        let mut stt = ScriptedStt::new(["", " hello "]);
+        let frames = scripted_frames(1, 1, 0);
+        let first = stt
+            .transcribe(
+                &Utterance {
+                    turn: TurnId(0),
+                    frames: frames.clone(),
+                },
+                &Cancel::new(),
+            )
+            .unwrap();
+        assert_eq!(first.text, "");
+        let second = stt
+            .transcribe(
+                &Utterance {
+                    turn: TurnId(1),
+                    frames,
+                },
+                &Cancel::new(),
+            )
+            .unwrap();
+        assert_eq!(second.text, " hello ");
     }
 
     #[test]

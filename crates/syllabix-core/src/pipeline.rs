@@ -20,6 +20,11 @@ use crate::types::{
 
 const POLL: Duration = Duration::from_millis(5);
 
+/// Empty or whitespace Whisper text must not start LLM/TTS.
+pub fn is_blank_stt(text: &str) -> bool {
+    text.trim().is_empty()
+}
+
 /// How the loop should finish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopMode {
@@ -116,7 +121,7 @@ pub struct LoopReport {
     pub tasks_still_running: usize,
     /// Whether shutdown was requested before natural completion.
     pub cancelled: bool,
-    /// Turns dropped after a recoverable provider error.
+    /// Turns dropped after a recoverable provider error or blank STT.
     pub skipped_turns: usize,
 }
 
@@ -687,8 +692,19 @@ fn stt_loop<S: Stt>(
                 shared.mark_utterance(utterance.turn, Instant::now());
                 match stt.transcribe(&utterance, cancel) {
                     Ok(transcript) => {
-                        shared.note_user(transcript.turn, transcript.text.clone(), Instant::now());
-                        ignore_cancel(tx.send_cancellable(transcript, cancel), shared, cancel);
+                        if is_blank_stt(&transcript.text) {
+                            if let Some(debug) = &shared.turn_debug {
+                                debug.note_stt(transcript.turn, &transcript.text);
+                            }
+                            shared.note_skip(transcript.turn, cancel);
+                        } else {
+                            shared.note_user(
+                                transcript.turn,
+                                transcript.text.clone(),
+                                Instant::now(),
+                            );
+                            ignore_cancel(tx.send_cancellable(transcript, cancel), shared, cancel);
+                        }
                     }
                     Err(Error::Cancelled) => {
                         if cancel.is_shutdown() {
@@ -866,7 +882,9 @@ fn maybe_stop_after(mode: LoopMode, completed: usize, cancel: &Cancel) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
+    use crate::fake::{
+        scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad, ScriptedStt,
+    };
     use crate::types::TurnId;
 
     fn run_turns(n: usize) -> LoopReport {
@@ -981,5 +999,72 @@ mod tests {
     #[test]
     fn default_loop_config_runs_until_input_ends() {
         assert_eq!(LoopConfig::default().mode, LoopMode::UntilInputEnds);
+    }
+
+    #[test]
+    fn blank_stt_is_empty_or_whitespace() {
+        assert!(is_blank_stt(""));
+        assert!(is_blank_stt(" \n\t"));
+        assert!(!is_blank_stt("hello"));
+        assert!(!is_blank_stt(" a "));
+    }
+
+    #[test]
+    fn empty_stt_does_not_start_llm_or_tts() {
+        let llm = FakeLlm::new();
+        let calls = llm.call_log();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let report = run_loop(
+            LoopConfig {
+                events: Some(tx),
+                ..LoopConfig::default()
+            },
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: ScriptedStt::new([""]),
+                llm,
+                tts: FakeTts,
+                sink: CollectingSink::default(),
+            },
+            scripted_frames(1, 2, 1),
+            Cancel::new(),
+        )
+        .expect("empty stt");
+        assert!(
+            report.turns.is_empty(),
+            "blank STT must not complete a spoken turn"
+        );
+        assert!(report.skipped_turns >= 1);
+        assert!(calls.lock().expect("llm log").is_empty());
+        let events: Vec<LoopEvent> = rx.try_iter().collect();
+        assert!(
+            events.iter().all(|event| !matches!(
+                event,
+                LoopEvent::User { .. } | LoopEvent::Assistant { .. } | LoopEvent::Timings { .. }
+            )),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn whitespace_stt_does_not_start_llm_or_tts() {
+        let llm = FakeLlm::new();
+        let calls = llm.call_log();
+        let report = run_loop(
+            LoopConfig::default(),
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: ScriptedStt::new([" \n\t"]),
+                llm,
+                tts: FakeTts,
+                sink: CollectingSink::default(),
+            },
+            scripted_frames(1, 2, 1),
+            Cancel::new(),
+        )
+        .expect("whitespace stt");
+        assert!(report.turns.is_empty());
+        assert!(report.skipped_turns >= 1);
+        assert!(calls.lock().expect("llm log").is_empty());
     }
 }
