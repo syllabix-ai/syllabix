@@ -1,6 +1,7 @@
 //! Silero ONNX voice-activity detection for the v0 16 kHz mono audio contract.
 
 use std::path::Path;
+use std::time::Duration;
 
 use ort::session::Session;
 
@@ -8,24 +9,44 @@ use crate::defaults::BuiltinDefaults;
 use crate::error::{Error, Result};
 use crate::models::{Fetcher, ModelCache, Progress};
 use crate::providers::Vad;
-use crate::types::{AudioFrame, TurnId, Utterance, VadEvent, FRAME_SAMPLES};
+use crate::types::{
+    AudioFrame, TurnId, Utterance, VadEvent, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+};
 use crate::Cancel;
 
 /// Silero probability at or above which a frame begins or continues speech.
 pub const SPEECH_THRESHOLD: f32 = 0.5;
 
-/// Silence needed to close an utterance. Ten 32 ms frames give a 320 ms endpoint.
-pub const END_SILENCE_FRAMES: usize = 10;
+/// A turn starts only after this much contiguous speech (four 32 ms frames).
+pub const MIN_SPEECH: Duration = Duration::from_millis(100);
+
+/// Silence needed to close an utterance (eleven 32 ms frames = 352 ms).
+pub const END_SILENCE: Duration = Duration::from_millis(350);
+
+/// v0 hop: 512 samples at 16 kHz.
+pub const FRAME_DURATION: Duration = Duration::from_millis(32);
+
+/// Frames of speech that meet [`MIN_SPEECH`].
+pub const MIN_SPEECH_FRAMES: usize = 4;
+
+/// Frames of silence that meet [`END_SILENCE`].
+pub const END_SILENCE_FRAMES: usize = 11;
 
 /// In-process Silero VAD backed by ONNX Runtime.
 ///
 /// The detector accepts only the fixed v0 capture contract: 512 samples of
-/// 16 kHz mono PCM. It retains Silero's recurrent state between frames.
+/// 16 kHz mono PCM. It pair-averages each frame to Silero's 8 kHz / 256-sample
+/// window (the ONNX 512 / `sr=16000` branch scores ~0.003). It retains
+/// Silero's recurrent state between frames.
 pub struct SileroVad {
     scorer: Box<dyn ProbabilityScorer>,
     next_turn: u64,
-    current: Option<(TurnId, Vec<AudioFrame>)>,
-    silence_frames: usize,
+    /// Speech frames for the open (or still-tentative) utterance.
+    current: Vec<AudioFrame>,
+    /// Set once [`MIN_SPEECH`] has elapsed; `None` means frames are tentative.
+    active: Option<TurnId>,
+    speech: Duration,
+    silence: Duration,
 }
 
 impl SileroVad {
@@ -57,8 +78,10 @@ impl SileroVad {
         Self {
             scorer,
             next_turn: 0,
-            current: None,
-            silence_frames: 0,
+            current: Vec::new(),
+            active: None,
+            speech: Duration::ZERO,
+            silence: Duration::ZERO,
         }
     }
 
@@ -80,21 +103,23 @@ impl SileroVad {
         self.probability(frame)
     }
 
-    fn start(&mut self, frame: AudioFrame) -> VadEvent {
+    fn promote(&mut self) -> Option<VadEvent> {
+        if self.active.is_some() || self.speech < MIN_SPEECH {
+            return None;
+        }
         let turn = TurnId(self.next_turn);
         self.next_turn += 1;
-        self.current = Some((turn, vec![frame]));
-        VadEvent::SpeechStart { turn }
+        self.active = Some(turn);
+        Some(VadEvent::SpeechStart { turn })
     }
 
     fn finish(&mut self) -> Option<VadEvent> {
-        self.silence_frames = 0;
-        let event = self
-            .current
-            .take()
-            .map(|(turn, frames)| VadEvent::SpeechEnd {
-                utterance: Utterance { turn, frames },
-            });
+        self.silence = Duration::ZERO;
+        self.speech = Duration::ZERO;
+        let frames = std::mem::take(&mut self.current);
+        let event = self.active.take().map(|turn| VadEvent::SpeechEnd {
+            utterance: Utterance { turn, frames },
+        });
         if event.is_some() {
             // Recurrent hangover otherwise suppresses the next user turn
             // (identical or similar speech stays below 0.5).
@@ -114,19 +139,24 @@ impl Vad for SileroVad {
         let mut events = Vec::new();
 
         if speech {
-            self.silence_frames = 0;
-            if let Some((_, frames)) = self.current.as_mut() {
-                frames.push(frame);
-            } else {
-                events.push(self.start(frame));
+            self.silence = Duration::ZERO;
+            self.current.push(frame);
+            self.speech += FRAME_DURATION;
+            if let Some(event) = self.promote() {
+                events.push(event);
             }
-        } else if self.current.is_some() {
-            self.silence_frames += 1;
-            if self.silence_frames >= END_SILENCE_FRAMES {
+        } else if self.active.is_some() {
+            self.silence += FRAME_DURATION;
+            if self.silence >= END_SILENCE {
                 if let Some(event) = self.finish() {
                     events.push(event);
                 }
             }
+        } else if !self.current.is_empty() {
+            // Tentative speech never reached min duration; drop it.
+            self.current.clear();
+            self.speech = Duration::ZERO;
+            self.silence = Duration::ZERO;
         }
 
         Ok(events)
@@ -142,8 +172,10 @@ impl SileroVad {
     pub fn reset(&mut self) {
         self.scorer.reset();
         self.next_turn = 0;
-        self.current = None;
-        self.silence_frames = 0;
+        self.current.clear();
+        self.active = None;
+        self.speech = Duration::ZERO;
+        self.silence = Duration::ZERO;
     }
 }
 
@@ -194,8 +226,10 @@ impl OrtScorer {
 
 impl ProbabilityScorer for OrtScorer {
     fn score(&mut self, frame: &AudioFrame) -> Result<f32> {
-        // silero_vad.onnx (v6.2.1) scores 256-sample 8 kHz windows. v0 frames
-        // are 512 samples at 16 kHz; pair-average to the native window.
+        // silero_vad.onnx (v6.2.1): 512 samples at sr=16000 scores ~0.003.
+        // Two 256-sample 16 kHz windows hear speech but split speech.wav
+        // across a pause longer than 350 ms hangover. Pair-average to 8 kHz.
+        debug_assert_eq!(frame.sample_rate_hz, DEFAULT_SAMPLE_RATE_HZ);
         let audio: Vec<f32> = frame
             .samples
             .chunks_exact(2)
@@ -270,16 +304,37 @@ mod tests {
         .unwrap()
     }
 
+    fn push_seq(vad: &mut SileroVad, seq: u64) -> Vec<VadEvent> {
+        vad.push_frame(frame(seq)).unwrap()
+    }
+
     #[test]
     fn speech_and_silence_boundaries_follow_fixed_thresholds() {
         let probabilities = std::iter::once(0.2)
-            .chain([0.5, 0.9])
+            .chain(std::iter::repeat_n(0.9, MIN_SPEECH_FRAMES))
             .chain(std::iter::repeat_n(0.1, END_SILENCE_FRAMES))
             .collect();
         let mut vad = SileroVad::with_scorer(Box::new(ScriptedScorer(probabilities)));
         let mut events = Vec::new();
-        for seq in 0..(END_SILENCE_FRAMES + 3) as u64 {
-            events.extend(vad.push_frame(frame(seq)).unwrap());
+        let total = 1 + MIN_SPEECH_FRAMES + END_SILENCE_FRAMES;
+        for seq in 0..total as u64 {
+            events.extend(push_seq(&mut vad, seq));
+            if seq + 1 < (1 + MIN_SPEECH_FRAMES) as u64 {
+                assert!(
+                    events.is_empty(),
+                    "SpeechStart must wait for {MIN_SPEECH:?}"
+                );
+            }
+            if seq + 1 == (1 + MIN_SPEECH_FRAMES) as u64 {
+                assert_eq!(events, vec![VadEvent::SpeechStart { turn: TurnId(0) }]);
+            }
+            if seq + 1 == (1 + MIN_SPEECH_FRAMES + END_SILENCE_FRAMES - 1) as u64 {
+                assert_eq!(
+                    events.len(),
+                    1,
+                    "10 silence frames are under {END_SILENCE:?}"
+                );
+            }
         }
 
         assert_eq!(events.len(), 2);
@@ -288,21 +343,41 @@ mod tests {
             panic!("expected a speech end");
         };
         assert_eq!(utterance.turn, TurnId(0));
-        assert_eq!(utterance.frames.len(), 2);
+        assert_eq!(utterance.frames.len(), MIN_SPEECH_FRAMES);
         assert_eq!(utterance.frames[0].seq, 1);
-        assert_eq!(utterance.frames[1].seq, 2);
+        assert_eq!(
+            utterance.frames[MIN_SPEECH_FRAMES - 1].seq,
+            MIN_SPEECH_FRAMES as u64
+        );
+    }
+
+    #[test]
+    fn speech_shorter_than_min_duration_is_dropped() {
+        let n = MIN_SPEECH_FRAMES - 1;
+        let probabilities = std::iter::repeat_n(0.9, n)
+            .chain(std::iter::once(0.1))
+            .collect();
+        let mut vad = SileroVad::with_scorer(Box::new(ScriptedScorer(probabilities)));
+        let mut events = Vec::new();
+        for seq in 0..=n as u64 {
+            events.extend(push_seq(&mut vad, seq));
+        }
+        assert!(events.is_empty());
+        assert!(vad.flush().unwrap().is_empty());
     }
 
     #[test]
     fn flush_closes_active_speech_without_waiting_for_silence() {
-        let mut vad = SileroVad::with_scorer(Box::new(ScriptedScorer(vec![0.8])));
-        assert_eq!(
-            vad.push_frame(frame(0)).unwrap(),
-            vec![VadEvent::SpeechStart { turn: TurnId(0) }]
-        );
+        let mut vad =
+            SileroVad::with_scorer(Box::new(ScriptedScorer(vec![0.8; MIN_SPEECH_FRAMES])));
+        let mut events = Vec::new();
+        for seq in 0..MIN_SPEECH_FRAMES as u64 {
+            events.extend(push_seq(&mut vad, seq));
+        }
+        assert_eq!(events, vec![VadEvent::SpeechStart { turn: TurnId(0) }]);
         let events = vad.flush().unwrap();
         assert!(
-            matches!(events.as_slice(), [VadEvent::SpeechEnd { utterance }] if utterance.frames.len() == 1)
+            matches!(events.as_slice(), [VadEvent::SpeechEnd { utterance }] if utterance.frames.len() == MIN_SPEECH_FRAMES)
         );
     }
 
@@ -333,19 +408,21 @@ mod tests {
             }
         }
         let mut vad = SileroVad::with_scorer(Box::new(ReplayScorer {
-            values: vec![0.9, 0.9],
+            values: vec![0.9; MIN_SPEECH_FRAMES],
             index: 0,
         }));
         assert_eq!(vad.name(), "silero");
-        assert_eq!(
-            vad.push_frame(frame(0)).unwrap(),
-            vec![VadEvent::SpeechStart { turn: TurnId(0) }]
-        );
+        let mut events = Vec::new();
+        for seq in 0..MIN_SPEECH_FRAMES as u64 {
+            events.extend(push_seq(&mut vad, seq));
+        }
+        assert_eq!(events, vec![VadEvent::SpeechStart { turn: TurnId(0) }]);
         vad.reset();
-        assert_eq!(
-            vad.push_frame(frame(1)).unwrap(),
-            vec![VadEvent::SpeechStart { turn: TurnId(0) }]
-        );
+        events.clear();
+        for seq in 0..MIN_SPEECH_FRAMES as u64 {
+            events.extend(push_seq(&mut vad, seq));
+        }
+        assert_eq!(events, vec![VadEvent::SpeechStart { turn: TurnId(0) }]);
     }
 
     #[test]

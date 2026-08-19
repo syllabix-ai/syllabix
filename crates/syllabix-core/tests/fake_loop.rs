@@ -7,7 +7,7 @@ use syllabix_core::{
     audio::{read_wav, PcmFormat},
     run_loop, scripted_frames, BuiltinDefaults, Cancel, CollectingSink, FailOnceLlm, FailOnceStt,
     FailOnceTts, FakeLlm, FakeStt, FakeTts, FakeVad, LoopConfig, LoopMode, PipelineStages,
-    QueueCaps, TurnDebug, TurnId, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    QueueCaps, ScriptedStt, TurnDebug, TurnId, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
 fn run_with(
@@ -270,6 +270,38 @@ fn provider_error_in_tts_skips_the_turn_and_keeps_going() {
     assert_eq!(report.turns[0].id, TurnId(1));
 }
 
+#[test]
+fn empty_and_whitespace_stt_skip_llm_and_keep_later_turns() {
+    let llm = FakeLlm::new();
+    let calls = llm.call_log();
+    let report = run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: None,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: ScriptedStt::new(["", " \n", "hello"]),
+            llm,
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(3, 2, 1),
+        Cancel::new(),
+    )
+    .expect("blank then real");
+    assert_eq!(report.skipped_turns, 2);
+    assert_eq!(report.turns.len(), 1);
+    assert_eq!(report.turns[0].user_text, "hello");
+    assert_eq!(report.turns[0].assistant_text, "echo:hello");
+    let log = calls.lock().expect("llm log");
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0].user_text, "hello");
+    assert!(log[0].history_user_texts.is_empty());
+}
+
 fn unique_debug_dir() -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "syllabix-fake-turn-debug-{}-{}",
@@ -393,6 +425,45 @@ fn turn_debug_skipped_stt_still_writes() {
     assert!(skipped.contains("skipped"));
     let completed = std::fs::read_to_string(dir.join("turn-001").join("turn.json")).unwrap();
     assert!(completed.contains("completed"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn turn_debug_empty_stt_is_skipped_without_tts() {
+    let dir = unique_debug_dir();
+    let debug = TurnDebug::open(&dir).unwrap();
+    let llm = FakeLlm::new();
+    let calls = llm.call_log();
+    let report = run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: Some(debug),
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: ScriptedStt::new([""]),
+            llm,
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(1, 2, 1),
+        Cancel::new(),
+    )
+    .expect("empty stt debug");
+    assert!(report.turns.is_empty());
+    assert!(calls.lock().expect("llm log").is_empty());
+    let sidecar = std::fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
+    assert!(sidecar.contains("\"outcome\": \"skipped\""));
+    assert!(sidecar.contains("\"stt_text\": \"\""));
+    assert!(sidecar.contains("\"llm_text\": \"\""));
+    assert!(sidecar.contains("\"tts_speak_text\": \"\""));
+    let tts = read_wav(std::io::Cursor::new(
+        std::fs::read(dir.join("turn-000").join("tts.wav")).unwrap(),
+    ))
+    .unwrap();
+    assert!(tts.samples.is_empty());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
