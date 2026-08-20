@@ -72,16 +72,6 @@ To dump a live conversation for diagnosis (listen to `utterance.wav` against STT
 cargo run -p syllabix --release -- run --turn-debug target/turn-debug
 ```
 
-Onset of user speech should be on `utterance.wav` (200 ms preroll before the first Silero-positive frame), not only on `clean.wav`.
-
-This agent environment has no laptop microphone or speakers. On a quiet laptop, talk over the agent with AEC still on (do not mute the mic):
-
-```bash
-cargo run -p syllabix --release -- run --barge-in --turn-debug target/turn-debug
-```
-
-Playback should stop quickly, `turn.json` for the interrupted turn should be `cancelled`, and the new turn's `utterance.wav` should include the onset preroll. Laptop speakers must not false-barge-in. The 100-interruption p95 <200 ms matrix is a human measurement, not CI.
-
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
