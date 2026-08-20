@@ -1,9 +1,11 @@
-//! Sidecar written next to a `dist/` executable by `scripts/package-release.sh`.
+//! Sidecar and SHA256SUMS written next to a `dist/` executable.
 
 use serde::Deserialize;
 use syllabix_core::{
-    artifact_name_for_target, ARTIFACT_FILE_NAMES, DIST_PROFILE, DIST_TARGETS,
-    MAX_DIST_BINARY_BYTES,
+    artifact_name_for_target, artifact_name_for_uname, format_sha256sums_line,
+    latest_release_download_url, parse_sha256sums, sha256sums_contains, ARTIFACT_FILE_NAMES,
+    DIST_PROFILE, DIST_TARGETS, MAX_DIST_BINARY_BYTES, RELEASE_LATEST_DOWNLOAD_PREFIX,
+    SHA256SUMS_FILE_NAME,
 };
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +31,35 @@ fn dist_target_matrix_is_four_launch_oses() {
         artifact_name_for_target(DIST_TARGETS[0]).unwrap(),
         ARTIFACT_FILE_NAMES[0]
     );
+}
+
+#[test]
+fn readme_curl_uname_maps_to_release_asset_names() {
+    assert_eq!(
+        artifact_name_for_uname("Linux", "x86_64").unwrap(),
+        "syllabix-Linux-x86_64"
+    );
+    let url = latest_release_download_url("syllabix-Linux-x86_64");
+    assert_eq!(
+        url,
+        format!("{RELEASE_LATEST_DOWNLOAD_PREFIX}syllabix-Linux-x86_64")
+    );
+    assert_eq!(SHA256SUMS_FILE_NAME, "SHA256SUMS");
+}
+
+#[test]
+fn sha256sums_file_covers_launch_artifacts() {
+    let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let mut body = String::new();
+    for name in ARTIFACT_FILE_NAMES {
+        body.push_str(&format_sha256sums_line(hex, name));
+        body.push('\n');
+    }
+    let parsed = parse_sha256sums(&body).expect("four launch artifacts");
+    assert_eq!(parsed.len(), 4);
+    for name in ARTIFACT_FILE_NAMES {
+        assert!(sha256sums_contains(&parsed, name, hex), "{name}");
+    }
 }
 
 #[test]

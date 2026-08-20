@@ -14,15 +14,19 @@ cargo run -p syllabix -- run --turn-debug   # optional per-turn WAVs + sidecar
 cargo run -p syllabix -- run --barge-in     # interrupt TTS when the user speaks
 ```
 
-## Intended 3-minute path (Release publication is sequence 23)
+## 3-minute path
 
 ```bash
 curl -L https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-$(uname -s)-$(uname -m) -o syllabix
+curl -L https://github.com/syllabix-ai/syllabix/releases/latest/download/SHA256SUMS -o SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
 chmod +x syllabix
 ./syllabix run
 ```
 
-GitHub Releases are not published yet (sequence 23). Sequence 22 produces the installable files:
+Windows: download `syllabix-Windows-x86_64.exe` from the same Release. First `run` fills `~/.cache/syllabix/models/v1` (or `%LOCALAPPDATA%\syllabix\cache\models\v1`). A second `run` must work with the network blocked.
+
+GitHub Release files are the four sequence-22 names plus `SHA256SUMS`. `.github/workflows/release.yml` publishes them on `v*` tags. Pull requests do not package dist binaries. If Actions cannot run, build each target with `scripts/package-release.sh` and attach with `scripts/publish-release.sh v0.1.0`.
 
 | Target | Artifact |
 | --- | --- |
@@ -35,7 +39,9 @@ GitHub Releases are not published yet (sequence 23). Sequence 22 produces the in
 ./scripts/package-release.sh                         # host triple
 ./scripts/package-release.sh x86_64-unknown-linux-gnu
 ./scripts/check-clean-artifact.sh dist/syllabix-Linux-x86_64
-./scripts/check-repro.sh                             # two isolated dist builds
+./scripts/check-clean-machine.sh dist/syllabix-Linux-x86_64
+./scripts/check-repro.sh                             # two isolated dist builds; run when dist packaging changes
+./scripts/publish-release.sh v0.1.0                  # attach dist/ when Actions cannot run
 ```
 
 `cargo build -p syllabix --profile dist` is thin-LTO, one codegen unit, debuginfo stripped. Default `release` is unchanged for `ci-local.sh`. The executable does **not** pack Silero / Whisper / Llama / Kokoro weights; first `run` fetches them into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1` (`%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows), verifies SHA-256, and reuses the cache offline. `--help` / `init` do not need the cache.
@@ -61,8 +67,8 @@ Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-./scripts/ci-local.sh   # Linux stand-in for GitHub Actions (includes dist package + clean artifact)
-./scripts/check-repro.sh  # two dist builds; matching *.repro.json including sha256
+./scripts/ci-local.sh   # Linux stand-in for GitHub Actions (fmt through tests, then Linux dist + clean-machine)
+./scripts/check-repro.sh  # two dist builds; run when the dist profile or packaging script changes
 # `cargo llvm-cov --workspace --fail-under-lines 85` skips native inference (`cfg(coverage)`). Run `cargo test` for Whisper/Llama/Kokoro.
 ```
 

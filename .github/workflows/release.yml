@@ -1,0 +1,101 @@
+name: Release
+
+# Tag-only. PR CI does not package dist binaries (see ci.yml).
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  package:
+    name: dist artifact / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macos-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install ALSA headers and CMake
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+      - name: Install CMake
+        if: runner.os == 'macOS'
+        run: brew install cmake
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-dist-${{ matrix.name }}
+      - name: Package dist artifact
+        shell: bash
+        run: |
+          chmod +x scripts/package-release.sh scripts/check-clean-artifact.sh scripts/write-sha256sums.sh
+          scripts/package-release.sh "${{ matrix.target }}"
+          sidecar="$(ls dist/*.repro.json)"
+          artifact="${sidecar%.repro.json}"
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            chmod +x scripts/check-dynamic-libs.sh scripts/check-one-ggml.sh
+            scripts/check-dynamic-libs.sh "${artifact}"
+            scripts/check-one-ggml.sh "${artifact}"
+          fi
+          scripts/check-clean-artifact.sh "${artifact}"
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: GitHub Release
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Combined SHA256SUMS
+        run: |
+          chmod +x scripts/write-sha256sums.sh
+          scripts/write-sha256sums.sh dist
+          ls -l dist
+          test -s dist/SHA256SUMS
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          files=(dist/syllabix-Linux-x86_64 dist/syllabix-Darwin-arm64 dist/syllabix-Darwin-x86_64 dist/syllabix-Windows-x86_64.exe dist/SHA256SUMS)
+          for f in "${files[@]}"; do
+            test -f "${f}"
+          done
+          shopt -s nullglob
+          sidecars=(dist/*.repro.json)
+          gh release create "${tag}" \
+            "${files[@]}" \
+            "${sidecars[@]}" \
+            --title "${tag}" \
+            --notes "Single-file Syllabix binaries. Download for your OS, chmod +x, then \`./syllabix run\`. Weights fetch on first run into the local cache. Verify with SHA256SUMS. No Python, pip, or API key."

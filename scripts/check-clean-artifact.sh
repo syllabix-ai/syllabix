@@ -27,6 +27,23 @@ copied="${tmp}/$(basename "${bin}")"
 cp -f "${bin}" "${copied}"
 chmod +x "${copied}"
 
+sums_src="$(dirname "${bin}")/SHA256SUMS"
+if [[ -f "${sums_src}" ]]; then
+  want="$(awk -v n="$(basename "${bin}")" '$2==n {print $1; exit}' "${sums_src}")"
+  got="$(
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "${copied}" | awk '{print $1}'
+    else
+      shasum -a 256 "${copied}" | awk '{print $1}'
+    fi
+  )"
+  if [[ -z "${want}" || "${want}" != "${got}" ]]; then
+    echo "SHA256SUMS does not match $(basename "${bin}")" >&2
+    exit 1
+  fi
+  echo "SHA256SUMS matches $(basename "${bin}")"
+fi
+
 if [[ "$(uname -s)" == "Linux" ]]; then
   "${root}/scripts/check-dynamic-libs.sh" "${copied}"
   "${root}/scripts/check-one-ggml.sh" "${copied}"
