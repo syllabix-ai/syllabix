@@ -53,7 +53,7 @@ pub struct SileroVad {
     history: VecDeque<AudioFrame>,
     /// Snapshot of [`WHISPER_PREROLL`] taken at the first ≥0.5 frame.
     preroll: Vec<AudioFrame>,
-    /// Speech frames for the open (or still-tentative) utterance.
+    /// Frames for the open (or still-tentative) utterance, including hangover.
     current: Vec<AudioFrame>,
     /// Set once [`MIN_SPEECH`] has elapsed; `None` means frames are tentative.
     active: Option<TurnId>,
@@ -190,8 +190,15 @@ impl Vad for SileroVad {
                 events.push(event);
             }
         } else if self.active.is_some() {
+            // Keep every post-start frame on the Whisper clip. Silero <0.5 is
+            // often a quiet consonant or a short pause, not end-of-turn, and
+            // the closing hangover itself still contains word endings.
+            self.current.push(frame.clone());
             self.push_history(frame);
             self.silence += FRAME_DURATION;
+            // Count elapsed Duration, not `350 / 32` integer frames (that is
+            // 10 frames / 320 ms). Close on the first frame where silence
+            // is ≥ 350 ms (11 × 32 ms = 352 ms).
             if self.silence >= END_SILENCE {
                 if let Some(event) = self.finish() {
                     events.push(event);
@@ -422,7 +429,10 @@ mod tests {
             panic!("expected a speech end");
         };
         assert_eq!(utterance.turn, TurnId(0));
-        assert_eq!(utterance.frames.len(), 1 + MIN_SPEECH_FRAMES);
+        assert_eq!(
+            utterance.frames.len(),
+            1 + MIN_SPEECH_FRAMES + END_SILENCE_FRAMES
+        );
         assert_eq!(utterance.frames[0].seq, 0, "leading silence is preroll");
         assert_eq!(utterance.frames[1].seq, 1);
         assert_eq!(
@@ -430,8 +440,55 @@ mod tests {
             MIN_SPEECH_FRAMES as u64
         );
         assert_eq!(
+            utterance.frames.last().map(|f| f.seq),
+            Some((1 + MIN_SPEECH_FRAMES + END_SILENCE_FRAMES - 1) as u64),
+            "hangover frames stay on the Whisper clip"
+        );
+        assert_eq!(
             utterance.pcm().len(),
-            (1 + MIN_SPEECH_FRAMES) * FRAME_SAMPLES
+            (1 + MIN_SPEECH_FRAMES + END_SILENCE_FRAMES) * FRAME_SAMPLES
+        );
+        assert!(FRAME_DURATION * (END_SILENCE_FRAMES as u32 - 1) < END_SILENCE);
+        assert!(FRAME_DURATION * END_SILENCE_FRAMES as u32 >= END_SILENCE);
+    }
+
+    #[test]
+    fn below_threshold_frames_during_an_open_turn_stay_on_the_whisper_clip() {
+        let dip = 3;
+        let probabilities = std::iter::repeat_n(0.9, MIN_SPEECH_FRAMES)
+            .chain(std::iter::repeat_n(0.1, dip))
+            .chain(std::iter::repeat_n(0.9, 2))
+            .chain(std::iter::repeat_n(0.1, END_SILENCE_FRAMES))
+            .collect();
+        let mut vad = SileroVad::with_scorer(Box::new(ScriptedScorer(probabilities)));
+        let mut events = Vec::new();
+        let mut seq = 0_u64;
+        for fill in std::iter::repeat_n(100_i16, MIN_SPEECH_FRAMES)
+            .chain(std::iter::repeat_n(7, dip))
+            .chain(std::iter::repeat_n(100, 2))
+            .chain(std::iter::repeat_n(0, END_SILENCE_FRAMES))
+        {
+            events.extend(vad.push_frame(marked_frame(seq, fill)).unwrap());
+            seq += 1;
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, VadEvent::SpeechStart { .. }))
+                .count(),
+            1,
+            "a short dip must not close the turn"
+        );
+        let Some(VadEvent::SpeechEnd { utterance }) = events.last() else {
+            panic!("expected speech end, got {events:?}");
+        };
+        let pcm = utterance.pcm();
+        let dip_pcm =
+            &pcm[MIN_SPEECH_FRAMES * FRAME_SAMPLES..(MIN_SPEECH_FRAMES + dip) * FRAME_SAMPLES];
+        assert!(
+            dip_pcm.iter().all(|s| *s == 7),
+            "intra-utterance <0.5 audio must reach Whisper, got {:?}",
+            dip_pcm.iter().copied().take(8).collect::<Vec<_>>()
         );
     }
 
