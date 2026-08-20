@@ -35,4 +35,12 @@ echo "== test =="
 # Native inference (whisper/llama/kokoro/six-turn) runs here once.
 cargo test --workspace
 
+echo "== dist package =="
+chmod +x scripts/package-release.sh scripts/check-clean-artifact.sh
+scripts/package-release.sh
+sidecar="$(ls "${root}/dist"/*.repro.json)"
+artifact="${sidecar%.repro.json}"
+echo "== clean artifact =="
+scripts/check-clean-artifact.sh "${artifact}"
+
 echo "linux CI stand-in passed"

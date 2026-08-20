@@ -162,4 +162,22 @@ mod tests {
         assert_eq!(ModelLayer::Llm.as_str(), "llm");
         assert_eq!(ModelLayer::Tts.as_str(), "tts");
     }
+
+    #[test]
+    fn v0_weights_are_first_run_https_cache_not_packed() {
+        let m = Manifest::v0();
+        let mut total = 0u64;
+        for asset in &m.assets {
+            assert!(
+                asset.url.starts_with("https://"),
+                "{} must be a first-run HTTPS fetch, not an embedded blob",
+                asset.id
+            );
+            total += asset.size_bytes;
+        }
+        // Whisper + Llama + Kokoro alone exceed 1.5 GiB; packing them into
+        // the executable is not the v0 installable-artifact policy.
+        assert!(total > 1_500_000_000);
+        assert!(m.asset("silero").unwrap().size_bytes < 8_000_000);
+    }
 }

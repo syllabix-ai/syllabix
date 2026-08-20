@@ -129,7 +129,7 @@ pub struct BuiltinDefaults {
     pub stt_model: SttModel,
     /// LLM provider.
     pub llm: LlmProvider,
-    /// Small instruct GGUF id (bundled or first-run cache later).
+    /// Small instruct GGUF id. Fetched into the first-run cache; not packed.
     pub llm_model: &'static str,
     /// TTS provider.
     pub tts: TtsProvider,
