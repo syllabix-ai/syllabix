@@ -462,14 +462,13 @@ mod tests {
             .collect();
         let mut vad = SileroVad::with_scorer(Box::new(ScriptedScorer(probabilities)));
         let mut events = Vec::new();
-        let mut seq = 0_u64;
-        for fill in std::iter::repeat_n(100_i16, MIN_SPEECH_FRAMES)
+        for (seq, fill) in std::iter::repeat_n(100_i16, MIN_SPEECH_FRAMES)
             .chain(std::iter::repeat_n(7, dip))
             .chain(std::iter::repeat_n(100, 2))
             .chain(std::iter::repeat_n(0, END_SILENCE_FRAMES))
+            .enumerate()
         {
-            events.extend(vad.push_frame(marked_frame(seq, fill)).unwrap());
-            seq += 1;
+            events.extend(vad.push_frame(marked_frame(seq as u64, fill)).unwrap());
         }
         assert_eq!(
             events
