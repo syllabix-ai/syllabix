@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::cancel::Cancel;
 use crate::error::{Error, Result};
+use crate::types::GenerationId;
 
 /// Device-side ring holds this much real time of PCM.
 pub const DEVICE_RING_MS: u32 = 200;
@@ -69,6 +70,13 @@ impl SampleRing {
         self.underruns.load(Ordering::SeqCst)
     }
 
+    /// Drop queued samples so barge-in can silence playback immediately.
+    pub fn clear(&self) {
+        let mut q = self.inner.lock().expect("sample ring");
+        q.clear();
+        self.not_full.notify_all();
+    }
+
     /// Wake waiters and refuse further pushes.
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
@@ -112,11 +120,16 @@ impl SampleRing {
         written
     }
 
-    /// Pipeline-thread push. Blocks while the ring is full unless cancelled.
-    pub fn push_slice_cancellable(&self, samples: &[f32], cancel: &Cancel) -> Result<()> {
+    /// Pipeline-thread push. Blocks while the ring is full unless cancelled or stale.
+    pub fn push_slice_cancellable(
+        &self,
+        samples: &[f32],
+        cancel: &Cancel,
+        generation: GenerationId,
+    ) -> Result<()> {
         let mut offset = 0;
         while offset < samples.len() {
-            if cancel.is_shutdown() {
+            if cancel.is_shutdown() || cancel.is_stale(generation) {
                 return Err(Error::Cancelled);
             }
             if self.closed.load(Ordering::SeqCst) {
@@ -126,6 +139,7 @@ impl SampleRing {
             while q.len() >= self.cap
                 && !self.closed.load(Ordering::SeqCst)
                 && !cancel.is_shutdown()
+                && !cancel.is_stale(generation)
             {
                 let (guard, wait) = self
                     .not_full
@@ -134,13 +148,13 @@ impl SampleRing {
                 q = guard;
                 if wait.timed_out() {
                     drop(q);
-                    if cancel.is_shutdown() {
+                    if cancel.is_shutdown() || cancel.is_stale(generation) {
                         return Err(Error::Cancelled);
                     }
                     q = self.inner.lock().expect("sample ring");
                 }
             }
-            if cancel.is_shutdown() {
+            if cancel.is_shutdown() || cancel.is_stale(generation) {
                 return Err(Error::Cancelled);
             }
             if self.closed.load(Ordering::SeqCst) {
@@ -252,7 +266,38 @@ mod tests {
         ring.try_push_slice(&[1.0]);
         let cancel = Cancel::new();
         cancel.shutdown();
-        let err = ring.push_slice_cancellable(&[2.0], &cancel).unwrap_err();
+        let err = ring
+            .push_slice_cancellable(&[2.0], &cancel, crate::types::GenerationId(0))
+            .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
+    }
+
+    #[test]
+    fn push_aborts_when_generation_goes_stale() {
+        let ring = std::sync::Arc::new(SampleRing::new(8));
+        assert_eq!(ring.try_push_slice(&[1.0; 8]), 8);
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let pusher = {
+            let ring = std::sync::Arc::clone(&ring);
+            let cancel = cancel.clone();
+            std::thread::spawn(move || ring.push_slice_cancellable(&[2.0; 64], &cancel, generation))
+        };
+        std::thread::sleep(Duration::from_millis(20));
+        cancel.cancel_generation();
+        let err = pusher.join().expect("push thread").unwrap_err();
+        assert!(matches!(err, Error::Cancelled));
+    }
+
+    #[test]
+    fn clear_drops_queued_samples() {
+        let ring = SampleRing::new(4);
+        assert_eq!(ring.try_push_slice(&[1.0, 2.0]), 2);
+        ring.clear();
+        assert_eq!(ring.occupancy(), 0);
+        assert_eq!(ring.try_push_slice(&[3.0]), 1);
+        let mut buf = [0.0; 1];
+        assert_eq!(ring.try_pop_slice(&mut buf), 1);
+        assert_eq!(buf[0], 3.0);
     }
 }

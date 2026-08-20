@@ -83,7 +83,8 @@ impl AudioFrame {
 pub struct Utterance {
     /// Turn assigned at speech-start.
     pub turn: TurnId,
-    /// Frames from speech-start through the last speech frame (silence not included).
+    /// 200 ms post-AEC preroll (when available) plus every frame after speech-start
+    /// until end-of-utterance, including below-threshold dips and the 350 ms hangover.
     pub frames: Vec<AudioFrame>,
 }
 
@@ -97,7 +98,7 @@ impl Utterance {
     }
 }
 
-/// Speech-start / speech-stop events. Barge-in later keys off `SpeechStart`.
+/// Speech-start / speech-stop events. `--barge-in` keys off `SpeechStart`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VadEvent {
     /// Mic crossed into speech; a new turn id is reserved.

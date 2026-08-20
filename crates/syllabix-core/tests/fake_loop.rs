@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use syllabix_core::{
     audio::{read_wav, PcmFormat},
-    run_loop, scripted_frames, BuiltinDefaults, Cancel, CollectingSink, FailOnceLlm, FailOnceStt,
-    FailOnceTts, FakeLlm, FakeStt, FakeTts, FakeVad, LoopConfig, LoopMode, PipelineStages,
-    QueueCaps, ScriptedStt, TurnDebug, TurnId, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    run_loop, run_loop_captured, scripted_frames, AudioCapture, AudioSink, BuiltinDefaults, Cancel,
+    CollectingSink, Error, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt, FakeTts,
+    FakeVad, LoopConfig, LoopMode, PipelineStages, QueueCaps, Result, ScriptedStt,
+    SynthesizedAudio, TurnDebug, TurnId, Vad, VadEvent, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
 fn run_with(
@@ -22,6 +23,7 @@ fn run_with(
             mode,
             events: None,
             turn_debug: None,
+            barge_in: false,
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -280,6 +282,7 @@ fn empty_and_whitespace_stt_skip_llm_and_keep_later_turns() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: None,
+            barge_in: false,
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -338,6 +341,7 @@ fn turn_debug_one_turn_writes_wavs_and_does_not_change_reply() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: Some(debug),
+            barge_in: false,
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -408,6 +412,7 @@ fn turn_debug_skipped_stt_still_writes() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: Some(debug),
+            barge_in: false,
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -440,6 +445,7 @@ fn turn_debug_empty_stt_is_skipped_without_tts() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: Some(debug),
+            barge_in: false,
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -489,6 +495,7 @@ fn turn_debug_cancel_writes_partial_turn() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: Some(debug),
+            barge_in: false,
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -512,4 +519,327 @@ fn turn_debug_cancel_writes_partial_turn() {
         "second turn must survive generation cancel"
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+struct PacedCapture {
+    frames: std::vec::IntoIter<syllabix_core::AudioFrame>,
+    delay: Duration,
+}
+
+impl AudioCapture for PacedCapture {
+    fn name(&self) -> &'static str {
+        "paced"
+    }
+
+    fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<syllabix_core::AudioFrame>> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        let Some(frame) = self.frames.next() else {
+            return Ok(None);
+        };
+        if !self.delay.is_zero() {
+            thread::sleep(self.delay);
+        }
+        Ok(Some(frame))
+    }
+}
+
+struct SlowSink {
+    delay: Duration,
+    playing: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    inner: CollectingSink,
+}
+
+impl AudioSink for SlowSink {
+    fn play(&mut self, audio: SynthesizedAudio, cancel: &Cancel) -> Result<()> {
+        self.playing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + self.delay;
+        while std::time::Instant::now() < deadline {
+            if cancel.is_shutdown() {
+                self.playing
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                return Err(Error::Cancelled);
+            }
+            if cancel.is_stale(audio.generation) {
+                self.playing
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                self.inner.interrupt();
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        let result = self.inner.play(audio, cancel);
+        self.playing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        result
+    }
+
+    fn interrupt(&mut self) {
+        self.playing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.inner.interrupt();
+    }
+}
+
+fn barge_loop(barge_in: bool, llm: FakeLlm) -> syllabix_core::LoopReport {
+    run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: None,
+            barge_in,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm,
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(2, 2, 1),
+        Cancel::new(),
+    )
+    .expect("barge loop")
+}
+
+#[test]
+fn without_barge_in_speech_start_does_not_cancel_tts() {
+    let report = barge_loop(false, FakeLlm::with_delay(Duration::from_millis(8)));
+    assert_eq!(report.turns.len(), 2);
+    assert_eq!(report.turns[0].assistant_text, "echo:turn-000");
+    assert_eq!(report.turns[1].assistant_text, "echo:turn-001");
+}
+
+#[test]
+fn barge_in_cancels_playback_on_speech_start_and_keeps_the_new_turn() {
+    let report = barge_loop(true, FakeLlm::with_delay(Duration::from_millis(25)));
+    assert!(
+        report.turns.iter().any(|t| t.id.0 == 1),
+        "incoming user turn must complete after barge-in, got {:?}",
+        report.turns.iter().map(|t| t.id.0).collect::<Vec<_>>()
+    );
+    if let Some(first) = report.turns.iter().find(|t| t.id.0 == 0) {
+        assert_ne!(first.assistant_text, "echo:turn-000");
+    }
+    let second = report
+        .turns
+        .iter()
+        .find(|t| t.id.0 == 1)
+        .expect("second turn");
+    assert_eq!(second.user_text, "turn-001");
+    assert_eq!(second.assistant_text, "echo:turn-001");
+}
+
+#[test]
+fn barge_in_turn_debug_writes_interrupted_turn() {
+    let dir = unique_debug_dir();
+    let debug = TurnDebug::open(&dir).unwrap();
+    let report = run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: Some(debug),
+            barge_in: true,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm: FakeLlm::with_delay(Duration::from_millis(25)),
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(2, 2, 1),
+        Cancel::new(),
+    )
+    .expect("barge debug");
+    let first = std::fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
+    assert!(
+        first.contains("cancelled"),
+        "interrupted turn must dump as cancelled: {first}"
+    );
+    assert!(dir.join("turn-000").join("tts.wav").is_file());
+    assert!(
+        report.turns.iter().any(|t| t.id.0 == 1),
+        "new user utterance must complete"
+    );
+    let second = std::fs::read_to_string(dir.join("turn-001").join("turn.json")).unwrap();
+    assert!(second.contains("completed"), "{second}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn vad_emits_speech_start_during_tts_only_with_barge_in() {
+    fn run(barge_in: bool) -> (bool, syllabix_core::LoopReport) {
+        let playing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let overlap = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let overlap_flag = std::sync::Arc::clone(&overlap);
+        let playing_flag = std::sync::Arc::clone(&playing);
+        struct OverlapVad {
+            inner: FakeVad,
+            playing: std::sync::Arc<std::sync::atomic::AtomicBool>,
+            overlap: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl Vad for OverlapVad {
+            fn name(&self) -> &'static str {
+                self.inner.name()
+            }
+            fn push_frame(&mut self, frame: syllabix_core::AudioFrame) -> Result<Vec<VadEvent>> {
+                let events = self.inner.push_frame(frame)?;
+                if events
+                    .iter()
+                    .any(|e| matches!(e, VadEvent::SpeechStart { .. }))
+                    && self.playing.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    self.overlap
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(events)
+            }
+            fn flush(&mut self) -> Result<Vec<VadEvent>> {
+                self.inner.flush()
+            }
+        }
+        let report = run_loop_captured(
+            LoopConfig {
+                defaults: BuiltinDefaults::v0(),
+                mode: LoopMode::UntilInputEnds,
+                events: None,
+                turn_debug: None,
+                barge_in,
+            },
+            PipelineStages {
+                vad: OverlapVad {
+                    inner: FakeVad::new(),
+                    playing: playing_flag,
+                    overlap: overlap_flag,
+                },
+                stt: FakeStt,
+                llm: FakeLlm::new(),
+                tts: FakeTts,
+                sink: SlowSink {
+                    delay: Duration::from_millis(40),
+                    playing,
+                    inner: CollectingSink::default(),
+                },
+            },
+            PacedCapture {
+                frames: scripted_frames(2, 2, 1).into_iter(),
+                delay: Duration::from_millis(8),
+            },
+            Cancel::new(),
+        )
+        .expect("paced barge");
+        (overlap.load(std::sync::atomic::Ordering::SeqCst), report)
+    }
+
+    let (overlap_off, report_off) = run(false);
+    assert!(
+        !overlap_off,
+        "default run must not emit SpeechStart while TTS is playing"
+    );
+    assert_eq!(report_off.turns.len(), 2);
+
+    let (overlap_on, report_on) = run(true);
+    assert!(
+        overlap_on,
+        "--barge-in must allow SpeechStart while TTS is playing"
+    );
+    assert!(report_on.turns.iter().any(|t| t.id.0 == 1));
+}
+
+struct HoldUntilStaleSink {
+    started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AudioSink for HoldUntilStaleSink {
+    fn play(&mut self, audio: SynthesizedAudio, cancel: &Cancel) -> Result<()> {
+        let first = !self.started.swap(true, std::sync::atomic::Ordering::SeqCst);
+        if !first {
+            return Ok(());
+        }
+        loop {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            if cancel.is_stale(audio.generation) {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+#[test]
+fn barge_in_stops_a_blocked_previous_tts_play() {
+    let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    struct GateCapture {
+        frames: std::vec::IntoIter<syllabix_core::AudioFrame>,
+        index: usize,
+        gate_after: usize,
+        started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl AudioCapture for GateCapture {
+        fn name(&self) -> &'static str {
+            "gate"
+        }
+        fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<syllabix_core::AudioFrame>> {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            if self.index == self.gate_after {
+                let wait_started = std::time::Instant::now();
+                while !self.started.load(std::sync::atomic::Ordering::SeqCst) {
+                    if cancel.is_shutdown() {
+                        return Err(Error::Cancelled);
+                    }
+                    assert!(
+                        wait_started.elapsed() < Duration::from_secs(2),
+                        "TTS play never started"
+                    );
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+            self.index += 1;
+            Ok(self.frames.next())
+        }
+    }
+    let report = run_loop_captured(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: None,
+            barge_in: true,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm: FakeLlm::new(),
+            tts: FakeTts,
+            sink: HoldUntilStaleSink {
+                started: std::sync::Arc::clone(&started),
+            },
+        },
+        GateCapture {
+            frames: scripted_frames(2, 2, 1).into_iter(),
+            index: 0,
+            gate_after: 3,
+            started: std::sync::Arc::clone(&started),
+        },
+        Cancel::new(),
+    )
+    .expect("blocked tts barge");
+    assert!(
+        started.load(std::sync::atomic::Ordering::SeqCst),
+        "first TTS chunk must have started playing"
+    );
+    assert!(
+        report.turns.iter().any(|t| t.id.0 == 1),
+        "next user turn must still complete, got {:?}",
+        report.turns.iter().map(|t| t.id.0).collect::<Vec<_>>()
+    );
 }

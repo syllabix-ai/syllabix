@@ -141,6 +141,12 @@ impl TurnDebug {
         write_turn(&self.root, turn.0, TurnOutcome::Skipped, &mut inner)
     }
 
+    /// Barge-in or generation cancel; dump interrupted TTS plus what exists so far.
+    pub fn interrupt(&self, turn: TurnId) -> Result<()> {
+        let mut inner = self.lock();
+        write_turn(&self.root, turn.0, TurnOutcome::Cancelled, &mut inner)
+    }
+
     /// Write every turn that never completed or skipped (shutdown / cancel).
     pub fn finish_open(&self) -> Result<()> {
         let mut inner = self.lock();
@@ -408,6 +414,24 @@ mod tests {
         assert!(skipped.contains("skipped"));
         let cancelled = fs::read_to_string(dir.join("turn-002").join("turn.json")).unwrap();
         assert!(cancelled.contains("cancelled"));
+        debug.finish_open().unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn interrupt_writes_cancelled_turn_immediately() {
+        let dir = unique_dir();
+        let debug = TurnDebug::open(&dir).unwrap();
+        debug.start_turn(TurnId(0));
+        debug.note_tts(TurnId(0), &[1, 2, 3]);
+        debug.interrupt(TurnId(0)).unwrap();
+        let json = fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
+        assert!(json.contains("cancelled"));
+        let wav = read_wav(Cursor::new(
+            fs::read(dir.join("turn-000").join("tts.wav")).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(wav.samples, vec![1, 2, 3]);
         debug.finish_open().unwrap();
         fs::remove_dir_all(&dir).unwrap();
     }

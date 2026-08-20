@@ -19,12 +19,13 @@ fn help_exits_zero_and_lists_commands() {
 }
 
 #[test]
-fn run_help_lists_turn_debug() {
+fn run_help_lists_turn_debug_and_barge_in() {
     syllabix()
         .args(["run", "--help"])
         .assert()
         .success()
-        .stdout(str::contains("--turn-debug"));
+        .stdout(str::contains("--turn-debug"))
+        .stdout(str::contains("--barge-in"));
 }
 
 #[test]

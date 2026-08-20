@@ -17,8 +17,9 @@ pub fn run_live(
     cancel: Cancel,
     events: Option<Sender<LoopEvent>>,
     turn_debug: Option<TurnDebug>,
+    barge_in: bool,
 ) -> Result<LoopReport> {
-    run_live_inner(config, cancel, events, turn_debug)
+    run_live_inner(config, cancel, events, turn_debug, barge_in)
 }
 
 #[cfg(not(coverage))]
@@ -27,6 +28,7 @@ fn run_live_inner(
     cancel: Cancel,
     events: Option<Sender<LoopEvent>>,
     turn_debug: Option<TurnDebug>,
+    barge_in: bool,
 ) -> Result<LoopReport> {
     use crate::audio::{NativeCapture, NativePlayback};
     use crate::models::{HttpFetcher, ModelCache, StderrProgress};
@@ -59,6 +61,7 @@ fn run_live_inner(
             mode: LoopMode::UntilInputEnds,
             events,
             turn_debug,
+            barge_in,
         },
         PipelineStages {
             vad,
@@ -78,6 +81,7 @@ fn run_live_inner(
     cancel: Cancel,
     events: Option<Sender<LoopEvent>>,
     turn_debug: Option<TurnDebug>,
+    barge_in: bool,
 ) -> Result<LoopReport> {
     use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
     use crate::pipeline::{run_loop, LoopConfig, PipelineStages};
@@ -87,6 +91,7 @@ fn run_live_inner(
         LoopConfig {
             events,
             turn_debug,
+            barge_in,
             ..LoopConfig::default()
         },
         PipelineStages {
@@ -113,7 +118,7 @@ mod tests {
     #[cfg(coverage)]
     #[test]
     fn coverage_run_live_completes_a_fake_turn() {
-        let report = super::run_live(&AgentConfig::v0(), crate::Cancel::new(), None, None)
+        let report = super::run_live(&AgentConfig::v0(), crate::Cancel::new(), None, None, false)
             .expect("fake live");
         assert_eq!(report.turns.len(), 1);
         assert_eq!(report.tasks_still_running, 0);
@@ -131,8 +136,14 @@ mod tests {
                 .as_nanos()
         ));
         let debug = crate::TurnDebug::open(&dir).expect("open");
-        let report = super::run_live(&AgentConfig::v0(), crate::Cancel::new(), None, Some(debug))
-            .expect("fake live debug");
+        let report = super::run_live(
+            &AgentConfig::v0(),
+            crate::Cancel::new(),
+            None,
+            Some(debug),
+            false,
+        )
+        .expect("fake live debug");
         assert_eq!(report.turns.len(), 1);
         assert!(dir.join("turn-000").join("turn.json").is_file());
         std::fs::remove_dir_all(&dir).unwrap();

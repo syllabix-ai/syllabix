@@ -579,6 +579,7 @@ impl AudioSink for NativePlayback {
             return Err(Error::Cancelled);
         }
         if cancel.is_stale(audio.generation) {
+            self.interrupt();
             return Ok(());
         }
         let f32s = i16_to_f32(&audio.samples);
@@ -586,7 +587,22 @@ impl AudioSink for NativePlayback {
         if audio.is_last {
             device_pcm.extend(self.conv.flush());
         }
-        self.ring.push_slice_cancellable(&device_pcm, cancel)
+        match self
+            .ring
+            .push_slice_cancellable(&device_pcm, cancel, audio.generation)
+        {
+            Ok(()) => Ok(()),
+            Err(Error::Cancelled) if !cancel.is_shutdown() => {
+                self.interrupt();
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn interrupt(&mut self) {
+        self.ring.clear();
+        self.conv.reset();
     }
 }
 
@@ -877,6 +893,65 @@ mod tests {
             playback.play(stopped, &cancel),
             Err(Error::Cancelled)
         ));
+    }
+
+    #[test]
+    fn interrupt_clears_queued_playback() {
+        let mut playback = test_playback();
+        let cancel = Cancel::new();
+        playback
+            .play(
+                SynthesizedAudio {
+                    turn: crate::types::TurnId(0),
+                    generation: cancel.generation(),
+                    index: 0,
+                    samples: vec![1_024; 16],
+                    is_last: false,
+                },
+                &cancel,
+            )
+            .expect("queue audio");
+        assert!(playback.ring.occupancy() > 0);
+        playback.interrupt();
+        assert_eq!(playback.ring.occupancy(), 0);
+    }
+
+    #[test]
+    fn play_stops_feeding_the_ring_when_generation_goes_stale() {
+        let mut playback = NativePlayback {
+            _worker: idle_worker(),
+            ring: Arc::new(SampleRing::new(32)),
+            echo_ring: None,
+            conv: PcmConverter::new(PcmFormat::v0(), PcmFormat::v0()).expect("v0 converter"),
+            device_name: "test speakers".into(),
+            device_format: PcmFormat::v0(),
+        };
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let watcher = cancel.clone();
+        thread::spawn(move || {
+            thread::sleep(std::time::Duration::from_millis(30));
+            watcher.cancel_generation();
+        });
+        let started = std::time::Instant::now();
+        playback
+            .play(
+                SynthesizedAudio {
+                    turn: crate::types::TurnId(0),
+                    generation,
+                    index: 0,
+                    samples: vec![1_024; 16_000],
+                    is_last: true,
+                },
+                &cancel,
+            )
+            .expect("stale play returns");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "barge-in must abort a blocked speaker write, took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(playback.ring.occupancy(), 0);
     }
 
     #[test]

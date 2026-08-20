@@ -99,6 +99,13 @@ impl PcmConverter {
         self.leftover_samples() * std::mem::size_of::<f32>()
     }
 
+    /// Drop leftover PCM so barge-in does not flush a tail of the old turn.
+    pub fn reset(&mut self) {
+        self.partial_frame.clear();
+        self.mono.clear();
+        self.phase = 0.0;
+    }
+
     /// Convert one interleaved chunk. Output is interleaved at `dst`.
     pub fn push(&mut self, input: &[f32]) -> Vec<f32> {
         if input.is_empty() {
@@ -397,6 +404,22 @@ mod tests {
         assert_eq!(frames[0].samples.len(), FRAME_SAMPLES);
         assert_eq!(split.leftover_samples(), 7);
         assert!(split.leftover_samples() <= FRAME_SPLITTER_MAX);
+    }
+
+    #[test]
+    fn reset_clears_leftover() {
+        let mut conv = PcmConverter::new(
+            PcmFormat {
+                sample_rate_hz: 44_100,
+                channels: 1,
+            },
+            PcmFormat::v0(),
+        )
+        .unwrap();
+        let _ = conv.push(&[0.1, 0.2, 0.3]);
+        assert!(conv.leftover_samples() > 0);
+        conv.reset();
+        assert_eq!(conv.leftover_samples(), 0);
     }
 
     #[test]

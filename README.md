@@ -11,6 +11,7 @@ cargo run -p syllabix -- --help
 cargo run -p syllabix -- init     # optional syllabix.yaml
 cargo run -p syllabix -- run      # zero-config mic + speakers with full-duplex AEC
 cargo run -p syllabix -- run --turn-debug   # optional per-turn WAVs + sidecar
+cargo run -p syllabix -- run --barge-in     # interrupt TTS when the user speaks
 ```
 
 ## Intended 3-minute path (Release binary not shipping yet)
@@ -27,8 +28,9 @@ GitHub Releases are not published yet. From this checkout, `cargo run -p syllabi
 
 | Command | Now | Launch |
 | --- | --- | --- |
-| `syllabix run` | Zero-config local mic/speaker conversation, full-duplex AEC, and TUI timings | Same; barge-in comes after turn debug |
+| `syllabix run` | Zero-config local mic/speaker conversation, full-duplex AEC, and TUI timings | Same |
 | `syllabix run --turn-debug [dir]` | Opt-in. Writes `capture.wav` / `clean.wav` / `utterance.wav` / `tts.wav` and `turn.json` per turn under `dir`, `$SYLLABIX_TURN_DEBUG_DIR`, or `target/turn-debug`. Default `run` writes nothing. | Same |
+| `syllabix run --barge-in` | Opt-in. VAD keeps running during TTS; user SpeechStart stops playback, flushes queued audio, and cancels LLM/TTS. Off by default. Combine with `--turn-debug` to dump interrupted turns. Whisper utterances always include 200 ms of post-AEC preroll. | Same |
 | `syllabix init [dir]` | Optional `syllabix.yaml` scaffold | Same |
 
 There is no `serve`, `bench`, cloud provider, or API key in v0. `run` does not require yaml. If `syllabix.yaml` is present, it must name the v0 on-device stack and `language: en`.

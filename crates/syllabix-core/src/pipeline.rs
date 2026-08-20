@@ -1,7 +1,7 @@
 //! In-memory conversation loop: VAD → STT → LLM → TTS → sink with bounded queues.
 
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::{BTreeMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -73,6 +73,8 @@ pub struct LoopConfig {
     pub events: Option<Sender<LoopEvent>>,
     /// Opt-in per-turn WAV + sidecar writer. None means default `run` writes nothing.
     pub turn_debug: Option<TurnDebug>,
+    /// Keep VAD running during TTS and cancel playback on SpeechStart.
+    pub barge_in: bool,
 }
 
 impl LoopConfig {
@@ -83,6 +85,7 @@ impl LoopConfig {
             mode: LoopMode::StopAfterTurns(30),
             events: None,
             turn_debug: None,
+            barge_in: false,
         }
     }
 
@@ -93,6 +96,7 @@ impl LoopConfig {
             mode: LoopMode::StopAfterTurns(6),
             events: None,
             turn_debug: None,
+            barge_in: false,
         }
     }
 }
@@ -104,6 +108,7 @@ impl Default for LoopConfig {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: None,
+            barge_in: false,
         }
     }
 }
@@ -148,10 +153,19 @@ struct Shared {
     skipped: AtomicUsize,
     events: Option<Sender<LoopEvent>>,
     turn_debug: Option<TurnDebug>,
+    barge_in: bool,
+    pause_vad: AtomicBool,
+    flush_playback: AtomicBool,
+    assistant_turn: Mutex<Option<TurnId>>,
+    interrupted: Mutex<HashSet<TurnId>>,
 }
 
 impl Shared {
-    fn new(events: Option<Sender<LoopEvent>>, turn_debug: Option<TurnDebug>) -> Arc<Self> {
+    fn new(
+        events: Option<Sender<LoopEvent>>,
+        turn_debug: Option<TurnDebug>,
+        barge_in: bool,
+    ) -> Arc<Self> {
         Arc::new(Self {
             turns: Mutex::new(BTreeMap::new()),
             live_tasks: Arc::new(AtomicUsize::new(0)),
@@ -160,6 +174,11 @@ impl Shared {
             skipped: AtomicUsize::new(0),
             events,
             turn_debug,
+            barge_in,
+            pause_vad: AtomicBool::new(false),
+            flush_playback: AtomicBool::new(false),
+            assistant_turn: Mutex::new(None),
+            interrupted: Mutex::new(HashSet::new()),
         })
     }
 
@@ -170,12 +189,69 @@ impl Shared {
     }
 
     fn note_skip(&self, turn: TurnId, cancel: &Cancel) {
+        self.release_assistant(turn);
         self.skipped.fetch_add(1, Ordering::SeqCst);
         if let Some(debug) = &self.turn_debug {
             if let Err(err) = debug.skip(turn) {
                 self.fail(err, cancel);
             }
         }
+    }
+
+    fn mark_assistant(&self, turn: TurnId) {
+        *self.assistant_turn.lock().expect("assistant turn") = Some(turn);
+        if !self.barge_in {
+            self.pause_vad.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn release_assistant(&self, turn: TurnId) {
+        let mut slot = self.assistant_turn.lock().expect("assistant turn");
+        if *slot == Some(turn) {
+            *slot = None;
+            self.pause_vad.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Cancel in-flight LLM/TTS when `--barge-in` hears SpeechStart.
+    ///
+    /// Always bump the generation and flush the speaker ring. Playback can still
+    /// hold the previous turn after we released `assistant_turn` (last chunk
+    /// queued, ring not empty) or while `play` is blocked feeding a long sentence.
+    fn interrupt_assistant(&self, cancel: &Cancel) -> bool {
+        if !self.barge_in {
+            return false;
+        }
+        let turn = {
+            let mut slot = self.assistant_turn.lock().expect("assistant turn");
+            slot.take()
+        };
+        self.pause_vad.store(false, Ordering::SeqCst);
+        cancel.cancel_generation();
+        self.flush_playback.store(true, Ordering::SeqCst);
+        if let Some(turn) = turn {
+            self.interrupted
+                .lock()
+                .expect("interrupted turns")
+                .insert(turn);
+            if let Some(debug) = &self.turn_debug {
+                if let Err(err) = debug.interrupt(turn) {
+                    self.fail(err, cancel);
+                }
+            }
+        }
+        true
+    }
+
+    fn take_flush(&self) -> bool {
+        self.flush_playback.swap(false, Ordering::SeqCst)
+    }
+
+    fn is_interrupted(&self, turn: TurnId) -> bool {
+        self.interrupted
+            .lock()
+            .expect("interrupted turns")
+            .contains(&turn)
     }
 
     fn fail(&self, err: Error, cancel: &Cancel) {
@@ -437,7 +513,11 @@ where
     let (tok_tx, tok_rx, tok_stats) = bounded("tokens", caps.tokens);
     let (aud_tx, aud_rx, aud_stats) = bounded("audio", caps.audio);
 
-    let shared = Shared::new(config.events.clone(), config.turn_debug.clone());
+    let shared = Shared::new(
+        config.events.clone(),
+        config.turn_debug.clone(),
+        config.barge_in,
+    );
     let mut joins: Vec<JoinHandle<()>> = Vec::new();
 
     // Capture → VAD
@@ -623,6 +703,7 @@ fn vad_loop<V: Vad>(
      -> Result<()> {
         for event in &events {
             if let VadEvent::SpeechStart { turn } = event {
+                shared.interrupt_assistant(cancel);
                 *active = Some(*turn);
                 if let Some(debug) = &shared.turn_debug {
                     debug.start_turn(*turn);
@@ -637,6 +718,7 @@ fn vad_loop<V: Vad>(
                 if let Some(debug) = &shared.turn_debug {
                     debug.note_utterance(&utterance);
                 }
+                shared.mark_assistant(utterance.turn);
                 *active = None;
                 tx.send_cancellable(utterance, cancel)?;
             }
@@ -647,6 +729,10 @@ fn vad_loop<V: Vad>(
     loop {
         if cancel.is_shutdown() {
             return;
+        }
+        if shared.pause_vad.load(Ordering::SeqCst) {
+            thread::sleep(POLL);
+            continue;
         }
         match rx.recv_timeout(POLL) {
             Ok(frame) => {
@@ -689,6 +775,9 @@ fn stt_loop<S: Stt>(
     loop {
         match rx.recv_cancellable(cancel) {
             Ok(Some(utterance)) => {
+                if shared.is_interrupted(utterance.turn) {
+                    continue;
+                }
                 shared.mark_utterance(utterance.turn, Instant::now());
                 match stt.transcribe(&utterance, cancel) {
                     Ok(transcript) => {
@@ -741,6 +830,9 @@ fn llm_loop<L: Llm>(
     loop {
         match rx.recv_cancellable(cancel) {
             Ok(Some(user)) => {
+                if shared.is_interrupted(user.turn) {
+                    continue;
+                }
                 let mut assistant = String::new();
                 shared.mark_llm_start(user.turn, Instant::now());
                 let gen_result = llm.generate(&history, &user, cancel, &mut |chunk| {
@@ -756,6 +848,7 @@ fn llm_loop<L: Llm>(
                         history.push(HistoryTurn { user, assistant });
                     }
                     Err(Error::Cancelled) => {
+                        shared.release_assistant(user.turn);
                         if let Some(debug) = &shared.turn_debug {
                             debug.note_llm(user.turn, assistant);
                         }
@@ -793,7 +886,7 @@ fn tts_loop<T: Tts>(
     loop {
         match rx.recv_cancellable(cancel) {
             Ok(Some(token)) => {
-                if cancel.is_stale(token.generation) {
+                if shared.is_interrupted(token.turn) || cancel.is_stale(token.generation) {
                     continue;
                 }
                 match tts.synthesize_chunk(&token, cancel) {
@@ -806,6 +899,7 @@ fn tts_loop<T: Tts>(
                         }
                     }
                     Err(Error::Cancelled) => {
+                        shared.release_assistant(token.turn);
                         if cancel.is_shutdown() {
                             return;
                         }
@@ -837,20 +931,39 @@ fn sink_loop<K: AudioSink>(
     shared: &Shared,
 ) {
     loop {
-        match rx.recv_cancellable(cancel) {
-            Ok(Some(audio)) => {
-                if cancel.is_stale(audio.generation) {
+        if cancel.is_shutdown() {
+            return;
+        }
+        if shared.take_flush() {
+            sink.interrupt();
+        }
+        match rx.recv_timeout(POLL) {
+            Ok(audio) => {
+                if shared.take_flush() {
+                    sink.interrupt();
+                }
+                if cancel.is_stale(audio.generation) || shared.is_interrupted(audio.turn) {
                     continue;
                 }
                 let is_last = audio.is_last;
+                let turn = audio.turn;
+                let generation = audio.generation;
                 match sink.play(audio.clone(), cancel) {
                     Ok(()) => {
+                        if shared.take_flush() {
+                            sink.interrupt();
+                        }
+                        if cancel.is_stale(generation) || shared.is_interrupted(turn) {
+                            continue;
+                        }
                         let completed = shared.note_audio(&audio, Instant::now(), cancel);
                         if is_last {
+                            shared.release_assistant(turn);
                             maybe_stop_after(mode, completed, cancel);
                         }
                     }
                     Err(Error::Cancelled) => {
+                        shared.release_assistant(turn);
                         if cancel.is_shutdown() {
                             return;
                         }
@@ -861,12 +974,8 @@ fn sink_loop<K: AudioSink>(
                     }
                 }
             }
-            Ok(None) => return,
-            Err(Error::Cancelled) => return,
-            Err(err) => {
-                shared.fail(err, cancel);
-                return;
-            }
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return,
         }
     }
 }
