@@ -4,7 +4,8 @@
 //! playback. Fake providers remain in the 30-turn in-memory tests. Native
 //! inference tests share one binary (`native_inference`) and skip weight loads
 //! under `cargo llvm-cov` (`cfg(coverage)`). Sequence 22 ships a `dist`
-//! profile executable; model weights stay in the first-run cache.
+//! profile executable; model weights stay in the first-run cache. Sequence 23
+//! publishes those files as a GitHub Release.
 
 pub mod audio;
 pub mod models;
@@ -36,8 +37,10 @@ pub use defaults::{
     BuiltinDefaults, LlmProvider, QueueCaps, SttModel, SttProvider, TtsProvider, VadProvider,
 };
 pub use dist::{
-    artifact_name_for_target, ARTIFACT_FILE_NAMES, DIST_PROFILE, DIST_TARGETS,
-    MAX_DIST_BINARY_BYTES,
+    artifact_name_for_target, artifact_name_for_uname, format_sha256sums_line,
+    latest_release_download_url, parse_sha256sums, sha256sums_contains, ARTIFACT_FILE_NAMES,
+    DIST_PROFILE, DIST_TARGETS, MAX_DIST_BINARY_BYTES, RELEASE_LATEST_DOWNLOAD_PREFIX,
+    SHA256SUMS_FILE_NAME,
 };
 pub use error::{Error, Result};
 pub use fake::{

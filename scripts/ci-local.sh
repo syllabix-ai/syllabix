@@ -43,4 +43,8 @@ artifact="${sidecar%.repro.json}"
 echo "== clean artifact =="
 scripts/check-clean-artifact.sh "${artifact}"
 
+echo "== clean machine =="
+chmod +x scripts/check-clean-machine.sh scripts/write-sha256sums.sh
+scripts/check-clean-machine.sh "${artifact}"
+
 echo "linux CI stand-in passed"

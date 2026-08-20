@@ -88,3 +88,6 @@ EOF
 
 echo "wrote ${dest} (${size} bytes, sha256 ${sha})"
 echo "wrote ${sidecar}"
+
+chmod +x "${root}/scripts/write-sha256sums.sh"
+"${root}/scripts/write-sha256sums.sh" "${dist_dir}"
