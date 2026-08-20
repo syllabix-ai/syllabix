@@ -405,6 +405,8 @@ impl Tts for FailOnceTts {
 pub struct CollectingSink {
     /// Chunks in the order `play` was called, after stale generations were skipped.
     pub chunks: Vec<SynthesizedAudio>,
+    /// Times [`AudioSink::interrupt`] ran (barge-in flush).
+    pub interrupted: usize,
 }
 
 impl AudioSink for CollectingSink {
@@ -417,6 +419,10 @@ impl AudioSink for CollectingSink {
         }
         self.chunks.push(audio);
         Ok(())
+    }
+
+    fn interrupt(&mut self) {
+        self.interrupted += 1;
     }
 }
 
@@ -583,6 +589,8 @@ mod tests {
         };
         sink.play(audio.clone(), &cancel).unwrap();
         assert_eq!(sink.chunks.len(), 1);
+        sink.interrupt();
+        assert_eq!(sink.interrupted, 1);
         cancel.shutdown();
         assert!(matches!(sink.play(audio, &cancel), Err(Error::Cancelled)));
     }

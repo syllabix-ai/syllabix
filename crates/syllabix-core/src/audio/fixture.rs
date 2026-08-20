@@ -107,6 +107,10 @@ impl AudioSink for FixturePlayback {
         }
         Ok(())
     }
+
+    fn interrupt(&mut self) {
+        self.conv.reset();
+    }
 }
 
 /// Playback conversion that drops PCM after measuring live leftover.
@@ -189,6 +193,10 @@ impl AudioSink for DrainingPlayback {
             .fetch_add(converted.len(), Ordering::SeqCst);
         drop(converted);
         Ok(())
+    }
+
+    fn interrupt(&mut self) {
+        self.conv.reset();
     }
 }
 

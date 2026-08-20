@@ -32,6 +32,9 @@ pub enum Commands {
         /// Write per-turn WAVs and a sidecar. Off by default.
         #[arg(long, value_name = "DIR", num_args = 0..=1)]
         turn_debug: Option<Option<PathBuf>>,
+        /// Keep VAD running during TTS and cancel playback on user speech.
+        #[arg(long)]
+        barge_in: bool,
     },
     /// Scaffold an optional project folder with syllabix.yaml.
     Init {
@@ -44,7 +47,10 @@ pub enum Commands {
 /// Dispatch a parsed CLI invocation.
 pub fn execute(cli: Cli) -> Result<()> {
     match cli.command {
-        Commands::Run { turn_debug } => run(turn_debug),
+        Commands::Run {
+            turn_debug,
+            barge_in,
+        } => run(turn_debug, barge_in),
         Commands::Init { dir } => init(dir),
     }
 }
@@ -59,22 +65,22 @@ fn open_turn_debug(flag: Option<Option<PathBuf>>) -> Result<Option<TurnDebug>> {
     }
 }
 
-fn run(turn_debug: Option<Option<PathBuf>>) -> Result<()> {
+fn run(turn_debug: Option<Option<PathBuf>>, barge_in: bool) -> Result<()> {
     let debug = open_turn_debug(turn_debug)?;
     let config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
     let cancel = Cancel::new();
     #[cfg(coverage)]
     {
-        let report = run_live(&config, cancel, None, debug)?;
+        let report = run_live(&config, cancel, None, debug, barge_in)?;
         tracing::info!(turns = report.turns.len(), "conversation ended");
         Ok(())
     }
     #[cfg(not(coverage))]
     {
         if io::stdout().is_terminal() {
-            tui::run_conversation_tui(config, cancel, debug)
+            tui::run_conversation_tui(config, cancel, debug, barge_in)
         } else {
-            let report = run_live(&config, cancel, None, debug)?;
+            let report = run_live(&config, cancel, None, debug, barge_in)?;
             tracing::info!(turns = report.turns.len(), "conversation ended");
             Ok(())
         }
@@ -115,7 +121,13 @@ mod tests {
     fn parses_run() {
         let cli = Cli::try_parse_from(["syllabix", "run"]).expect("parse run");
         match cli.command {
-            Commands::Run { turn_debug } => assert!(turn_debug.is_none()),
+            Commands::Run {
+                turn_debug,
+                barge_in,
+            } => {
+                assert!(turn_debug.is_none());
+                assert!(!barge_in);
+            }
             Commands::Init { .. } => panic!("expected run"),
         }
     }
@@ -124,7 +136,13 @@ mod tests {
     fn parses_run_turn_debug_without_dir() {
         let cli = Cli::try_parse_from(["syllabix", "run", "--turn-debug"]).expect("parse");
         match cli.command {
-            Commands::Run { turn_debug } => assert_eq!(turn_debug, Some(None)),
+            Commands::Run {
+                turn_debug,
+                barge_in,
+            } => {
+                assert_eq!(turn_debug, Some(None));
+                assert!(!barge_in);
+            }
             Commands::Init { .. } => panic!("expected run"),
         }
     }
@@ -134,8 +152,12 @@ mod tests {
         let cli = Cli::try_parse_from(["syllabix", "run", "--turn-debug", "/tmp/turns"])
             .expect("parse dir");
         match cli.command {
-            Commands::Run { turn_debug } => {
+            Commands::Run {
+                turn_debug,
+                barge_in,
+            } => {
                 assert_eq!(turn_debug, Some(Some(PathBuf::from("/tmp/turns"))));
+                assert!(!barge_in);
             }
             Commands::Init { .. } => panic!("expected run"),
         }
@@ -172,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn run_help_lists_turn_debug() {
+    fn run_help_lists_turn_debug_and_barge_in() {
         let mut command = Cli::command();
         let help = command
             .find_subcommand_mut("run")
@@ -180,6 +202,38 @@ mod tests {
             .render_help()
             .to_string();
         assert!(help.contains("--turn-debug"), "{help}");
+        assert!(help.contains("--barge-in"), "{help}");
+    }
+
+    #[test]
+    fn parses_run_barge_in() {
+        let cli = Cli::try_parse_from(["syllabix", "run", "--barge-in"]).expect("parse");
+        match cli.command {
+            Commands::Run { barge_in, .. } => assert!(barge_in),
+            Commands::Init { .. } => panic!("expected run"),
+        }
+    }
+
+    #[test]
+    fn parses_run_barge_in_with_turn_debug() {
+        let cli = Cli::try_parse_from([
+            "syllabix",
+            "run",
+            "--barge-in",
+            "--turn-debug",
+            "/tmp/turns",
+        ])
+        .expect("parse both");
+        match cli.command {
+            Commands::Run {
+                turn_debug,
+                barge_in,
+            } => {
+                assert!(barge_in);
+                assert_eq!(turn_debug, Some(Some(PathBuf::from("/tmp/turns"))));
+            }
+            Commands::Init { .. } => panic!("expected run"),
+        }
     }
 
     #[test]
@@ -214,6 +268,7 @@ mod tests {
         let err = execute(Cli {
             command: Commands::Run {
                 turn_debug: Some(Some(blocker.join("nested"))),
+                barge_in: false,
             },
         })
         .expect_err("unwritable");
@@ -226,7 +281,10 @@ mod tests {
     #[test]
     fn execute_run_uses_fake_loop_under_coverage() {
         execute(Cli {
-            command: Commands::Run { turn_debug: None },
+            command: Commands::Run {
+                turn_debug: None,
+                barge_in: false,
+            },
         })
         .expect("coverage run");
     }
@@ -238,6 +296,7 @@ mod tests {
         execute(Cli {
             command: Commands::Run {
                 turn_debug: Some(Some(dir.clone())),
+                barge_in: false,
             },
         })
         .expect("coverage turn debug");

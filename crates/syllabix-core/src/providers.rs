@@ -64,6 +64,9 @@ pub trait Tts: Send {
 pub trait AudioSink: Send {
     /// Play or collect one chunk. Must check `cancel`.
     fn play(&mut self, audio: SynthesizedAudio, cancel: &Cancel) -> Result<()>;
+
+    /// Duck/stop queued playback. Default is a no-op for collecting sinks.
+    fn interrupt(&mut self) {}
 }
 
 /// Microphone (or fixture) source. Yields v0 PCM frames.

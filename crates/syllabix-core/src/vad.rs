@@ -1,5 +1,6 @@
 //! Silero ONNX voice-activity detection for the v0 16 kHz mono audio contract.
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::time::Duration;
 
@@ -32,6 +33,13 @@ pub const MIN_SPEECH_FRAMES: usize = 4;
 /// Frames of silence that meet [`END_SILENCE`].
 pub const END_SILENCE_FRAMES: usize = 11;
 
+/// Post-AEC audio prepended onto the Whisper utterance before the first ≥0.5 frame.
+pub const WHISPER_PREROLL: Duration = Duration::from_millis(200);
+
+/// Samples in [`WHISPER_PREROLL`] at the v0 capture rate.
+pub const PREROLL_SAMPLES: usize =
+    (DEFAULT_SAMPLE_RATE_HZ as usize) * (WHISPER_PREROLL.as_millis() as usize) / 1000;
+
 /// In-process Silero VAD backed by ONNX Runtime.
 ///
 /// The detector accepts only the fixed v0 capture contract: 512 samples of
@@ -41,6 +49,10 @@ pub const END_SILENCE_FRAMES: usize = 11;
 pub struct SileroVad {
     scorer: Box<dyn ProbabilityScorer>,
     next_turn: u64,
+    /// Recent post-AEC frames that are not part of the open speech clip.
+    history: VecDeque<AudioFrame>,
+    /// Snapshot of [`WHISPER_PREROLL`] taken at the first ≥0.5 frame.
+    preroll: Vec<AudioFrame>,
     /// Speech frames for the open (or still-tentative) utterance.
     current: Vec<AudioFrame>,
     /// Set once [`MIN_SPEECH`] has elapsed; `None` means frames are tentative.
@@ -78,6 +90,8 @@ impl SileroVad {
         Self {
             scorer,
             next_turn: 0,
+            history: VecDeque::new(),
+            preroll: Vec::new(),
             current: Vec::new(),
             active: None,
             speech: Duration::ZERO,
@@ -116,7 +130,8 @@ impl SileroVad {
     fn finish(&mut self) -> Option<VadEvent> {
         self.silence = Duration::ZERO;
         self.speech = Duration::ZERO;
-        let frames = std::mem::take(&mut self.current);
+        let mut frames = std::mem::take(&mut self.preroll);
+        frames.extend(std::mem::take(&mut self.current));
         let event = self.active.take().map(|turn| VadEvent::SpeechEnd {
             utterance: Utterance { turn, frames },
         });
@@ -126,6 +141,32 @@ impl SileroVad {
             self.scorer.reset();
         }
         event
+    }
+
+    fn push_history(&mut self, frame: AudioFrame) {
+        self.history.push_back(frame);
+        loop {
+            let total: usize = self.history.iter().map(|frame| frame.samples.len()).sum();
+            let Some(front) = self.history.front() else {
+                break;
+            };
+            if total.saturating_sub(front.samples.len()) >= PREROLL_SAMPLES {
+                self.history.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn drop_tentative(&mut self, silence: AudioFrame) {
+        let leftover = std::mem::take(&mut self.current);
+        for frame in leftover {
+            self.push_history(frame);
+        }
+        self.push_history(silence);
+        self.preroll.clear();
+        self.speech = Duration::ZERO;
+        self.silence = Duration::ZERO;
     }
 }
 
@@ -140,12 +181,16 @@ impl Vad for SileroVad {
 
         if speech {
             self.silence = Duration::ZERO;
+            if self.current.is_empty() {
+                self.preroll = preroll_frames(&self.history);
+            }
             self.current.push(frame);
             self.speech += FRAME_DURATION;
             if let Some(event) = self.promote() {
                 events.push(event);
             }
         } else if self.active.is_some() {
+            self.push_history(frame);
             self.silence += FRAME_DURATION;
             if self.silence >= END_SILENCE {
                 if let Some(event) = self.finish() {
@@ -153,10 +198,9 @@ impl Vad for SileroVad {
                 }
             }
         } else if !self.current.is_empty() {
-            // Tentative speech never reached min duration; drop it.
-            self.current.clear();
-            self.speech = Duration::ZERO;
-            self.silence = Duration::ZERO;
+            self.drop_tentative(frame);
+        } else {
+            self.push_history(frame);
         }
 
         Ok(events)
@@ -172,11 +216,46 @@ impl SileroVad {
     pub fn reset(&mut self) {
         self.scorer.reset();
         self.next_turn = 0;
+        self.history.clear();
+        self.preroll.clear();
         self.current.clear();
         self.active = None;
         self.speech = Duration::ZERO;
         self.silence = Duration::ZERO;
     }
+}
+
+fn preroll_frames(history: &VecDeque<AudioFrame>) -> Vec<AudioFrame> {
+    let total: usize = history.iter().map(|frame| frame.samples.len()).sum();
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut skip = total.saturating_sub(PREROLL_SAMPLES);
+    let mut out = Vec::new();
+    for frame in history {
+        if skip >= frame.samples.len() {
+            skip -= frame.samples.len();
+            continue;
+        }
+        let start = skip;
+        skip = 0;
+        let samples = frame.samples[start..].to_vec();
+        let capture_pcm = frame.capture_pcm.as_ref().map(|pcm| {
+            if start < pcm.len() {
+                pcm[start..].to_vec()
+            } else {
+                Vec::new()
+            }
+        });
+        out.push(AudioFrame {
+            seq: frame.seq,
+            sample_rate_hz: frame.sample_rate_hz,
+            channels: frame.channels,
+            samples,
+            capture_pcm,
+        });
+    }
+    out
 }
 
 trait ProbabilityScorer: Send {
@@ -343,12 +422,68 @@ mod tests {
             panic!("expected a speech end");
         };
         assert_eq!(utterance.turn, TurnId(0));
-        assert_eq!(utterance.frames.len(), MIN_SPEECH_FRAMES);
-        assert_eq!(utterance.frames[0].seq, 1);
+        assert_eq!(utterance.frames.len(), 1 + MIN_SPEECH_FRAMES);
+        assert_eq!(utterance.frames[0].seq, 0, "leading silence is preroll");
+        assert_eq!(utterance.frames[1].seq, 1);
         assert_eq!(
-            utterance.frames[MIN_SPEECH_FRAMES - 1].seq,
+            utterance.frames[MIN_SPEECH_FRAMES].seq,
             MIN_SPEECH_FRAMES as u64
         );
+        assert_eq!(
+            utterance.pcm().len(),
+            (1 + MIN_SPEECH_FRAMES) * FRAME_SAMPLES
+        );
+    }
+
+    fn marked_frame(seq: u64, fill: i16) -> AudioFrame {
+        AudioFrame::new(
+            seq,
+            DEFAULT_SAMPLE_RATE_HZ,
+            DEFAULT_CHANNELS,
+            vec![fill; FRAME_SAMPLES],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn whisper_utterance_includes_200ms_preroll() {
+        let preroll_frames = 8;
+        let probabilities = std::iter::repeat_n(0.1, preroll_frames)
+            .chain(std::iter::repeat_n(0.9, MIN_SPEECH_FRAMES))
+            .chain(std::iter::repeat_n(0.1, END_SILENCE_FRAMES))
+            .collect();
+        let mut vad = SileroVad::with_scorer(Box::new(ScriptedScorer(probabilities)));
+        let mut events = Vec::new();
+        let mut seq = 0_u64;
+        for _ in 0..preroll_frames {
+            events.extend(
+                vad.push_frame(marked_frame(seq, i16::try_from(seq).unwrap()))
+                    .unwrap(),
+            );
+            seq += 1;
+        }
+        for _ in 0..MIN_SPEECH_FRAMES {
+            events.extend(vad.push_frame(marked_frame(seq, 100)).unwrap());
+            seq += 1;
+        }
+        for _ in 0..END_SILENCE_FRAMES {
+            events.extend(vad.push_frame(marked_frame(seq, 0)).unwrap());
+            seq += 1;
+        }
+        let Some(VadEvent::SpeechEnd { utterance }) = events.last() else {
+            panic!("expected speech end, got {events:?}");
+        };
+        let pcm = utterance.pcm();
+        assert!(pcm.len() >= PREROLL_SAMPLES + MIN_SPEECH_FRAMES * FRAME_SAMPLES);
+        let preroll = &pcm[..PREROLL_SAMPLES];
+        assert!(
+            preroll.iter().all(|s| *s != 100 && *s != 0),
+            "preroll must be the audio before the first ≥0.5 frame"
+        );
+        let speech = &pcm[PREROLL_SAMPLES..PREROLL_SAMPLES + MIN_SPEECH_FRAMES * FRAME_SAMPLES];
+        assert!(speech.iter().all(|s| *s == 100));
+        assert_eq!(preroll.len(), PREROLL_SAMPLES);
+        assert_eq!(WHISPER_PREROLL, Duration::from_millis(200));
     }
 
     #[test]

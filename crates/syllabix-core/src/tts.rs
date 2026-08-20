@@ -153,11 +153,11 @@ impl Tts for KokoroTts {
             if spoken.is_empty() {
                 continue;
             }
-            let samples = self
-                .engine
-                .lock()
-                .expect("kokoro engine")
-                .synthesize(&spoken, cancel)?;
+            let samples = self.engine.lock().expect("kokoro engine").synthesize(
+                &spoken,
+                cancel,
+                token.generation,
+            )?;
             let is_last = token.is_last && i == last_i;
             out.push(self.emit(samples, token, is_last));
         }
@@ -173,7 +173,12 @@ impl Tts for KokoroTts {
 }
 
 trait WaveformEngine: Send {
-    fn synthesize(&mut self, sentence: &str, cancel: &Cancel) -> Result<Vec<i16>>;
+    fn synthesize(
+        &mut self,
+        sentence: &str,
+        cancel: &Cancel,
+        generation: GenerationId,
+    ) -> Result<Vec<i16>>;
 }
 
 struct OrtKokoro {
@@ -242,19 +247,27 @@ impl OrtKokoro {
 }
 
 impl WaveformEngine for OrtKokoro {
-    fn synthesize(&mut self, sentence: &str, cancel: &Cancel) -> Result<Vec<i16>> {
-        if cancel.is_shutdown() {
+    fn synthesize(
+        &mut self,
+        sentence: &str,
+        cancel: &Cancel,
+        generation: GenerationId,
+    ) -> Result<Vec<i16>> {
+        if cancel.is_shutdown() || cancel.is_stale(generation) {
             return Err(Error::Cancelled);
         }
         let mut pcm = Vec::new();
         for ids in phoneme_windows(sentence)? {
-            if cancel.is_shutdown() {
+            if cancel.is_shutdown() || cancel.is_stale(generation) {
                 return Err(Error::Cancelled);
             }
             if ids.is_empty() {
                 continue;
             }
             let native = self.infer(&ids)?;
+            if cancel.is_stale(generation) {
+                return Err(Error::Cancelled);
+            }
             pcm.extend(resample_to_v0(&native));
         }
         if pcm.is_empty() {
@@ -371,8 +384,13 @@ mod tests {
     }
 
     impl WaveformEngine for ScriptedEngine {
-        fn synthesize(&mut self, sentence: &str, cancel: &Cancel) -> Result<Vec<i16>> {
-            if cancel.is_shutdown() {
+        fn synthesize(
+            &mut self,
+            sentence: &str,
+            cancel: &Cancel,
+            generation: GenerationId,
+        ) -> Result<Vec<i16>> {
+            if cancel.is_shutdown() || cancel.is_stale(generation) {
                 return Err(Error::Cancelled);
             }
             self.calls.lock().expect("calls").push(sentence.to_string());

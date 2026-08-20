@@ -75,7 +75,7 @@ pub use types::{
 };
 pub use vad::{
     SileroVad, END_SILENCE, END_SILENCE_FRAMES, FRAME_DURATION, MIN_SPEECH, MIN_SPEECH_FRAMES,
-    SPEECH_THRESHOLD,
+    PREROLL_SAMPLES, SPEECH_THRESHOLD, WHISPER_PREROLL,
 };
 
 /// Force-link both native frontends into `syllabix` (PR 10).
