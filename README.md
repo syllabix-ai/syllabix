@@ -14,7 +14,7 @@ cargo run -p syllabix -- run --turn-debug   # optional per-turn WAVs + sidecar
 cargo run -p syllabix -- run --barge-in     # interrupt TTS when the user speaks
 ```
 
-## Intended 3-minute path (Release binary not shipping yet)
+## Intended 3-minute path (Release publication is sequence 23)
 
 ```bash
 curl -L https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-$(uname -s)-$(uname -m) -o syllabix
@@ -22,7 +22,25 @@ chmod +x syllabix
 ./syllabix run
 ```
 
-GitHub Releases are not published yet. From this checkout, `cargo run -p syllabix -- run` talks on a machine with a microphone and speakers. First run fetches model weights into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`. WebRTC AEC3 echo control is on by default and calibrates automatically from the samples sent to the speakers while the microphone stays open. If the terminal reports a lost speaker reference or the laptop still self-interrupts, use headphones and include the device names from the startup line in a bug report.
+GitHub Releases are not published yet (sequence 23). Sequence 22 produces the installable files:
+
+| Target | Artifact |
+| --- | --- |
+| Linux x64 | `syllabix-Linux-x86_64` |
+| macOS Apple Silicon | `syllabix-Darwin-arm64` |
+| macOS Intel | `syllabix-Darwin-x86_64` |
+| Windows x64 | `syllabix-Windows-x86_64.exe` |
+
+```bash
+./scripts/package-release.sh                         # host triple
+./scripts/package-release.sh x86_64-unknown-linux-gnu
+./scripts/check-clean-artifact.sh dist/syllabix-Linux-x86_64
+./scripts/check-repro.sh                             # two isolated dist builds
+```
+
+`cargo build -p syllabix --profile dist` is thin-LTO, one codegen unit, debuginfo stripped. Default `release` is unchanged for `ci-local.sh`. The executable does **not** pack Silero / Whisper / Llama / Kokoro weights; first `run` fetches them into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1` (`%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows), verifies SHA-256, and reuses the cache offline. `--help` / `init` do not need the cache.
+
+From this checkout, `cargo run -p syllabix -- run` talks on a machine with a microphone and speakers. WebRTC AEC3 echo control is on by default and calibrates automatically from the samples sent to the speakers while the microphone stays open. If the terminal reports a lost speaker reference or the laptop still self-interrupts, use headphones and include the device names from the startup line in a bug report.
 
 ## CLI
 
@@ -43,11 +61,12 @@ Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-./scripts/ci-local.sh   # Linux stand-in for GitHub Actions
+./scripts/ci-local.sh   # Linux stand-in for GitHub Actions (includes dist package + clean artifact)
+./scripts/check-repro.sh  # two dist builds; matching *.repro.json including sha256
 # `cargo llvm-cov --workspace --fail-under-lines 85` skips native inference (`cfg(coverage)`). Run `cargo test` for Whisper/Llama/Kokoro.
 ```
 
-Model weights are not in git. A versioned manifest lists Silero, whisper.cpp `small`, llama-3.2-1b, and Kokoro. The cache writes into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`, verifies SHA-256, and reuses files offline. `syllabix run` fills that cache on first launch.
+Model weights are not in git and are not packed into the `dist` executable. A versioned manifest lists Silero, whisper.cpp `small`, llama-3.2-1b, and Kokoro. The cache writes into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`, verifies SHA-256, and reuses files offline. `syllabix run` fills that cache on first launch.
 
 CI records and plays a WAV fixture (no microphone). That path also soaks 30 minutes of *audio time* through bounded queues faster than real time. A six-turn native loop test runs Silero → whisper.cpp → llama.cpp → Kokoro through fixture capture/playback. The first STT/LLM/TTS/VAD test run fetches weights into the model cache.
 

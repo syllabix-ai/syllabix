@@ -41,3 +41,13 @@ ratatui = { version = "=0.26.3", default-features = false, features = ["crosster
 # One CPU-only ggml, shared by whisper.cpp and llama.cpp. GPU/Metal/CUDA
 # stay off so the binary keeps the declared dynamic-library set.
 syllabix-native = { path = "crates/syllabix-native" }
+
+# Installable artifacts (V0_LAUNCH sequence 22). Default `release` stays the
+# CI / `ci-local.sh` profile so everyday checks do not pay thin LTO.
+# `strip = "debuginfo"` keeps `nm` able to prove one `ggml_new_tensor`.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+strip = "debuginfo"

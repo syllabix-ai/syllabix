@@ -3,7 +3,8 @@
 //! Pull request 13 runs Silero → whisper.cpp → llama.cpp → Kokoro → fixture
 //! playback. Fake providers remain in the 30-turn in-memory tests. Native
 //! inference tests share one binary (`native_inference`) and skip weight loads
-//! under `cargo llvm-cov` (`cfg(coverage)`).
+//! under `cargo llvm-cov` (`cfg(coverage)`). Sequence 22 ships a `dist`
+//! profile executable; model weights stay in the first-run cache.
 
 pub mod audio;
 pub mod models;
@@ -11,6 +12,7 @@ pub mod models;
 mod cancel;
 mod config;
 mod defaults;
+mod dist;
 mod error;
 mod fake;
 mod g2p;
@@ -32,6 +34,10 @@ pub use cancel::Cancel;
 pub use config::{AgentConfig, CONFIG_FILE_NAME};
 pub use defaults::{
     BuiltinDefaults, LlmProvider, QueueCaps, SttModel, SttProvider, TtsProvider, VadProvider,
+};
+pub use dist::{
+    artifact_name_for_target, ARTIFACT_FILE_NAMES, DIST_PROFILE, DIST_TARGETS,
+    MAX_DIST_BINARY_BYTES,
 };
 pub use error::{Error, Result};
 pub use fake::{
