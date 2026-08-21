@@ -1,0 +1,118 @@
+name: Weekly full check
+
+# Full cross-platform safety net on GitHub-hosted runners.
+# The per-PR fast gate (fmt / clippy / coverage) lives in ci.yml on the
+# self-hosted macOS runner (0 billed minutes); this workflow re-validates
+# every supported OS and the Linux coverage baseline on hosted runners
+# (~80-90 billed minutes per run).
+
+on:
+  schedule:
+    - cron: "0 06 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  SYLLABIX_CACHE_DIR: ${{ github.workspace }}/.syllabix-cache
+
+# A scheduled run superseded by a manual run (or vice versa) is cancelled so
+# both never bill at once.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Keeps the Linux coverage baseline honest now that the per-PR coverage
+  # gate runs on macOS (Darwin-specific code paths shift line coverage).
+  coverage-linux:
+    name: code coverage (linux baseline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          components: llvm-tools-preview
+      - name: Install ALSA headers and CMake
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.syllabix-cache
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
+      # Keep cargo-llvm-cov aligned with DEVELOPMENT.md and local verification.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.6.21
+      - uses: Swatinem/rust-cache@v2
+      - name: Run unit tests with coverage
+        run: cargo llvm-cov --workspace --fail-under-lines 85 --cobertura --output-path coverage.xml
+      - name: Store coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-cobertura-linux
+          path: coverage.xml
+          if-no-files-found: error
+
+  test:
+    name: test / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      # Bill all three legs only when they can all pass; stop the others as
+      # soon as one fails.
+      fail-fast: true
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            extra_target: ""
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            extra_target: ""
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            extra_target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          targets: ${{ matrix.target }}${{ matrix.extra_target != '' && format(',{0}', matrix.extra_target) || '' }}
+      - name: Install ALSA headers and CMake
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+      - name: Install CMake
+        if: runner.os == 'macOS'
+        run: brew install cmake
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.syllabix-cache
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - name: Unit and CLI tests
+        run: cargo test --workspace --target ${{ matrix.target }}
+      - name: Release compile
+        run: cargo build --workspace --release --target ${{ matrix.target }}
+      - name: Cross-compile macOS Intel
+        if: matrix.extra_target != ''
+        run: cargo build --workspace --release --target ${{ matrix.extra_target }}
+      - name: Check undeclared dynamic libraries
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x scripts/check-dynamic-libs.sh
+          scripts/check-dynamic-libs.sh "target/${{ matrix.target }}/release/syllabix"
+      - name: Check one shared ggml
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x scripts/check-one-ggml.sh
+          scripts/check-one-ggml.sh "target/${{ matrix.target }}/release/syllabix"
+
+  # Dist packaging and GitHub Release attach live in release.yml (v* tags only).
