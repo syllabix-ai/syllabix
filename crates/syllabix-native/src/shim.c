@@ -49,7 +49,12 @@ void syllabix_native_hush_logs(void) {
 }
 
 int syllabix_native_link_anchor(void) {
-    /* Volatile so LTO / --gc-sections cannot delete the referred objects. */
+    /* Volatile so LTO / --gc-sections cannot delete the referred objects.
+     * Address-takes only: do not CALL llama/whisper_print_system_info here.
+     * They build into shared static std::string buffers (clear + append)
+     * that are not thread-safe; racing them against syllabix_llama_system_info
+     * from parallel test threads returned wiped strings. See
+     * llama_system_info() in src/lib.rs, which memoizes the real call. */
     volatile uintptr_t keep = 0;
     keep ^= (uintptr_t)ggml_new_tensor;
     keep ^= (uintptr_t)whisper_init_from_file_with_params;
@@ -60,9 +65,7 @@ int syllabix_native_link_anchor(void) {
     keep ^= (uintptr_t)llama_model_load_from_file;
     keep ^= (uintptr_t)llama_decode;
     keep ^= (uintptr_t)llama_chat_apply_template;
-    const char *llama_info = llama_print_system_info();
-    const char *whisper_info = whisper_print_system_info();
-    return (llama_info != NULL) && (whisper_info != NULL) && (keep != 0);
+    return keep != 0 ? 1 : 0;
 }
 
 const char *syllabix_llama_system_info(void) {

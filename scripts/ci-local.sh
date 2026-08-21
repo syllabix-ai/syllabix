@@ -43,8 +43,12 @@ artifact="${sidecar%.repro.json}"
 echo "== clean artifact =="
 scripts/check-clean-artifact.sh "${artifact}"
 
-echo "== clean machine =="
-chmod +x scripts/check-clean-machine.sh scripts/write-sha256sums.sh
-scripts/check-clean-machine.sh "${artifact}"
+echo "== smoke-offline-setup =="
+chmod +x scripts/smoke-offline-setup.sh scripts/write-sha256sums.sh
+scripts/smoke-offline-setup.sh "${artifact}"
+
+echo "== smoke-setup (sequence 27) =="
+chmod +x scripts/smoke-setup.sh
+scripts/smoke-setup.sh "${artifact}"
 
 echo "linux CI stand-in passed"

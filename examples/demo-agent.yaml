@@ -1,0 +1,21 @@
+# Minimal Syllabix example — the launch config shape from V0_LAUNCH.md.
+# Copy into a project folder as syllabix.yaml, or generate the canonical
+# version with `syllabix init`. `syllabix run` needs no yaml at all.
+#
+# Omitted VAD keys fall back to the launch defaults:
+#   threshold 0.5, min_speech_ms 100, end_silence_ms 350, preroll_ms 200.
+# Other LLM ids: qwen3.5-0.8b / qwen3.5-2b (add `thinking: true` for Qwen
+# chain-of-thought; it is stripped before TTS either way).
+name: demo-agent
+pipeline:
+  vad:
+    provider: silero
+  stt:
+    provider: whisper.cpp
+    model: small
+    language: en
+  llm:
+    provider: llama.cpp
+    model: llama-3.2-1b
+  tts:
+    provider: kokoro

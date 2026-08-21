@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Clean-machine checks for a dist artifact: checksum, no contributor
-# toolchain, and a second run that must not hit the network when the
-# model cache is already populated.
+# One promise: the models are already in the cache, so a second run must
+# work without fetching anything. Verifies checksum and clean `--help`
+# first, then runs from a temp HOME with a warm cache and asserts no
+# network use.
 #
 # Spoken-reply in under three minutes needs a laptop mic/speakers (Hardware
 # Yes). This script does not open a conversation unless devices exist.
@@ -58,7 +59,7 @@ case "${base}" in
 esac
 if [[ "${skip_exec}" -eq 1 ]]; then
   echo "skipping offline run: ${base} is not native on ${os}/${arch}"
-  echo "clean machine check passed (checksum + skipped exec)"
+  echo "smoke-offline-setup passed (checksum + skipped exec)"
   exit 0
 fi
 
@@ -77,27 +78,42 @@ if [[ -n "${src_cache}" && -d "${src_cache}/models/v1" ]]; then
   mkdir -p "${tmp}/home/.cache/syllabix/models"
   cp -a "${src_cache}/models/v1" "${tmp}/home/.cache/syllabix/models/v1"
   echo "== second run with network blocked (warm cache) =="
-  run_offline() {
-    env -i \
-      PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
-      HOME="${tmp}/home" \
-      TERM="${TERM:-xterm}" \
-      LC_ALL=C \
-      "$@"
-  }
-  limiter=()
-  if command -v timeout >/dev/null 2>&1; then
-    limiter=(timeout 8)
-  fi
-  set +e
+  # Portable watchdog: GNU timeout when present, otherwise background kill.
+  # macOS ships no `timeout`; without this the run would block forever on a
+  # machine that has mic/speakers (it opens devices and waits for speech).
+  # The sanitized `env -i` stays a real executable, so it composes with both.
+  inner=(env -i \
+    PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+    HOME="${tmp}/home" \
+    TERM="${TERM:-xterm}" \
+    LC_ALL=C)
   if command -v unshare >/dev/null 2>&1 && unshare -n true >/dev/null 2>&1; then
-    out="$(run_offline unshare -n "${limiter[@]}" "${copied}" run 2>&1)"
+    inner+=(unshare -n)
+  fi
+  inner+=("${copied}" run)
+  # Run from a neutral cwd: a clean machine has no ./syllabix.yaml, and the
+  # repo checkout must not leak one into the offline check.
+  set +e
+  if command -v timeout >/dev/null 2>&1; then
+    out="$(cd "${tmp}/home" && timeout 8 "${inner[@]}" 2>&1)"
     status=$?
   else
-    out="$(run_offline "${limiter[@]}" "${copied}" run 2>&1)"
+    log="${tmp}/offline-run.log"
+    (cd "${tmp}/home" && exec "${inner[@]}") >"${log}" 2>&1 &
+    pid=$!
+    { sleep 8 && kill "${pid}" 2>/dev/null; } &
+    watchdog=$!
+    wait "${pid}"
     status=$?
+    kill "${watchdog}" 2>/dev/null || true
+    wait "${watchdog}" 2>/dev/null || true
+    out="$(cat "${log}" 2>/dev/null || true)"
   fi
   set -e
+  if [[ "${status}" -eq 127 ]]; then
+    echo "offline run failed to start the binary (exit 127)" >&2
+    exit 1
+  fi
   printf '%s\n' "${out}" | tail -n 40
   if printf '%s\n' "${out}" | grep -qiE 'download failed|network blocked|checksum mismatch'; then
     echo "offline run touched the network or rejected the cache" >&2
@@ -114,4 +130,4 @@ else
   echo "human: empty cache, download the Release binary, ./syllabix run, then a second run with network blocked"
 fi
 
-echo "clean machine check passed"
+echo "smoke-offline-setup passed"

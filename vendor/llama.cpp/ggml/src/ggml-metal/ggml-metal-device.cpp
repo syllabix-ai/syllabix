@@ -18,11 +18,16 @@ struct ggml_metal_device_deleter {
 typedef std::unique_ptr<ggml_metal_device, ggml_metal_device_deleter> ggml_metal_device_ptr;
 
 ggml_metal_device_t ggml_metal_device_get(int device) {
-    static std::vector<ggml_metal_device_ptr> devs;
+    // Syllabix local patch: leak the device cache on purpose (never run its
+    // destructor). Freeing Metal devices from a C++ static destructor during
+    // __cxa_finalize trips GGML_ASSERT([rsets->data count] == 0) inside
+    // ggml_metal_rsets_free, aborting every ggml Metal process at exit while
+    // contexts are still alive. Intentional leak at exit; no runtime change.
+    static std::vector<ggml_metal_device_ptr>* devs = new std::vector<ggml_metal_device_ptr>();
 
-    devs.emplace_back(ggml_metal_device_init(device));
+    devs->emplace_back(ggml_metal_device_init(device));
 
-    return devs.back().get();
+    return devs->back().get();
 }
 
 struct ggml_metal_pipelines {
