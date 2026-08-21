@@ -4,6 +4,24 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      pool:
+        description: "Runner pool for the fast checks (default: self-hosted, free)"
+        type: choice
+        default: '["self-hosted", "macOS"]'
+        options:
+          - '["self-hosted", "macOS"]'
+          - '["ubuntu-latest"]'
+
+# Superseded runs (multiple pushes per branch) are cancelled so they stop
+# consuming runner time.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,11 +29,13 @@ env:
   SYLLABIX_CACHE_DIR: ${{ github.workspace }}/.syllabix-cache
 
 jobs:
+  # Fast per-PR gate. OS-agnostic, runs on the self-hosted macOS runner
+  # (0 billed Actions minutes); workflow_dispatch may override to hosted.
   coverage:
     name: code coverage
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
+    timeout-minutes: 15
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     steps:
       # Use the PR head so reported lines map to the submitted diff.
       - uses: actions/checkout@v6
@@ -25,7 +45,11 @@ jobs:
         with:
           components: llvm-tools-preview
       - name: Install ALSA headers and CMake
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+      - name: Ensure CMake (no-op when preinstalled on the runner)
+        if: runner.os == 'macOS'
+        run: command -v cmake || brew install cmake
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
@@ -35,6 +59,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov@0.6.21
+      # Coverage now runs on macOS (self-hosted) instead of hosted Linux; the
+      # Linux baseline is re-checked weekly in weekly.yml (coverage-linux).
+      - uses: Swatinem/rust-cache@v2
       - name: Run unit tests with coverage
         run: cargo llvm-cov --workspace --fail-under-lines 85 --cobertura --output-path coverage.xml
       - name: Store coverage report
@@ -46,9 +73,11 @@ jobs:
 
   fmt:
     name: rustfmt
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
+    timeout-minutes: 15
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.91.0
         with:
           components: rustfmt
@@ -56,70 +85,25 @@ jobs:
 
   clippy:
     name: clippy
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
+    timeout-minutes: 15
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.91.0
         with:
           components: clippy
       - name: Install ALSA headers and CMake
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+      - name: Ensure CMake (no-op when preinstalled on the runner)
+        if: runner.os == 'macOS'
+        run: command -v cmake || brew install cmake
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  test:
-    name: test / ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux-x64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            extra_target: ""
-          - name: windows-x64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            extra_target: ""
-          - name: macos-arm64
-            os: macos-latest
-            target: aarch64-apple-darwin
-            extra_target: x86_64-apple-darwin
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.91.0
-        with:
-          targets: ${{ matrix.target }}${{ matrix.extra_target != '' && format(',{0}', matrix.extra_target) || '' }}
-      - name: Install ALSA headers and CMake
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
-      - name: Install CMake
-        if: runner.os == 'macOS'
-        run: brew install cmake
-      - uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.name }}
-      - name: Unit and CLI tests
-        run: cargo test --workspace --target ${{ matrix.target }}
-      - name: Release compile
-        run: cargo build --workspace --release --target ${{ matrix.target }}
-      - name: Cross-compile macOS Intel
-        if: matrix.extra_target != ''
-        run: cargo build --workspace --release --target ${{ matrix.extra_target }}
-      - name: Check undeclared dynamic libraries
-        if: runner.os == 'Linux'
-        run: |
-          chmod +x scripts/check-dynamic-libs.sh
-          scripts/check-dynamic-libs.sh "target/${{ matrix.target }}/release/syllabix"
-      - name: Check one shared ggml
-        if: runner.os == 'Linux'
-        run: |
-          chmod +x scripts/check-one-ggml.sh
-          scripts/check-one-ggml.sh "target/${{ matrix.target }}/release/syllabix"
-
-  # Dist packaging and GitHub Release attach live in release.yml (v* tags only).
+  # The cross-platform test matrix (linux/windows/macos + Intel cross-build)
+  # moved to weekly.yml: scheduled Mondays or on demand via workflow_dispatch.
+  # It bills GitHub Actions minutes (~80-90/run), so it no longer runs on
+  # every push/PR. Dist packaging and GitHub Release attach remain in
+  # release.yml (v* tags only). PR CI still does not package dist binaries.
