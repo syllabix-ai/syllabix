@@ -33,6 +33,8 @@ mod ffi {
         pub fn syllabix_llama_system_info() -> *const c_char;
         pub fn syllabix_llama_backend_init();
         pub fn syllabix_llama_backend_free();
+        pub fn syllabix_llama_n_gpu_layers() -> c_int;
+        pub fn syllabix_whisper_use_gpu() -> c_int;
         pub fn syllabix_whisper_load(path: *const c_char) -> *mut WhisperContext;
         pub fn syllabix_whisper_free(ctx: *mut WhisperContext);
         pub fn syllabix_whisper_decode(
@@ -92,6 +94,16 @@ pub fn llama_system_info() -> String {
             CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
     }
+}
+
+/// Layers offloaded to Metal. `-1` on Darwin (all), `0` on Linux/Windows.
+pub fn llama_n_gpu_layers() -> i32 {
+    unsafe { ffi::syllabix_llama_n_gpu_layers() }
+}
+
+/// Whisper encoder uses Metal on Darwin. CPU everywhere else.
+pub fn whisper_use_gpu() -> bool {
+    unsafe { ffi::syllabix_whisper_use_gpu() != 0 }
 }
 
 /// In-process whisper.cpp context loaded from a GGML weight file.
@@ -335,11 +347,35 @@ mod tests {
             !info.is_empty(),
             "llama.cpp frontend must report system info"
         );
+        let lower = info.to_ascii_lowercase();
         assert!(
-            !info.to_ascii_lowercase().contains("cuda")
-                || info.to_ascii_lowercase().contains("cpu"),
+            !lower.contains("cuda") || lower.contains("cpu"),
             "unexpected llama system info: {info}"
         );
+    }
+
+    #[test]
+    fn n_gpu_layers_matches_os() {
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            assert_eq!(llama_n_gpu_layers(), 0);
+            assert!(!whisper_use_gpu());
+            let lower = llama_system_info().to_ascii_lowercase();
+            assert!(
+                !lower.contains("metal") && !lower.contains("mtl"),
+                "Linux/Windows ggml must stay CPU-only: {lower}"
+            );
+        }
+        #[cfg(target_vendor = "apple")]
+        {
+            assert_eq!(llama_n_gpu_layers(), -1);
+            assert!(whisper_use_gpu());
+            let lower = llama_system_info().to_ascii_lowercase();
+            assert!(
+                lower.contains("metal") || lower.contains("mtl"),
+                "Darwin ggml must compile Metal: {lower}"
+            );
+        }
     }
 
     #[test]
