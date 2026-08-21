@@ -20,6 +20,11 @@ const char *syllabix_llama_system_info(void);
 void syllabix_llama_backend_init(void);
 void syllabix_llama_backend_free(void);
 
+/* Darwin Metal: -1 (all layers). Linux/Windows CPU: 0. Does not load weights. */
+int syllabix_llama_n_gpu_layers(void);
+/* Darwin Metal: true. Linux/Windows: false. Does not load weights. */
+int syllabix_whisper_use_gpu(void);
+
 struct whisper_context *syllabix_whisper_load(const char *path);
 void syllabix_whisper_free(struct whisper_context *ctx);
 

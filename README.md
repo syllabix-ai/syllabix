@@ -61,7 +61,7 @@ There is no `serve`, `bench`, cloud provider, or API key in v0. `run` does not r
 
 ## Develop
 
-Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share one CPU `ggml` compiled into the binary. Linux contributors also need ALSA headers (`libasound2-dev`).
+Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share one `ggml` compiled into the binary (Darwin Metal + Accelerate; Linux/Windows portable CPU). Linux contributors also need ALSA headers (`libasound2-dev`).
 
 ```bash
 cargo fmt --all -- --check

@@ -102,5 +102,15 @@ mod shared_ggml_tests {
         assert!(super::ensure_shared_ggml_frontends());
         let info = syllabix_native::llama_system_info();
         assert!(!info.is_empty(), "llama.cpp frontend must be linked");
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            assert_eq!(syllabix_native::llama_n_gpu_layers(), 0);
+            assert!(!syllabix_native::whisper_use_gpu());
+        }
+        #[cfg(target_vendor = "apple")]
+        {
+            assert_eq!(syllabix_native::llama_n_gpu_layers(), -1);
+            assert!(syllabix_native::whisper_use_gpu());
+        }
     }
 }

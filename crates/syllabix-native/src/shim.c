@@ -27,6 +27,22 @@ static int min_int(int a, int b) {
     return a < b ? a : b;
 }
 
+int syllabix_llama_n_gpu_layers(void) {
+#if defined(__APPLE__)
+    return -1;
+#else
+    return 0;
+#endif
+}
+
+int syllabix_whisper_use_gpu(void) {
+#if defined(__APPLE__)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 void syllabix_native_hush_logs(void) {
     whisper_log_set(silent_log, NULL);
     llama_log_set(silent_log, NULL);
@@ -63,7 +79,7 @@ void syllabix_llama_backend_free(void) {
 
 struct whisper_context *syllabix_whisper_load(const char *path) {
     struct whisper_context_params params = whisper_context_default_params();
-    params.use_gpu = false;
+    params.use_gpu = syllabix_whisper_use_gpu() != 0;
     params.flash_attn = false;
     return whisper_init_from_file_with_params(path, params);
 }
@@ -157,7 +173,7 @@ struct syllabix_llama *syllabix_llama_load(const char *path, int n_threads) {
     llama_backend_init();
 
     struct llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0;
+    model_params.n_gpu_layers = syllabix_llama_n_gpu_layers();
 
     struct llama_model *model = llama_model_load_from_file(path, model_params);
     if (model == NULL) {
@@ -171,7 +187,7 @@ struct syllabix_llama *syllabix_llama_load(const char *path, int n_threads) {
     ctx_params.n_ubatch = ctx_params.n_batch;
     ctx_params.n_threads = n_threads;
     ctx_params.n_threads_batch = n_threads;
-    ctx_params.offload_kqv = false;
+    ctx_params.offload_kqv = syllabix_llama_n_gpu_layers() != 0;
 
     struct llama_context *ctx = llama_init_from_model(model, ctx_params);
     if (ctx == NULL) {

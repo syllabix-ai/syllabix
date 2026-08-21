@@ -9,22 +9,52 @@ fn main() {
     println!("cargo:rerun-if-changed=include/syllabix_native.h");
     println!("cargo:rerun-if-changed=../../vendor/llama.cpp");
     println!("cargo:rerun-if-changed=../../vendor/whisper.cpp");
+    println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
 
-    let dst = cmake::Config::new(".")
+    let target = env::var("TARGET").unwrap_or_default();
+    let apple = target.contains("apple");
+    let apple_arm = apple && (target.starts_with("aarch64") || target.contains("arm64"));
+
+    let mut config = cmake::Config::new(".");
+    config
         .define("BUILD_SHARED_LIBS", "OFF")
-        .define("GGML_NATIVE", "OFF")
-        .define("GGML_METAL", "OFF")
         .define("GGML_CUDA", "OFF")
         .define("GGML_OPENMP", "OFF")
-        .define("GGML_BLAS", "OFF")
         .define("LLAMA_BUILD_COMMON", "OFF")
         .define("LLAMA_BUILD_TESTS", "OFF")
         .define("LLAMA_BUILD_TOOLS", "OFF")
         .define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
         .define("LLAMA_BUILD_APP", "OFF")
-        .define("LLAMA_OPENSSL", "OFF")
-        .build();
+        .define("LLAMA_OPENSSL", "OFF");
+
+    if apple {
+        config
+            .define("GGML_METAL", "ON")
+            .define("GGML_METAL_EMBED_LIBRARY", "ON")
+            .define("GGML_BLAS", "ON")
+            .define("GGML_BLAS_VENDOR", "Apple")
+            .define("GGML_ACCELERATE", "ON");
+        if apple_arm {
+            config.define("GGML_NATIVE", "ON");
+        } else {
+            config.define("GGML_NATIVE", "OFF");
+        }
+        config.define("GGML_CPU_KLEIDIAI", "OFF");
+        if let Ok(macosx) = env::var("MACOSX_DEPLOYMENT_TARGET") {
+            config.define("CMAKE_OSX_DEPLOYMENT_TARGET", &macosx);
+        }
+    } else {
+        config
+            .define("GGML_NATIVE", "OFF")
+            .define("GGML_METAL", "OFF")
+            .define("GGML_BLAS", "OFF")
+            .define("GGML_ACCELERATE", "OFF")
+            .define("GGML_OPENMP", "OFF")
+            .define("GGML_CPU_KLEIDIAI", "OFF");
+    }
+
+    let dst = config.build();
 
     let mut search = vec![dst.join("lib"), dst.join("lib64"), dst.join("build")];
     collect_lib_dirs(&dst, &mut search);
@@ -37,15 +67,17 @@ fn main() {
     let mut libs = collect_static_libs(&search);
     // Link order: shim, frontends, then ggml pieces.
     prefer_first(&mut libs, &["syllabix_native", "whisper", "llama"]);
-    let target = env::var("TARGET").unwrap_or_default();
     // Release `--gc-sections` otherwise drops unused ggml/whisper objects
     // because the CLI does not transcribe yet. Keep both frontends in the binary.
     for lib in &libs {
         println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
     }
-    if target.contains("apple") {
+    if apple {
         println!("cargo:rustc-link-lib=c++");
         println!("cargo:rustc-link-lib=framework=Accelerate");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+        println!("cargo:rustc-link-lib=framework=Metal");
+        println!("cargo:rustc-link-lib=framework=MetalKit");
     } else if target.contains("windows") {
         println!("cargo:rustc-link-lib=dylib=advapi32");
     } else {

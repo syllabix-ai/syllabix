@@ -10,7 +10,7 @@ Not the product README. Scores for the three first-run cache GGUFs at the vendor
 | Flags | `-ngl 0 -t 4 -p 512 -n 32 -r 3` unless a row says otherwise |
 | Build | `Release`, `GGML_NATIVE=ON`, Metal/CUDA/BLAS off on Linux |
 
-These numbers are **llama-bench**, not `syllabix`. The product binary still compiles `GGML_NATIVE=OFF`, `GGML_METAL=OFF`, `GGML_BLAS=OFF`, `n_gpu_layers=0`, max 4 threads. M4 llama-bench with Metal+Accelerate is ~100 t/s tg on 0.8B; Syllabix does not use that path yet.
+These numbers are **llama-bench**, not `syllabix`. Linux/Windows `syllabix` stays portable CPU (`n_gpu_layers=0`, max 4 threads). Darwin `syllabix` compiles Metal + embedded metallib + Accelerate, uses `n_gpu_layers=-1`, and keeps the 4-thread cap. M4 llama-bench with Metal+Accelerate is ~100 t/s tg on 0.8B; compare a Darwin `syllabix` build to the tables below.
 
 GGUF files (SHA-256 in `crates/syllabix-core/src/models/manifest.rs`):
 
@@ -46,7 +46,7 @@ On this host, Qwen3.5 0.8B decode is faster than Llama 3.2 1B. That does **not**
 - Host: MTL0 **Apple M4**, `MTLGPUFamilyApple9`, unified memory, recommended working set 12.7 GiB. Tensor API disabled (pre-M5).
 - Date: 2026-08-21
 - Build: same pin, `Release`, `GGML_NATIVE=ON`, **Metal + embedded metallib** (`build: ece963f41 (10450)`)
-- llama-bench reports backend **`MTL,BLAS`** on every row, including `-ngl 0`, because this binary was built with Metal and Accelerate. That is still not the Syllabix binary (`GGML_METAL=OFF`, `GGML_BLAS=OFF`).
+- llama-bench reports backend **`MTL,BLAS`** on every row, including `-ngl 0`, because this binary was built with Metal and Accelerate. Darwin `syllabix` now compiles that same pair (`n_gpu_layers=-1`). Linux `syllabix` does not.
 - zsh treated `#` comments as commands (`command not found: #`); the three tables below are still A / B / C in order.
 
 Commands (zsh-safe, no `#` lines):
@@ -101,3 +101,17 @@ Voice cares about **tg32**. On this M4, Qwen 0.8B decode is ~100 t/s with Metal 
 | qwen35 0.8B Q4_K - Medium | 542.31 MiB | 772.85 M | MTL,BLAS | 4 | tg32 | 103.30 ± 0.48 |
 | qwen35 2B Q4_K - Medium | 1.29 GiB | 1.94 B | MTL,BLAS | 4 | pp512 | 807.80 ± 16.32 |
 | qwen35 2B Q4_K - Medium | 1.29 GiB | 1.94 B | MTL,BLAS | 4 | tg32 | 56.72 ± 0.43 |
+
+## Darwin `syllabix` checks (sequence 26)
+
+Linux CI cannot compile Metal. On Apple Silicon, from this checkout:
+
+```bash
+cargo test -p syllabix-native n_gpu_layers_matches_os -- --nocapture
+cargo test --workspace
+# system info from the unit test should mention Metal; Whisper GPU is on.
+# Live tok/s vs the M4 tables above (tg32, default llama-3.2-1b, 4 threads):
+cargo run -p syllabix --release -- run --turn-debug /tmp/syllabix-turn-debug
+```
+
+KleidiAI SME did not link (`___arm_tpidr2_save`). It stays off. Default GGUF stays `llama-3.2-1b`. Metal + Accelerate are the Darwin path.
