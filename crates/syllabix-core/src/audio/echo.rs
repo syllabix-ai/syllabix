@@ -7,7 +7,10 @@
 //! its own separate 8 kHz conversion in the VAD adapter.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use sonora::config::{EchoCanceller, HighPassFilter};
 use sonora::{AudioProcessing, Config, StreamConfig};
@@ -84,6 +87,12 @@ pub struct EchoRecording {
 
 /// Sonora AEC3 wrapper operating on the existing 16 kHz capture/ASR stream.
 pub struct EchoController {
+    inner: Arc<Mutex<EchoInner>>,
+    stop_pump: Arc<AtomicBool>,
+    pump: Option<JoinHandle<()>>,
+}
+
+struct EchoInner {
     processor: AudioProcessing,
     reference: EchoReference,
     render_converter: PcmConverter,
@@ -130,60 +139,87 @@ impl EchoController {
         let render_converter = PcmConverter::new(reference.device_format, PcmFormat::v0())?;
         let last_dropped_samples = reference.dropped_samples();
         Ok(Self {
-            processor,
-            reference,
-            render_converter,
-            render_pending: VecDeque::with_capacity(MAX_PENDING_SAMPLES),
-            capture_pending: VecDeque::with_capacity(AEC_FRAME_SAMPLES * 4),
-            clean_pending: VecDeque::with_capacity(AEC_FRAME_SAMPLES * 4),
-            last_dropped_samples,
-            far_end_blocks: 0,
-            render_starved_holds: 0,
-            calibration: EchoCalibration::WaitingForPlayback,
-            recording: false,
-            rec_render: Vec::new(),
-            rec_capture: Vec::new(),
-            rec_clean: Vec::new(),
-            delay_render: Vec::new(),
-            delay_capture: Vec::new(),
-            delay_applied: false,
-            estimated_delay_ms: None,
-            last_render_block: vec![0.0; AEC_FRAME_SAMPLES],
-            tap_enabled: false,
-            tap_capture: Vec::new(),
-            tap_clean: Vec::new(),
+            inner: Arc::new(Mutex::new(EchoInner {
+                processor,
+                reference,
+                render_converter,
+                render_pending: VecDeque::with_capacity(MAX_PENDING_SAMPLES),
+                capture_pending: VecDeque::with_capacity(AEC_FRAME_SAMPLES * 4),
+                clean_pending: VecDeque::with_capacity(AEC_FRAME_SAMPLES * 4),
+                last_dropped_samples,
+                far_end_blocks: 0,
+                render_starved_holds: 0,
+                calibration: EchoCalibration::WaitingForPlayback,
+                recording: false,
+                rec_render: Vec::new(),
+                rec_capture: Vec::new(),
+                rec_clean: Vec::new(),
+                delay_render: Vec::new(),
+                delay_capture: Vec::new(),
+                delay_applied: false,
+                estimated_delay_ms: None,
+                last_render_block: vec![0.0; AEC_FRAME_SAMPLES],
+                tap_enabled: false,
+                tap_capture: Vec::new(),
+                tap_clean: Vec::new(),
+            })),
+            stop_pump: Arc::new(AtomicBool::new(false)),
+            pump: None,
         })
+    }
+
+    /// Empty the speaker-copy ring even when capture is blocked (VAD paused).
+    pub fn start_render_pump(&mut self) {
+        if self.pump.is_some() {
+            return;
+        }
+        let inner = Arc::clone(&self.inner);
+        let stop = Arc::clone(&self.stop_pump);
+        self.pump = Some(thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                if let Ok(mut echo) = inner.lock() {
+                    let _ = echo.drain_and_process_render();
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        }));
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, EchoInner> {
+        self.inner.lock().expect("echo")
     }
 
     /// Keep 16 kHz render/capture/clean PCM for a debug dump.
     pub fn enable_recording(&mut self) {
-        self.recording = true;
+        self.lock().recording = true;
     }
 
     /// Record aligned pre-AEC / post-AEC blocks for `--turn-debug` without a session dump.
     pub fn enable_debug_tap(&mut self) {
-        self.tap_enabled = true;
+        self.lock().tap_enabled = true;
     }
 
     /// Drain capture/clean blocks produced since the last take. Lengths match.
     pub fn take_debug_tap(&mut self) -> (Vec<f32>, Vec<f32>) {
+        let mut echo = self.lock();
         (
-            std::mem::take(&mut self.tap_capture),
-            std::mem::take(&mut self.tap_clean),
+            std::mem::take(&mut echo.tap_capture),
+            std::mem::take(&mut echo.tap_clean),
         )
     }
 
     /// Snapshot of recorded PCM and AEC diagnostics.
     pub fn recording(&self) -> EchoRecording {
+        let echo = self.lock();
         EchoRecording {
-            render: self.rec_render.clone(),
-            capture: self.rec_capture.clone(),
-            clean: self.rec_clean.clone(),
-            render_starved_holds: self.render_starved_holds,
-            estimated_delay_ms: self.estimated_delay_ms,
-            aec_delay_ms: self.processor.statistics().delay_ms,
-            calibration: self.calibration,
-            far_end_blocks: self.far_end_blocks,
+            render: echo.rec_render.clone(),
+            capture: echo.rec_capture.clone(),
+            clean: echo.rec_clean.clone(),
+            render_starved_holds: echo.render_starved_holds,
+            estimated_delay_ms: echo.estimated_delay_ms,
+            aec_delay_ms: echo.processor.statistics().delay_ms,
+            calibration: echo.calibration,
+            far_end_blocks: echo.far_end_blocks,
         }
     }
 
@@ -196,6 +232,31 @@ impl EchoController {
     /// Capture is not paired with invented silence when the mic is briefly
     /// ahead of the speaker callback.
     pub fn process_capture(&mut self, capture: &[f32]) -> Result<Vec<f32>> {
+        self.lock().process_capture(capture)
+    }
+
+    /// Current automatic calibration state.
+    pub fn calibration(&self) -> EchoCalibration {
+        self.lock().calibration
+    }
+
+    /// Number of non-silent 10 ms speaker blocks observed.
+    pub fn far_end_blocks(&self) -> u64 {
+        self.lock().far_end_blocks
+    }
+}
+
+impl Drop for EchoController {
+    fn drop(&mut self) {
+        self.stop_pump.store(true, Ordering::SeqCst);
+        if let Some(pump) = self.pump.take() {
+            let _ = pump.join();
+        }
+    }
+}
+
+impl EchoInner {
+    fn process_capture(&mut self, capture: &[f32]) -> Result<Vec<f32>> {
         self.capture_pending.extend(capture.iter().copied());
         self.drain_and_process_render()?;
 
@@ -209,16 +270,6 @@ impl EchoController {
         }
 
         Ok(self.clean_pending.drain(..).collect())
-    }
-
-    /// Current automatic calibration state.
-    pub fn calibration(&self) -> EchoCalibration {
-        self.calibration
-    }
-
-    /// Number of non-silent 10 ms speaker blocks observed.
-    pub fn far_end_blocks(&self) -> u64 {
-        self.far_end_blocks
     }
 
     fn drain_and_process_render(&mut self) -> Result<()> {

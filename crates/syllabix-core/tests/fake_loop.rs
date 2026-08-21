@@ -4,11 +4,16 @@ use std::thread;
 use std::time::Duration;
 
 use syllabix_core::{
+    audio::{
+        device_ring_capacity_samples, i16_to_f32, EchoCalibration, EchoController, EchoReference,
+        SampleRing, AEC_FRAME_SAMPLES,
+    },
     audio::{read_wav, PcmFormat},
     run_loop, run_loop_captured, scripted_frames, AudioCapture, AudioSink, BuiltinDefaults, Cancel,
     CollectingSink, Error, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt, FakeTts,
     FakeVad, LoopConfig, LoopMode, PipelineStages, QueueCaps, Result, ScriptedStt,
-    SynthesizedAudio, TurnDebug, TurnId, Vad, VadEvent, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    SynthesizedAudio, TokenChunk, Tts, TurnDebug, TurnId, Vad, VadEvent, DEFAULT_CHANNELS,
+    DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
 fn run_with(
@@ -841,5 +846,154 @@ fn barge_in_stops_a_blocked_previous_tts_play() {
         report.turns.iter().any(|t| t.id.0 == 1),
         "next user turn must still complete, got {:?}",
         report.turns.iter().map(|t| t.id.0).collect::<Vec<_>>()
+    );
+}
+
+/// Live mic after SpeechEnd: keep producing frames so the VAD queue can fill
+/// while default `run` pauses VAD for the assistant reply.
+struct LiveMicWithAec {
+    echo: EchoController,
+    seq: u64,
+    speech_left: u32,
+    calibration: std::sync::Arc<std::sync::Mutex<EchoCalibration>>,
+}
+
+impl AudioCapture for LiveMicWithAec {
+    fn name(&self) -> &'static str {
+        "aec-mic"
+    }
+
+    fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<syllabix_core::AudioFrame>> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        let energy = if self.speech_left > 0 {
+            self.speech_left -= 1;
+            8_000
+        } else {
+            0
+        };
+        let frame = syllabix_core::AudioFrame::new(
+            self.seq,
+            DEFAULT_SAMPLE_RATE_HZ,
+            DEFAULT_CHANNELS,
+            vec![energy; FRAME_SAMPLES],
+        )?;
+        self.seq += 1;
+        let clean = self
+            .echo
+            .process_capture(&i16_to_f32(&frame.samples))
+            .expect("aec capture");
+        let _ = clean;
+        *self.calibration.lock().expect("calibration") = self.echo.calibration();
+        Ok(Some(frame))
+    }
+}
+
+/// One first-TTS burst longer than the 200 ms speaker-copy ring, paced like a
+/// device callback (10 ms blocks). Real agent audio, not silence.
+struct FirstReplyTts;
+
+impl Tts for FirstReplyTts {
+    fn name(&self) -> &'static str {
+        BuiltinDefaults::v0().tts.as_str()
+    }
+
+    fn synthesize_chunk(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+    ) -> Result<Vec<SynthesizedAudio>> {
+        if cancel.is_stale(token.generation) {
+            return Err(Error::Cancelled);
+        }
+        if !token.is_last {
+            return Ok(Vec::new());
+        }
+        // 1 s of speech at 16 kHz. Speaker-copy ring is 200 ms.
+        Ok(vec![SynthesizedAudio {
+            turn: token.turn,
+            generation: token.generation,
+            index: 0,
+            samples: vec![10_000; DEFAULT_SAMPLE_RATE_HZ as usize],
+            is_last: true,
+        }])
+    }
+}
+
+struct SpeakerCallbackSink {
+    ring: std::sync::Arc<SampleRing>,
+}
+
+impl AudioSink for SpeakerCallbackSink {
+    fn play(&mut self, audio: SynthesizedAudio, cancel: &Cancel) -> Result<()> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        let pcm = i16_to_f32(&audio.samples);
+        let mut offset = 0;
+        while offset < pcm.len() {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            let end = (offset + AEC_FRAME_SAMPLES).min(pcm.len());
+            let _ = self.ring.try_push_slice(&pcm[offset..end]);
+            offset = end;
+            // Device-like pacing so a draining capture can empty the copy.
+            thread::sleep(Duration::from_millis(2));
+        }
+        Ok(())
+    }
+
+    fn interrupt(&mut self) {}
+}
+
+#[test]
+fn first_tts_does_not_lose_speaker_copy_while_vad_is_paused() {
+    let cap = device_ring_capacity_samples(DEFAULT_SAMPLE_RATE_HZ, DEFAULT_CHANNELS);
+    let ring = std::sync::Arc::new(SampleRing::new(cap));
+    let reference = EchoReference::new(std::sync::Arc::clone(&ring), PcmFormat::v0());
+    let calibration =
+        std::sync::Arc::new(std::sync::Mutex::new(EchoCalibration::WaitingForPlayback));
+    let mut echo = EchoController::new(reference).expect("echo");
+    echo.start_render_pump();
+    let report = run_loop_captured(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::StopAfterTurns(1),
+            events: None,
+            turn_debug: None,
+            barge_in: false,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm: FakeLlm::new(),
+            tts: FirstReplyTts,
+            sink: SpeakerCallbackSink {
+                ring: std::sync::Arc::clone(&ring),
+            },
+        },
+        LiveMicWithAec {
+            echo,
+            seq: 0,
+            speech_left: 3,
+            calibration: std::sync::Arc::clone(&calibration),
+        },
+        Cancel::new(),
+    )
+    .expect("first tts aec");
+    assert_eq!(report.turns.len(), 1, "first reply must complete");
+    let status = *calibration.lock().expect("calibration");
+    assert_ne!(
+        status,
+        EchoCalibration::Degraded,
+        "first TTS dropped the speaker copy (headphones / reference lost); overruns={}",
+        ring.overruns()
+    );
+    assert_eq!(
+        ring.overruns(),
+        0,
+        "speaker-copy ring overflowed during first TTS"
     );
 }

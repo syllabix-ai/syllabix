@@ -389,7 +389,14 @@ impl NativeCapture {
         let inv = CpalInventory::new();
         let choice = select_input(&inv)?;
         let opened = spawn_input(choice)?;
-        let echo = reference.map(EchoController::new).transpose()?;
+        let echo = match reference {
+            Some(reference) => {
+                let mut echo = EchoController::new(reference)?;
+                echo.start_render_pump();
+                Some(echo)
+            }
+            None => None,
+        };
         Ok(Self {
             conv: PcmConverter::new(opened.device_format, PcmFormat::v0())?,
             echo,
