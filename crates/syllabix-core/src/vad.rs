@@ -36,9 +36,39 @@ pub const END_SILENCE_FRAMES: usize = 11;
 /// Post-AEC audio prepended onto the Whisper utterance before the first ≥0.5 frame.
 pub const WHISPER_PREROLL: Duration = Duration::from_millis(200);
 
-/// Samples in [`WHISPER_PREROLL`] at the v0 capture rate.
+/// Samples in the v0 [`WHISPER_PREROLL`] at the capture rate.
 pub const PREROLL_SAMPLES: usize =
     (DEFAULT_SAMPLE_RATE_HZ as usize) * (WHISPER_PREROLL.as_millis() as usize) / 1000;
+
+/// Silero turn policy. Frame size and 8 kHz pair-average stay fixed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VadSettings {
+    /// Silero probability at or above which a frame is speech.
+    pub speech_threshold: f32,
+    /// Contiguous speech required to open a turn.
+    pub min_speech: Duration,
+    /// Silence required to close a turn.
+    pub end_silence: Duration,
+    /// Post-AEC audio prepended before the first speech frame.
+    pub preroll: Duration,
+}
+
+impl VadSettings {
+    /// Launch defaults from `V0_LAUNCH.md`.
+    pub fn v0() -> Self {
+        Self {
+            speech_threshold: SPEECH_THRESHOLD,
+            min_speech: MIN_SPEECH,
+            end_silence: END_SILENCE,
+            preroll: WHISPER_PREROLL,
+        }
+    }
+
+    /// Samples of preroll at the v0 capture rate.
+    pub fn preroll_samples(&self) -> usize {
+        (DEFAULT_SAMPLE_RATE_HZ as usize) * (self.preroll.as_millis() as usize) / 1000
+    }
+}
 
 /// In-process Silero VAD backed by ONNX Runtime.
 ///
@@ -48,6 +78,7 @@ pub const PREROLL_SAMPLES: usize =
 /// Silero's recurrent state between frames.
 pub struct SileroVad {
     scorer: Box<dyn ProbabilityScorer>,
+    settings: VadSettings,
     next_turn: u64,
     /// Recent post-AEC frames that are not part of the open speech clip.
     history: VecDeque<AudioFrame>,
@@ -86,9 +117,16 @@ impl SileroVad {
         Self::from_model_path(path)
     }
 
+    /// Apply yaml (or built-in) turn policy. Scoring path is unchanged.
+    pub fn with_settings(mut self, settings: VadSettings) -> Self {
+        self.settings = settings;
+        self
+    }
+
     fn with_scorer(scorer: Box<dyn ProbabilityScorer>) -> Self {
         Self {
             scorer,
+            settings: VadSettings::v0(),
             next_turn: 0,
             history: VecDeque::new(),
             preroll: Vec::new(),
@@ -118,7 +156,7 @@ impl SileroVad {
     }
 
     fn promote(&mut self) -> Option<VadEvent> {
-        if self.active.is_some() || self.speech < MIN_SPEECH {
+        if self.active.is_some() || self.speech < self.settings.min_speech {
             return None;
         }
         let turn = TurnId(self.next_turn);
@@ -150,7 +188,7 @@ impl SileroVad {
             let Some(front) = self.history.front() else {
                 break;
             };
-            if total.saturating_sub(front.samples.len()) >= PREROLL_SAMPLES {
+            if total.saturating_sub(front.samples.len()) >= self.settings.preroll_samples() {
                 self.history.pop_front();
             } else {
                 break;
@@ -176,13 +214,13 @@ impl Vad for SileroVad {
     }
 
     fn push_frame(&mut self, frame: AudioFrame) -> Result<Vec<VadEvent>> {
-        let speech = self.probability(&frame)? >= SPEECH_THRESHOLD;
+        let speech = self.probability(&frame)? >= self.settings.speech_threshold;
         let mut events = Vec::new();
 
         if speech {
             self.silence = Duration::ZERO;
             if self.current.is_empty() {
-                self.preroll = preroll_frames(&self.history);
+                self.preroll = preroll_frames(&self.history, self.settings.preroll_samples());
             }
             self.current.push(frame);
             self.speech += FRAME_DURATION;
@@ -199,7 +237,7 @@ impl Vad for SileroVad {
             // Count elapsed Duration, not `350 / 32` integer frames (that is
             // 10 frames / 320 ms). Close on the first frame where silence
             // is ≥ 350 ms (11 × 32 ms = 352 ms).
-            if self.silence >= END_SILENCE {
+            if self.silence >= self.settings.end_silence {
                 if let Some(event) = self.finish() {
                     events.push(event);
                 }
@@ -232,12 +270,12 @@ impl SileroVad {
     }
 }
 
-fn preroll_frames(history: &VecDeque<AudioFrame>) -> Vec<AudioFrame> {
+fn preroll_frames(history: &VecDeque<AudioFrame>, preroll_samples: usize) -> Vec<AudioFrame> {
     let total: usize = history.iter().map(|frame| frame.samples.len()).sum();
     if total == 0 {
         return Vec::new();
     }
-    let mut skip = total.saturating_sub(PREROLL_SAMPLES);
+    let mut skip = total.saturating_sub(preroll_samples);
     let mut out = Vec::new();
     for frame in history {
         if skip >= frame.samples.len() {
@@ -540,6 +578,27 @@ mod tests {
         assert!(speech.iter().all(|s| *s == 100));
         assert_eq!(preroll.len(), PREROLL_SAMPLES);
         assert_eq!(WHISPER_PREROLL, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn yaml_min_speech_can_require_more_frames() {
+        let settings = VadSettings {
+            min_speech: Duration::from_millis(200),
+            ..VadSettings::v0()
+        };
+        let probabilities = std::iter::repeat_n(0.9, MIN_SPEECH_FRAMES)
+            .chain(std::iter::once(0.1))
+            .collect();
+        let mut vad =
+            SileroVad::with_scorer(Box::new(ScriptedScorer(probabilities))).with_settings(settings);
+        let mut events = Vec::new();
+        for seq in 0..=MIN_SPEECH_FRAMES as u64 {
+            events.extend(push_seq(&mut vad, seq));
+        }
+        assert!(
+            events.is_empty(),
+            "200 ms min speech must ignore a 128 ms burst"
+        );
     }
 
     #[test]

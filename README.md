@@ -57,7 +57,7 @@ From this checkout, `cargo run -p syllabix -- run` talks on a machine with a mic
 | `syllabix run --barge-in` | Opt-in. VAD keeps running during TTS; user SpeechStart stops playback, flushes queued audio, and cancels LLM/TTS. Off by default. Combine with `--turn-debug` to dump interrupted turns. Whisper utterances always include 200 ms of post-AEC preroll. | Same |
 | `syllabix init [dir]` | Optional `syllabix.yaml` scaffold | Same |
 
-There is no `serve`, `bench`, cloud provider, or API key in v0. `run` does not require yaml. If `syllabix.yaml` is present, it must name the v0 on-device stack and `language: en`.
+There is no `serve`, `bench`, cloud provider, or API key in v0. `run` does not require yaml. If `syllabix.yaml` is present, it must name the v0 on-device stack and `language: en`. Optional `pipeline.vad` keys (`threshold`, `min_speech_ms`, `end_silence_ms`, `preroll_ms`) tune Silero; omit them for the launch defaults.
 
 ## Develop
 
