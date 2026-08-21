@@ -219,6 +219,7 @@ int syllabix_llama_generate(
     const char *const *contents,
     int n_messages,
     int n_predict,
+    int thinking,
     int n_threads,
     bool (*abort_cb)(void *user),
     void *abort_user,
@@ -253,6 +254,10 @@ int syllabix_llama_generate(
     const char *tmpl = llama_model_chat_template(llm->model, NULL);
     int32_t prompt_len = llama_chat_apply_template(tmpl, chat, (size_t)n_messages, true, NULL, 0);
     if (prompt_len < 1) {
+        tmpl = "chatml";
+        prompt_len = llama_chat_apply_template(tmpl, chat, (size_t)n_messages, true, NULL, 0);
+    }
+    if (prompt_len < 1) {
         free(chat);
         return -1;
     }
@@ -269,6 +274,19 @@ int syllabix_llama_generate(
     }
     prompt[prompt_len] = '\0';
     free(chat);
+
+    if (!thinking) {
+        static const char suffix[] = "<think>\n</think>\n";
+        const size_t suffix_len = sizeof(suffix) - 1;
+        char *grown = (char *)realloc(prompt, (size_t)prompt_len + suffix_len + 1);
+        if (grown == NULL) {
+            free(prompt);
+            return -1;
+        }
+        prompt = grown;
+        memcpy(prompt + prompt_len, suffix, suffix_len + 1);
+        prompt_len += (int32_t)suffix_len;
+    }
 
     const struct llama_vocab *vocab = llama_model_get_vocab(llm->model);
     const int n_ctx = (int)llama_n_ctx(llm->ctx);

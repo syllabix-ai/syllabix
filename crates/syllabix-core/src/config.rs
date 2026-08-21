@@ -29,8 +29,10 @@ pub struct AgentConfig {
     pub language: String,
     /// LLM provider.
     pub llm: LlmProvider,
-    /// LLM model id (`llama-3.2-1b`).
+    /// LLM model id (`llama-3.2-1b`, `qwen3.5-0.8b`, or `qwen3.5-2b`).
     pub llm_model: String,
+    /// Qwen thinking. Default false; yaml `thinking: true` enables it.
+    pub thinking: bool,
     /// TTS provider.
     pub tts: TtsProvider,
 }
@@ -51,6 +53,7 @@ impl AgentConfig {
             language: defaults.language.to_string(),
             llm: defaults.llm,
             llm_model: defaults.llm_model.to_string(),
+            thinking: defaults.llm_thinking,
             tts: defaults.tts,
         }
     }
@@ -101,6 +104,7 @@ pipeline:
   llm:
     provider: {llm}
     model: {llm_model}
+    thinking: {thinking}
   tts:
     provider: {tts}
 ",
@@ -111,6 +115,7 @@ pipeline:
             language = self.language,
             llm = self.llm.as_str(),
             llm_model = self.llm_model,
+            thinking = self.thinking,
             tts = self.tts.as_str(),
         )
     }
@@ -157,9 +162,10 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     let language = parse_language(required_string(stt, "pipeline.stt.language", "language")?)?;
 
     let llm = mapping(required(pipeline, "pipeline.llm", "llm")?, "pipeline.llm")?;
-    deny_unknown(llm, "pipeline.llm", &["provider", "model"])?;
+    deny_unknown(llm, "pipeline.llm", &["provider", "model", "thinking"])?;
     let llm_provider = parse_llm(required_string(llm, "pipeline.llm.provider", "provider")?)?;
     let llm_model = parse_llm_model(required_string(llm, "pipeline.llm.model", "model")?)?;
+    let thinking = optional_bool(llm, "pipeline.llm", "thinking", false)?;
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
     deny_unknown(tts, "pipeline.tts", &["provider"])?;
@@ -173,6 +179,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         language: language.to_string(),
         llm: llm_provider,
         llm_model: llm_model.to_string(),
+        thinking,
         tts: tts_provider,
     })
 }
@@ -216,6 +223,21 @@ fn required_string<'a>(map: &'a serde_yaml::Mapping, field: &str, key: &str) -> 
     value.as_str().ok_or_else(|| Error::Config {
         field: field.into(),
         message: "must be a string".into(),
+    })
+}
+
+fn optional_bool(
+    map: &serde_yaml::Mapping,
+    prefix: &str,
+    key: &str,
+    default: bool,
+) -> Result<bool> {
+    let Some(value) = map.get(key) else {
+        return Ok(default);
+    };
+    value.as_bool().ok_or_else(|| Error::Config {
+        field: format!("{prefix}.{key}"),
+        message: "must be a boolean".into(),
     })
 }
 
@@ -263,11 +285,15 @@ fn parse_llm(value: &str) -> Result<LlmProvider> {
 }
 
 fn parse_llm_model(value: &str) -> Result<&str> {
-    let expected = BuiltinDefaults::v0().llm_model;
-    if value == expected {
-        Ok(expected)
-    } else {
-        Err(unsupported("pipeline.llm.model", value, expected))
+    match value {
+        crate::llm::QWEN35_08B_ASSET
+        | crate::llm::QWEN35_2B_ASSET
+        | crate::llm::LLAMA_32_1B_ASSET => Ok(value),
+        other => Err(unsupported(
+            "pipeline.llm.model",
+            other,
+            "llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b",
+        )),
     }
 }
 
@@ -306,6 +332,8 @@ mod tests {
     fn generated_yaml_round_trips() {
         let yaml = AgentConfig::v0().to_yaml();
         assert!(yaml.contains("language: en"));
+        assert!(yaml.contains("model: llama-3.2-1b"));
+        assert!(yaml.contains("thinking: false"));
         assert_eq!(AgentConfig::parse_yaml(&yaml).unwrap(), AgentConfig::v0());
     }
 
@@ -330,6 +358,43 @@ pipeline:
     }
 
     #[test]
+    fn yaml_qwen_sizes_and_thinking_on() {
+        let two = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: llama-3.2-1b", "model: qwen3.5-2b")
+            .replace("thinking: false", "thinking: true");
+        let cfg = AgentConfig::parse_yaml(&two).unwrap();
+        assert_eq!(cfg.llm_model, "qwen3.5-2b");
+        assert!(cfg.thinking);
+        let small = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: llama-3.2-1b", "model: qwen3.5-0.8b");
+        let cfg = AgentConfig::parse_yaml(&small).unwrap();
+        assert_eq!(cfg.llm_model, "qwen3.5-0.8b");
+        assert!(!cfg.thinking);
+    }
+
+    #[test]
+    fn unknown_llm_model_is_field_level() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: llama-3.2-1b", "model: huge");
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.llm.model"), "{err}");
+        assert!(err.to_string().contains("huge"), "{err}");
+    }
+
+    #[test]
+    fn thinking_must_be_a_boolean() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("thinking: false", "thinking: nope");
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.llm.thinking"), "{err}");
+        assert!(err.to_string().contains("boolean"), "{err}");
+    }
+
+    #[test]
     fn missing_language_is_field_level() {
         let yaml = r#"
 name: demo-agent
@@ -341,7 +406,7 @@ pipeline:
     model: small
   llm:
     provider: llama.cpp
-    model: llama-3.2-1b
+    model: qwen3.5-2b
   tts:
     provider: kokoro
 "#;

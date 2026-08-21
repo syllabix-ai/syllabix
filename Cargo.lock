@@ -1661,6 +1661,8 @@ dependencies = [
  "crossterm",
  "predicates",
  "ratatui",
+ "serde",
+ "serde_yaml",
  "syllabix-core",
  "tracing",
  "tracing-subscriber",

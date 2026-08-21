@@ -42,6 +42,7 @@ void syllabix_llama_free(struct syllabix_llama *llm);
 /*
  * 0 = ok, 1 = cancelled, -1 = error.
  * `roles`/`contents` are parallel arrays (`system` / `user` / `assistant`).
+ * `thinking` is 0 to disable Qwen think (empty `<think></think>` closer).
  * `token_cb` is invoked in order; the last call has `is_last != 0`.
  * `token_cb` returns 0 to continue, 1 to cancel, -1 on error.
  */
@@ -51,6 +52,7 @@ int syllabix_llama_generate(
     const char *const *contents,
     int n_messages,
     int n_predict,
+    int thinking,
     int n_threads,
     bool (*abort_cb)(void *user),
     void *abort_user,

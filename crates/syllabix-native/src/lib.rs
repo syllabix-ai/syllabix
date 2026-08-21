@@ -58,6 +58,7 @@ mod ffi {
             contents: *const *const c_char,
             n_messages: c_int,
             n_predict: c_int,
+            thinking: c_int,
             n_threads: c_int,
             abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
             abort_user: *mut c_void,
@@ -171,6 +172,16 @@ impl Drop for WhisperContext {
     }
 }
 
+/// Options for one greedy llama.cpp generate.
+pub struct LlamaGenerate {
+    /// Token budget (`n_predict`).
+    pub n_predict: i32,
+    /// When false, append an empty Qwen think closer so the model skips CoT.
+    pub thinking: bool,
+    /// llama.cpp thread count.
+    pub n_threads: i32,
+}
+
 /// In-process llama.cpp context loaded from a GGUF.
 pub struct LlamaContext {
     raw: *mut ffi::LlamaHandle,
@@ -203,8 +214,7 @@ impl LlamaContext {
     pub unsafe fn generate(
         &mut self,
         messages: &[ChatMessage],
-        n_predict: i32,
-        n_threads: i32,
+        opts: LlamaGenerate,
         abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
         abort_user: *mut c_void,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<(), LlamaError>,
@@ -238,8 +248,9 @@ impl LlamaContext {
                 role_ptrs.as_ptr(),
                 content_ptrs.as_ptr(),
                 messages.len() as c_int,
-                n_predict,
-                n_threads,
+                opts.n_predict,
+                if opts.thinking { 1 } else { 0 },
+                opts.n_threads,
                 abort,
                 abort_user,
                 Some(on_token_piece),

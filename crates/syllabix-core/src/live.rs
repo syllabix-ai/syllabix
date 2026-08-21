@@ -38,13 +38,8 @@ fn run_live_inner(
 
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
-    let (vad, stt, llm, tts) = load_real_providers(
-        &cache,
-        &HttpFetcher,
-        &mut progress,
-        &cancel,
-        &config.language,
-    )?;
+    let (vad, stt, llm, tts) =
+        load_real_providers(&cache, &HttpFetcher, &mut progress, &cancel, config)?;
     let (sink, echo_reference) = NativePlayback::open_with_echo()?;
     let mut capture = NativeCapture::open_with_echo(echo_reference)?;
     if turn_debug.is_some() {
@@ -86,7 +81,11 @@ fn run_live_inner(
     use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
     use crate::pipeline::{run_loop, LoopConfig, PipelineStages};
 
-    let _ = config.language.as_str();
+    let _ = (
+        config.language.as_str(),
+        config.llm_model.as_str(),
+        config.thinking,
+    );
     run_loop(
         LoopConfig {
             events,

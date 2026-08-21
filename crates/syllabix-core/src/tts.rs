@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::g2p::{english_to_kokoro_ids, pad_input_ids, KOKORO_MAX_PHONEME_TOKENS};
 use crate::models::{Fetcher, ModelCache, Progress};
 use crate::providers::Tts;
-use crate::speech_text::{strip_markdown_for_speech, take_sentences};
+use crate::speech_text::{speak_text_for_tts, take_sentences, ThinkFilter};
 use crate::types::{GenerationId, SynthesizedAudio, TokenChunk, TurnId, DEFAULT_SAMPLE_RATE_HZ};
 
 /// Manifest id for the Kokoro ONNX graph.
@@ -35,6 +35,7 @@ const VOICE_BYTES: usize = VOICE_ROWS * STYLE_DIM * 4;
 /// In-process Kokoro adapter. Buffers tokens until a sentence boundary.
 pub struct KokoroTts {
     engine: Arc<Mutex<Box<dyn WaveformEngine>>>,
+    think: ThinkFilter,
     buffer: String,
     turn: Option<TurnId>,
     generation: Option<GenerationId>,
@@ -45,6 +46,7 @@ impl Clone for KokoroTts {
     fn clone(&self) -> Self {
         Self {
             engine: Arc::clone(&self.engine),
+            think: ThinkFilter::default(),
             buffer: String::new(),
             turn: None,
             generation: None,
@@ -88,6 +90,7 @@ impl KokoroTts {
     fn from_engine(engine: Box<dyn WaveformEngine>) -> Self {
         Self {
             engine: Arc::new(Mutex::new(engine)),
+            think: ThinkFilter::default(),
             buffer: String::new(),
             turn: None,
             generation: None,
@@ -101,6 +104,7 @@ impl KokoroTts {
     }
 
     fn reset(&mut self) {
+        self.think = ThinkFilter::default();
         self.buffer.clear();
         self.turn = None;
         self.generation = None;
@@ -140,7 +144,8 @@ impl Tts for KokoroTts {
             self.turn = Some(token.turn);
         }
 
-        self.buffer.push_str(&token.text);
+        self.buffer
+            .push_str(&self.think.push(&token.text, token.is_last));
         let sentences = take_sentences(&mut self.buffer, token.is_last);
         let mut out = Vec::new();
         let last_i = sentences.len().saturating_sub(1);
@@ -149,7 +154,7 @@ impl Tts for KokoroTts {
                 self.reset();
                 return Err(Error::Cancelled);
             }
-            let spoken = strip_markdown_for_speech(&sentence);
+            let spoken = speak_text_for_tts(&sentence);
             if spoken.is_empty() {
                 continue;
             }
@@ -443,6 +448,21 @@ mod tests {
         assert_eq!(calls[0], "Hello world.");
         assert!(!calls[0].contains('#'));
         assert!(!calls[0].contains('*'));
+    }
+
+    #[test]
+    fn think_tags_never_reach_synthesis() {
+        let engine = ScriptedEngine::new();
+        let log = Arc::clone(&engine.calls);
+        let mut tts = KokoroTts::with_engine(Box::new(engine));
+        tts.synthesize_chunk(
+            &token("<think>do not say this.</think> Hello **world**.", 0, true),
+            &Cancel::new(),
+        )
+        .unwrap();
+        let calls = log.lock().expect("calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], "Hello world.");
     }
 
     #[test]

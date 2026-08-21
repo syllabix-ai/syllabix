@@ -4,7 +4,7 @@ use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use syllabix_native::{ChatMessage, LlamaContext, LlamaError};
+use syllabix_native::{ChatMessage, LlamaContext, LlamaError, LlamaGenerate};
 
 use crate::cancel::Cancel;
 use crate::defaults::BuiltinDefaults;
@@ -14,17 +14,26 @@ use crate::models::{Fetcher, ModelCache, Progress};
 use crate::providers::Llm;
 use crate::types::{HistoryTurn, TokenChunk, Transcript};
 
-/// Manifest id for the v0 Llama 3.2 1B instruct GGUF.
-pub const LLAMA_1B_ASSET: &str = "llama-3.2-1b";
+/// Manifest id for the default Qwen3.5 0.8B instruct GGUF.
+pub const QWEN35_08B_ASSET: &str = "qwen3.5-0.8b";
+
+/// Manifest id for the yaml-only Qwen3.5 2B instruct GGUF.
+pub const QWEN35_2B_ASSET: &str = "qwen3.5-2b";
+
+/// Manifest id for the yaml-only Llama 3.2 1B instruct GGUF.
+pub const LLAMA_32_1B_ASSET: &str = "llama-3.2-1b";
 
 /// Short spoken-English system prompt. No Markdown.
 pub const VOICE_SYSTEM_PROMPT: &str = "You are a voice assistant on a laptop. Reply in short spoken English, one or two sentences. Do not use markdown, lists, headings, or emoji.";
 
-/// CPU context length for v0. Fits the 1B Q4_K_M GGUF on CI runners.
+/// CPU context length for v0.
 pub const LLAMA_N_CTX: i32 = 2048;
 
-/// Greedy generation cap. Voice replies stay short.
+/// Greedy generation cap when thinking is off. Voice replies stay short.
 pub const LLAMA_N_PREDICT: i32 = 96;
+
+/// Extra budget so a think block can finish and still leave an answer.
+pub const LLAMA_N_PREDICT_THINKING: i32 = 256;
 
 /// Oldest rolling turns kept in the prompt.
 pub const LLAMA_MAX_HISTORY_TURNS: usize = 8;
@@ -32,10 +41,16 @@ pub const LLAMA_MAX_HISTORY_TURNS: usize = 8;
 /// Native cancel must surface as [`Error::Cancelled`] within this window.
 pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// In-process llama.cpp adapter. Loads the v0 Q4_K_M GGUF.
+/// True when `id` is a v0 llama.cpp GGUF.
+pub fn is_v0_llm_model(id: &str) -> bool {
+    id == QWEN35_08B_ASSET || id == QWEN35_2B_ASSET || id == LLAMA_32_1B_ASSET
+}
+
+/// In-process llama.cpp adapter. Loads a v0 Q4_K_M GGUF.
 pub struct LlamaLlm {
     engine: Arc<Mutex<Box<dyn Engine>>>,
     calls: Arc<Mutex<Vec<LlmCall>>>,
+    thinking: bool,
 }
 
 impl Clone for LlamaLlm {
@@ -43,6 +58,7 @@ impl Clone for LlamaLlm {
         Self {
             engine: Arc::clone(&self.engine),
             calls: Arc::clone(&self.calls),
+            thinking: self.thinking,
         }
     }
 }
@@ -54,24 +70,54 @@ impl LlamaLlm {
         Ok(Self {
             engine: Arc::new(Mutex::new(Box::new(engine))),
             calls: Arc::new(Mutex::new(Vec::new())),
+            thinking: false,
         })
     }
 
-    /// Resolve `llama-3.2-1b` from the manifest cache, then load it.
+    /// Resolve the default `llama-3.2-1b` GGUF from the manifest cache, then load it.
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
         progress: &mut dyn Progress,
         cancel: &Cancel,
     ) -> Result<Self> {
+        Self::from_cached_model(
+            cache,
+            fetcher,
+            progress,
+            cancel,
+            BuiltinDefaults::v0().llm_model,
+            BuiltinDefaults::v0().llm_thinking,
+        )
+    }
+
+    /// Resolve one v0 GGUF id and load it. Does not fetch the other size.
+    pub fn from_cached_model(
+        cache: &ModelCache,
+        fetcher: &dyn Fetcher,
+        progress: &mut dyn Progress,
+        cancel: &Cancel,
+        model_id: &str,
+        thinking: bool,
+    ) -> Result<Self> {
+        if !is_v0_llm_model(model_id) {
+            return Err(Error::Config {
+                field: "pipeline.llm.model".into(),
+                message: format!(
+                    "unsupported value {model_id:?} (allowed: llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b)"
+                ),
+            });
+        }
         let asset = cache
             .manifest()
-            .asset(LLAMA_1B_ASSET)
+            .asset(model_id)
             .ok_or_else(|| Error::ModelCache {
-                message: "manifest does not contain the llama-3.2-1b asset".into(),
+                message: format!("manifest does not contain the {model_id} asset"),
             })?;
         let path = cache.resolve(asset, fetcher, progress, cancel)?;
-        Self::from_model_path(path)
+        let mut llm = Self::from_model_path(path)?;
+        llm.thinking = thinking;
+        Ok(llm)
     }
 
     /// Shared call log. Clone the `Arc` before moving the LLM into the pipeline.
@@ -79,12 +125,32 @@ impl LlamaLlm {
         Arc::clone(&self.calls)
     }
 
+    /// Thinking flag used for this load.
+    pub fn thinking(&self) -> bool {
+        self.thinking
+    }
+
+    fn n_predict(&self) -> i32 {
+        if self.thinking {
+            LLAMA_N_PREDICT_THINKING
+        } else {
+            LLAMA_N_PREDICT
+        }
+    }
+
     #[cfg(test)]
     fn with_engine(engine: Box<dyn Engine>) -> Self {
         Self {
             engine: Arc::new(Mutex::new(engine)),
             calls: Arc::new(Mutex::new(Vec::new())),
+            thinking: false,
         }
+    }
+
+    #[cfg(test)]
+    fn with_thinking(mut self, thinking: bool) -> Self {
+        self.thinking = thinking;
+        self
     }
 }
 
@@ -141,6 +207,8 @@ impl Llm for LlamaLlm {
         let mut index = 0u32;
         self.engine.lock().expect("llama engine").generate(
             &messages,
+            self.thinking,
+            self.n_predict(),
             cancel,
             &mut |text, is_last| {
                 if cancel.is_stale(generation) {
@@ -168,6 +236,8 @@ trait Engine: Send {
     fn generate(
         &mut self,
         messages: &[ChatMessage],
+        thinking: bool,
+        n_predict: i32,
         cancel: &Cancel,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()>;
@@ -193,6 +263,8 @@ impl Engine for LlamaEngine {
     fn generate(
         &mut self,
         messages: &[ChatMessage],
+        thinking: bool,
+        n_predict: i32,
         cancel: &Cancel,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()> {
@@ -203,8 +275,11 @@ impl Engine for LlamaEngine {
         match unsafe {
             self.ctx.generate(
                 messages,
-                LLAMA_N_PREDICT,
-                thread_count(),
+                LlamaGenerate {
+                    n_predict,
+                    thinking,
+                    n_threads: thread_count(),
+                },
                 Some(abort_on_shutdown),
                 abort_user,
                 &mut |text, is_last| match on_piece(text, is_last) {
@@ -262,6 +337,8 @@ mod tests {
         fn generate(
             &mut self,
             messages: &[ChatMessage],
+            _thinking: bool,
+            _n_predict: i32,
             cancel: &Cancel,
             on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
         ) -> Result<()> {
@@ -305,7 +382,14 @@ mod tests {
             last_messages: Arc::new(Mutex::new(Vec::new())),
         }));
         assert_eq!(llm.name(), "llama.cpp");
-        assert_eq!(LLAMA_1B_ASSET, BuiltinDefaults::v0().llm_model);
+        assert_eq!(LLAMA_32_1B_ASSET, BuiltinDefaults::v0().llm_model);
+        assert_eq!(QWEN35_08B_ASSET, "qwen3.5-0.8b");
+        assert_eq!(QWEN35_2B_ASSET, "qwen3.5-2b");
+        assert_eq!(LLAMA_32_1B_ASSET, "llama-3.2-1b");
+        assert!(is_v0_llm_model(QWEN35_08B_ASSET));
+        assert!(is_v0_llm_model(QWEN35_2B_ASSET));
+        assert!(is_v0_llm_model(LLAMA_32_1B_ASSET));
+        assert!(!is_v0_llm_model("mistral"));
         assert!(VOICE_SYSTEM_PROMPT.contains("voice"));
         assert!(!VOICE_SYSTEM_PROMPT.contains("**"));
         assert_eq!(LLAMA_CANCEL_TIMEOUT, Duration::from_secs(2));
@@ -433,7 +517,7 @@ mod tests {
 
     #[test]
     fn missing_model_file_is_a_provider_error() {
-        let err = match LlamaLlm::from_model_path("/no/such/Llama-3.2-1B-Instruct-Q4_K_M.gguf") {
+        let err = match LlamaLlm::from_model_path("/no/such/Qwen3.5-2B-Q4_K_M.gguf") {
             Err(err) => err,
             Ok(_) => panic!("missing model path should fail"),
         };
@@ -526,5 +610,51 @@ mod tests {
         };
         assert!(matches!(err, Error::ModelCache { .. }));
         assert!(err.to_string().contains("llama-3.2-1b"));
+    }
+
+    #[test]
+    fn thinking_on_uses_the_long_predict_budget() {
+        let off = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["ok".into()],
+            delay: Duration::ZERO,
+            last_messages: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let on = off.clone().with_thinking(true);
+        assert!(!off.thinking());
+        assert!(on.thinking());
+        assert_eq!(off.n_predict(), LLAMA_N_PREDICT);
+        assert_eq!(on.n_predict(), LLAMA_N_PREDICT_THINKING);
+    }
+
+    #[test]
+    fn unknown_cached_model_id_is_config() {
+        let root = std::env::temp_dir().join(format!(
+            "syllabix-llm-unknown-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let cache = ModelCache::new(
+            root,
+            crate::models::Manifest {
+                version: 1,
+                assets: vec![],
+            },
+        );
+        let err = match LlamaLlm::from_cached_model(
+            &cache,
+            &crate::models::BlockedFetcher::default(),
+            &mut crate::models::NoProgress,
+            &Cancel::new(),
+            "mistral",
+            true,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("unknown model should fail"),
+        };
+        assert!(matches!(err, Error::Config { .. }));
     }
 }

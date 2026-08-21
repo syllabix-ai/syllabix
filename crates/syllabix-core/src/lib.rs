@@ -50,8 +50,9 @@ pub use fake::{
 pub use g2p::{english_to_ipa, english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
 pub use live::run_live;
 pub use llm::{
-    LlamaLlm, LLAMA_1B_ASSET, LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS, LLAMA_N_CTX,
-    LLAMA_N_PREDICT, VOICE_SYSTEM_PROMPT,
+    is_v0_llm_model, LlamaLlm, LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS,
+    LLAMA_N_CTX, LLAMA_N_PREDICT, LLAMA_N_PREDICT_THINKING, QWEN35_08B_ASSET, QWEN35_2B_ASSET,
+    VOICE_SYSTEM_PROMPT,
 };
 pub use memory::{process_rss_bytes, LOOP_RSS_GROWTH_CEILING_BYTES};
 pub use models::{
@@ -65,7 +66,10 @@ pub use pipeline::{
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
 pub use real::load_real_providers;
-pub use speech_text::{strip_markdown_for_speech, take_sentences};
+pub use speech_text::{
+    speak_text_for_tts, strip_markdown_for_speech, strip_think_for_speech, take_sentences,
+    ThinkFilter,
+};
 pub use stt::{
     contains_words_in_order, transcript_words, word_match_ratio, WhisperStt,
     LIBRISPEECH_MIN_WORD_MATCH, STT_LANGUAGE, WHISPER_SMALL_ASSET,

@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn corrupt_download_is_rejected() {
         let body = b"good-weights-body!!".to_vec();
-        let asset = hashed_asset("llama-3.2-1b", &body);
+        let asset = hashed_asset("qwen3.5-2b", &body);
         let cache = ModelCache::new(
             scratch(),
             Manifest {
