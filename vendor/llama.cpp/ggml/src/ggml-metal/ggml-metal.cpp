@@ -919,7 +919,10 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
             g_devices = atoi(env);
         }
 
-        static std::vector<ggml_backend_device_ptr> devs;
+        // Syllabix local patch: leak on purpose (never run the destructor) so
+        // Metal devices are not freed from a static destructor at exit; see
+        // ggml-metal-device.cpp ggml_metal_device_get.
+        static std::vector<ggml_backend_device_ptr>* devs = new std::vector<ggml_backend_device_ptr>();
 
         if (!initialized) {
             // workaround macOS limitation (kIOGPUCommandBufferCallbackErrorImpactingInteractivity) until proper fix becomes possible
@@ -930,7 +933,7 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
 
             for (int i = 0; i < g_devices; ++i) {
                 auto * dev = ggml_backend_metal_device_init(&reg, i);
-                devs.emplace_back(dev);
+                devs->emplace_back(dev);
 
                 reg_ctx->devices.push_back(dev);
             }

@@ -481,6 +481,30 @@ mod tests {
     }
 
     #[test]
+    fn example_config_parses_to_launch_defaults() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-agent.yaml");
+        let text = fs::read_to_string(&path).expect("examples/demo-agent.yaml exists");
+        assert!(text.contains("#"), "example documents its keys in comments");
+        let config = AgentConfig::parse_yaml(&text).expect("example parses");
+        assert_eq!(config, AgentConfig::v0());
+        assert!(!config.thinking, "thinking stays off by default");
+        // The example is the minimal shape: no VAD tunables spelled out.
+        assert!(
+            !text.contains("threshold:") && !text.contains("min_speech_ms:"),
+            "example stays minimal; launch defaults are omitted"
+        );
+    }
+
+    #[test]
+    fn example_config_loads_from_path_with_field_context() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-agent.yaml");
+        let config = AgentConfig::load_path(&path).expect("load example");
+        assert_eq!(config.name, "demo-agent");
+        assert_eq!(config.llm_model, "llama-3.2-1b");
+        assert_eq!(config.language, "en");
+    }
+
+    #[test]
     fn yaml_vad_tunables_override_defaults() {
         let yaml = AgentConfig::v0()
             .to_yaml()

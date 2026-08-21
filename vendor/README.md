@@ -16,4 +16,6 @@ Sequence 26 vendors `ggml/src/ggml-metal` and `ggml/src/ggml-blas` from the same
 
 Do not add a second `ggml` copy. Do not use `--allow-multiple-definition` or post-build `objcopy` symbol renaming.
 
+**Local patch (sequence 27), Darwin only:** `ggml/src/ggml-metal/ggml-metal-device.cpp` and `ggml-metal.cpp` leak their process-global Metal device caches on purpose (`static ... = new ...`, destructor never runs). Freeing them from C++ static destructors during `__cxa_finalize` aborted every ggml-Metal process at exit — `native_inference` passed all 16 tests, then SIGABRT in `ggml_metal_rsets_free`. No runtime behavior change; keep the patch when bumping the pin.
+
 CPU vs Metal tok/s for the three v0 GGUFs: [`llama-bench.md`](llama-bench.md).

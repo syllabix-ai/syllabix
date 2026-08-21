@@ -26,7 +26,7 @@ chmod +x syllabix
 
 Windows: download `syllabix-Windows-x86_64.exe` from the same Release. First `run` fills `~/.cache/syllabix/models/v1` (or `%LOCALAPPDATA%\syllabix\cache\models\v1`). A second `run` must work with the network blocked.
 
-GitHub Release files are the four sequence-22 names plus `SHA256SUMS`. `.github/workflows/release.yml` publishes them on `v*` tags. Pull requests do not package dist binaries. If Actions cannot run, build each target with `scripts/package-release.sh` and attach with `scripts/publish-release.sh v0.1.0`.
+GitHub Release files are the four sequence-22 names plus `SHA256SUMS`. `.github/workflows/release.yml` publishes them on `v*` tags. Pull requests do not package dist binaries. If Actions cannot run, build each target with `scripts/package-release.sh` and attach with `scripts/publish-release.sh v0.1.0`. After a Release is published, validate the documented download path against it: `SMOKE_RELEASE_URL=https://github.com/syllabix-ai/syllabix/releases/download/<tag> scripts/smoke-setup.sh syllabix-Linux-x86_64` (repeat per OS you can touch).
 
 | Target | Artifact |
 | --- | --- |
@@ -39,7 +39,7 @@ GitHub Release files are the four sequence-22 names plus `SHA256SUMS`. `.github/
 ./scripts/package-release.sh                         # host triple
 ./scripts/package-release.sh x86_64-unknown-linux-gnu
 ./scripts/check-clean-artifact.sh dist/syllabix-Linux-x86_64
-./scripts/check-clean-machine.sh dist/syllabix-Linux-x86_64
+./scripts/smoke-offline-setup.sh dist/syllabix-Linux-x86_64
 ./scripts/check-repro.sh                             # two isolated dist builds; run when dist packaging changes
 ./scripts/publish-release.sh v0.1.0                  # attach dist/ when Actions cannot run
 ```
@@ -57,7 +57,7 @@ From this checkout, `cargo run -p syllabix -- run` talks on a machine with a mic
 | `syllabix run --barge-in` | Opt-in. VAD keeps running during TTS; user SpeechStart stops playback, flushes queued audio, and cancels LLM/TTS. Off by default. Combine with `--turn-debug` to dump interrupted turns. Whisper utterances always include 200 ms of post-AEC preroll. | Same |
 | `syllabix init [dir]` | Optional `syllabix.yaml` scaffold | Same |
 
-There is no `serve`, `bench`, cloud provider, or API key in v0. `run` does not require yaml. If `syllabix.yaml` is present, it must name the v0 on-device stack and `language: en`. Optional `pipeline.vad` keys (`threshold`, `min_speech_ms`, `end_silence_ms`, `preroll_ms`) tune Silero; omit them for the launch defaults.
+There is no `serve`, `bench`, cloud provider, or API key in v0. `run` does not require yaml. If `syllabix.yaml` is present, it must name the v0 on-device stack and `language: en`. Optional `pipeline.vad` keys (`threshold`, `min_speech_ms`, `end_silence_ms`, `preroll_ms`) tune Silero; omit them for the launch defaults. A minimal example lives at [`examples/demo-agent.yaml`](examples/demo-agent.yaml).
 
 ## Develop
 
@@ -67,10 +67,12 @@ Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-./scripts/ci-local.sh   # Linux stand-in for GitHub Actions (fmt through tests, then Linux dist + clean-machine)
+./scripts/ci-local.sh   # Linux stand-in for GitHub Actions (fmt through tests, then Linux dist + clean-machine + README smoke)
 ./scripts/check-repro.sh  # two dist builds; run when the dist profile or packaging script changes
 # `cargo llvm-cov --workspace --fail-under-lines 85` skips native inference (`cfg(coverage)`). Run `cargo test` for Whisper/Llama/Kokoro.
 ```
+
+Reference hardware profiles and measurement protocols (AEC zero-false-turns gate, barge-in p95, TTS→ASR intelligibility): [`docs/reference-profiles.md`](docs/reference-profiles.md).
 
 Model weights are not in git and are not packed into the `dist` executable. A versioned manifest lists Silero, whisper.cpp `small`, Llama 3.2 1B (default), Qwen3.5-0.8B, Qwen3.5-2B, and Kokoro. Zero-config `run` fetches only the selected GGUF (`llama-3.2-1b` unless yaml sets `pipeline.llm.model`). Thinking is off unless yaml sets `pipeline.llm.thinking: true` (Qwen). CPU vs Metal tok/s for the three GGUFs is in `vendor/llama-bench.md`, not here. The cache writes into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`, verifies SHA-256, and reuses files offline. `syllabix run` fills that cache on first launch.
 
@@ -96,6 +98,20 @@ To dump a live conversation for diagnosis (listen to `utterance.wav` against STT
 ```bash
 cargo run -p syllabix --release -- run --turn-debug target/turn-debug
 ```
+
+## Troubleshooting
+
+| Symptom | What to do |
+| --- | --- |
+| `error: No speakers found` / no microphone | `syllabix run` needs input **and** output devices at launch. Check OS sound settings, then rerun. On a headless box there is nothing to talk to — failing fast is correct. |
+| The agent interrupts itself on laptop speakers | Full-duplex AEC3 is on by default and calibrates automatically for ~10 s; let calibration finish before speaking. If it still self-interrupts, use headphones and include the device names from the startup line in a bug report. |
+| First `run` is slow | It fetches Silero, Whisper `small`, Llama 3.2 1B, and Kokoro into the model cache with progress lines. Later runs reuse the cache and never touch the network. |
+| Replies are cut off mid-sentence when you speak over them | That is barge-in — but only with `run --barge-in`, which keeps VAD listening during TTS. Without the flag the agent finishes its sentence first; that is the default, not a bug. |
+| The agent speaks Qwen's reasoning aloud | It should not: `<think>…</think>` is stripped before TTS and hidden in the TUI. Thinking stays off unless yaml sets `pipeline.llm.thinking: true`. If you hear chain-of-thought, capture it with `--turn-debug` (`turn.json` keeps the full `llm_text`) and file a bug. |
+| STT text does not match what you said | Run with `--turn-debug [dir]`, then listen to `utterance.wav` (what Whisper received, including the 200 ms onset preroll) versus `clean.wav` (post-AEC). If `utterance.wav` sounds wrong but `clean.wav` sounds right, report the sidecar `stt` text plus both files. |
+| Linux build fails linking ALSA | Contributors need `libasound2-dev` (a declared OS library). Users of the Release binary never compile anything. |
+| macOS asks to approve microphone access | Grant it once in System Settings → Privacy & Security → Microphone; the binary requests access through CoreAudio. |
+| Downloaded binary won't verify | Re-download the artifact and `SHA256SUMS` from the same Release; the checksum command must pass before you run anything. |
 
 ## License
 

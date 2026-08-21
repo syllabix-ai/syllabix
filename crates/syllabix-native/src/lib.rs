@@ -82,18 +82,28 @@ pub fn frontends_linked() -> bool {
     unsafe { ffi::syllabix_native_link_anchor() != 0 }
 }
 
-/// llama.cpp CPU system-info string. Does not load a GGUF.
+/// llama.cpp system-info string. Does not load a GGUF.
+///
+/// Memoized: `llama_print_system_info` builds into a shared static
+/// `std::string` (`clear()` then append) that is not thread-safe, so
+/// concurrent callers (the test harness runs tests in parallel threads)
+/// can observe a wiped string. System info never changes for the process,
+/// so the first copy wins.
 pub fn llama_system_info() -> String {
-    hush_logs();
-    unsafe {
-        ffi::syllabix_llama_backend_init();
-        let ptr = ffi::syllabix_llama_system_info();
-        if ptr.is_null() {
-            String::new()
-        } else {
-            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+    static INFO: OnceLock<String> = OnceLock::new();
+    INFO.get_or_init(|| {
+        hush_logs();
+        unsafe {
+            ffi::syllabix_llama_backend_init();
+            let ptr = ffi::syllabix_llama_system_info();
+            if ptr.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(ptr).to_string_lossy().into_owned()
+            }
         }
-    }
+    })
+    .clone()
 }
 
 /// Layers offloaded to Metal. `-1` on Darwin (all), `0` on Linux/Windows.
