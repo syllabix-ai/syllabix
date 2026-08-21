@@ -123,7 +123,9 @@ fn populated_cache_resolves_every_asset_with_network_blocked() {
     let bodies = [
         ("silero", &b"vad"[..]),
         ("whisper-small", &b"stt"[..]),
-        ("llama-3.2-1b", &b"llm"[..]),
+        ("qwen3.5-0.8b", &b"llm-small"[..]),
+        ("qwen3.5-2b", &b"llm"[..]),
+        ("llama-3.2-1b", &b"llm-llama"[..]),
         ("kokoro", &b"tts"[..]),
         ("kokoro-voice", &b"voice"[..]),
     ];
@@ -144,7 +146,7 @@ fn populated_cache_resolves_every_asset_with_network_blocked() {
     let paths = cache
         .resolve_all(&blocked, &mut NoProgress, &Cancel::new())
         .expect("populated cache must not fetch");
-    assert_eq!(paths.len(), 5);
+    assert_eq!(paths.len(), 7);
     assert_eq!(blocked.hits.load(Ordering::SeqCst), 0);
     for (path, (_, body)) in paths.iter().zip(bodies) {
         assert_eq!(std::fs::read(path).unwrap(), body);
@@ -152,11 +154,42 @@ fn populated_cache_resolves_every_asset_with_network_blocked() {
 }
 
 #[test]
+fn resolving_one_llm_id_does_not_fetch_the_other() {
+    let small = asset("qwen3.5-0.8b", b"zero-eight");
+    let two = asset("qwen3.5-2b", b"two-b-bytes");
+    let llama = asset("llama-3.2-1b", b"llama-bytes");
+    let cache = cache_with(vec![small.clone(), two.clone(), llama.clone()]);
+    let two_fetch = BytesFetcher {
+        body: b"two-b-bytes".to_vec(),
+        fail_first: false,
+        calls: AtomicUsize::new(0),
+    };
+    let small_fetch = BytesFetcher {
+        body: b"zero-eight".to_vec(),
+        fail_first: false,
+        calls: AtomicUsize::new(0),
+    };
+    cache
+        .resolve(&small, &small_fetch, &mut NoProgress, &Cancel::new())
+        .unwrap();
+    assert_eq!(small_fetch.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(two_fetch.calls.load(Ordering::SeqCst), 0);
+    cache
+        .resolve(&small, &two_fetch, &mut NoProgress, &Cancel::new())
+        .unwrap();
+    assert_eq!(two_fetch.calls.load(Ordering::SeqCst), 0);
+    assert!(!cache.asset_path(&two).exists());
+    assert!(!cache.asset_path(&llama).exists());
+}
+
+#[test]
 fn v0_manifest_is_complete() {
     let m = Manifest::v0();
-    assert_eq!(m.assets.len(), 5);
+    assert_eq!(m.assets.len(), 7);
     assert!(m.asset("silero").is_some());
     assert!(m.asset("whisper-small").is_some());
+    assert!(m.asset("qwen3.5-0.8b").is_some());
+    assert!(m.asset("qwen3.5-2b").is_some());
     assert!(m.asset("llama-3.2-1b").is_some());
     assert!(m.asset("kokoro").is_some());
     assert!(m.asset("kokoro-voice").is_some());

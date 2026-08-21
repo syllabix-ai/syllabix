@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use syllabix_core::{
     run_loop, scripted_frames, BlockedFetcher, Cancel, CollectingSink, FakeStt, FakeTts, FakeVad,
     HistoryTurn, LlamaLlm, Llm, LoopConfig, ModelCache, PipelineStages, StderrProgress, TokenChunk,
-    Transcript, TurnId, LLAMA_1B_ASSET, LLAMA_CANCEL_TIMEOUT, VOICE_SYSTEM_PROMPT,
+    Transcript, TurnId, LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT, QWEN35_08B_ASSET,
+    VOICE_SYSTEM_PROMPT,
 };
 
 use crate::native;
@@ -48,6 +49,9 @@ fn q4_km_gguf_loads_without_segfault() {
         assert_eq!(chunk.index, i as u32);
         assert_eq!(chunk.turn, TurnId(0));
     }
+    let spoken = syllabix_core::speak_text_for_tts(&joined(&chunks));
+    assert!(!spoken.contains("<think>"), "{spoken}");
+    assert!(!spoken.contains("</think>"), "{spoken}");
 }
 
 #[test]
@@ -175,7 +179,7 @@ fn llama_replaces_fake_llm_in_the_loop() {
 fn populated_cache_reuses_the_gguf_offline() {
     let _n = native();
     let cached = ModelCache::v0();
-    let asset = cached.manifest().asset(LLAMA_1B_ASSET).unwrap();
+    let asset = cached.manifest().asset(LLAMA_32_1B_ASSET).unwrap();
     cached
         .resolve(
             asset,
@@ -184,4 +188,29 @@ fn populated_cache_reuses_the_gguf_offline() {
             &Cancel::new(),
         )
         .expect("populated cache must not need the network");
+}
+
+#[test]
+fn yaml_qwen_08b_thinking_true_strips_think_for_speech() {
+    drop(native());
+    let cache = ModelCache::v0();
+    let mut progress = StderrProgress::new();
+    let mut llm = LlamaLlm::from_cached_model(
+        &cache,
+        &syllabix_core::HttpFetcher,
+        &mut progress,
+        &Cancel::new(),
+        QWEN35_08B_ASSET,
+        true,
+    )
+    .expect("reload qwen3.5-0.8b with thinking");
+    assert!(llm.thinking());
+    let user = Transcript {
+        turn: TurnId(0),
+        text: "Say ping.".into(),
+    };
+    let chunks = collect(&mut llm, &[], &user, &Cancel::new()).expect("thinking generate");
+    assert!(!chunks.is_empty());
+    let spoken = syllabix_core::speak_text_for_tts(&joined(&chunks));
+    assert!(!spoken.contains("<think>") && !spoken.contains("</think>"));
 }

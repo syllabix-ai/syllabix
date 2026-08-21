@@ -1,6 +1,7 @@
 //! Load the blessed v0 native providers from the model cache.
 
 use crate::cancel::Cancel;
+use crate::config::AgentConfig;
 use crate::error::Result;
 use crate::llm::LlamaLlm;
 use crate::models::{Fetcher, ModelCache, Progress};
@@ -14,11 +15,19 @@ pub fn load_real_providers(
     fetcher: &dyn Fetcher,
     progress: &mut dyn Progress,
     cancel: &Cancel,
-    language: &str,
+    config: &AgentConfig,
 ) -> Result<(SileroVad, WhisperStt, LlamaLlm, KokoroTts)> {
     let vad = SileroVad::from_cache(cache, fetcher, progress, cancel)?;
-    let stt = WhisperStt::from_cache(cache, fetcher, progress, cancel)?.with_language(language)?;
-    let llm = LlamaLlm::from_cache(cache, fetcher, progress, cancel)?;
+    let stt = WhisperStt::from_cache(cache, fetcher, progress, cancel)?
+        .with_language(&config.language)?;
+    let llm = LlamaLlm::from_cached_model(
+        cache,
+        fetcher,
+        progress,
+        cancel,
+        &config.llm_model,
+        config.thinking,
+    )?;
     let tts = KokoroTts::from_cache(cache, fetcher, progress, cancel)?;
     Ok((vad, stt, llm, tts))
 }
@@ -53,7 +62,7 @@ mod tests {
             &crate::models::BlockedFetcher::default(),
             &mut NoProgress,
             &Cancel::new(),
-            crate::STT_LANGUAGE,
+            &crate::AgentConfig::v0(),
         ) {
             Err(err) => err,
             Ok(_) => panic!("empty manifest should fail"),

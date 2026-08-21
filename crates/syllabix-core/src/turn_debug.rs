@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::audio::{write_wav, PcmFormat, WavPcm};
 use crate::error::{Error, Result};
-use crate::speech_text::strip_markdown_for_speech;
+use crate::speech_text::speak_text_for_tts;
 use crate::types::{TurnId, TurnTimings, Utterance, DEFAULT_SAMPLE_RATE_HZ};
 
 /// Environment override for the default dump directory.
@@ -238,7 +238,7 @@ fn write_pcm(path: &Path, samples: &[i16]) -> Result<()> {
 
 fn render_sidecar(id: u64, outcome: TurnOutcome, dump: &TurnDump) -> String {
     let stt = dump.stt_text.as_deref().unwrap_or("");
-    let speak = strip_markdown_for_speech(&dump.llm_text);
+    let speak = speak_text_for_tts(&dump.llm_text);
     let timings = dump.timings.unwrap_or_default();
     format!(
         "{{\n  \"turn\": {id},\n  \"outcome\": {},\n  \"stt_text\": {},\n  \"llm_text\": {},\n  \"tts_speak_text\": {},\n  \"timings\": {{\n    \"stt_ms\": {},\n    \"ttft_ms\": {},\n    \"ttfb_ms\": {},\n    \"total_ms\": {}\n  }},\n  \"capture_samples\": {},\n  \"capture_frames\": {},\n  \"capture_duration_ms\": {},\n  \"clean_samples\": {},\n  \"clean_frames\": {},\n  \"clean_duration_ms\": {},\n  \"utterance_samples\": {},\n  \"utterance_frames\": {},\n  \"utterance_duration_ms\": {},\n  \"tts_samples\": {},\n  \"tts_chunks\": {},\n  \"tts_duration_ms\": {}\n}}\n",
@@ -373,7 +373,7 @@ mod tests {
         };
         debug.note_utterance(&utterance);
         debug.note_stt(turn, "hello");
-        debug.note_llm(turn, "hi **there**".into());
+        debug.note_llm(turn, "<think>plan</think> hi **there**".into());
         debug.note_tts(turn, &[9, 8, 7]);
         debug
             .complete(
@@ -394,6 +394,7 @@ mod tests {
         let json = fs::read_to_string(turn_dir.join("turn.json")).unwrap();
         assert!(json.contains("\"outcome\": \"completed\""));
         assert!(json.contains("\"stt_text\": \"hello\""));
+        assert!(json.contains("\"llm_text\": \"<think>plan</think> hi **there**\""));
         assert!(json.contains("\"tts_speak_text\": \"hi there\""));
         assert!(json.contains("\"stt_ms\": 11"));
         let wav = read_wav(Cursor::new(fs::read(turn_dir.join("tts.wav")).unwrap())).unwrap();

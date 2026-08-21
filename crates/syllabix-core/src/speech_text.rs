@@ -1,10 +1,96 @@
-//! Markdown-to-speech cleanup and sentence chunking for TTS.
+//! Think-tag strip, Markdown-to-speech cleanup, and sentence chunking for TTS.
+
+const THINK_OPEN: &str = "<think>";
+const THINK_CLOSE: &str = "</think>";
 
 /// Abbreviations that should not split a sentence on the following period.
 const ABBREV: &[&str] = &[
     "mr", "mrs", "ms", "dr", "prof", "jr", "sr", "vs", "st", "gen", "col", "sgt", "lt", "gov",
     "inc", "ltd", "eg", "ie", "am", "pm", "us", "usa",
 ];
+
+/// Remove `<think>…</think>` (and leftover / unclosed think tags) so Kokoro
+/// speaks the answer, not the chain of thought.
+pub fn strip_think_for_speech(text: &str) -> String {
+    let mut filter = ThinkFilter::default();
+    collapse_ws(&filter.push(text, true))
+}
+
+/// Think-strip, then Markdown-strip. Used by TTS and `--turn-debug` speak-text.
+pub fn speak_text_for_tts(text: &str) -> String {
+    strip_markdown_for_speech(&strip_think_for_speech(text))
+}
+
+/// Streaming filter: hold tokens inside an open think block; emit the rest.
+#[derive(Debug, Default)]
+pub struct ThinkFilter {
+    in_think: bool,
+    pending: String,
+}
+
+impl ThinkFilter {
+    /// Append `chunk`. When `flush` is set, drop an unclosed think tail.
+    pub fn push(&mut self, chunk: &str, flush: bool) -> String {
+        self.pending.push_str(chunk);
+        let mut out = String::new();
+        loop {
+            if self.in_think {
+                if let Some(i) = self.pending.find(THINK_CLOSE) {
+                    self.pending = self.pending[i + THINK_CLOSE.len()..].to_string();
+                    self.in_think = false;
+                    continue;
+                }
+                if flush {
+                    self.pending.clear();
+                    self.in_think = false;
+                } else {
+                    let held = incomplete_tag_suffix(&self.pending, THINK_CLOSE);
+                    let keep_from = self.pending.len() - held.len();
+                    self.pending = self.pending[keep_from..].to_string();
+                }
+                break;
+            }
+            if let Some(i) = self.pending.find(THINK_OPEN) {
+                out.push_str(&self.pending[..i]);
+                self.pending = self.pending[i + THINK_OPEN.len()..].to_string();
+                self.in_think = true;
+                continue;
+            }
+            if flush {
+                out.push_str(&self.pending);
+                self.pending.clear();
+            } else {
+                let held = incomplete_tag_suffix(&self.pending, THINK_OPEN);
+                let emit_end = self.pending.len() - held.len();
+                out.push_str(&self.pending[..emit_end]);
+                self.pending = self.pending[emit_end..].to_string();
+            }
+            break;
+        }
+        out.replace(THINK_CLOSE, "")
+    }
+}
+
+fn incomplete_tag_suffix<'a>(s: &'a str, tag: &str) -> &'a str {
+    let max = tag.len().saturating_sub(1);
+    if max == 0 || s.is_empty() {
+        return "";
+    }
+    let start = s
+        .char_indices()
+        .rev()
+        .take_while(|(i, _)| s.len() - i <= max)
+        .map(|(i, _)| i)
+        .last()
+        .unwrap_or(s.len());
+    for (i, _) in s[start..].char_indices() {
+        let idx = start + i;
+        if tag.starts_with(&s[idx..]) {
+            return &s[idx..];
+        }
+    }
+    ""
+}
 
 /// Strip headings, list markers, emphasis, and link markup so TTS does not
 /// speak punctuation from Markdown.
@@ -250,5 +336,25 @@ mod tests {
     fn incomplete_markdown_link_is_left_as_text() {
         let spoken = strip_markdown_for_speech("[label](https://x.test and [open");
         assert!(spoken.contains("label") || spoken.contains('['));
+    }
+
+    #[test]
+    fn think_blocks_and_leftover_tags_never_reach_speech() {
+        assert_eq!(
+            strip_think_for_speech("<think>secret plan</think> Hello there."),
+            "Hello there."
+        );
+        assert_eq!(speak_text_for_tts("<think>**no**</think> **yes**."), "yes.");
+        assert_eq!(strip_think_for_speech("<think>unclosed"), "");
+        assert_eq!(strip_think_for_speech("answer</think>"), "answer");
+    }
+
+    #[test]
+    fn think_filter_holds_tokens_until_the_block_closes() {
+        let mut filter = ThinkFilter::default();
+        assert_eq!(filter.push("<th", false), "");
+        assert_eq!(filter.push("ink>hidden. ", false), "");
+        assert_eq!(filter.push("still hidden</th", false), "");
+        assert_eq!(filter.push("ink>Spoken now.", true), "Spoken now.");
     }
 }

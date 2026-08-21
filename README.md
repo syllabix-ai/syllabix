@@ -72,7 +72,7 @@ cargo test --workspace
 # `cargo llvm-cov --workspace --fail-under-lines 85` skips native inference (`cfg(coverage)`). Run `cargo test` for Whisper/Llama/Kokoro.
 ```
 
-Model weights are not in git and are not packed into the `dist` executable. A versioned manifest lists Silero, whisper.cpp `small`, llama-3.2-1b, and Kokoro. The cache writes into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`, verifies SHA-256, and reuses files offline. `syllabix run` fills that cache on first launch.
+Model weights are not in git and are not packed into the `dist` executable. A versioned manifest lists Silero, whisper.cpp `small`, Llama 3.2 1B (default), Qwen3.5-0.8B, Qwen3.5-2B, and Kokoro. Zero-config `run` fetches only the selected GGUF (`llama-3.2-1b` unless yaml sets `pipeline.llm.model`). Thinking is off unless yaml sets `pipeline.llm.thinking: true` (Qwen). CPU vs Metal tok/s for the three GGUFs is in `vendor/llama-bench.md`, not here. The cache writes into `$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`, verifies SHA-256, and reuses files offline. `syllabix run` fills that cache on first launch.
 
 CI records and plays a WAV fixture (no microphone). That path also soaks 30 minutes of *audio time* through bounded queues faster than real time. A six-turn native loop test runs Silero → whisper.cpp → llama.cpp → Kokoro through fixture capture/playback. The first STT/LLM/TTS/VAD test run fetches weights into the model cache.
 

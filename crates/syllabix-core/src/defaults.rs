@@ -129,8 +129,10 @@ pub struct BuiltinDefaults {
     pub stt_model: SttModel,
     /// LLM provider.
     pub llm: LlmProvider,
-    /// Small instruct GGUF id. Fetched into the first-run cache; not packed.
+    /// Instruct GGUF id. Fetched into the first-run cache; not packed.
     pub llm_model: &'static str,
+    /// Qwen thinking. Off by default; yaml `thinking: true` enables it.
+    pub llm_thinking: bool,
     /// TTS provider.
     pub tts: TtsProvider,
     /// STT language code (`en`). YAML may set this; v0 allows only `en`.
@@ -155,6 +157,7 @@ impl BuiltinDefaults {
             stt_model: SttModel::Small,
             llm: LlmProvider::LlamaCpp,
             llm_model: "llama-3.2-1b",
+            llm_thinking: false,
             tts: TtsProvider::Kokoro,
             language: "en",
             sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
@@ -184,6 +187,7 @@ mod tests {
         assert_eq!(d.stt_model.as_str(), "small");
         assert_eq!(d.llm.as_str(), "llama.cpp");
         assert_eq!(d.llm_model, "llama-3.2-1b");
+        assert!(!d.llm_thinking);
         assert_eq!(d.tts.as_str(), "kokoro");
         assert_eq!(d.language, "en");
         assert_eq!(d.sample_rate_hz, 16_000);

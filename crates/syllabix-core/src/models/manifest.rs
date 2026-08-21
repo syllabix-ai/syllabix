@@ -1,7 +1,5 @@
 //! Compiled-in v0 model list. The binary is the manifest; there is no extra file.
 
-use crate::defaults::BuiltinDefaults;
-
 /// Pipeline layer an asset belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelLayer {
@@ -54,8 +52,8 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// Launch stack from `V0_LAUNCH.md`: Silero, whisper.cpp `small`,
-    /// llama-3.2-1b GGUF, Kokoro + default English voice.
+    /// Launch stack: Silero, whisper.cpp `small`, Llama 3.2 1B (default),
+    /// Qwen3.5 0.8B and 2B (yaml), Kokoro + default English voice.
     pub fn v0() -> Self {
         Self {
             version: 1,
@@ -77,7 +75,23 @@ impl Manifest {
                     487_601_967,
                 ),
                 asset(
-                    BuiltinDefaults::v0().llm_model,
+                    "qwen3.5-0.8b",
+                    ModelLayer::Llm,
+                    "Qwen_Qwen3.5-0.8B-Q4_K_M.gguf",
+                    "https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/Qwen_Qwen3.5-0.8B-Q4_K_M.gguf",
+                    "fb044e93939a70469c905781334f5de1e6c8b608ced6cbc8c9249bd4127d9526",
+                    579_615_840,
+                ),
+                asset(
+                    "qwen3.5-2b",
+                    ModelLayer::Llm,
+                    "Qwen_Qwen3.5-2B-Q4_K_M.gguf",
+                    "https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF/resolve/main/Qwen_Qwen3.5-2B-Q4_K_M.gguf",
+                    "57a1085840f497d764a7fc5d346922dbde961efb54cc792ea81d694fd846a1d8",
+                    1_396_198_496,
+                ),
+                asset(
+                    "llama-3.2-1b",
                     ModelLayer::Llm,
                     "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
                     "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
@@ -131,13 +145,13 @@ fn asset(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::defaults::SttModel;
+    use crate::defaults::{BuiltinDefaults, SttModel};
 
     #[test]
     fn v0_lists_every_launch_layer() {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
-        assert_eq!(m.assets.len(), 5);
+        assert_eq!(m.assets.len(), 7);
         assert_eq!(m.asset("silero").unwrap().layer, ModelLayer::Vad);
         assert_eq!(m.asset("whisper-small").unwrap().layer, ModelLayer::Stt);
         assert_eq!(
@@ -148,6 +162,8 @@ mod tests {
             m.asset(BuiltinDefaults::v0().llm_model).unwrap().layer,
             ModelLayer::Llm
         );
+        assert_eq!(m.asset("qwen3.5-2b").unwrap().layer, ModelLayer::Llm);
+        assert_eq!(m.asset("llama-3.2-1b").unwrap().layer, ModelLayer::Llm);
         assert_eq!(m.asset("kokoro").unwrap().layer, ModelLayer::Tts);
         assert_eq!(m.asset("kokoro-voice").unwrap().layer, ModelLayer::Tts);
         assert!(m.asset("missing").is_none());

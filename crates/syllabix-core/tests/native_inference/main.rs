@@ -51,7 +51,8 @@ pub(crate) fn native() -> MutexGuard<'static, Native> {
         let stt = WhisperStt::from_cache(&cache, &HttpFetcher, &mut progress, &cancel)
             .expect("load whisper.cpp small once");
         let llm = LlamaLlm::from_cache(&cache, &HttpFetcher, &mut progress, &cancel)
-            .expect("load Llama Q4_K_M once");
+            .expect("load Llama 3.2 1B Q4_K_M once");
+        assert!(!llm.thinking(), "v0 thinking is off until yaml enables it");
         let tts = KokoroTts::from_cache(&cache, &HttpFetcher, &mut progress, &cancel)
             .expect("load Kokoro ONNX once");
         Mutex::new(Native { stt, llm, tts })
