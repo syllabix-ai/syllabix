@@ -1,6 +1,6 @@
 //! Transcript + latency TUI for `syllabix run`.
 
-use syllabix_core::{LoopEvent, TurnId};
+use syllabix_core::{LoopEvent, ThinkFilter, TurnId};
 
 /// Rolling transcript shown in the TUI.
 #[derive(Debug, Default)]
@@ -8,6 +8,7 @@ use syllabix_core::{LoopEvent, TurnId};
 pub struct TranscriptUi {
     lines: Vec<String>,
     current_agent: Option<(TurnId, String)>,
+    think: ThinkFilter,
     latency: String,
 }
 
@@ -25,9 +26,13 @@ impl TranscriptUi {
                 text,
                 is_last,
             } => {
+                if !matches!(&self.current_agent, Some((id, _)) if *id == turn) {
+                    self.flush_agent();
+                }
+                let spoken = self.think.push(&text, is_last);
                 match &mut self.current_agent {
-                    Some((id, buf)) if *id == turn => buf.push_str(&text),
-                    _ => self.current_agent = Some((turn, text)),
+                    Some((id, buf)) if *id == turn => buf.push_str(&spoken),
+                    _ => self.current_agent = Some((turn, spoken)),
                 }
                 if is_last {
                     self.flush_agent();
@@ -45,6 +50,7 @@ impl TranscriptUi {
                 self.lines.push(format!("Agent: {text}"));
             }
         }
+        self.think = ThinkFilter::default();
     }
 
     /// Visible transcript, including an in-flight assistant line.
@@ -53,13 +59,22 @@ impl TranscriptUi {
         if let Some((_, text)) = &self.current_agent {
             if !text.is_empty() {
                 lines.push(format!("Agent: {text}"));
+            } else if self.think.in_think() {
+                lines.push("Agent: …".into());
             }
+        } else if self.think.in_think() {
+            lines.push("Agent: …".into());
         }
         if lines.is_empty() {
             "Listening… speak to start. q or Ctrl+C to quit.".into()
         } else {
             lines.join("\n")
         }
+    }
+
+    /// Scroll so the last wrapped line stays in a pane of `width` × `height`.
+    pub fn transcript_scroll(&self, width: u16, height: u16) -> u16 {
+        scroll_offset(&self.transcript_text(), width, height)
     }
 
     /// Latency footer.
@@ -70,6 +85,33 @@ impl TranscriptUi {
             &self.latency
         }
     }
+}
+
+fn wrapped_line_count(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    text.split('\n')
+        .map(|line| {
+            let chars = line.chars().count();
+            if chars == 0 {
+                1
+            } else {
+                chars.div_ceil(width)
+            }
+        })
+        .sum()
+}
+
+fn scroll_offset(text: &str, width: u16, height: u16) -> u16 {
+    let width = width as usize;
+    let height = height as usize;
+    if width == 0 || height == 0 {
+        return 0;
+    }
+    wrapped_line_count(text, width)
+        .saturating_sub(height)
+        .min(u16::MAX as usize) as u16
 }
 
 #[cfg(not(coverage))]
@@ -146,8 +188,12 @@ mod live_terminal {
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Min(3), Constraint::Length(3)])
                         .split(frame.size());
-                    let transcript = Paragraph::new(ui.transcript_text())
+                    let inner_width = chunks[0].width.saturating_sub(2);
+                    let inner_height = chunks[0].height.saturating_sub(2);
+                    let text = ui.transcript_text();
+                    let transcript = Paragraph::new(text.clone())
                         .wrap(Wrap { trim: false })
+                        .scroll((ui.transcript_scroll(inner_width, inner_height), 0))
                         .block(Block::default().borders(Borders::ALL).title("syllabix"));
                     let latency = Paragraph::new(ui.latency_line().to_string())
                         .block(Block::default().borders(Borders::ALL).title("latency"));
@@ -205,6 +251,41 @@ mod tests {
             ui.latency_line(),
             "STT 10ms  TTFT 20ms  TTFB 30ms  total 40ms"
         );
+    }
+
+    #[test]
+    fn think_tokens_are_hidden_until_the_spoken_reply() {
+        let mut ui = TranscriptUi::default();
+        ui.apply(LoopEvent::User {
+            turn: TurnId(1),
+            text: "hey".into(),
+        });
+        ui.apply(LoopEvent::Assistant {
+            turn: TurnId(1),
+            text: "<think>plan".into(),
+            is_last: false,
+        });
+        assert_eq!(ui.transcript_text(), "You: hey\nAgent: …");
+        ui.apply(LoopEvent::Assistant {
+            turn: TurnId(1),
+            text: "</think> I'm well.".into(),
+            is_last: true,
+        });
+        assert_eq!(ui.transcript_text(), "You: hey\nAgent:  I'm well.");
+    }
+
+    #[test]
+    fn transcript_scroll_keeps_the_last_line_visible() {
+        let mut ui = TranscriptUi::default();
+        for i in 0..20 {
+            ui.apply(LoopEvent::User {
+                turn: TurnId(i),
+                text: format!("line{i}"),
+            });
+        }
+        let text = ui.transcript_text();
+        assert!(text.contains("line19"));
+        assert_eq!(ui.transcript_scroll(20, 4), 16);
     }
 
     #[test]

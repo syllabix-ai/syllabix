@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_yaml::Value;
 
@@ -10,17 +11,26 @@ use crate::defaults::{
 };
 use crate::error::{Error, Result};
 use crate::stt::STT_LANGUAGE;
+use crate::vad::{VadSettings, END_SILENCE, MIN_SPEECH, SPEECH_THRESHOLD, WHISPER_PREROLL};
 
 /// File name written by `init` and optionally read by `run`.
 pub const CONFIG_FILE_NAME: &str = "syllabix.yaml";
 
 /// Validated v0 agent config. One provider per layer; language is a single STT code.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AgentConfig {
     /// Agent name (`demo-agent` by default).
     pub name: String,
     /// VAD provider.
     pub vad: VadProvider,
+    /// Silero speech threshold `(0, 1]`.
+    pub vad_threshold: f32,
+    /// Contiguous speech to open a turn, milliseconds.
+    pub vad_min_speech_ms: u32,
+    /// Hangover silence to close a turn, milliseconds.
+    pub vad_end_silence_ms: u32,
+    /// Post-AEC Whisper preroll, milliseconds.
+    pub vad_preroll_ms: u32,
     /// STT provider.
     pub stt: SttProvider,
     /// STT model id.
@@ -48,6 +58,10 @@ impl AgentConfig {
         Self {
             name: defaults.name.to_string(),
             vad: defaults.vad,
+            vad_threshold: SPEECH_THRESHOLD,
+            vad_min_speech_ms: MIN_SPEECH.as_millis() as u32,
+            vad_end_silence_ms: END_SILENCE.as_millis() as u32,
+            vad_preroll_ms: WHISPER_PREROLL.as_millis() as u32,
             stt: defaults.stt,
             stt_model: defaults.stt_model,
             language: defaults.language.to_string(),
@@ -97,6 +111,10 @@ name: {name}
 pipeline:
   vad:
     provider: {vad}
+    threshold: {vad_threshold}
+    min_speech_ms: {vad_min_speech_ms}
+    end_silence_ms: {vad_end_silence_ms}
+    preroll_ms: {vad_preroll_ms}
   stt:
     provider: {stt}
     model: {stt_model}
@@ -110,6 +128,10 @@ pipeline:
 ",
             name = self.name,
             vad = self.vad.as_str(),
+            vad_threshold = self.vad_threshold,
+            vad_min_speech_ms = self.vad_min_speech_ms,
+            vad_end_silence_ms = self.vad_end_silence_ms,
+            vad_preroll_ms = self.vad_preroll_ms,
             stt = self.stt.as_str(),
             stt_model = self.stt_model.as_str(),
             language = self.language,
@@ -133,6 +155,16 @@ pipeline:
         fs::write(&path, Self::v0().to_yaml())?;
         Ok(path)
     }
+
+    /// Silero turn policy for this config.
+    pub fn vad_settings(&self) -> VadSettings {
+        VadSettings {
+            speech_threshold: self.vad_threshold,
+            min_speech: Duration::from_millis(u64::from(self.vad_min_speech_ms)),
+            end_silence: Duration::from_millis(u64::from(self.vad_end_silence_ms)),
+            preroll: Duration::from_millis(u64::from(self.vad_preroll_ms)),
+        }
+    }
 }
 
 impl Default for AgentConfig {
@@ -152,8 +184,43 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     deny_unknown(pipeline, "pipeline", &["vad", "stt", "llm", "tts"])?;
 
     let vad = mapping(required(pipeline, "pipeline.vad", "vad")?, "pipeline.vad")?;
-    deny_unknown(vad, "pipeline.vad", &["provider"])?;
+    deny_unknown(
+        vad,
+        "pipeline.vad",
+        &[
+            "provider",
+            "threshold",
+            "min_speech_ms",
+            "end_silence_ms",
+            "preroll_ms",
+        ],
+    )?;
     let vad_provider = parse_vad(required_string(vad, "pipeline.vad.provider", "provider")?)?;
+    let vad_threshold = optional_f32(vad, "pipeline.vad", "threshold", SPEECH_THRESHOLD)?;
+    let vad_min_speech_ms = optional_u32(
+        vad,
+        "pipeline.vad",
+        "min_speech_ms",
+        MIN_SPEECH.as_millis() as u32,
+    )?;
+    let vad_end_silence_ms = optional_u32(
+        vad,
+        "pipeline.vad",
+        "end_silence_ms",
+        END_SILENCE.as_millis() as u32,
+    )?;
+    let vad_preroll_ms = optional_u32(
+        vad,
+        "pipeline.vad",
+        "preroll_ms",
+        WHISPER_PREROLL.as_millis() as u32,
+    )?;
+    validate_vad(
+        vad_threshold,
+        vad_min_speech_ms,
+        vad_end_silence_ms,
+        vad_preroll_ms,
+    )?;
 
     let stt = mapping(required(pipeline, "pipeline.stt", "stt")?, "pipeline.stt")?;
     deny_unknown(stt, "pipeline.stt", &["provider", "model", "language"])?;
@@ -174,6 +241,10 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     Ok(AgentConfig {
         name: name.to_string(),
         vad: vad_provider,
+        vad_threshold,
+        vad_min_speech_ms,
+        vad_end_silence_ms,
+        vad_preroll_ms,
         stt: stt_provider,
         stt_model,
         language: language.to_string(),
@@ -224,6 +295,74 @@ fn required_string<'a>(map: &'a serde_yaml::Mapping, field: &str, key: &str) -> 
         field: field.into(),
         message: "must be a string".into(),
     })
+}
+
+fn optional_u32(map: &serde_yaml::Mapping, prefix: &str, key: &str, default: u32) -> Result<u32> {
+    let Some(value) = map.get(key) else {
+        return Ok(default);
+    };
+    let field = format!("{prefix}.{key}");
+    let n = if let Some(n) = value.as_u64() {
+        n
+    } else if let Some(n) = value.as_i64() {
+        u64::try_from(n).map_err(|_| Error::Config {
+            field: field.clone(),
+            message: "must be a positive integer".into(),
+        })?
+    } else {
+        return Err(Error::Config {
+            field,
+            message: "must be a positive integer".into(),
+        });
+    };
+    u32::try_from(n).map_err(|_| Error::Config {
+        field,
+        message: "must be a positive integer".into(),
+    })
+}
+
+fn optional_f32(map: &serde_yaml::Mapping, prefix: &str, key: &str, default: f32) -> Result<f32> {
+    let Some(value) = map.get(key) else {
+        return Ok(default);
+    };
+    let field = format!("{prefix}.{key}");
+    if let Some(n) = value.as_f64() {
+        return Ok(n as f32);
+    }
+    if let Some(n) = value.as_i64() {
+        return Ok(n as f32);
+    }
+    Err(Error::Config {
+        field,
+        message: "must be a number".into(),
+    })
+}
+
+fn validate_vad(
+    threshold: f32,
+    min_speech_ms: u32,
+    end_silence_ms: u32,
+    preroll_ms: u32,
+) -> Result<()> {
+    if !(threshold > 0.0 && threshold <= 1.0) {
+        return Err(Error::Config {
+            field: "pipeline.vad.threshold".into(),
+            message: "must be in (0, 1]".into(),
+        });
+    }
+    for (field, ms) in [
+        ("pipeline.vad.min_speech_ms", min_speech_ms),
+        ("pipeline.vad.end_silence_ms", end_silence_ms),
+        ("pipeline.vad.preroll_ms", preroll_ms),
+    ] {
+        if ms == 0 {
+            return Err(Error::Config {
+                field: field.into(),
+                message: "must be at least 1".into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn optional_bool(
@@ -334,7 +473,42 @@ mod tests {
         assert!(yaml.contains("language: en"));
         assert!(yaml.contains("model: llama-3.2-1b"));
         assert!(yaml.contains("thinking: false"));
+        assert!(yaml.contains("threshold: 0.5"));
+        assert!(yaml.contains("min_speech_ms: 100"));
+        assert!(yaml.contains("end_silence_ms: 350"));
+        assert!(yaml.contains("preroll_ms: 200"));
         assert_eq!(AgentConfig::parse_yaml(&yaml).unwrap(), AgentConfig::v0());
+    }
+
+    #[test]
+    fn yaml_vad_tunables_override_defaults() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("threshold: 0.5", "threshold: 0.7")
+            .replace("min_speech_ms: 100", "min_speech_ms: 200");
+        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert!((cfg.vad_threshold - 0.7).abs() < f32::EPSILON);
+        assert_eq!(cfg.vad_min_speech_ms, 200);
+        assert_eq!(cfg.vad_end_silence_ms, 350);
+        assert_eq!(cfg.vad_settings().min_speech, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn vad_unknown_field_is_named() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("preroll_ms: 200", "preroll_ms: 200\n    sr: 16000");
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.vad.sr"), "{err}");
+    }
+
+    #[test]
+    fn vad_threshold_out_of_range_is_field_level() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("threshold: 0.5", "threshold: 1.5");
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.vad.threshold"), "{err}");
     }
 
     #[test]

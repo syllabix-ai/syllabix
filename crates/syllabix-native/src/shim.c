@@ -149,8 +149,8 @@ int syllabix_whisper_decode(
     return 0;
 }
 
-struct syllabix_llama *syllabix_llama_load(const char *path, int n_ctx, int n_threads) {
-    if (path == NULL || n_ctx < 64 || n_threads < 1) {
+struct syllabix_llama *syllabix_llama_load(const char *path, int n_threads) {
+    if (path == NULL || n_threads < 1) {
         return NULL;
     }
 
@@ -164,9 +164,10 @@ struct syllabix_llama *syllabix_llama_load(const char *path, int n_ctx, int n_th
         return NULL;
     }
 
+    const int trained = llama_model_n_ctx_train(model);
     struct llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = (uint32_t)n_ctx;
-    ctx_params.n_batch = (uint32_t)min_int(n_ctx, 512);
+    ctx_params.n_ctx = 0;
+    ctx_params.n_batch = (uint32_t)min_int(trained > 0 ? trained : 512, 512);
     ctx_params.n_ubatch = ctx_params.n_batch;
     ctx_params.n_threads = n_threads;
     ctx_params.n_threads_batch = n_threads;
@@ -187,6 +188,20 @@ struct syllabix_llama *syllabix_llama_load(const char *path, int n_ctx, int n_th
     llm->model = model;
     llm->ctx = ctx;
     return llm;
+}
+
+int syllabix_llama_n_ctx(const struct syllabix_llama *llm) {
+    if (llm == NULL || llm->ctx == NULL) {
+        return 0;
+    }
+    return (int)llama_n_ctx(llm->ctx);
+}
+
+int syllabix_llama_n_ctx_train(const struct syllabix_llama *llm) {
+    if (llm == NULL || llm->model == NULL) {
+        return 0;
+    }
+    return llama_model_n_ctx_train(llm->model);
 }
 
 void syllabix_llama_free(struct syllabix_llama *llm) {
@@ -218,7 +233,6 @@ int syllabix_llama_generate(
     const char *const *roles,
     const char *const *contents,
     int n_messages,
-    int n_predict,
     int thinking,
     int n_threads,
     bool (*abort_cb)(void *user),
@@ -226,7 +240,7 @@ int syllabix_llama_generate(
     int (*token_cb)(const char *piece, int is_last, void *user),
     void *token_user) {
     if (llm == NULL || llm->ctx == NULL || llm->model == NULL || roles == NULL || contents == NULL
-        || n_messages < 1 || n_predict < 1 || token_cb == NULL) {
+        || n_messages < 1 || token_cb == NULL) {
         return -1;
     }
     if (aborted(abort_cb, abort_user)) {
@@ -332,9 +346,13 @@ int syllabix_llama_generate(
     int emitted = 0;
     int status = 0;
 
-    for (int i = 0; i < n_predict; i++) {
+    int generated = 0;
+    for (;;) {
         if (aborted(abort_cb, abort_user)) {
             status = 1;
+            break;
+        }
+        if (n_tokens + generated >= n_ctx - 1) {
             break;
         }
         const llama_token id = llama_sampler_sample(smpl, llm->ctx, -1);
@@ -365,6 +383,7 @@ int syllabix_llama_generate(
             status = (rc == 2 || aborted(abort_cb, abort_user)) ? 1 : -1;
             break;
         }
+        generated += 1;
     }
 
     if (status == 0) {

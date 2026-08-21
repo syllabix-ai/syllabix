@@ -41,6 +41,8 @@ fn q4_km_gguf_loads_without_segfault() {
     };
     let chunks = collect(&mut n.llm, &[], &user, &Cancel::new()).expect("generate after load");
     assert!(!chunks.is_empty(), "must stream at least one token chunk");
+    let window = n.llm.context_window().expect("native llama context");
+    assert!(window.0 > 0 && window.0 == window.1, "n_ctx={window:?}");
     assert!(
         chunks.last().expect("last").is_last,
         "last streamed chunk must set is_last"

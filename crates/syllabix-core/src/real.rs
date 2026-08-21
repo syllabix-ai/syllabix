@@ -17,7 +17,8 @@ pub fn load_real_providers(
     cancel: &Cancel,
     config: &AgentConfig,
 ) -> Result<(SileroVad, WhisperStt, LlamaLlm, KokoroTts)> {
-    let vad = SileroVad::from_cache(cache, fetcher, progress, cancel)?;
+    let vad = SileroVad::from_cache(cache, fetcher, progress, cancel)?
+        .with_settings(config.vad_settings());
     let stt = WhisperStt::from_cache(cache, fetcher, progress, cancel)?
         .with_language(&config.language)?;
     let llm = LlamaLlm::from_cached_model(

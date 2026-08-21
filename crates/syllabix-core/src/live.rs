@@ -85,6 +85,10 @@ fn run_live_inner(
         config.language.as_str(),
         config.llm_model.as_str(),
         config.thinking,
+        config.vad_threshold,
+        config.vad_min_speech_ms,
+        config.vad_end_silence_ms,
+        config.vad_preroll_ms,
     );
     run_loop(
         LoopConfig {

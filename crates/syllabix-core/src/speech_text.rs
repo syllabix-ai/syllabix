@@ -29,6 +29,11 @@ pub struct ThinkFilter {
 }
 
 impl ThinkFilter {
+    /// True while tokens are inside an open `<think>` block.
+    pub fn in_think(&self) -> bool {
+        self.in_think
+    }
+
     /// Append `chunk`. When `flush` is set, drop an unclosed think tail.
     pub fn push(&mut self, chunk: &str, flush: bool) -> String {
         self.pending.push_str(chunk);
@@ -356,5 +361,6 @@ mod tests {
         assert_eq!(filter.push("ink>hidden. ", false), "");
         assert_eq!(filter.push("still hidden</th", false), "");
         assert_eq!(filter.push("ink>Spoken now.", true), "Spoken now.");
+        assert!(!filter.in_think());
     }
 }

@@ -26,20 +26,12 @@ pub const LLAMA_32_1B_ASSET: &str = "llama-3.2-1b";
 /// Short spoken-English system prompt. No Markdown.
 pub const VOICE_SYSTEM_PROMPT: &str = "You are a voice assistant on a laptop. Reply in short spoken English, one or two sentences. Do not use markdown, lists, headings, or emoji.";
 
-/// CPU context length for v0.
-pub const LLAMA_N_CTX: i32 = 2048;
-
-/// Greedy generation cap when thinking is off. Voice replies stay short.
-pub const LLAMA_N_PREDICT: i32 = 96;
-
-/// Extra budget so a think block can finish and still leave an answer.
-pub const LLAMA_N_PREDICT_THINKING: i32 = 256;
-
-/// Oldest rolling turns kept in the prompt.
+/// Rolling history kept in the prompt.
 pub const LLAMA_MAX_HISTORY_TURNS: usize = 8;
 
 /// Native cancel must surface as [`Error::Cancelled`] within this window.
-pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// Full GGUF `n_ctx` makes one `llama_decode` heavier than the old 2048-slot cap.
+pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// True when `id` is a v0 llama.cpp GGUF.
 pub fn is_v0_llm_model(id: &str) -> bool {
@@ -130,12 +122,9 @@ impl LlamaLlm {
         self.thinking
     }
 
-    fn n_predict(&self) -> i32 {
-        if self.thinking {
-            LLAMA_N_PREDICT_THINKING
-        } else {
-            LLAMA_N_PREDICT
-        }
+    /// `(n_ctx, n_ctx_train)` after a real GGUF load.
+    pub fn context_window(&self) -> Option<(i32, i32)> {
+        self.engine.lock().expect("llama engine").context_window()
     }
 
     #[cfg(test)]
@@ -208,7 +197,6 @@ impl Llm for LlamaLlm {
         self.engine.lock().expect("llama engine").generate(
             &messages,
             self.thinking,
-            self.n_predict(),
             cancel,
             &mut |text, is_last| {
                 if cancel.is_stale(generation) {
@@ -237,10 +225,13 @@ trait Engine: Send {
         &mut self,
         messages: &[ChatMessage],
         thinking: bool,
-        n_predict: i32,
         cancel: &Cancel,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()>;
+
+    fn context_window(&self) -> Option<(i32, i32)> {
+        None
+    }
 }
 
 struct LlamaEngine {
@@ -249,11 +240,9 @@ struct LlamaEngine {
 
 impl LlamaEngine {
     fn load(path: &Path) -> Result<Self> {
-        let ctx = LlamaContext::load(path, LLAMA_N_CTX, thread_count()).map_err(|message| {
-            Error::Provider {
-                provider: "llama.cpp",
-                message,
-            }
+        let ctx = LlamaContext::load(path, thread_count()).map_err(|message| Error::Provider {
+            provider: "llama.cpp",
+            message,
         })?;
         Ok(Self { ctx })
     }
@@ -264,7 +253,6 @@ impl Engine for LlamaEngine {
         &mut self,
         messages: &[ChatMessage],
         thinking: bool,
-        n_predict: i32,
         cancel: &Cancel,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()> {
@@ -276,7 +264,6 @@ impl Engine for LlamaEngine {
             self.ctx.generate(
                 messages,
                 LlamaGenerate {
-                    n_predict,
                     thinking,
                     n_threads: thread_count(),
                 },
@@ -303,6 +290,10 @@ impl Engine for LlamaEngine {
                 message,
             }),
         }
+    }
+
+    fn context_window(&self) -> Option<(i32, i32)> {
+        Some((self.ctx.n_ctx(), self.ctx.n_ctx_train()))
     }
 }
 
@@ -338,7 +329,6 @@ mod tests {
             &mut self,
             messages: &[ChatMessage],
             _thinking: bool,
-            _n_predict: i32,
             cancel: &Cancel,
             on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
         ) -> Result<()> {
@@ -392,7 +382,7 @@ mod tests {
         assert!(!is_v0_llm_model("mistral"));
         assert!(VOICE_SYSTEM_PROMPT.contains("voice"));
         assert!(!VOICE_SYSTEM_PROMPT.contains("**"));
-        assert_eq!(LLAMA_CANCEL_TIMEOUT, Duration::from_secs(2));
+        assert_eq!(LLAMA_CANCEL_TIMEOUT, Duration::from_secs(5));
     }
 
     #[test]
@@ -613,17 +603,25 @@ mod tests {
     }
 
     #[test]
-    fn thinking_on_uses_the_long_predict_budget() {
+    fn thinking_flag_does_not_cap_generation() {
         let off = LlamaLlm::with_engine(Box::new(ScriptedEngine {
-            pieces: vec!["ok".into()],
+            pieces: (0..200).map(|i| format!("t{i}")).collect(),
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
         }));
         let on = off.clone().with_thinking(true);
         assert!(!off.thinking());
         assert!(on.thinking());
-        assert_eq!(off.n_predict(), LLAMA_N_PREDICT);
-        assert_eq!(on.n_predict(), LLAMA_N_PREDICT_THINKING);
+        assert!(off.context_window().is_none());
+        let mut chunks = Vec::new();
+        let mut llm = off;
+        llm.generate(&[], &user(0, "hi"), &Cancel::new(), &mut |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(chunks.len(), 200);
+        assert!(chunks.last().unwrap().is_last);
     }
 
     #[test]

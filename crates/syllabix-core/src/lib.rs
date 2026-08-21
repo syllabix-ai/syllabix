@@ -51,8 +51,7 @@ pub use g2p::{english_to_ipa, english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
 pub use live::run_live;
 pub use llm::{
     is_v0_llm_model, LlamaLlm, LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS,
-    LLAMA_N_CTX, LLAMA_N_PREDICT, LLAMA_N_PREDICT_THINKING, QWEN35_08B_ASSET, QWEN35_2B_ASSET,
-    VOICE_SYSTEM_PROMPT,
+    QWEN35_08B_ASSET, QWEN35_2B_ASSET, VOICE_SYSTEM_PROMPT,
 };
 pub use memory::{process_rss_bytes, LOOP_RSS_GROWTH_CEILING_BYTES};
 pub use models::{
@@ -87,8 +86,8 @@ pub use types::{
     FRAME_SAMPLES,
 };
 pub use vad::{
-    SileroVad, END_SILENCE, END_SILENCE_FRAMES, FRAME_DURATION, MIN_SPEECH, MIN_SPEECH_FRAMES,
-    PREROLL_SAMPLES, SPEECH_THRESHOLD, WHISPER_PREROLL,
+    SileroVad, VadSettings, END_SILENCE, END_SILENCE_FRAMES, FRAME_DURATION, MIN_SPEECH,
+    MIN_SPEECH_FRAMES, PREROLL_SAMPLES, SPEECH_THRESHOLD, WHISPER_PREROLL,
 };
 
 /// Force-link both native frontends into `syllabix` (PR 10).

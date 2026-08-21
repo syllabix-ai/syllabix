@@ -46,18 +46,15 @@ mod ffi {
             out: *mut c_char,
             out_cap: c_int,
         ) -> c_int;
-        pub fn syllabix_llama_load(
-            path: *const c_char,
-            n_ctx: c_int,
-            n_threads: c_int,
-        ) -> *mut LlamaHandle;
+        pub fn syllabix_llama_load(path: *const c_char, n_threads: c_int) -> *mut LlamaHandle;
         pub fn syllabix_llama_free(llm: *mut LlamaHandle);
+        pub fn syllabix_llama_n_ctx(llm: *const LlamaHandle) -> c_int;
+        pub fn syllabix_llama_n_ctx_train(llm: *const LlamaHandle) -> c_int;
         pub fn syllabix_llama_generate(
             llm: *mut LlamaHandle,
             roles: *const *const c_char,
             contents: *const *const c_char,
             n_messages: c_int,
-            n_predict: c_int,
             thinking: c_int,
             n_threads: c_int,
             abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
@@ -174,8 +171,6 @@ impl Drop for WhisperContext {
 
 /// Options for one greedy llama.cpp generate.
 pub struct LlamaGenerate {
-    /// Token budget (`n_predict`).
-    pub n_predict: i32,
     /// When false, append an empty Qwen think closer so the model skips CoT.
     pub thinking: bool,
     /// llama.cpp thread count.
@@ -190,8 +185,8 @@ pub struct LlamaContext {
 unsafe impl Send for LlamaContext {}
 
 impl LlamaContext {
-    /// Load `Llama-3.2-1B-Instruct` (or any instruct GGUF) for CPU greedy decode.
-    pub fn load(path: impl AsRef<Path>, n_ctx: i32, n_threads: i32) -> Result<Self, String> {
+    /// Load an instruct GGUF. Context length is the model's trained window.
+    pub fn load(path: impl AsRef<Path>, n_threads: i32) -> Result<Self, String> {
         hush_logs();
         unsafe { ffi::syllabix_llama_backend_init() };
         let path = path.as_ref();
@@ -200,11 +195,21 @@ impl LlamaContext {
             .ok_or_else(|| format!("model path is not valid UTF-8: {}", path.display()))?;
         let c_path = CString::new(path).map_err(|_| "model path contains an interior NUL")?;
         let _ggml = ggml_lock();
-        let raw = unsafe { ffi::syllabix_llama_load(c_path.as_ptr(), n_ctx, n_threads) };
+        let raw = unsafe { ffi::syllabix_llama_load(c_path.as_ptr(), n_threads) };
         if raw.is_null() {
             return Err(format!("failed to load llama.cpp GGUF at {path}"));
         }
         Ok(Self { raw })
+    }
+
+    /// llama.cpp context size after load (`n_ctx_train` when `n_ctx` was 0).
+    pub fn n_ctx(&self) -> i32 {
+        unsafe { ffi::syllabix_llama_n_ctx(self.raw) }
+    }
+
+    /// GGUF trained context length.
+    pub fn n_ctx_train(&self) -> i32 {
+        unsafe { ffi::syllabix_llama_n_ctx_train(self.raw) }
     }
 
     /// Stream greedy pieces. `on_piece` is invoked in order; the last call has `is_last`.
@@ -248,7 +253,6 @@ impl LlamaContext {
                 role_ptrs.as_ptr(),
                 content_ptrs.as_ptr(),
                 messages.len() as c_int,
-                opts.n_predict,
                 if opts.thinking { 1 } else { 0 },
                 opts.n_threads,
                 abort,
@@ -349,7 +353,7 @@ mod tests {
 
     #[test]
     fn missing_llama_weights_do_not_load() {
-        let err = match LlamaContext::load("/no/such/model.gguf", 2048, 1) {
+        let err = match LlamaContext::load("/no/such/model.gguf", 1) {
             Err(err) => err,
             Ok(_) => panic!("missing llama weights should fail"),
         };
