@@ -3,7 +3,8 @@
 use crate::cancel::Cancel;
 use crate::error::Result;
 use crate::types::{
-    AudioFrame, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, Utterance, VadEvent,
+    AudioFrame, HistoryTurn, LlmDebugMeta, SynthesizedAudio, TokenChunk, Transcript, Utterance,
+    VadEvent,
 };
 
 /// Voice-activity detector. Consumes frames, emits speech-start and speech-stop.
@@ -29,8 +30,14 @@ pub trait Stt: Send {
 
 /// Streaming language model.
 pub trait Llm: Send {
-    /// Config name (`llama.cpp`).
+    /// Config name (`llama.cpp`, `openai`).
     fn name(&self) -> &'static str;
+
+    /// Provider facts for `--turn-debug` sidecars. `None` means the fake and
+    /// test providers; live engines report provider/model/endpoint/request-id.
+    fn debug_meta(&self) -> Option<LlmDebugMeta> {
+        None
+    }
 
     /// Stream tokens for `user`. `history` is completed prior turns in order.
     ///

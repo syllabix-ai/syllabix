@@ -855,6 +855,11 @@ fn llm_loop<L: Llm>(
                     shared.note_token(&chunk, Instant::now());
                     tx.send_cancellable(chunk, cancel)
                 });
+                // Sidecar provider facts (provider/model/endpoint/request-id)
+                // land before any immediate dump (skip) can write the turn.
+                if let Some(debug) = &shared.turn_debug {
+                    debug.note_llm_meta(user.turn, llm.debug_meta());
+                }
                 match gen_result {
                     Ok(()) => {
                         history.push(HistoryTurn { user, assistant });
@@ -1187,5 +1192,83 @@ mod tests {
         assert!(report.turns.is_empty());
         assert!(report.skipped_turns >= 1);
         assert!(calls.lock().expect("llm log").is_empty());
+    }
+
+    /// Wraps [`FakeLlm`] and reports provider facts the way live engines do.
+    struct MetaLlm {
+        inner: FakeLlm,
+    }
+
+    impl MetaLlm {
+        fn new() -> Self {
+            Self {
+                inner: FakeLlm::new(),
+            }
+        }
+    }
+
+    impl crate::providers::Llm for MetaLlm {
+        fn name(&self) -> &'static str {
+            "meta-fake"
+        }
+
+        fn debug_meta(&self) -> Option<crate::types::LlmDebugMeta> {
+            Some(crate::types::LlmDebugMeta {
+                provider: "online".into(),
+                model: "gpt-test".into(),
+                endpoint: "https://mock.example/v1/chat/completions".into(),
+                request_id: "req-42".into(),
+            })
+        }
+
+        fn generate(
+            &mut self,
+            history: &[HistoryTurn],
+            user: &Transcript,
+            cancel: &Cancel,
+            on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
+        ) -> Result<()> {
+            self.inner.generate(history, user, cancel, on_token)
+        }
+    }
+
+    #[test]
+    fn turn_debug_sidecar_records_llm_provider_facts() {
+        let dir = std::env::temp_dir().join(format!(
+            "syllabix-pipeline-meta-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let debug = TurnDebug::open(&dir).expect("open");
+        run_loop(
+            LoopConfig {
+                turn_debug: Some(debug),
+                mode: LoopMode::StopAfterTurns(1),
+                ..LoopConfig::default()
+            },
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: FakeStt,
+                llm: MetaLlm::new(),
+                tts: FakeTts,
+                sink: CollectingSink::default(),
+            },
+            scripted_frames(1, 2, 1),
+            Cancel::new(),
+        )
+        .expect("loop");
+        let json =
+            std::fs::read_to_string(dir.join("turn-000").join("turn.json")).expect("sidecar");
+        assert!(json.contains("\"llm_provider\": \"online\""), "{json}");
+        assert!(json.contains("\"llm_model\": \"gpt-test\""), "{json}");
+        assert!(
+            json.contains("\"llm_endpoint\": \"https://mock.example/v1/chat/completions\""),
+            "{json}"
+        );
+        assert!(json.contains("\"llm_request_id\": \"req-42\""), "{json}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

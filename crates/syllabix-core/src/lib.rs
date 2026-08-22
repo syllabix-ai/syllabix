@@ -21,6 +21,7 @@ mod language;
 mod live;
 mod llm;
 mod memory;
+mod openai;
 mod pipeline;
 mod providers;
 mod queue;
@@ -59,13 +60,17 @@ pub use models::{
     cache_root, format_progress_line, BlockedFetcher, Fetcher, HttpFetcher, Manifest, ModelAsset,
     ModelCache, ModelLayer, NoProgress, Progress, StderrProgress,
 };
+pub use openai::{
+    join_endpoint, resolve_api_key, validate_base_url, OpenAiLlm, OpenAiSettings, API_KEY_ENV,
+    CLOUD_FALLBACK_TEXT, DEFAULT_LLM_BASE_URL,
+};
 pub use pipeline::{
     is_blank_stt, run_loop, run_loop_captured, LoopConfig, LoopEvent, LoopMode, LoopReport,
     PipelineStages,
 };
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
-pub use real::load_real_providers;
+pub use real::{build_llm, load_real_providers, LiveLlm};
 pub use speech_text::{
     speak_text_for_tts, strip_markdown_for_speech, strip_think_for_speech, take_sentences,
     ThinkFilter,
@@ -82,9 +87,9 @@ pub use turn_debug::{
     TURN_DEBUG_DIR_ENV,
 };
 pub use types::{
-    AudioFrame, CompletedTurn, GenerationId, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript,
-    TurnId, TurnTimings, Utterance, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ,
-    FRAME_SAMPLES,
+    AudioFrame, CompletedTurn, GenerationId, HistoryTurn, LlmDebugMeta, SynthesizedAudio,
+    TokenChunk, Transcript, TurnId, TurnTimings, Utterance, VadEvent, DEFAULT_CHANNELS,
+    DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 pub use vad::{
     SileroVad, VadSettings, END_SILENCE, END_SILENCE_FRAMES, FRAME_DURATION, MIN_SPEECH,

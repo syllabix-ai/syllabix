@@ -43,6 +43,10 @@ pub struct AgentConfig {
     pub llm_model: String,
     /// Qwen thinking. Default false; yaml `thinking: true` enables it.
     pub thinking: bool,
+    /// OpenAI-compatible endpoint (`pipeline.llm.base_url`). Required for
+    /// `provider: online`, forbidden for `provider: local`; the API key never
+    /// lives here.
+    pub llm_base_url: Option<String>,
     /// TTS provider.
     pub tts: TtsProvider,
 }
@@ -68,6 +72,7 @@ impl AgentConfig {
             llm: defaults.llm,
             llm_model: defaults.llm_model.to_string(),
             thinking: defaults.llm_thinking,
+            llm_base_url: None,
             tts: defaults.tts,
         }
     }
@@ -123,7 +128,7 @@ pipeline:
     provider: {llm}
     model: {llm_model}
     thinking: {thinking}
-  tts:
+{base_url_line}  tts:
     provider: {tts}
 ",
             name = self.name,
@@ -138,6 +143,11 @@ pipeline:
             llm = self.llm.as_str(),
             llm_model = self.llm_model,
             thinking = self.thinking,
+            base_url_line = self
+                .llm_base_url
+                .as_deref()
+                .map(|url| format!("    base_url: {url}\n"))
+                .unwrap_or_default(),
             tts = self.tts.as_str(),
         )
     }
@@ -229,10 +239,21 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     let language = parse_language(required_string(stt, "pipeline.stt.language", "language")?)?;
 
     let llm = mapping(required(pipeline, "pipeline.llm", "llm")?, "pipeline.llm")?;
-    deny_unknown(llm, "pipeline.llm", &["provider", "model", "thinking"])?;
+    deny_unknown(
+        llm,
+        "pipeline.llm",
+        &["provider", "model", "thinking", "base_url"],
+    )?;
     let llm_provider = parse_llm(required_string(llm, "pipeline.llm.provider", "provider")?)?;
-    let llm_model = parse_llm_model(required_string(llm, "pipeline.llm.model", "model")?)?;
+    let llm_model = parse_llm_model(
+        llm_provider,
+        required_string(llm, "pipeline.llm.model", "model")?,
+    )?;
     let thinking = optional_bool(llm, "pipeline.llm", "thinking", false)?;
+    // Row 30: the endpoint is explicit for `online` (OpenAI, Groq, Ollama,
+    // vLLM, llama-server); the key may not live here either way —
+    // `SYLLABIX_LLM_API_KEY` env only, never yaml, never `.env`.
+    let llm_base_url = resolve_llm_base_url(llm, llm_provider)?;
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
     deny_unknown(tts, "pipeline.tts", &["provider"])?;
@@ -251,6 +272,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         llm: llm_provider,
         llm_model: llm_model.to_string(),
         thinking,
+        llm_base_url,
         tts: tts_provider,
     })
 }
@@ -425,21 +447,70 @@ fn parse_language(value: &str) -> Result<String> {
 
 fn parse_llm(value: &str) -> Result<LlmProvider> {
     match value {
-        "llama.cpp" => Ok(LlmProvider::LlamaCpp),
-        other => Err(unsupported("pipeline.llm.provider", other, "llama.cpp")),
+        "local" => Ok(LlmProvider::Local),
+        "online" => Ok(LlmProvider::Online),
+        other => Err(unsupported("pipeline.llm.provider", other, "local, online")),
     }
 }
 
-fn parse_llm_model(value: &str) -> Result<&str> {
-    match value {
-        crate::llm::QWEN35_08B_ASSET
-        | crate::llm::QWEN35_2B_ASSET
-        | crate::llm::LLAMA_32_1B_ASSET => Ok(value),
-        other => Err(unsupported(
-            "pipeline.llm.model",
-            other,
-            "llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b",
-        )),
+/// `pipeline.llm.model`: the three binary-supported GGUF ids for `local`; any
+/// non-empty id for `online` (the endpoint decides what it serves).
+fn parse_llm_model(provider: LlmProvider, value: &str) -> Result<String> {
+    match provider {
+        LlmProvider::Local => match value {
+            crate::llm::QWEN35_08B_ASSET
+            | crate::llm::QWEN35_2B_ASSET
+            | crate::llm::LLAMA_32_1B_ASSET => Ok(value.to_string()),
+            other => Err(unsupported(
+                "pipeline.llm.model",
+                other,
+                "llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b",
+            )),
+        },
+        LlmProvider::Online => {
+            if value.trim().is_empty() {
+                Err(Error::Config {
+                    field: "pipeline.llm.model".into(),
+                    message: "must be a non-empty model id".into(),
+                })
+            } else {
+                Ok(value.to_string())
+            }
+        }
+    }
+}
+
+/// `pipeline.llm.base_url`: required (non-empty) for `provider: online`,
+/// forbidden for `provider: local` — the local engine has nothing to point at.
+fn resolve_llm_base_url(
+    map: &serde_yaml::Mapping,
+    provider: LlmProvider,
+) -> Result<Option<String>> {
+    match provider {
+        LlmProvider::Local => {
+            if map.get("base_url").is_some() {
+                return Err(Error::Config {
+                    field: "pipeline.llm.base_url".into(),
+                    message: "is only valid when pipeline.llm.provider is online".into(),
+                });
+            }
+            Ok(None)
+        }
+        LlmProvider::Online => {
+            let value = map.get("base_url").ok_or_else(|| Error::Config {
+                field: "pipeline.llm.base_url".into(),
+                message: "is required when pipeline.llm.provider is online".into(),
+            })?;
+            let raw = value.as_str().ok_or_else(|| Error::Config {
+                field: "pipeline.llm.base_url".into(),
+                message: "must be a string".into(),
+            })?;
+            crate::openai::validate_base_url(raw).map_err(|message| Error::Config {
+                field: "pipeline.llm.base_url".into(),
+                message,
+            })?;
+            Ok(Some(raw.to_string()))
+        }
     }
 }
 
@@ -555,7 +626,7 @@ pipeline:
     model: small
     language: en
   llm:
-    provider: llama.cpp
+    provider: local
     model: llama-3.2-1b
   tts:
     provider: kokoro
@@ -600,6 +671,128 @@ pipeline:
         assert!(err.to_string().contains("boolean"), "{err}");
     }
 
+    fn online_yaml(model: &str, base_url: &str) -> String {
+        format!(
+            r#"
+name: demo-agent
+pipeline:
+  vad:
+    provider: silero
+  stt:
+    provider: whisper.cpp
+    model: small
+    language: en
+  llm:
+    provider: online
+    model: "{model}"
+    base_url: {base_url}
+  tts:
+    provider: kokoro
+"#
+        )
+    }
+
+    #[test]
+    fn online_provider_accepts_any_model_id() {
+        let cfg = AgentConfig::parse_yaml(&online_yaml("gpt-4o-mini", "https://api.openai.com/v1"))
+            .unwrap();
+        assert_eq!(cfg.llm, LlmProvider::Online);
+        assert_eq!(cfg.llm_model, "gpt-4o-mini");
+        assert_eq!(
+            cfg.llm_base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
+        // The endpoint decides what it serves; ids are not menu-restricted.
+        assert_eq!(
+            AgentConfig::parse_yaml(&online_yaml("llama3.2:1b", "http://127.0.0.1:11434/v1"))
+                .unwrap()
+                .llm_model,
+            "llama3.2:1b"
+        );
+    }
+
+    #[test]
+    fn online_empty_model_is_field_level() {
+        // A bare empty yaml value parses as null ("must be a string"); a
+        // whitespace string must hit the non-empty rule.
+        let err =
+            AgentConfig::parse_yaml(&online_yaml("   ", "https://api.openai.com/v1")).unwrap_err();
+        assert!(err.to_string().contains("pipeline.llm.model"), "{err}");
+        assert!(err.to_string().contains("non-empty"), "{err}");
+    }
+
+    #[test]
+    fn online_requires_a_base_url() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("provider: local", "provider: online")
+            .replace("model: llama-3.2-1b", "model: gpt-4o-mini");
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.llm.base_url"), "{err}");
+        assert!(err.to_string().contains("required"), "{err}");
+    }
+
+    #[test]
+    fn local_provider_still_enforces_the_gguf_menu() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: llama-3.2-1b", "model: gpt-4o-mini");
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.llm.model"), "{err}");
+    }
+
+    #[test]
+    fn local_rejects_base_url() {
+        // The in-process engine has nothing to point at; the field is
+        // reserved for `online`.
+        let yaml = AgentConfig::v0().to_yaml().replace(
+            "    thinking: false",
+            "    thinking: false\n    base_url: https://api.groq.com/openai/v1",
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.llm.base_url"), "{err}");
+        assert!(err.to_string().contains("online"), "{err}");
+    }
+
+    #[test]
+    fn online_base_url_round_trips() {
+        let url = "https://api.groq.com/openai/v1";
+        let cfg = AgentConfig::parse_yaml(&online_yaml("gpt-4o-mini", url)).unwrap();
+        assert_eq!(cfg.llm_base_url.as_deref(), Some(url));
+        let round = AgentConfig::parse_yaml(&cfg.to_yaml()).unwrap();
+        assert_eq!(round, cfg);
+        assert!(cfg.to_yaml().contains(&format!("base_url: {url}")));
+        // The default run yaml stays byte-identical: no key, no base_url line.
+        assert!(!AgentConfig::v0().to_yaml().contains("base_url"));
+        assert!(AgentConfig::v0().to_yaml().contains("provider: local"));
+    }
+
+    #[test]
+    fn online_base_url_must_be_an_absolute_http_url() {
+        for bad in [
+            "api.example.com/v1",
+            "ftp://api.example.com",
+            "file:///tmp/sock",
+            "https://user:pass@api.example.com",
+            "",
+        ] {
+            let err = AgentConfig::parse_yaml(&online_yaml("gpt-4o-mini", bad)).unwrap_err();
+            assert!(
+                err.to_string().contains("pipeline.llm.base_url"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_string_base_url_is_field_level() {
+        let yaml = online_yaml("gpt-4o-mini", "https://api.openai.com/v1")
+            .replace("base_url: https://api.openai.com/v1\n", "base_url: 7\n");
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.llm.base_url"), "{err}");
+        assert!(err.to_string().contains("must be a string"), "{err}");
+    }
+
     #[test]
     fn missing_language_is_field_level() {
         let yaml = r#"
@@ -611,7 +804,7 @@ pipeline:
     provider: whisper.cpp
     model: small
   llm:
-    provider: llama.cpp
+    provider: local
     model: qwen3.5-2b
   tts:
     provider: kokoro
@@ -742,7 +935,7 @@ pipeline:
             (
                 AgentConfig::v0()
                     .to_yaml()
-                    .replace("provider: llama.cpp", "provider: ollama"),
+                    .replace("provider: local", "provider: ollama"),
                 "pipeline.llm.provider:",
             ),
             (

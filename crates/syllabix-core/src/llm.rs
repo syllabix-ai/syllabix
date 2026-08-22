@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::fake::LlmCall;
 use crate::models::{Fetcher, ModelCache, Progress};
 use crate::providers::Llm;
-use crate::types::{HistoryTurn, TokenChunk, Transcript};
+use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, Transcript};
 
 /// Manifest id for the default Qwen3.5 0.8B instruct GGUF.
 pub const QWEN35_08B_ASSET: &str = "qwen3.5-0.8b";
@@ -58,6 +58,7 @@ pub struct LlamaLlm {
     engine: Arc<Mutex<Box<dyn Engine>>>,
     calls: Arc<Mutex<Vec<LlmCall>>>,
     thinking: bool,
+    model_id: String,
 }
 
 impl Clone for LlamaLlm {
@@ -66,6 +67,7 @@ impl Clone for LlamaLlm {
             engine: Arc::clone(&self.engine),
             calls: Arc::clone(&self.calls),
             thinking: self.thinking,
+            model_id: self.model_id.clone(),
         }
     }
 }
@@ -78,6 +80,11 @@ impl LlamaLlm {
             engine: Arc::new(Mutex::new(Box::new(engine))),
             calls: Arc::new(Mutex::new(Vec::new())),
             thinking: false,
+            model_id: path
+                .as_ref()
+                .file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
         })
     }
 
@@ -124,6 +131,7 @@ impl LlamaLlm {
         let path = cache.resolve(asset, fetcher, progress, cancel)?;
         let mut llm = Self::from_model_path(path)?;
         llm.thinking = thinking;
+        llm.model_id = model_id.to_string();
         Ok(llm)
     }
 
@@ -148,6 +156,7 @@ impl LlamaLlm {
             engine: Arc::new(Mutex::new(engine)),
             calls: Arc::new(Mutex::new(Vec::new())),
             thinking: false,
+            model_id: BuiltinDefaults::v0().llm_model.to_string(),
         }
     }
 
@@ -161,6 +170,15 @@ impl LlamaLlm {
 impl Llm for LlamaLlm {
     fn name(&self) -> &'static str {
         BuiltinDefaults::v0().llm.as_str()
+    }
+
+    fn debug_meta(&self) -> Option<LlmDebugMeta> {
+        Some(LlmDebugMeta {
+            provider: BuiltinDefaults::v0().llm.as_str().into(),
+            model: self.model_id.clone(),
+            endpoint: String::new(),
+            request_id: String::new(),
+        })
     }
 
     fn generate(
@@ -256,7 +274,7 @@ struct LlamaEngine {
 impl LlamaEngine {
     fn load(path: &Path) -> Result<Self> {
         let ctx = LlamaContext::load(path, thread_count()).map_err(|message| Error::Provider {
-            provider: "llama.cpp",
+            provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
             message,
         })?;
         Ok(Self { ctx })
@@ -301,7 +319,7 @@ impl Engine for LlamaEngine {
             Err(LlamaError::Cancelled) => Err(Error::Cancelled),
             Err(LlamaError::Failed(_)) if cancel.is_shutdown() => Err(Error::Cancelled),
             Err(LlamaError::Failed(message)) => Err(Error::Provider {
-                provider: "llama.cpp",
+                provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
                 message,
             }),
         }
@@ -412,7 +430,7 @@ mod tests {
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
         }));
-        assert_eq!(llm.name(), "llama.cpp");
+        assert_eq!(llm.name(), "local");
         assert_eq!(LLAMA_32_1B_ASSET, BuiltinDefaults::v0().llm_model);
         assert_eq!(QWEN35_08B_ASSET, "qwen3.5-0.8b");
         assert_eq!(QWEN35_2B_ASSET, "qwen3.5-2b");
@@ -579,7 +597,7 @@ mod tests {
         assert!(matches!(
             err,
             Error::Provider {
-                provider: "llama.cpp",
+                provider: "local",
                 ..
             }
         ));

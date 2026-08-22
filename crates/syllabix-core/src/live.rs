@@ -2,13 +2,21 @@
 
 use std::sync::mpsc::Sender;
 
+use zeroize::Zeroizing;
+
 use crate::cancel::Cancel;
 use crate::config::AgentConfig;
 use crate::error::Result;
+use crate::openai::resolve_api_key;
 use crate::pipeline::{LoopEvent, LoopReport};
 use crate::turn_debug::TurnDebug;
 
 /// Load weights, open default devices, and run until shutdown or capture ends.
+///
+/// A cloud LLM config (`pipeline.llm.provider: openai`) must already carry its
+/// key in the `SYLLABIX_LLM_API_KEY` environment variable; a missing or empty
+/// key fails here — before any device opens or any weight loads. Default
+/// keyless runs never read it.
 ///
 /// Under `cfg(coverage)` this is a one-turn fake loop so llvm-cov does not
 /// load whisper.cpp / llama.cpp / Kokoro weights or open devices.
@@ -19,7 +27,11 @@ pub fn run_live(
     turn_debug: Option<TurnDebug>,
     barge_in: bool,
 ) -> Result<LoopReport> {
-    run_live_inner(config, cancel, events, turn_debug, barge_in)
+    let llm_api_key = match config.llm {
+        crate::LlmProvider::Online => Some(resolve_api_key(|name| std::env::var(name).ok())?),
+        crate::LlmProvider::Local => None,
+    };
+    run_live_inner(config, cancel, events, turn_debug, barge_in, llm_api_key)
 }
 
 #[cfg(not(coverage))]
@@ -29,6 +41,7 @@ fn run_live_inner(
     events: Option<Sender<LoopEvent>>,
     turn_debug: Option<TurnDebug>,
     barge_in: bool,
+    llm_api_key: Option<Zeroizing<String>>,
 ) -> Result<LoopReport> {
     use crate::audio::{NativeCapture, NativePlayback};
     use crate::models::{HttpFetcher, ModelCache, StderrProgress};
@@ -38,8 +51,14 @@ fn run_live_inner(
 
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
-    let (vad, stt, llm, tts) =
-        load_real_providers(&cache, &HttpFetcher, &mut progress, &cancel, config)?;
+    let (vad, stt, llm, tts) = load_real_providers(
+        &cache,
+        &HttpFetcher,
+        &mut progress,
+        &cancel,
+        config,
+        llm_api_key.as_ref(),
+    )?;
     let (sink, echo_reference) = NativePlayback::open_with_echo()?;
     let mut capture = NativeCapture::open_with_echo(echo_reference)?;
     if turn_debug.is_some() {
@@ -77,6 +96,7 @@ fn run_live_inner(
     events: Option<Sender<LoopEvent>>,
     turn_debug: Option<TurnDebug>,
     barge_in: bool,
+    llm_api_key: Option<Zeroizing<String>>,
 ) -> Result<LoopReport> {
     use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
     use crate::pipeline::{run_loop, LoopConfig, PipelineStages};
@@ -90,6 +110,7 @@ fn run_live_inner(
         config.vad_min_speech_ms,
         config.vad_end_silence_ms,
         config.vad_preroll_ms,
+        llm_api_key.is_some(),
     );
     run_loop(
         LoopConfig {
