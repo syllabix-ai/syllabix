@@ -1,10 +1,15 @@
-//! In-process Kokoro ONNX text-to-speech.
+//! In-process text-to-speech: Kokoro ONNX (default) and Qwen3-TTS (row 31).
+//!
+//! Both providers share one sentence-chunking core: tokens buffer until a
+//! sentence boundary, the think filter runs first, and each completed
+//! sentence becomes one [`SynthesizedAudio`] through a [`WaveformEngine`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ort::session::Session;
+use syllabix_native::{QwenTtsContext, QwenTtsError};
 
 use crate::audio::{f32_to_i16, PcmConverter, PcmFormat};
 use crate::cancel::Cancel;
@@ -25,6 +30,15 @@ pub const KOKORO_VOICE_ASSET: &str = "kokoro-voice";
 /// Kokoro waveform rate before conversion to the v0 16 kHz contract.
 pub const KOKORO_NATIVE_RATE_HZ: u32 = 24_000;
 
+/// Manifest id for the Qwen3-TTS backbone GGUF.
+pub const QWEN_TTS_ASSET: &str = "qwen3-tts";
+
+/// Manifest id for the Qwen3-TTS speech-tokenizer projector.
+pub const QWEN_TTS_MMPROJ_ASSET: &str = "qwen3-tts-mmproj";
+
+/// The blessed Qwen3-TTS backbone weight (row 31).
+pub const QWEN_TTS_MODEL_ID: &str = "qwen3-tts-1.7b-base";
+
 /// Text → TTS → Whisper round-trip: at least 80% of reference words, in order.
 pub const TTS_ASR_MIN_WORD_MATCH: f64 = 0.8;
 
@@ -32,9 +46,9 @@ const VOICE_ROWS: usize = 510;
 const STYLE_DIM: usize = 256;
 const VOICE_BYTES: usize = VOICE_ROWS * STYLE_DIM * 4;
 
-/// In-process Kokoro adapter. Buffers tokens until a sentence boundary.
-pub struct KokoroTts {
-    engine: Arc<Mutex<Box<dyn WaveformEngine>>>,
+/// Per-generation sentence buffering shared by both providers.
+#[derive(Default)]
+struct ChunkState {
     think: ThinkFilter,
     buffer: String,
     turn: Option<TurnId>,
@@ -42,15 +56,91 @@ pub struct KokoroTts {
     next_index: u32,
 }
 
+impl ChunkState {
+    fn reset(&mut self) {
+        self.think = ThinkFilter::default();
+        self.buffer.clear();
+        self.turn = None;
+        self.generation = None;
+        self.next_index = 0;
+    }
+
+    fn emit(&mut self, samples: Vec<i16>, token: &TokenChunk, is_last: bool) -> SynthesizedAudio {
+        let index = self.next_index;
+        self.next_index += 1;
+        SynthesizedAudio {
+            turn: token.turn,
+            generation: token.generation,
+            index,
+            samples,
+            is_last,
+        }
+    }
+}
+
+/// The one sentence-chunking loop. Tokens buffer until a sentence boundary;
+/// think-strip runs first, then markdown strip, then the engine. An empty
+/// final turn still emits a tiny closing chunk so playback can finish.
+fn synthesize_chunk_shared(
+    engine: &Mutex<Box<dyn WaveformEngine>>,
+    state: &mut ChunkState,
+    token: &TokenChunk,
+    cancel: &Cancel,
+) -> Result<Vec<SynthesizedAudio>> {
+    if cancel.is_stale(token.generation) {
+        state.reset();
+        return Err(Error::Cancelled);
+    }
+    if state.generation != Some(token.generation) || state.turn != Some(token.turn) {
+        state.reset();
+        state.generation = Some(token.generation);
+        state.turn = Some(token.turn);
+    }
+
+    state
+        .buffer
+        .push_str(&state.think.push(&token.text, token.is_last));
+    let sentences = take_sentences(&mut state.buffer, token.is_last);
+    let mut out = Vec::new();
+    let last_i = sentences.len().saturating_sub(1);
+    for (i, sentence) in sentences.into_iter().enumerate() {
+        if cancel.is_stale(token.generation) {
+            state.reset();
+            return Err(Error::Cancelled);
+        }
+        let spoken = speak_text_for_tts(&sentence);
+        if spoken.is_empty() {
+            continue;
+        }
+        let samples =
+            engine
+                .lock()
+                .expect("tts engine")
+                .synthesize(&spoken, cancel, token.generation)?;
+        let is_last = token.is_last && i == last_i;
+        out.push(state.emit(samples, token, is_last));
+    }
+    if token.is_last && out.is_empty() {
+        out.push(state.emit(vec![0; 16], token, true));
+    } else if token.is_last {
+        if let Some(last) = out.last_mut() {
+            last.is_last = true;
+        }
+    }
+    Ok(out)
+}
+
+/// In-process Kokoro adapter. Buffers tokens until a sentence boundary.
+pub struct KokoroTts {
+    core: ChunkState,
+    engine: Arc<Mutex<Box<dyn WaveformEngine>>>,
+}
+
 impl Clone for KokoroTts {
     fn clone(&self) -> Self {
         Self {
+            core: ChunkState::default(),
             engine: Arc::clone(&self.engine),
-            think: ThinkFilter::default(),
-            buffer: String::new(),
-            turn: None,
-            generation: None,
-            next_index: 0,
         }
     }
 }
@@ -89,38 +179,14 @@ impl KokoroTts {
 
     fn from_engine(engine: Box<dyn WaveformEngine>) -> Self {
         Self {
+            core: ChunkState::default(),
             engine: Arc::new(Mutex::new(engine)),
-            think: ThinkFilter::default(),
-            buffer: String::new(),
-            turn: None,
-            generation: None,
-            next_index: 0,
         }
     }
 
     #[cfg(test)]
     fn with_engine(engine: Box<dyn WaveformEngine>) -> Self {
         Self::from_engine(engine)
-    }
-
-    fn reset(&mut self) {
-        self.think = ThinkFilter::default();
-        self.buffer.clear();
-        self.turn = None;
-        self.generation = None;
-        self.next_index = 0;
-    }
-
-    fn emit(&mut self, samples: Vec<i16>, token: &TokenChunk, is_last: bool) -> SynthesizedAudio {
-        let index = self.next_index;
-        self.next_index += 1;
-        SynthesizedAudio {
-            turn: token.turn,
-            generation: token.generation,
-            index,
-            samples,
-            is_last,
-        }
     }
 }
 
@@ -129,51 +195,111 @@ impl Tts for KokoroTts {
         BuiltinDefaults::v0().tts.as_str()
     }
 
+    fn model_id(&self) -> Option<&str> {
+        Some(KOKORO_ASSET)
+    }
+
     fn synthesize_chunk(
         &mut self,
         token: &TokenChunk,
         cancel: &Cancel,
     ) -> Result<Vec<SynthesizedAudio>> {
-        if cancel.is_stale(token.generation) {
-            self.reset();
-            return Err(Error::Cancelled);
-        }
-        if self.generation != Some(token.generation) || self.turn != Some(token.turn) {
-            self.reset();
-            self.generation = Some(token.generation);
-            self.turn = Some(token.turn);
-        }
+        synthesize_chunk_shared(&self.engine, &mut self.core, token, cancel)
+    }
+}
 
-        self.buffer
-            .push_str(&self.think.push(&token.text, token.is_last));
-        let sentences = take_sentences(&mut self.buffer, token.is_last);
-        let mut out = Vec::new();
-        let last_i = sentences.len().saturating_sub(1);
-        for (i, sentence) in sentences.into_iter().enumerate() {
-            if cancel.is_stale(token.generation) {
-                self.reset();
-                return Err(Error::Cancelled);
-            }
-            let spoken = speak_text_for_tts(&sentence);
-            if spoken.is_empty() {
-                continue;
-            }
-            let samples = self.engine.lock().expect("kokoro engine").synthesize(
-                &spoken,
-                cancel,
-                token.generation,
-            )?;
-            let is_last = token.is_last && i == last_i;
-            out.push(self.emit(samples, token, is_last));
+/// Row 31 adapter: Qwen3-TTS through the shared llama.cpp/ggml path.
+pub struct QwenTts {
+    core: ChunkState,
+    engine: Arc<Mutex<Box<dyn WaveformEngine>>>,
+}
+
+impl Clone for QwenTts {
+    fn clone(&self) -> Self {
+        Self {
+            core: ChunkState::default(),
+            engine: Arc::clone(&self.engine),
         }
-        if token.is_last && out.is_empty() {
-            out.push(self.emit(vec![0; 16], token, true));
-        } else if token.is_last {
-            if let Some(last) = out.last_mut() {
-                last.is_last = true;
-            }
+    }
+}
+
+impl QwenTts {
+    /// Load the backbone GGUF + mmproj from disk and speak `language`.
+    pub fn from_paths(
+        model: impl AsRef<Path>,
+        mmproj: impl AsRef<Path>,
+        language: &str,
+    ) -> Result<Self> {
+        // Runtime sampling is randomized (llama.cpp default seed).
+        Self::from_paths_with_seed(model, mmproj, language, u32::MAX)
+    }
+
+    /// [`QwenTts::from_paths`] with a pinned sampler seed. The native
+    /// round-trip test uses this so fixtures reproduce; runtime callers use
+    /// the random-seed path above.
+    pub fn from_paths_with_seed(
+        model: impl AsRef<Path>,
+        mmproj: impl AsRef<Path>,
+        language: &str,
+        seed: u32,
+    ) -> Result<Self> {
+        let engine = NativeQwen::load_with_seed(model.as_ref(), mmproj.as_ref(), language, seed)?;
+        Ok(Self::from_engine(Box::new(engine)))
+    }
+
+    /// Resolve the two Qwen3-TTS assets from the manifest cache, then load.
+    pub fn from_cache(
+        cache: &ModelCache,
+        fetcher: &dyn Fetcher,
+        progress: &mut dyn Progress,
+        cancel: &Cancel,
+        language: &str,
+    ) -> Result<Self> {
+        let model = cache
+            .manifest()
+            .asset(QWEN_TTS_ASSET)
+            .ok_or_else(|| Error::ModelCache {
+                message: "manifest does not contain the qwen3-tts asset".into(),
+            })?;
+        let mmproj = cache
+            .manifest()
+            .asset(QWEN_TTS_MMPROJ_ASSET)
+            .ok_or_else(|| Error::ModelCache {
+                message: "manifest does not contain the qwen3-tts-mmproj asset".into(),
+            })?;
+        let model_path = cache.resolve(model, fetcher, progress, cancel)?;
+        let mmproj_path = cache.resolve(mmproj, fetcher, progress, cancel)?;
+        Self::from_paths(model_path, mmproj_path, language)
+    }
+
+    fn from_engine(engine: Box<dyn WaveformEngine>) -> Self {
+        Self {
+            core: ChunkState::default(),
+            engine: Arc::new(Mutex::new(engine)),
         }
-        Ok(out)
+    }
+
+    #[cfg(test)]
+    fn with_engine(engine: Box<dyn WaveformEngine>) -> Self {
+        Self::from_engine(engine)
+    }
+}
+
+impl Tts for QwenTts {
+    fn name(&self) -> &'static str {
+        "qwen"
+    }
+
+    fn model_id(&self) -> Option<&str> {
+        Some(QWEN_TTS_MODEL_ID)
+    }
+
+    fn synthesize_chunk(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+    ) -> Result<Vec<SynthesizedAudio>> {
+        synthesize_chunk_shared(&self.engine, &mut self.core, token, cancel)
     }
 }
 
@@ -280,6 +406,94 @@ impl WaveformEngine for OrtKokoro {
         }
         Ok(pcm)
     }
+}
+
+/// Qwen3-TTS waveform engine over the shared ggml native path. One sentence
+/// per call; the underlying context keeps no cross-sentence state.
+struct NativeQwen {
+    ctx: QwenTtsContext,
+    lang: String,
+}
+
+impl NativeQwen {
+    fn load_with_seed(model: &Path, mmproj: &Path, language: &str, seed: u32) -> Result<Self> {
+        // Same cap as the LLM/STT engines: portable-CPU friendly.
+        let n_threads = std::thread::available_parallelism()
+            .map(|n| n.get().min(4) as i32)
+            .unwrap_or(1);
+        let ctx = QwenTtsContext::load(model, mmproj, n_threads, seed).map_err(|message| {
+            Error::Provider {
+                provider: "qwen",
+                message,
+            }
+        })?;
+        Ok(Self {
+            ctx,
+            lang: language.to_string(),
+        })
+    }
+}
+
+impl WaveformEngine for NativeQwen {
+    fn synthesize(
+        &mut self,
+        sentence: &str,
+        cancel: &Cancel,
+        generation: GenerationId,
+    ) -> Result<Vec<i16>> {
+        if cancel.is_shutdown() || cancel.is_stale(generation) {
+            return Err(Error::Cancelled);
+        }
+        let abort_user = cancel as *const Cancel as *mut std::ffi::c_void;
+        match unsafe {
+            self.ctx
+                .synthesize(sentence, &self.lang, Some(abort_on_shutdown), abort_user)
+        } {
+            Ok((rate, samples)) => {
+                if cancel.is_stale(generation) || cancel.is_shutdown() {
+                    return Err(Error::Cancelled);
+                }
+                Ok(resample_i16_to_v0(&samples, rate))
+            }
+            Err(QwenTtsError::Cancelled) => Err(Error::Cancelled),
+            Err(QwenTtsError::Failed(_)) if cancel.is_shutdown() => Err(Error::Cancelled),
+            Err(QwenTtsError::Failed(message)) => Err(Error::Provider {
+                provider: "qwen",
+                message,
+            }),
+        }
+    }
+}
+
+unsafe extern "C" fn abort_on_shutdown(user_data: *mut std::ffi::c_void) -> bool {
+    if user_data.is_null() {
+        return false;
+    }
+    // Safety: `user_data` is `&Cancel` for the duration of the synthesis.
+    unsafe { (*(user_data as *const Cancel)).is_shutdown() }
+}
+
+/// Convert an engine's native-rate mono PCM to the v0 16 kHz contract.
+fn resample_i16_to_v0(samples: &[i16], rate_hz: i32) -> Vec<i16> {
+    let f32_pcm: Vec<f32> = samples.iter().map(|s| f32::from(*s) / 32_767.0).collect();
+    let mut conv = PcmConverter::new(
+        PcmFormat {
+            sample_rate_hz: rate_hz.max(1) as u32,
+            channels: 1,
+        },
+        PcmFormat {
+            sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
+            channels: 1,
+        },
+    )
+    .expect("engine rates are valid conversions");
+    let mut out_f32 = conv.push(&f32_pcm);
+    out_f32.extend(conv.flush());
+    let mut pcm = f32_to_i16(&out_f32);
+    if pcm.is_empty() {
+        pcm.push(0);
+    }
+    pcm
 }
 
 fn phoneme_windows(sentence: &str) -> Result<Vec<Vec<i64>>> {
@@ -510,6 +724,115 @@ mod tests {
             .synthesize_chunk(&token("world.", 0, true), &Cancel::new())
             .unwrap();
         assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn qwen_name_and_buffering_match_contract() {
+        let engine = ScriptedEngine::new();
+        let log = Arc::clone(&engine.calls);
+        let mut tts = QwenTts::with_engine(Box::new(engine));
+        assert_eq!(tts.name(), "qwen");
+        let first = tts
+            .synthesize_chunk(&token("Hello world. ", 0, false), &Cancel::new())
+            .unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(!first[0].is_last);
+        let rest = tts
+            .synthesize_chunk(&token("More later.", 1, true), &Cancel::new())
+            .unwrap();
+        assert_eq!(rest.len(), 1);
+        assert!(rest[0].is_last);
+        // Think-strip and markdown-strip run before the qwen engine too.
+        assert_eq!(
+            log.lock().expect("calls").as_slice(),
+            ["Hello world.", "More later."]
+        );
+    }
+
+    #[test]
+    fn qwen_strips_think_and_markdown_before_synthesis() {
+        let engine = ScriptedEngine::new();
+        let log = Arc::clone(&engine.calls);
+        let mut tts = QwenTts::with_engine(Box::new(engine));
+        tts.synthesize_chunk(
+            &token("<think>chain</think> It costs **$5**.", 0, true),
+            &Cancel::new(),
+        )
+        .unwrap();
+        let calls = log.lock().expect("calls");
+        assert_eq!(calls.len(), 1);
+        assert!(!calls[0].contains('<'));
+        assert!(!calls[0].contains('*'));
+    }
+
+    #[test]
+    fn qwen_cancel_paths_match_kokoro() {
+        let mut tts = QwenTts::with_engine(Box::new(ScriptedEngine::new()));
+        let cancel = Cancel::new();
+        cancel.shutdown();
+        let err = tts
+            .synthesize_chunk(&token("Hello.", 0, true), &cancel)
+            .unwrap_err();
+        assert!(matches!(err, Error::Cancelled));
+
+        let mut tts = QwenTts::with_engine(Box::new(ScriptedEngine::new()));
+        let cancel = Cancel::new();
+        cancel.cancel_generation();
+        let err = tts
+            .synthesize_chunk(&token("World.", 0, true), &cancel)
+            .unwrap_err();
+        assert!(matches!(err, Error::Cancelled));
+
+        // Empty final turn still closes.
+        let mut tts = QwenTts::with_engine(Box::new(ScriptedEngine::new()));
+        let chunks = tts
+            .synthesize_chunk(&token("", 0, true), &Cancel::new())
+            .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].is_last);
+    }
+
+    #[test]
+    fn qwen_from_cache_requires_both_assets() {
+        let root = std::env::temp_dir().join(format!(
+            "syllabix-qwen-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let cache = crate::models::ModelCache::new(
+            root,
+            crate::models::Manifest {
+                version: 1,
+                assets: vec![],
+            },
+        );
+        let err = match QwenTts::from_cache(
+            &cache,
+            &crate::models::BlockedFetcher::default(),
+            &mut crate::models::NoProgress,
+            &Cancel::new(),
+            "en",
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("empty manifest should fail"),
+        };
+        assert!(matches!(err, Error::ModelCache { .. }));
+        assert!(err.to_string().contains("qwen3-tts"));
+    }
+
+    #[test]
+    fn resample_i16_native_rates_reach_16k() {
+        let rate = 24_000_i32;
+        let native: Vec<i16> = (0..480)
+            .map(|i| ((i as f32 / 24.0).sin() * 8192.0) as i16)
+            .collect();
+        let pcm = resample_i16_to_v0(&native, rate);
+        assert!(!pcm.is_empty());
+        assert!(pcm.iter().any(|s| *s != 0));
     }
 
     #[test]

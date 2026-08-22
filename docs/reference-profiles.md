@@ -98,3 +98,43 @@ covers checksum verify, clean-toolchain `--help`, `init`, and the offline
 second run. The spoken part stays human: download on the clean machine,
 `./syllabix run`, start talking within three minutes of putting the binary
 on disk, then block the network and confirm a second `run` still works.
+
+## 8. TTS provider compute placement (row 31, profile A)
+
+`provider: qwen` runs its backbone plus mtmd audio graphs on **CPU on every
+OS**, while STT/LLM keep their shipped placement (Metal on Darwin). This is
+not a fallback: the audio gen_code graph asks for a ~870 MiB Metal compute
+buffer that `ggml_backend_sched` fails to place while the STT and LLM
+contexts are resident (the normal Syllabix configuration), and llama-bench
+shows the backbone does not want the GPU anyway.
+
+Protocol (llama-bench at the vendored llama.cpp commit `ad1de39`, 4 threads,
+pp512 / tg128, 2 repetitions, MacBook Air Apple Silicon):
+
+```bash
+llama-bench -m Llama-3.2-1B-Instruct-Q4_K_M.gguf   -p 512 -n 128 -t 4 -r 2 -ngl 99,0
+llama-bench -m Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf -p 512 -n 128 -t 4 -r 2 -ngl 0,99
+```
+
+| Model | backend | pp512 t/s | tg128 t/s |
+|---|---|---:|---:|
+| Llama 3.2 1B Q4_K_M (LLM slot) | Metal, BLAS | 1137.9 ± 160.6 | 106.3 ± 2.0 |
+| Llama 3.2 1B Q4_K_M | CPU | 299.3 ± 8.0 | 81.2 ± 1.7 |
+| Qwen3-TTS 1.7B Q4_K_M (TTS slot) | CPU | 832.0 ± 28.5 | **91.5 ± 0.7** |
+| Qwen3-TTS 1.7B Q4_K_M | Metal (solo reference) | 220.2 ± 4.0 | 74.7 ± 0.3 |
+
+Read: the LLM slot is ~31% faster at generation on Metal and stays there;
+the TTS backbone is ~22% *faster* on CPU than on Metal, so the CPU pin
+costs nothing and buys coexistence. Revisit Metal for the audio graph only
+after upstream splits it smaller.
+
+Sentence-level TTFB/RTF for the qwen provider land via the opt-in capture:
+
+```bash
+SYLLABIX_CACHE_DIR=<cache> SYLLABIX_QWEN_LATENCY=1 \
+  cargo test --release -p syllabix-core --test native_inference \
+  qwen_latency_capture -- --nocapture
+```
+
+Run it `--release`: a debug-profile build compiles ggml unoptimized and
+produces meaningless RTF (measured ~50x audio time in debug).

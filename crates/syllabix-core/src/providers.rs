@@ -56,6 +56,12 @@ pub trait Tts: Send {
     /// Config name (`kokoro`).
     fn name(&self) -> &'static str;
 
+    /// Weight id for `--turn-debug` sidecars. `None` means the fake and test
+    /// providers; live engines report the loaded asset id.
+    fn model_id(&self) -> Option<&str> {
+        None
+    }
+
     /// Synthesize buffered tokens. May return no chunks until a sentence ends.
     ///
     /// Pipeline calls this per streamed token. The last chunk of a generation

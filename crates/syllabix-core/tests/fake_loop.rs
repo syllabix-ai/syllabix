@@ -311,8 +311,13 @@ fn empty_and_whitespace_stt_skip_llm_and_keep_later_turns() {
 }
 
 fn unique_debug_dir() -> std::path::PathBuf {
+    // pid+nanos collided once under parallel load (two same-process tests in
+    // the same clock tick) and one test's WAVs landed in the other's
+    // asserted-empty dir. The counter makes collisions impossible.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     std::env::temp_dir().join(format!(
-        "syllabix-fake-turn-debug-{}-{}",
+        "syllabix-fake-turn-debug-{}-{}-{seq}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

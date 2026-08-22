@@ -76,16 +76,25 @@ target_compile_definitions(whisper PRIVATE WHISPER_VERSION="1.9.2")
 find_package(Threads REQUIRED)
 target_link_libraries(whisper PUBLIC Threads::Threads)
 
-add_library(syllabix_native STATIC src/shim.c)
+# Row 31: Qwen3-TTS audio path. Vendored upstream libmtmd slice (pinned at
+# ad1de39e0708) built against the SAME ggml as whisper/llama. Video support
+# and its ffmpeg/subprocess dependencies stay off; audio generation only.
+set(LLAMA_VERSION_BASE 0)
+set(LLAMA_VERSION_MAJOR 0)
+set(MTMD_VIDEO OFF CACHE BOOL "mtmd video support" FORCE)
+add_subdirectory("${LLAMA_DIR}/tools/mtmd" "${CMAKE_BINARY_DIR}/mtmd")
+
+add_library(syllabix_native STATIC src/shim.c src/shim_tts.c)
 target_include_directories(syllabix_native PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${WHISPER_DIR}/include"
     "${LLAMA_DIR}/include"
+    "${LLAMA_DIR}/tools/mtmd"
 )
-target_link_libraries(syllabix_native PUBLIC whisper llama)
+target_link_libraries(syllabix_native PUBLIC whisper llama mtmd)
 
 include(GNUInstallDirs)
-install(TARGETS syllabix_native whisper llama
+install(TARGETS syllabix_native whisper llama mtmd
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
