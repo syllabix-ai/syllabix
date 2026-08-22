@@ -115,6 +115,7 @@ impl Stt for FakeStt {
         Ok(Transcript {
             turn: utterance.turn,
             text: format!("turn-{:03}", utterance.turn.0),
+            language: BuiltinDefaults::v0().language.to_string(),
         })
     }
 }
@@ -123,6 +124,7 @@ impl Stt for FakeStt {
 pub struct ScriptedStt {
     texts: Vec<String>,
     index: usize,
+    language: String,
 }
 
 impl ScriptedStt {
@@ -131,7 +133,14 @@ impl ScriptedStt {
         Self {
             texts: texts.into_iter().map(Into::into).collect(),
             index: 0,
+            language: BuiltinDefaults::v0().language.to_string(),
         }
+    }
+
+    /// Language stamped onto every transcript (defaults to the v0 code).
+    pub fn with_language(mut self, language: impl Into<String>) -> Self {
+        self.language = language.into();
+        self
     }
 }
 
@@ -162,6 +171,7 @@ impl Stt for ScriptedStt {
         Ok(Transcript {
             turn: utterance.turn,
             text,
+            language: self.language.clone(),
         })
     }
 }

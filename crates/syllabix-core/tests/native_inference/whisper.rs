@@ -15,8 +15,8 @@ use sha2::{Digest, Sha256};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames},
     contains_words_in_order, run_loop, word_match_ratio, BlockedFetcher, Cancel, CollectingSink,
-    FakeLlm, FakeTts, FakeVad, LoopConfig, ModelCache, PipelineStages, StderrProgress, Stt, TurnId,
-    Utterance, LIBRISPEECH_MIN_WORD_MATCH,
+    FakeLlm, FakeTts, FakeVad, LoopConfig, ModelCache, PipelineStages, StderrProgress, Stt,
+    SttModel, TurnId, Utterance, WhisperStt, LIBRISPEECH_MIN_WORD_MATCH,
 };
 
 use crate::{hex, native};
@@ -224,4 +224,30 @@ fn cancel_aborts_native_decode_and_context_stays_usable() {
         .transcribe(&utterance, &Cancel::new())
         .expect("whisper context remains usable after cancel");
     assert!(contains_words_in_order(&again.text, JFK.expected));
+}
+
+#[test]
+fn auto_language_detects_english_and_pins_the_code() {
+    let cache = ModelCache::v0();
+    let asset = cache.manifest().asset(SttModel::Small.asset_id()).unwrap();
+    let path = cache
+        .resolve(
+            asset,
+            &BlockedFetcher::default(),
+            &mut StderrProgress::new(),
+            &Cancel::new(),
+        )
+        .expect("populated whisper-small cache");
+    let mut stt = WhisperStt::from_model_path(path, SttModel::Small)
+        .expect("load small for auto run")
+        .with_language("auto")
+        .expect("auto is a valid yaml language");
+    let transcript = stt
+        .transcribe(&fixture_utterance(&JFK), &Cancel::new())
+        .expect("auto decode");
+    assert_eq!(
+        transcript.language, "en",
+        "detected code must ride on the transcript"
+    );
+    assert!(contains_words_in_order(&transcript.text, JFK.expected));
 }

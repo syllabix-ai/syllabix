@@ -26,6 +26,21 @@ pub const LLAMA_32_1B_ASSET: &str = "llama-3.2-1b";
 /// Short spoken-English system prompt. No Markdown.
 pub const VOICE_SYSTEM_PROMPT: &str = "You are a voice assistant on a laptop. Reply in short spoken English, one or two sentences. Do not use markdown, lists, headings, or emoji.";
 
+/// System prompt for the turn's STT language.
+///
+/// English keeps [`VOICE_SYSTEM_PROMPT`] byte-for-byte. Any other whisper
+/// language pins its English name so the LLM replies in-language; unknown or
+/// `auto` codes (which never reach the LLM in a real run) fall back to English.
+pub fn system_prompt_for(language: &str) -> String {
+    if language == crate::stt::STT_LANGUAGE {
+        return VOICE_SYSTEM_PROMPT.to_string();
+    }
+    match crate::language::language_name(language) {
+        Some(name) => format!("You are a voice assistant on a laptop. Reply in short spoken {name}, one or two sentences. Do not use markdown, lists, headings, or emoji."),
+        None => VOICE_SYSTEM_PROMPT.to_string(),
+    }
+}
+
 /// Rolling history kept in the prompt.
 pub const LLAMA_MAX_HISTORY_TURNS: usize = 8;
 
@@ -176,7 +191,7 @@ impl Llm for LlamaLlm {
         let mut messages = Vec::with_capacity(2 + kept.len() * 2);
         messages.push(ChatMessage {
             role: "system".into(),
-            content: VOICE_SYSTEM_PROMPT.into(),
+            content: system_prompt_for(&user.language),
         });
         for turn in kept {
             messages.push(ChatMessage {
@@ -361,7 +376,33 @@ mod tests {
         Transcript {
             turn: TurnId(turn),
             text: text.into(),
+            language: crate::stt::STT_LANGUAGE.to_string(),
         }
+    }
+
+    fn user_in(turn: u64, text: &str, language: &str) -> Transcript {
+        Transcript {
+            turn: TurnId(turn),
+            text: text.into(),
+            language: language.into(),
+        }
+    }
+
+    #[test]
+    fn system_prompt_pins_the_reply_language() {
+        assert_eq!(system_prompt_for("en"), VOICE_SYSTEM_PROMPT);
+        assert_eq!(
+            system_prompt_for("fr"),
+            "You are a voice assistant on a laptop. Reply in short spoken French, one or two sentences. Do not use markdown, lists, headings, or emoji."
+        );
+        assert_eq!(system_prompt_for("de"), system_prompt_for("de"));
+        assert!(system_prompt_for("de").contains("German"));
+        assert!(system_prompt_for("yue").contains("Cantonese"));
+        // Unknown codes (and `auto`, which a real run never forwards) fall
+        // back to the English prompt instead of speaking a broken sentence.
+        assert_eq!(system_prompt_for("auto"), VOICE_SYSTEM_PROMPT);
+        assert_eq!(system_prompt_for("klingon"), VOICE_SYSTEM_PROMPT);
+        assert!(!system_prompt_for("fr").contains("**"));
     }
 
     #[test]
@@ -412,6 +453,30 @@ mod tests {
         assert_eq!(prompt[0].content, VOICE_SYSTEM_PROMPT);
         assert_eq!(prompt[1].role, "user");
         assert_eq!(prompt[1].content, "hi");
+    }
+
+    #[test]
+    fn detected_language_pins_into_the_system_prompt() {
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["Bonjour".into()],
+            delay: Duration::ZERO,
+            last_messages: Arc::clone(&messages),
+        }));
+        llm.generate(
+            &[],
+            &user_in(7, "bonjour", "fr"),
+            &Cancel::new(),
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+        let prompt = messages.lock().unwrap();
+        assert_eq!(prompt[0].role, "system");
+        assert_eq!(
+            prompt[0].content,
+            system_prompt_for("fr"),
+            "the LLM must be told to reply in the transcript's language"
+        );
     }
 
     #[test]

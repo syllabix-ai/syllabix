@@ -19,7 +19,8 @@ pub fn load_real_providers(
 ) -> Result<(SileroVad, WhisperStt, LlamaLlm, KokoroTts)> {
     let vad = SileroVad::from_cache(cache, fetcher, progress, cancel)?
         .with_settings(config.vad_settings());
-    let stt = WhisperStt::from_cache(cache, fetcher, progress, cancel)?
+    // Only the selected STT id is fetched; the rest of the menu stays on disk.
+    let stt = WhisperStt::from_cache(cache, fetcher, progress, cancel, config.stt_model)?
         .with_language(&config.language)?;
     let llm = LlamaLlm::from_cached_model(
         cache,

@@ -8,18 +8,16 @@ use syllabix_native::{DecodeError, WhisperContext};
 
 use crate::defaults::{BuiltinDefaults, SttModel};
 use crate::error::{Error, Result};
+use crate::language::{is_supported as is_supported_language, LANGUAGE_AUTO};
 use crate::models::{Fetcher, ModelCache, Progress};
 use crate::providers::Stt;
 use crate::types::{Transcript, Utterance};
 use crate::Cancel;
 
-/// v0 STT language. YAML may select this code; only `en` is accepted.
+/// Launch STT language (`en`). YAML may select any whisper-supported ISO code.
 pub const STT_LANGUAGE: &str = "en";
 
-/// Manifest id for whisper.cpp `small`.
-pub const WHISPER_SMALL_ASSET: &str = "whisper-small";
-
-/// In-process whisper.cpp adapter. Loads the v0 `small` GGML weights.
+/// In-process whisper.cpp adapter. Loads one menu GGML (default [`SttModel::Small`]).
 pub struct WhisperStt {
     decoder: Arc<Mutex<Box<dyn Decoder>>>,
     model: SttModel,
@@ -37,7 +35,7 @@ impl Clone for WhisperStt {
 }
 
 impl WhisperStt {
-    /// Load a ggml model from disk. v0 always uses [`SttModel::Small`].
+    /// Load a ggml model from disk.
     pub fn from_model_path(path: impl AsRef<Path>, model: SttModel) -> Result<Self> {
         let decoder = WhisperDecoder::load(path.as_ref())?;
         Ok(Self {
@@ -47,43 +45,50 @@ impl WhisperStt {
         })
     }
 
-    /// Resolve `whisper-small` from the manifest cache, then load it.
+    /// Resolve the selected model's asset from the manifest cache, then load it.
+    /// Only this id is fetched; the other menu sizes stay untouched on disk.
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
         progress: &mut dyn Progress,
         cancel: &Cancel,
+        model: SttModel,
     ) -> Result<Self> {
-        let asset =
-            cache
-                .manifest()
-                .asset(WHISPER_SMALL_ASSET)
-                .ok_or_else(|| Error::ModelCache {
-                    message: "manifest does not contain the whisper-small asset".into(),
-                })?;
+        let asset_id = model.asset_id();
+        let asset = cache
+            .manifest()
+            .asset(asset_id)
+            .ok_or_else(|| Error::ModelCache {
+                message: format!("manifest does not contain the {asset_id} asset"),
+            })?;
         let path = cache.resolve(asset, fetcher, progress, cancel)?;
-        Self::from_model_path(path, SttModel::Small)
+        Self::from_model_path(path, model)
     }
 
-    /// STT language code (`en`).
+    /// Configured or last-detected STT language code.
     pub fn language(&self) -> &str {
         &self.language
     }
 
-    /// Set the yaml language. v0 accepts only [`STT_LANGUAGE`].
+    /// Set the yaml language: any whisper-supported code or `auto`.
     pub fn with_language(mut self, language: impl Into<String>) -> Result<Self> {
         let language = language.into();
-        if language != STT_LANGUAGE {
+        if !is_supported_language(&language) {
             return Err(Error::Config {
                 field: "pipeline.stt.language".into(),
-                message: format!("unsupported value {language:?} (allowed: {STT_LANGUAGE})"),
+                message: format!("unsupported value {language:?} (allowed: ISO code or \"auto\")"),
             });
         }
         self.language = language;
         Ok(self)
     }
 
-    /// Configured whisper.cpp model id (`small`).
+    /// True when decode detects the language per utterance instead of pinning one.
+    pub fn auto_detects(&self) -> bool {
+        self.language == LANGUAGE_AUTO
+    }
+
+    /// Configured whisper.cpp model id.
     pub fn model(&self) -> SttModel {
         self.model
     }
@@ -121,7 +126,7 @@ impl Stt for WhisperStt {
             });
         }
         let audio: Vec<f32> = pcm.iter().map(|s| *s as f32 / 32768.0).collect();
-        let text = self
+        let (text, language) = self
             .decoder
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -132,12 +137,14 @@ impl Stt for WhisperStt {
         Ok(Transcript {
             turn: utterance.turn,
             text,
+            language,
         })
     }
 }
 
 trait Decoder: Send {
-    fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<String>;
+    /// Decode one utterance. Returns `(text, effective_language)`.
+    fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<(String, String)>;
 }
 
 struct WhisperDecoder {
@@ -155,7 +162,7 @@ impl WhisperDecoder {
 }
 
 impl Decoder for WhisperDecoder {
-    fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<String> {
+    fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<(String, String)> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
@@ -169,11 +176,11 @@ impl Decoder for WhisperDecoder {
                 abort_user,
             )
         } {
-            Ok(text) => {
+            Ok((text, detected)) => {
                 if cancel.is_shutdown() {
                     Err(Error::Cancelled)
                 } else {
-                    Ok(text)
+                    Ok((text, detected))
                 }
             }
             Err(DecodeError::Cancelled) => Err(Error::Cancelled),
@@ -250,12 +257,34 @@ mod tests {
 
     struct ScriptedDecoder {
         replies: Vec<String>,
+        detected: String,
         delay: Duration,
         calls: Arc<Mutex<usize>>,
     }
 
+    impl ScriptedDecoder {
+        fn new(replies: &[&str]) -> Self {
+            Self {
+                replies: replies.iter().map(|s| (*s).to_string()).collect(),
+                detected: STT_LANGUAGE.to_string(),
+                delay: Duration::ZERO,
+                calls: Arc::new(Mutex::new(0)),
+            }
+        }
+
+        fn with_detected(mut self, detected: &str) -> Self {
+            self.detected = detected.to_string();
+            self
+        }
+    }
+
     impl Decoder for ScriptedDecoder {
-        fn decode(&mut self, _pcm: &[f32], _language: &str, cancel: &Cancel) -> Result<String> {
+        fn decode(
+            &mut self,
+            _pcm: &[f32],
+            language: &str,
+            cancel: &Cancel,
+        ) -> Result<(String, String)> {
             if !self.delay.is_zero() {
                 let start = std::time::Instant::now();
                 while start.elapsed() < self.delay {
@@ -275,7 +304,14 @@ mod tests {
                     message: "scripted decoder exhausted".into(),
                 });
             }
-            Ok(self.replies.remove(0))
+            let text = self.replies.remove(0);
+            // Fixed-language runs echo the request; auto runs report detection.
+            let detected = if language == LANGUAGE_AUTO {
+                self.detected.clone()
+            } else {
+                language.to_string()
+            };
+            Ok((text, detected))
         }
     }
 
@@ -300,44 +336,34 @@ mod tests {
 
     #[test]
     fn name_and_model_match_v0_defaults() {
-        let stt = WhisperStt::with_decoder(
-            Box::new(ScriptedDecoder {
-                replies: vec!["hello".into()],
-                delay: Duration::ZERO,
-                calls: Arc::new(Mutex::new(0)),
-            }),
-            SttModel::Small,
-        );
+        let stt =
+            WhisperStt::with_decoder(Box::new(ScriptedDecoder::new(&["hello"])), SttModel::Small);
         assert_eq!(stt.name(), "whisper.cpp");
         assert_eq!(stt.model().as_str(), "small");
+        assert_eq!(SttModel::Small.asset_id(), "whisper-small");
         assert_eq!(stt.language(), STT_LANGUAGE);
-        assert_eq!(WHISPER_SMALL_ASSET, "whisper-small");
-        let err = match stt.with_language("fr") {
+        assert!(!stt.auto_detects());
+        let err = match stt.with_language("klingon") {
             Err(err) => err,
-            Ok(_) => panic!("non-en language must fail"),
+            Ok(_) => panic!("unsupported language must fail"),
         };
         assert!(err.to_string().contains("pipeline.stt.language"));
-        let ok = WhisperStt::with_decoder(
-            Box::new(ScriptedDecoder {
-                replies: vec!["hello".into()],
-                delay: Duration::ZERO,
-                calls: Arc::new(Mutex::new(0)),
-            }),
+        let fr = WhisperStt::with_decoder(
+            Box::new(ScriptedDecoder::new(&["bonjour"]).with_detected("fr")),
             SttModel::Small,
         )
-        .with_language(STT_LANGUAGE)
-        .expect("en");
-        assert_eq!(ok.language(), STT_LANGUAGE);
+        .with_language("fr")
+        .expect("ISO code is accepted");
+        assert_eq!(fr.language(), "fr");
+        assert!(!fr.auto_detects());
+        let auto = fr.with_language(LANGUAGE_AUTO).expect("auto is accepted");
+        assert!(auto.auto_detects());
     }
 
     #[test]
     fn transcribe_uses_utterance_pcm_and_turn() {
         let mut stt = WhisperStt::with_decoder(
-            Box::new(ScriptedDecoder {
-                replies: vec!["and so my fellow americans".into()],
-                delay: Duration::ZERO,
-                calls: Arc::new(Mutex::new(0)),
-            }),
+            Box::new(ScriptedDecoder::new(&["and so my fellow americans"])),
             SttModel::Small,
         );
         let transcript = stt
@@ -345,6 +371,23 @@ mod tests {
             .unwrap();
         assert_eq!(transcript.turn, TurnId(4));
         assert_eq!(transcript.text, "and so my fellow americans");
+        // Fixed language: the transcript carries the configured code.
+        assert_eq!(transcript.language, STT_LANGUAGE);
+    }
+
+    #[test]
+    fn auto_detect_surfaces_the_detected_language() {
+        let mut stt = WhisperStt::with_decoder(
+            Box::new(ScriptedDecoder::new(&["bonjour"]).with_detected("fr")),
+            SttModel::Small,
+        )
+        .with_language(LANGUAGE_AUTO)
+        .unwrap();
+        let transcript = stt
+            .transcribe(&speech_utterance(1, 1), &Cancel::new())
+            .unwrap();
+        assert_eq!(transcript.language, "fr");
+        assert_eq!(transcript.text, "bonjour");
     }
 
     #[test]
@@ -353,6 +396,7 @@ mod tests {
         let mut stt = WhisperStt::with_decoder(
             Box::new(ScriptedDecoder {
                 replies: vec!["should not run".into()],
+                detected: STT_LANGUAGE.into(),
                 delay: Duration::ZERO,
                 calls: Arc::clone(&calls),
             }),
@@ -379,14 +423,8 @@ mod tests {
 
     #[test]
     fn shutdown_before_transcribe_is_cancelled() {
-        let mut stt = WhisperStt::with_decoder(
-            Box::new(ScriptedDecoder {
-                replies: vec!["nope".into()],
-                delay: Duration::ZERO,
-                calls: Arc::new(Mutex::new(0)),
-            }),
-            SttModel::Small,
-        );
+        let mut stt =
+            WhisperStt::with_decoder(Box::new(ScriptedDecoder::new(&["nope"])), SttModel::Small);
         let cancel = Cancel::new();
         cancel.shutdown();
         assert!(matches!(
@@ -400,6 +438,7 @@ mod tests {
         let mut stt = WhisperStt::with_decoder(
             Box::new(ScriptedDecoder {
                 replies: vec!["late".into()],
+                detected: STT_LANGUAGE.into(),
                 delay: Duration::from_secs(2),
                 calls: Arc::new(Mutex::new(0)),
             }),
@@ -432,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn from_cache_requires_whisper_small_asset() {
+    fn from_cache_requires_the_selected_asset() {
         let root = std::env::temp_dir().join(format!(
             "syllabix-stt-missing-{}-{}",
             std::process::id(),
@@ -454,12 +493,80 @@ mod tests {
             &crate::models::BlockedFetcher::default(),
             &mut crate::models::NoProgress,
             &Cancel::new(),
+            SttModel::Small,
         ) {
             Err(err) => err,
             Ok(_) => panic!("empty manifest should fail"),
         };
         assert!(matches!(err, Error::ModelCache { .. }));
         assert!(err.to_string().contains("whisper-small"));
+    }
+
+    /// Records every requested URL, then refuses the network.
+    struct RecordingFetcher {
+        urls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Default for RecordingFetcher {
+        fn default() -> Self {
+            Self {
+                urls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl crate::models::Fetcher for RecordingFetcher {
+        fn fetch(
+            &self,
+            url: &str,
+            _writer: &mut dyn std::io::Write,
+            _on_chunk: &mut dyn FnMut(u64),
+            _cancel: &Cancel,
+        ) -> crate::error::Result<()> {
+            self.urls
+                .lock()
+                .expect("recording fetcher")
+                .push(url.to_string());
+            Err(Error::ModelCache {
+                message: "no network in test".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn from_cache_fetches_only_the_selected_model_id() {
+        let root = std::env::temp_dir().join(format!(
+            "syllabix-stt-selective-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let cache = ModelCache::new(root, crate::models::Manifest::v0());
+        let fetcher = RecordingFetcher::default();
+        // Native load fails on absent bytes, but the fetch log is the point:
+        // exactly one URL, the selected id, even though the manifest lists five.
+        let result = WhisperStt::from_cache(
+            &cache,
+            &fetcher,
+            &mut crate::models::NoProgress,
+            &Cancel::new(),
+            SttModel::MediumQ5_0,
+        );
+        assert!(result.is_err(), "no real weights in this test");
+        let urls = fetcher.urls.lock().expect("urls");
+        assert_eq!(urls.len(), 1, "only the selected id may be fetched");
+        assert!(urls[0].ends_with("ggml-medium-q5_0.bin"), "{urls:?}");
+        for other in [
+            "ggml-small.bin",
+            "ggml-medium.bin",
+            "ggml-large-v3-turbo.bin",
+            "ggml-large-v3-turbo-q5_0.bin",
+        ] {
+            assert!(!urls[0].contains(other), "{urls:?} must skip {other}");
+        }
     }
 
     #[test]
@@ -508,6 +615,7 @@ mod tests {
         let mut stt = WhisperStt::with_decoder(
             Box::new(ScriptedDecoder {
                 replies: vec!["should not run".into()],
+                detected: STT_LANGUAGE.into(),
                 delay: Duration::ZERO,
                 calls: Arc::clone(&calls),
             }),
@@ -541,6 +649,7 @@ mod tests {
         let stt = WhisperStt::with_decoder(
             Box::new(ScriptedDecoder {
                 replies: vec!["one".into(), "two".into()],
+                detected: STT_LANGUAGE.into(),
                 delay: Duration::ZERO,
                 calls: Arc::clone(&calls),
             }),

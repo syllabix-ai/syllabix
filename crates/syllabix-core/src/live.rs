@@ -83,6 +83,7 @@ fn run_live_inner(
 
     let _ = (
         config.language.as_str(),
+        config.stt_model.asset_id(),
         config.llm_model.as_str(),
         config.thinking,
         config.vad_threshold,

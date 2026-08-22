@@ -185,9 +185,13 @@ fn resolving_one_llm_id_does_not_fetch_the_other() {
 #[test]
 fn v0_manifest_is_complete() {
     let m = Manifest::v0();
-    assert_eq!(m.assets.len(), 7);
+    assert_eq!(m.assets.len(), 11);
     assert!(m.asset("silero").is_some());
     assert!(m.asset("whisper-small").is_some());
+    assert!(m.asset("whisper-medium").is_some());
+    assert!(m.asset("whisper-large-v3-turbo").is_some());
+    assert!(m.asset("whisper-medium-q5_0").is_some());
+    assert!(m.asset("whisper-large-v3-turbo-q5_0").is_some());
     assert!(m.asset("qwen3.5-0.8b").is_some());
     assert!(m.asset("qwen3.5-2b").is_some());
     assert!(m.asset("llama-3.2-1b").is_some());

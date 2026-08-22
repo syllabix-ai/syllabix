@@ -17,6 +17,7 @@ mod dist;
 mod error;
 mod fake;
 mod g2p;
+mod language;
 mod live;
 mod llm;
 mod memory;
@@ -50,8 +51,8 @@ pub use fake::{
 pub use g2p::{english_to_ipa, english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
 pub use live::run_live;
 pub use llm::{
-    is_v0_llm_model, LlamaLlm, LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS,
-    QWEN35_08B_ASSET, QWEN35_2B_ASSET, VOICE_SYSTEM_PROMPT,
+    is_v0_llm_model, system_prompt_for, LlamaLlm, LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT,
+    LLAMA_MAX_HISTORY_TURNS, QWEN35_08B_ASSET, QWEN35_2B_ASSET, VOICE_SYSTEM_PROMPT,
 };
 pub use memory::{process_rss_bytes, LOOP_RSS_GROWTH_CEILING_BYTES};
 pub use models::{
@@ -71,7 +72,7 @@ pub use speech_text::{
 };
 pub use stt::{
     contains_words_in_order, transcript_words, word_match_ratio, WhisperStt,
-    LIBRISPEECH_MIN_WORD_MATCH, STT_LANGUAGE, WHISPER_SMALL_ASSET,
+    LIBRISPEECH_MIN_WORD_MATCH, STT_LANGUAGE,
 };
 pub use tts::{
     KokoroTts, KOKORO_ASSET, KOKORO_NATIVE_RATE_HZ, KOKORO_VOICE_ASSET, TTS_ASR_MIN_WORD_MATCH,

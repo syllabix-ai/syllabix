@@ -29,7 +29,9 @@ struct whisper_context *syllabix_whisper_load(const char *path);
 void syllabix_whisper_free(struct whisper_context *ctx);
 
 /* 0 = ok, 1 = cancelled, -1 = error. `out` is a UTF-8 buffer of `out_cap` bytes.
- * `language` is a whisper.cpp language id (`en`). NULL means `en`. */
+ * `language` is a whisper.cpp language id (`en`) or `auto`. NULL means `en`.
+ * `out_lang` receives the effective language id (`en`, or the code detected by
+ * whisper.cpp when `language` was `auto`). May be NULL to skip the copy. */
 int syllabix_whisper_decode(
     struct whisper_context *ctx,
     const float *pcm,
@@ -39,7 +41,9 @@ int syllabix_whisper_decode(
     bool (*abort_cb)(void *user),
     void *abort_user,
     char *out,
-    int out_cap);
+    int out_cap,
+    char *out_lang,
+    int out_lang_cap);
 
 /* Context length comes from the GGUF (`n_ctx_train`), not a caller budget. */
 struct syllabix_llama *syllabix_llama_load(const char *path, int n_threads);

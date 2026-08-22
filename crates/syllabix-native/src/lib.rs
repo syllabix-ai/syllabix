@@ -47,6 +47,8 @@ mod ffi {
             abort_user: *mut c_void,
             out: *mut c_char,
             out_cap: c_int,
+            out_lang: *mut c_char,
+            out_lang_cap: c_int,
         ) -> c_int;
         pub fn syllabix_llama_load(path: *const c_char, n_threads: c_int) -> *mut LlamaHandle;
         pub fn syllabix_llama_free(llm: *mut LlamaHandle);
@@ -141,7 +143,11 @@ impl WhisperContext {
 
     /// # Safety
     /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
-    /// `language` is a whisper.cpp id (`en`) and must remain valid UTF-8 without interior NULs.
+    /// `language` is a whisper.cpp id (`en`) or `auto`, valid UTF-8 without interior NULs.
+    ///
+    /// Returns `(text, language)`: the transcript plus the effective language
+    /// code — the requested id, or the code whisper.cpp detected when
+    /// `language` was `auto`.
     pub unsafe fn decode(
         &mut self,
         pcm: &[f32],
@@ -149,13 +155,14 @@ impl WhisperContext {
         language: &str,
         abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
         abort_user: *mut c_void,
-    ) -> Result<String, DecodeError> {
+    ) -> Result<(String, String), DecodeError> {
         if pcm.is_empty() {
             return Err(DecodeError::Failed("no samples".into()));
         }
         let lang = CString::new(language)
             .map_err(|_| DecodeError::Failed("language contains NUL".into()))?;
         let mut out = vec![0u8; 32 * 1024];
+        let mut lang_out = vec![0u8; 16];
         let _ggml = ggml_lock();
         let rc = unsafe {
             ffi::syllabix_whisper_decode(
@@ -168,12 +175,25 @@ impl WhisperContext {
                 abort_user,
                 out.as_mut_ptr().cast::<c_char>(),
                 out.len() as c_int,
+                lang_out.as_mut_ptr().cast::<c_char>(),
+                lang_out.len() as c_int,
             )
         };
         match rc {
             0 => {
                 let end = out.iter().position(|&b| b == 0).unwrap_or(out.len());
-                Ok(String::from_utf8_lossy(&out[..end]).into_owned())
+                let text = String::from_utf8_lossy(&out[..end]).into_owned();
+                let lang_end = lang_out
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(lang_out.len());
+                let detected = String::from_utf8_lossy(&lang_out[..lang_end]).into_owned();
+                let detected = if detected.is_empty() {
+                    language.to_string()
+                } else {
+                    detected
+                };
+                Ok((text, detected))
             }
             1 => Err(DecodeError::Cancelled),
             _ => Err(DecodeError::Failed("whisper.cpp decode failed".into())),

@@ -120,6 +120,9 @@ pub struct Transcript {
     pub turn: TurnId,
     /// Recognized text. Empty string is allowed only if a provider emits it.
     pub text: String,
+    /// Effective STT language code: the configured id, or the code detected
+    /// from this utterance when yaml selected `auto`.
+    pub language: String,
 }
 
 /// One streamed LLM token.

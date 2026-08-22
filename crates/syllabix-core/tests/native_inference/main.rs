@@ -18,7 +18,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 #[cfg(not(coverage))]
 use syllabix_core::{
-    Cancel, HttpFetcher, KokoroTts, LlamaLlm, ModelCache, StderrProgress, WhisperStt,
+    Cancel, HttpFetcher, KokoroTts, LlamaLlm, ModelCache, StderrProgress, SttModel, WhisperStt,
 };
 
 #[cfg(not(coverage))]
@@ -48,8 +48,14 @@ pub(crate) fn native() -> MutexGuard<'static, Native> {
         let cache = ModelCache::v0();
         let mut progress = StderrProgress::new();
         let cancel = Cancel::new();
-        let stt = WhisperStt::from_cache(&cache, &HttpFetcher, &mut progress, &cancel)
-            .expect("load whisper.cpp small once");
+        let stt = WhisperStt::from_cache(
+            &cache,
+            &HttpFetcher,
+            &mut progress,
+            &cancel,
+            SttModel::Small,
+        )
+        .expect("load whisper.cpp small once");
         let llm = LlamaLlm::from_cache(&cache, &HttpFetcher, &mut progress, &cancel)
             .expect("load Llama 3.2 1B Q4_K_M once");
         assert!(!llm.thinking(), "v0 thinking is off until yaml enables it");
