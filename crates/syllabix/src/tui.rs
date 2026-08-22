@@ -17,9 +17,15 @@ impl TranscriptUi {
     /// Apply one pipeline event.
     pub fn apply(&mut self, event: LoopEvent) {
         match event {
-            LoopEvent::User { text, .. } => {
+            LoopEvent::User { text, language, .. } => {
                 self.flush_agent();
-                self.lines.push(format!("You: {text}"));
+                // Non-English turns carry a visible language tag (fixed or
+                // auto-detected); plain English stays untagged.
+                if language.is_empty() || language == "en" {
+                    self.lines.push(format!("You: {text}"));
+                } else {
+                    self.lines.push(format!("You [{language}]: {text}"));
+                }
             }
             LoopEvent::Assistant {
                 turn,
@@ -226,6 +232,7 @@ mod tests {
         ui.apply(LoopEvent::User {
             turn: TurnId(0),
             text: "hello".into(),
+            language: "en".into(),
         });
         ui.apply(LoopEvent::Assistant {
             turn: TurnId(0),
@@ -254,11 +261,29 @@ mod tests {
     }
 
     #[test]
+    fn detected_language_is_tagged_on_the_user_line() {
+        let mut ui = TranscriptUi::default();
+        ui.apply(LoopEvent::User {
+            turn: TurnId(0),
+            text: "bonjour".into(),
+            language: "fr".into(),
+        });
+        assert!(ui.transcript_text().starts_with("You [fr]: bonjour"));
+        ui.apply(LoopEvent::User {
+            turn: TurnId(1),
+            text: "hello".into(),
+            language: "en".into(),
+        });
+        assert!(ui.transcript_text().contains("\nYou: hello"));
+    }
+
+    #[test]
     fn think_tokens_are_hidden_until_the_spoken_reply() {
         let mut ui = TranscriptUi::default();
         ui.apply(LoopEvent::User {
             turn: TurnId(1),
             text: "hey".into(),
+            language: "en".into(),
         });
         ui.apply(LoopEvent::Assistant {
             turn: TurnId(1),
@@ -281,6 +306,7 @@ mod tests {
             ui.apply(LoopEvent::User {
                 turn: TurnId(i),
                 text: format!("line{i}"),
+                language: "en".into(),
             });
         }
         let text = ui.transcript_text();

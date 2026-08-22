@@ -100,7 +100,9 @@ int syllabix_whisper_decode(
     bool (*abort_cb)(void *user),
     void *abort_user,
     char *out,
-    int out_cap) {
+    int out_cap,
+    char *out_lang,
+    int out_lang_cap) {
     if (ctx == NULL || pcm == NULL || n_samples <= 0 || out == NULL || out_cap <= 1) {
         return -1;
     }
@@ -164,6 +166,20 @@ int syllabix_whisper_decode(
         used += (int)piece_len;
     }
     out[used] = '\0';
+    if (out_lang != NULL && out_lang_cap > 0) {
+        /* Effective language: the requested code, or the one whisper.cpp
+         * detected during this run when the caller passed `auto`. */
+        const char *code = language != NULL ? language : "en";
+        if (strcmp(code, "auto") == 0) {
+            const int lang_id = whisper_full_lang_id_from_state(state);
+            code = lang_id >= 0 ? whisper_lang_str(lang_id) : "en";
+        }
+        int lang_used = 0;
+        for (; code[lang_used] != '\0' && lang_used < out_lang_cap - 1; lang_used++) {
+            out_lang[lang_used] = code[lang_used];
+        }
+        out_lang[lang_used] = '\0';
+    }
     whisper_free_state(state);
     return 0;
 }

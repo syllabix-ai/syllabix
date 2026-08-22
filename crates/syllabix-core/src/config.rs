@@ -10,7 +10,7 @@ use crate::defaults::{
     BuiltinDefaults, LlmProvider, SttModel, SttProvider, TtsProvider, VadProvider,
 };
 use crate::error::{Error, Result};
-use crate::stt::STT_LANGUAGE;
+use crate::language::is_supported as is_supported_language;
 use crate::vad::{VadSettings, END_SILENCE, MIN_SPEECH, SPEECH_THRESHOLD, WHISPER_PREROLL};
 
 /// File name written by `init` and optionally read by `run`.
@@ -35,7 +35,7 @@ pub struct AgentConfig {
     pub stt: SttProvider,
     /// STT model id.
     pub stt_model: SttModel,
-    /// STT language code. v0 allows `en` only.
+    /// STT language code: a whisper-supported ISO code or `auto`.
     pub language: String,
     /// LLM provider.
     pub llm: LlmProvider,
@@ -247,7 +247,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         vad_preroll_ms,
         stt: stt_provider,
         stt_model,
-        language: language.to_string(),
+        language,
         llm: llm_provider,
         llm_model: llm_model.to_string(),
         thinking,
@@ -402,17 +402,24 @@ fn parse_stt(value: &str) -> Result<SttProvider> {
 }
 
 fn parse_stt_model(value: &str) -> Result<SttModel> {
-    match value {
-        "small" => Ok(SttModel::Small),
-        other => Err(unsupported("pipeline.stt.model", other, "small")),
-    }
+    SttModel::parse(value).ok_or_else(|| {
+        unsupported(
+            "pipeline.stt.model",
+            value,
+            "small, medium, large-v3-turbo, medium-q5_0, large-v3-turbo-q5_0",
+        )
+    })
 }
 
-fn parse_language(value: &str) -> Result<&str> {
-    if value == STT_LANGUAGE {
-        Ok(STT_LANGUAGE)
+fn parse_language(value: &str) -> Result<String> {
+    if is_supported_language(value) {
+        Ok(value.to_string())
     } else {
-        Err(unsupported("pipeline.stt.language", value, STT_LANGUAGE))
+        Err(unsupported(
+            "pipeline.stt.language",
+            value,
+            "ISO code or \"auto\"",
+        ))
     }
 }
 
@@ -453,6 +460,7 @@ fn unsupported(field: &str, got: &str, allowed: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::language::LANGUAGE_AUTO;
 
     fn tmp_dir(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -616,10 +624,51 @@ pipeline:
     fn unsupported_language_is_field_level() {
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("language: en", "language: es");
+            .replace("language: en", "language: klingon");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.stt.language"), "{err}");
-        assert!(err.to_string().contains("es"), "{err}");
+        assert!(err.to_string().contains("klingon"), "{err}");
+    }
+
+    #[test]
+    fn stt_model_menu_parses_and_rejects_unknown_ids() {
+        for model in SttModel::ALL {
+            let yaml = AgentConfig::v0()
+                .to_yaml()
+                .replace("model: small", &format!("model: {}", model.as_str()));
+            let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+            assert_eq!(cfg.stt_model, model);
+        }
+        for bad in ["tiny", "base", "large", "huge", "small.en"] {
+            let yaml = AgentConfig::v0()
+                .to_yaml()
+                .replace("model: small", &format!("model: {bad}"));
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("pipeline.stt.model"),
+                "{bad}: {err}"
+            );
+            assert!(err.to_string().contains(bad), "{bad}: {err}");
+        }
+        assert_eq!(AgentConfig::v0().stt_model, SttModel::Small);
+    }
+
+    #[test]
+    fn stt_language_menu_and_auto_parse() {
+        for code in ["en", "fr", "de", "es", "ja", "zh", "yue", "haw"] {
+            let yaml = AgentConfig::v0()
+                .to_yaml()
+                .replace("language: en", &format!("language: {code}"));
+            let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+            assert_eq!(cfg.language, code);
+        }
+        let auto = AgentConfig::v0()
+            .to_yaml()
+            .replace("language: en", "language: auto");
+        assert_eq!(
+            AgentConfig::parse_yaml(&auto).unwrap().language,
+            LANGUAGE_AUTO
+        );
     }
 
     #[test]

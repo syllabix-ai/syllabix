@@ -43,6 +43,8 @@ pub enum LoopEvent {
         turn: TurnId,
         /// Transcript.
         text: String,
+        /// Effective STT language code (configured or auto-detected).
+        language: String,
     },
     /// Assistant token text (delta).
     Assistant {
@@ -274,7 +276,7 @@ impl Shared {
         }
     }
 
-    fn note_user(&self, turn: TurnId, text: String, at: Instant) {
+    fn note_user(&self, turn: TurnId, text: String, language: &str, at: Instant) {
         {
             let mut map = self.turns.lock().expect("turn accumulator");
             let entry = map.entry(turn).or_insert_with(TurnAcc::new);
@@ -282,9 +284,13 @@ impl Shared {
             entry.stt_at = Some(at);
         }
         if let Some(debug) = &self.turn_debug {
-            debug.note_stt(turn, &text);
+            debug.note_stt(turn, &text, language);
         }
-        self.emit(LoopEvent::User { turn, text });
+        self.emit(LoopEvent::User {
+            turn,
+            text,
+            language: language.to_string(),
+        });
     }
 
     fn mark_llm_start(&self, turn: TurnId, at: Instant) {
@@ -783,13 +789,19 @@ fn stt_loop<S: Stt>(
                     Ok(transcript) => {
                         if is_blank_stt(&transcript.text) {
                             if let Some(debug) = &shared.turn_debug {
-                                debug.note_stt(transcript.turn, &transcript.text);
+                                debug.note_stt(
+                                    transcript.turn,
+                                    &transcript.text,
+                                    &transcript.language,
+                                );
                             }
                             shared.note_skip(transcript.turn, cancel);
                         } else {
+                            let language = transcript.language.clone();
                             shared.note_user(
                                 transcript.turn,
                                 transcript.text.clone(),
+                                &language,
                                 Instant::now(),
                             );
                             ignore_cancel(tx.send_cancellable(transcript, cancel), shared, cancel);

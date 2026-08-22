@@ -60,6 +60,7 @@ struct TurnDump {
     tts_chunks: usize,
     capture_frames: usize,
     stt_text: Option<String>,
+    stt_language: Option<String>,
     llm_text: String,
     timings: Option<TurnTimings>,
     written: bool,
@@ -106,10 +107,12 @@ impl TurnDebug {
         dump.utterance_frames = utterance.frames.len();
     }
 
-    /// STT hypothesis.
-    pub fn note_stt(&self, turn: TurnId, text: &str) {
+    /// STT hypothesis and its effective language code.
+    pub fn note_stt(&self, turn: TurnId, text: &str, language: &str) {
         let mut inner = self.lock();
-        inner.turns.entry(turn.0).or_default().stt_text = Some(text.to_string());
+        let dump = inner.turns.entry(turn.0).or_default();
+        dump.stt_text = Some(text.to_string());
+        dump.stt_language = Some(language.to_string());
     }
 
     /// Full LLM reply (concatenated tokens).
@@ -238,12 +241,14 @@ fn write_pcm(path: &Path, samples: &[i16]) -> Result<()> {
 
 fn render_sidecar(id: u64, outcome: TurnOutcome, dump: &TurnDump) -> String {
     let stt = dump.stt_text.as_deref().unwrap_or("");
+    let stt_language = dump.stt_language.as_deref().unwrap_or("");
     let speak = speak_text_for_tts(&dump.llm_text);
     let timings = dump.timings.unwrap_or_default();
     format!(
-        "{{\n  \"turn\": {id},\n  \"outcome\": {},\n  \"stt_text\": {},\n  \"llm_text\": {},\n  \"tts_speak_text\": {},\n  \"timings\": {{\n    \"stt_ms\": {},\n    \"ttft_ms\": {},\n    \"ttfb_ms\": {},\n    \"total_ms\": {}\n  }},\n  \"capture_samples\": {},\n  \"capture_frames\": {},\n  \"capture_duration_ms\": {},\n  \"clean_samples\": {},\n  \"clean_frames\": {},\n  \"clean_duration_ms\": {},\n  \"utterance_samples\": {},\n  \"utterance_frames\": {},\n  \"utterance_duration_ms\": {},\n  \"tts_samples\": {},\n  \"tts_chunks\": {},\n  \"tts_duration_ms\": {}\n}}\n",
+        "{{\n  \"turn\": {id},\n  \"outcome\": {},\n  \"stt_text\": {},\n  \"stt_language\": {},\n  \"llm_text\": {},\n  \"tts_speak_text\": {},\n  \"timings\": {{\n    \"stt_ms\": {},\n    \"ttft_ms\": {},\n    \"ttfb_ms\": {},\n    \"total_ms\": {}\n  }},\n  \"capture_samples\": {},\n  \"capture_frames\": {},\n  \"capture_duration_ms\": {},\n  \"clean_samples\": {},\n  \"clean_frames\": {},\n  \"clean_duration_ms\": {},\n  \"utterance_samples\": {},\n  \"utterance_frames\": {},\n  \"utterance_duration_ms\": {},\n  \"tts_samples\": {},\n  \"tts_chunks\": {},\n  \"tts_duration_ms\": {}\n}}\n",
         json_string(outcome.as_str()),
         json_string(stt),
+        json_string(stt_language),
         json_string(&dump.llm_text),
         json_string(&speak),
         duration_ms(timings.stt),
@@ -372,7 +377,7 @@ mod tests {
             frames: vec![frame],
         };
         debug.note_utterance(&utterance);
-        debug.note_stt(turn, "hello");
+        debug.note_stt(turn, "hello", "en");
         debug.note_llm(turn, "<think>plan</think> hi **there**".into());
         debug.note_tts(turn, &[9, 8, 7]);
         debug
@@ -394,6 +399,7 @@ mod tests {
         let json = fs::read_to_string(turn_dir.join("turn.json")).unwrap();
         assert!(json.contains("\"outcome\": \"completed\""));
         assert!(json.contains("\"stt_text\": \"hello\""));
+        assert!(json.contains("\"stt_language\": \"en\""));
         assert!(json.contains("\"llm_text\": \"<think>plan</think> hi **there**\""));
         assert!(json.contains("\"tts_speak_text\": \"hi there\""));
         assert!(json.contains("\"stt_ms\": 11"));
@@ -407,12 +413,13 @@ mod tests {
     fn skip_and_cancel_still_write() {
         let dir = unique_dir();
         let debug = TurnDebug::open(&dir).unwrap();
-        debug.note_stt(TurnId(1), "partial");
+        debug.note_stt(TurnId(1), "partial", "fr");
         debug.skip(TurnId(1)).unwrap();
         debug.start_turn(TurnId(2));
         debug.finish_open().unwrap();
         let skipped = fs::read_to_string(dir.join("turn-001").join("turn.json")).unwrap();
         assert!(skipped.contains("skipped"));
+        assert!(skipped.contains("\"stt_language\": \"fr\""));
         let cancelled = fs::read_to_string(dir.join("turn-002").join("turn.json")).unwrap();
         assert!(cancelled.contains("cancelled"));
         debug.finish_open().unwrap();

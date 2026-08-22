@@ -68,19 +68,58 @@ impl SttProvider {
     }
 }
 
-/// whisper.cpp model id for v0.
+/// whisper.cpp model menu. One provider, several GGML sizes; `small` stays
+/// the launch default. `-q5_0` ids are the published quantizations of their
+/// fp16 siblings (`tiny` / `base` are deliberately not offered).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SttModel {
-    /// `small` English / multilingual weights.
+    /// `small` multilingual weights (v0 launch default).
     Small,
+    /// `medium` multilingual weights.
+    Medium,
+    /// `large-v3-turbo` weights.
+    LargeV3Turbo,
+    /// Published `medium` q5_0 quantization.
+    MediumQ5_0,
+    /// Published `large-v3-turbo` q5_0 quantization.
+    LargeV3TurboQ5_0,
 }
 
 impl SttModel {
+    /// Every yaml-selectable id, manifest order.
+    pub const ALL: [SttModel; 5] = [
+        SttModel::Small,
+        SttModel::Medium,
+        SttModel::LargeV3Turbo,
+        SttModel::MediumQ5_0,
+        SttModel::LargeV3TurboQ5_0,
+    ];
+
     /// Config / log name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Small => "small",
+            Self::Medium => "medium",
+            Self::LargeV3Turbo => "large-v3-turbo",
+            Self::MediumQ5_0 => "medium-q5_0",
+            Self::LargeV3TurboQ5_0 => "large-v3-turbo-q5_0",
         }
+    }
+
+    /// Manifest asset id downloaded for this model.
+    pub fn asset_id(self) -> &'static str {
+        match self {
+            Self::Small => "whisper-small",
+            Self::Medium => "whisper-medium",
+            Self::LargeV3Turbo => "whisper-large-v3-turbo",
+            Self::MediumQ5_0 => "whisper-medium-q5_0",
+            Self::LargeV3TurboQ5_0 => "whisper-large-v3-turbo-q5_0",
+        }
+    }
+
+    /// Parse a yaml `pipeline.stt.model` id.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.as_str() == value)
     }
 }
 
@@ -201,5 +240,28 @@ mod tests {
         assert_eq!(SttProvider::WhisperCpp.as_str(), "whisper.cpp");
         assert_eq!(LlmProvider::LlamaCpp.as_str(), "llama.cpp");
         assert_eq!(TtsProvider::Kokoro.as_str(), "kokoro");
+    }
+
+    #[test]
+    fn stt_menu_ids_round_trip() {
+        let ids = [
+            "small",
+            "medium",
+            "large-v3-turbo",
+            "medium-q5_0",
+            "large-v3-turbo-q5_0",
+        ];
+        for (model, id) in SttModel::ALL.into_iter().zip(ids) {
+            assert_eq!(model.as_str(), id);
+            assert_eq!(SttModel::parse(id), Some(model));
+            assert!(SttModel::parse(&format!("{id}-nope")).is_none());
+        }
+        assert!(SttModel::parse("tiny").is_none());
+        assert!(SttModel::parse("base").is_none());
+        assert_eq!(
+            BuiltinDefaults::v0().stt_model,
+            SttModel::Small,
+            "`small` stays the launch default"
+        );
     }
 }

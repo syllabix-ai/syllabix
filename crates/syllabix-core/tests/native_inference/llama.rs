@@ -38,6 +38,7 @@ fn q4_km_gguf_loads_without_segfault() {
     let user = Transcript {
         turn: TurnId(0),
         text: "Say the word hello.".into(),
+        language: "en".into(),
     };
     let chunks = collect(&mut n.llm, &[], &user, &Cancel::new()).expect("generate after load");
     assert!(!chunks.is_empty(), "must stream at least one token chunk");
@@ -62,6 +63,7 @@ fn deterministic_fixture_streams_a_reply() {
     let user = Transcript {
         turn: TurnId(1),
         text: "Reply with the single word ping.".into(),
+        language: "en".into(),
     };
     let chunks = collect(&mut n.llm, &[], &user, &Cancel::new()).expect("stream");
     let text = joined(&chunks);
@@ -85,6 +87,7 @@ fn generate_preserves_configured_turn_history() {
     let first = Transcript {
         turn: TurnId(0),
         text: "My favorite color is teal.".into(),
+        language: "en".into(),
     };
     let first_chunks = collect(&mut n.llm, &[], &first, &Cancel::new()).expect("turn 1");
     let assistant: String = joined(&first_chunks);
@@ -95,6 +98,7 @@ fn generate_preserves_configured_turn_history() {
     let second = Transcript {
         turn: TurnId(1),
         text: "What color did I say?".into(),
+        language: "en".into(),
     };
     let log = n.llm.call_log();
     log.lock().expect("clear").clear();
@@ -117,6 +121,7 @@ fn cancel_aborts_native_generate_within_timeout() {
         turn: TurnId(0),
         text: "Tell a very long story about a river, a mountain, and a forest, with many details."
             .into(),
+        language: "en".into(),
     };
     let cancel = Cancel::new();
     let cancel_thread = cancel.clone();
@@ -210,6 +215,7 @@ fn yaml_qwen_08b_thinking_true_strips_think_for_speech() {
     let user = Transcript {
         turn: TurnId(0),
         text: "Say ping.".into(),
+        language: "en".into(),
     };
     let chunks = collect(&mut llm, &[], &user, &Cancel::new()).expect("thinking generate");
     assert!(!chunks.is_empty());

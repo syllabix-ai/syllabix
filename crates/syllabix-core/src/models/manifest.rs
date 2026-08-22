@@ -75,6 +75,38 @@ impl Manifest {
                     487_601_967,
                 ),
                 asset(
+                    "whisper-medium",
+                    ModelLayer::Stt,
+                    "ggml-medium.bin",
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
+                    "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+                    1_533_763_059,
+                ),
+                asset(
+                    "whisper-large-v3-turbo",
+                    ModelLayer::Stt,
+                    "ggml-large-v3-turbo.bin",
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+                    "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+                    1_624_555_275,
+                ),
+                asset(
+                    "whisper-medium-q5_0",
+                    ModelLayer::Stt,
+                    "ggml-medium-q5_0.bin",
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
+                    "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+                    539_212_467,
+                ),
+                asset(
+                    "whisper-large-v3-turbo-q5_0",
+                    ModelLayer::Stt,
+                    "ggml-large-v3-turbo-q5_0.bin",
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+                    "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+                    574_041_195,
+                ),
+                asset(
                     "qwen3.5-0.8b",
                     ModelLayer::Llm,
                     "Qwen_Qwen3.5-0.8B-Q4_K_M.gguf",
@@ -151,12 +183,22 @@ mod tests {
     fn v0_lists_every_launch_layer() {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
-        assert_eq!(m.assets.len(), 7);
-        assert_eq!(m.asset("silero").unwrap().layer, ModelLayer::Vad);
-        assert_eq!(m.asset("whisper-small").unwrap().layer, ModelLayer::Stt);
+        // Silero + five whisper ids + three GGUFs + Kokoro weights + voice.
+        assert_eq!(m.assets.len(), 11);
+        for model in SttModel::ALL {
+            let asset = m
+                .asset(model.asset_id())
+                .unwrap_or_else(|| panic!("manifest must contain {}", model.asset_id()));
+            assert_eq!(asset.layer, ModelLayer::Stt, "{}", asset.id);
+            assert!(asset.file_name.starts_with("ggml-"), "{}", asset.id);
+        }
         assert_eq!(
-            m.asset("whisper-small").unwrap().file_name,
+            m.asset(SttModel::Small.asset_id()).unwrap().file_name,
             "ggml-small.bin"
+        );
+        assert_eq!(
+            m.asset("whisper-large-v3-turbo-q5_0").unwrap().size_bytes,
+            574_041_195
         );
         assert_eq!(
             m.asset(BuiltinDefaults::v0().llm_model).unwrap().layer,
