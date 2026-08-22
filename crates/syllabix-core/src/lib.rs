@@ -80,7 +80,8 @@ pub use stt::{
     LIBRISPEECH_MIN_WORD_MATCH, STT_LANGUAGE,
 };
 pub use tts::{
-    KokoroTts, KOKORO_ASSET, KOKORO_NATIVE_RATE_HZ, KOKORO_VOICE_ASSET, TTS_ASR_MIN_WORD_MATCH,
+    KokoroTts, QwenTts, KOKORO_ASSET, KOKORO_NATIVE_RATE_HZ, KOKORO_VOICE_ASSET, QWEN_TTS_ASSET,
+    QWEN_TTS_MMPROJ_ASSET, TTS_ASR_MIN_WORD_MATCH,
 };
 pub use turn_debug::{
     prepare_turn_debug_dir, resolve_turn_debug_dir, TurnDebug, TurnOutcome, DEFAULT_TURN_DEBUG_DIR,

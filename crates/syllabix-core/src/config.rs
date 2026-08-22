@@ -49,6 +49,9 @@ pub struct AgentConfig {
     pub llm_base_url: Option<String>,
     /// TTS provider.
     pub tts: TtsProvider,
+    /// TTS language code (`en`). Qwen3-TTS speaks this language; Kokoro
+    /// ignores it (the ONNX voice is fixed).
+    pub tts_language: String,
 }
 
 impl AgentConfig {
@@ -74,6 +77,7 @@ impl AgentConfig {
             thinking: defaults.llm_thinking,
             llm_base_url: None,
             tts: defaults.tts,
+            tts_language: "en".to_string(),
         }
     }
 
@@ -130,6 +134,7 @@ pipeline:
     thinking: {thinking}
 {base_url_line}  tts:
     provider: {tts}
+    language: {tts_language}
 ",
             name = self.name,
             vad = self.vad.as_str(),
@@ -149,6 +154,7 @@ pipeline:
                 .map(|url| format!("    base_url: {url}\n"))
                 .unwrap_or_default(),
             tts = self.tts.as_str(),
+            tts_language = self.tts_language,
         )
     }
 
@@ -256,8 +262,14 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     let llm_base_url = resolve_llm_base_url(llm, llm_provider)?;
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
-    deny_unknown(tts, "pipeline.tts", &["provider"])?;
+    deny_unknown(tts, "pipeline.tts", &["provider", "language"])?;
     let tts_provider = parse_tts(required_string(tts, "pipeline.tts.provider", "provider")?)?;
+    // Row 31: Qwen3-TTS speaks this language; Kokoro ignores it. `auto` is an
+    // STT concept and stays rejected here.
+    let tts_language = match optional_string(tts, "pipeline.tts", "language")? {
+        Some(value) => parse_tts_language(&value)?,
+        None => "en".to_string(),
+    };
 
     Ok(AgentConfig {
         name: name.to_string(),
@@ -274,6 +286,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         thinking,
         llm_base_url,
         tts: tts_provider,
+        tts_language,
     })
 }
 
@@ -402,6 +415,20 @@ fn optional_bool(
     })
 }
 
+fn optional_string(map: &serde_yaml::Mapping, prefix: &str, key: &str) -> Result<Option<String>> {
+    let Some(value) = map.get(key) else {
+        return Ok(None);
+    };
+    value
+        .as_str()
+        .map(|s| s.to_string())
+        .map(Some)
+        .ok_or_else(|| Error::Config {
+            field: format!("{prefix}.{key}"),
+            message: "must be a string".into(),
+        })
+}
+
 fn missing(field: &str) -> Error {
     Error::Config {
         field: field.into(),
@@ -517,7 +544,25 @@ fn resolve_llm_base_url(
 fn parse_tts(value: &str) -> Result<TtsProvider> {
     match value {
         "kokoro" => Ok(TtsProvider::Kokoro),
-        other => Err(unsupported("pipeline.tts.provider", other, "kokoro")),
+        "qwen" => Ok(TtsProvider::Qwen),
+        other => Err(unsupported("pipeline.tts.provider", other, "kokoro, qwen")),
+    }
+}
+
+/// `pipeline.tts.language`: same supported-code vocabulary as STT, but `auto`
+/// is an STT-only concept.
+fn parse_tts_language(value: &str) -> Result<String> {
+    if value == "auto" {
+        return Err(unsupported(
+            "pipeline.tts.language",
+            value,
+            "ISO code (\"auto\" is STT-only)",
+        ));
+    }
+    if is_supported_language(value) {
+        Ok(value.to_string())
+    } else {
+        Err(unsupported("pipeline.tts.language", value, "ISO code"))
     }
 }
 
@@ -848,16 +893,16 @@ pipeline:
 
     #[test]
     fn stt_language_menu_and_auto_parse() {
+        // Scoped to the STT block: `pipeline.tts.language` exists too.
+        let stt_line = "  stt:\n    provider: whisper.cpp\n    model: small\n    language: en";
         for code in ["en", "fr", "de", "es", "ja", "zh", "yue", "haw"] {
-            let yaml = AgentConfig::v0()
-                .to_yaml()
-                .replace("language: en", &format!("language: {code}"));
+            let swapped = stt_line.replace("language: en", &format!("language: {code}"));
+            let yaml = AgentConfig::v0().to_yaml().replace(stt_line, &swapped);
             let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
             assert_eq!(cfg.language, code);
         }
-        let auto = AgentConfig::v0()
-            .to_yaml()
-            .replace("language: en", "language: auto");
+        let swapped = stt_line.replace("language: en", "language: auto");
+        let auto = AgentConfig::v0().to_yaml().replace(stt_line, &swapped);
         assert_eq!(
             AgentConfig::parse_yaml(&auto).unwrap().language,
             LANGUAGE_AUTO
@@ -875,10 +920,53 @@ pipeline:
     fn wrong_provider_is_named() {
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("provider: kokoro", "provider: qwen");
+            .replace("provider: kokoro", "provider: pansori");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.tts.provider"), "{err}");
-        assert!(err.to_string().contains("qwen"), "{err}");
+        assert!(err.to_string().contains("pansori"), "{err}");
+        assert!(err.to_string().contains("kokoro, qwen"), "{err}");
+    }
+
+    #[test]
+    fn qwen_provider_selects_and_defaults_english() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("provider: kokoro", "provider: qwen");
+        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(cfg.tts, TtsProvider::Qwen);
+        assert_eq!(cfg.tts_language, "en");
+        // The zero-config stack stays Kokoro by construction.
+        assert_eq!(AgentConfig::v0().tts, TtsProvider::Kokoro);
+    }
+
+    #[test]
+    fn qwen_tts_language_is_optional_iso_without_auto() {
+        for code in ["en", "fr", "de", "es", "ja", "zh"] {
+            let yaml = AgentConfig::v0()
+                .to_yaml()
+                .replace("provider: kokoro", "provider: qwen")
+                .replace("language: en\n", &format!("language: {code}\n"));
+            let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+            assert_eq!(cfg.tts_language, code);
+        }
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("provider: kokoro", "provider: qwen");
+        assert!(yaml.contains("  tts:\n    provider: qwen\n    language: en"));
+        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(cfg.tts_language, "en");
+
+        for bad in ["auto", "tlh"] {
+            let yaml = AgentConfig::v0().to_yaml().replace(
+                "  tts:\n    provider: kokoro\n    language: en",
+                &format!("  tts:\n    provider: kokoro\n    language: {bad}"),
+            );
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("pipeline.tts.language"),
+                "{bad}: {err}"
+            );
+        }
     }
 
     #[test]

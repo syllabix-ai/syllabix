@@ -27,6 +27,11 @@ mod ffi {
         _private: [u8; 0],
     }
 
+    #[repr(C)]
+    pub struct QwenTtsHandle {
+        _private: [u8; 0],
+    }
+
     extern "C" {
         pub fn syllabix_native_hush_logs();
         pub fn syllabix_native_link_anchor() -> c_int;
@@ -66,6 +71,24 @@ mod ffi {
             token_cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
             token_user: *mut c_void,
         ) -> c_int;
+        pub fn syllabix_qwen_tts_load(
+            model_path: *const c_char,
+            mmproj_path: *const c_char,
+            n_threads: c_int,
+            seed: u32,
+        ) -> *mut QwenTtsHandle;
+        pub fn syllabix_qwen_tts_free(tts: *mut QwenTtsHandle);
+        pub fn syllabix_qwen_tts_synthesize(
+            tts: *mut QwenTtsHandle,
+            text: *const c_char,
+            lang: *const c_char,
+            abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+            abort_user: *mut c_void,
+            out_sample_rate: *mut i32,
+            out_pcm: *mut *mut i16,
+            out_n_samples: *mut i64,
+        ) -> c_int;
+        pub fn syllabix_qwen_tts_pcm_free(pcm: *mut i16);
     }
 }
 
@@ -321,6 +344,117 @@ impl Drop for LlamaContext {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum QwenTtsError {
+    Cancelled,
+    Failed(String),
+}
+
+/// In-process Qwen3-TTS context: backbone GGUF + mmproj through the shared
+/// ggml. One instance synthesizes sentences sequentially; each sentence is an
+/// independent generation on the underlying llama.cpp context.
+pub struct QwenTtsContext {
+    raw: *mut ffi::QwenTtsHandle,
+}
+
+unsafe impl Send for QwenTtsContext {}
+
+impl QwenTtsContext {
+    /// Load the backbone GGUF and mmproj (speech tokenizer). `seed` pins the
+    /// semantic-token sampler; pass a fixed value in tests, `u32::MAX`
+    /// (llama.cpp `LLAMA_DEFAULT_SEED`) for runtime randomness.
+    pub fn load(
+        model_path: impl AsRef<Path>,
+        mmproj_path: impl AsRef<Path>,
+        n_threads: i32,
+        seed: u32,
+    ) -> Result<Self, String> {
+        hush_logs();
+        unsafe { ffi::syllabix_llama_backend_init() };
+        let to_c = |p: &Path| {
+            let s = p
+                .to_str()
+                .ok_or_else(|| format!("path is not valid UTF-8: {}", p.display()))?;
+            CString::new(s).map_err(|_| "path contains an interior NUL".to_string())
+        };
+        let c_model = to_c(model_path.as_ref())?;
+        let c_mmproj = to_c(mmproj_path.as_ref())?;
+        let _ggml = ggml_lock();
+        let raw = unsafe {
+            ffi::syllabix_qwen_tts_load(c_model.as_ptr(), c_mmproj.as_ptr(), n_threads, seed)
+        };
+        if raw.is_null() {
+            return Err(format!(
+                "failed to load Qwen3-TTS at {} (mmproj {})",
+                model_path.as_ref().display(),
+                mmproj_path.as_ref().display()
+            ));
+        }
+        Ok(Self { raw })
+    }
+
+    /// Synthesize one sentence into mono i16 PCM plus its sample rate.
+    ///
+    /// # Safety
+    /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
+    pub unsafe fn synthesize(
+        &mut self,
+        text: &str,
+        lang: &str,
+        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        abort_user: *mut c_void,
+    ) -> Result<(i32, Vec<i16>), QwenTtsError> {
+        if text.is_empty() {
+            return Err(QwenTtsError::Failed("empty speak text".into()));
+        }
+        let c_text =
+            CString::new(text).map_err(|_| QwenTtsError::Failed("text contains NUL".into()))?;
+        let c_lang =
+            CString::new(lang).map_err(|_| QwenTtsError::Failed("language contains NUL".into()))?;
+        let mut rate: i32 = 0;
+        let mut pcm: *mut i16 = std::ptr::null_mut();
+        let mut n_samples: i64 = 0;
+        let _ggml = ggml_lock();
+        let rc = unsafe {
+            ffi::syllabix_qwen_tts_synthesize(
+                self.raw,
+                c_text.as_ptr(),
+                c_lang.as_ptr(),
+                abort,
+                abort_user,
+                &mut rate,
+                &mut pcm,
+                &mut n_samples,
+            )
+        };
+        match rc {
+            0 => {
+                if pcm.is_null() || n_samples <= 0 || rate <= 0 {
+                    return Err(QwenTtsError::Failed(
+                        "native synth returned no audio".into(),
+                    ));
+                }
+                let samples =
+                    unsafe { std::slice::from_raw_parts(pcm, n_samples as usize) }.to_vec();
+                unsafe { ffi::syllabix_qwen_tts_pcm_free(pcm) };
+                Ok((rate, samples))
+            }
+            1 => Err(QwenTtsError::Cancelled),
+            _ => Err(QwenTtsError::Failed("Qwen3-TTS synthesis failed".into())),
+        }
+    }
+}
+
+impl Drop for QwenTtsContext {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _ggml = ggml_lock();
+            unsafe { ffi::syllabix_qwen_tts_free(self.raw) };
+            self.raw = std::ptr::null_mut();
+        }
+    }
+}
+
 struct TokenSink<'a> {
     on_piece: &'a mut dyn FnMut(&str, bool) -> Result<(), LlamaError>,
 }
@@ -424,6 +558,16 @@ mod tests {
             Ok(_) => panic!("missing llama weights should fail"),
         };
         assert!(err.contains("failed to load llama.cpp"));
+    }
+
+    #[test]
+    fn missing_qwen_tts_weights_do_not_load() {
+        let err =
+            match QwenTtsContext::load("/no/such/qwen3-tts.gguf", "/no/such/mmproj.gguf", 1, 0) {
+                Err(err) => err,
+                Ok(_) => panic!("missing Qwen3-TTS weights should fail"),
+            };
+        assert!(err.contains("failed to load Qwen3-TTS"));
     }
 
     #[test]

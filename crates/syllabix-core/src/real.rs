@@ -15,7 +15,7 @@ use crate::models::{Fetcher, ModelCache, Progress};
 use crate::openai::{OpenAiLlm, OpenAiSettings, API_KEY_ENV, PROVIDER_NAME};
 use crate::providers::Llm;
 use crate::stt::WhisperStt;
-use crate::tts::KokoroTts;
+use crate::tts::{KokoroTts, QwenTts};
 use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, Transcript};
 use crate::vad::SileroVad;
 
@@ -56,6 +56,41 @@ impl Llm for LiveLlm {
     }
 }
 
+/// The configured TTS implementation for one live run.
+pub enum LiveTts {
+    /// Kokoro ONNX (launch default).
+    Kokoro(KokoroTts),
+    /// Qwen3-TTS through the shared ggml (row 31).
+    Qwen(QwenTts),
+}
+
+impl crate::providers::Tts for LiveTts {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Kokoro(tts) => tts.name(),
+            Self::Qwen(tts) => tts.name(),
+        }
+    }
+
+    fn model_id(&self) -> Option<&str> {
+        match self {
+            Self::Kokoro(tts) => tts.model_id(),
+            Self::Qwen(tts) => tts.model_id(),
+        }
+    }
+
+    fn synthesize_chunk(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+    ) -> Result<Vec<crate::types::SynthesizedAudio>> {
+        match self {
+            Self::Kokoro(tts) => tts.synthesize_chunk(token, cancel),
+            Self::Qwen(tts) => tts.synthesize_chunk(token, cancel),
+        }
+    }
+}
+
 /// Silero + whisper.cpp + llama.cpp/Kokoro, resolved through the v0 manifest.
 ///
 /// `llm_api_key` carries the already-resolved `SYLLABIX_LLM_API_KEY` value
@@ -68,15 +103,38 @@ pub fn load_real_providers(
     cancel: &Cancel,
     config: &AgentConfig,
     llm_api_key: Option<&Zeroizing<String>>,
-) -> Result<(SileroVad, WhisperStt, LiveLlm, KokoroTts)> {
+) -> Result<(SileroVad, WhisperStt, LiveLlm, LiveTts)> {
     let vad = SileroVad::from_cache(cache, fetcher, progress, cancel)?
         .with_settings(config.vad_settings());
     // Only the selected STT id is fetched; the rest of the menu stays on disk.
     let stt = WhisperStt::from_cache(cache, fetcher, progress, cancel, config.stt_model)?
         .with_language(&config.language)?;
     let llm = build_llm(cache, fetcher, progress, cancel, config, llm_api_key)?;
-    let tts = KokoroTts::from_cache(cache, fetcher, progress, cancel)?;
+    let tts = build_tts(cache, fetcher, progress, cancel, config)?;
     Ok((vad, stt, llm, tts))
+}
+
+/// Build just the TTS slot from config. Only the selected provider's weights
+/// are fetched; the launch default never touches the Qwen GGUFs.
+pub fn build_tts(
+    cache: &ModelCache,
+    fetcher: &dyn Fetcher,
+    progress: &mut dyn Progress,
+    cancel: &Cancel,
+    config: &AgentConfig,
+) -> Result<LiveTts> {
+    match config.tts {
+        crate::TtsProvider::Kokoro => Ok(LiveTts::Kokoro(KokoroTts::from_cache(
+            cache, fetcher, progress, cancel,
+        )?)),
+        crate::TtsProvider::Qwen => Ok(LiveTts::Qwen(QwenTts::from_cache(
+            cache,
+            fetcher,
+            progress,
+            cancel,
+            &config.tts_language,
+        )?)),
+    }
 }
 
 /// Build just the LLM slot from config. The cloud path never touches the

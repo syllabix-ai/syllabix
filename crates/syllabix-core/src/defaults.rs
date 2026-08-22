@@ -147,11 +147,14 @@ impl LlmProvider {
     }
 }
 
-/// The only v0 TTS.
+/// TTS providers. Kokoro stays the launch default; Qwen3-TTS is the row-31
+/// yaml opt-in for LM-based speech (numbers, currency, ten languages).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsProvider {
     /// Kokoro ONNX.
     Kokoro,
+    /// Qwen3-TTS-12Hz through the shared llama.cpp/ggml path.
+    Qwen,
 }
 
 impl TtsProvider {
@@ -159,6 +162,7 @@ impl TtsProvider {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Kokoro => "kokoro",
+            Self::Qwen => "qwen",
         }
     }
 }

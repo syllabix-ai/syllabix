@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -10,6 +11,7 @@ extern "C" {
 
 struct whisper_context;
 struct syllabix_llama;
+struct syllabix_qwen_tts;
 
 void syllabix_native_hush_logs(void);
 
@@ -70,6 +72,32 @@ int syllabix_llama_generate(
     void *abort_user,
     int (*token_cb)(const char *piece, int is_last, void *user),
     void *token_user);
+
+/* Qwen3-TTS (row 31). Backbone GGUF + mmproj through the shared ggml.
+ * Sampling mirrors upstream tools/tts defaults; `seed` pins the fixture. */
+struct syllabix_qwen_tts *syllabix_qwen_tts_load(
+    const char *model_path,
+    const char *mmproj_path,
+    int n_threads,
+    unsigned int seed);
+void syllabix_qwen_tts_free(struct syllabix_qwen_tts *tts);
+
+/*
+ * 0 = ok, 1 = cancelled, -1 = error.
+ * Synthesizes one sentence. `out_pcm` receives malloc'd mono i16
+ * (clipped like the upstream WAV writer); free with
+ * syllabix_qwen_tts_pcm_free. `lang` may be NULL or empty for `en`.
+ */
+int syllabix_qwen_tts_synthesize(
+    struct syllabix_qwen_tts *tts,
+    const char *text,
+    const char *lang,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    int32_t *out_sample_rate,
+    int16_t **out_pcm,
+    int64_t *out_n_samples);
+void syllabix_qwen_tts_pcm_free(int16_t *pcm);
 
 #ifdef __cplusplus
 }

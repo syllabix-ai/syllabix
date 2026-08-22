@@ -160,6 +160,9 @@ struct Shared {
     flush_playback: AtomicBool,
     assistant_turn: Mutex<Option<TurnId>>,
     interrupted: Mutex<HashSet<TurnId>>,
+    /// Sidecar facts captured from the TTS stage before the workers start.
+    tts_provider: &'static str,
+    tts_model: Option<String>,
 }
 
 impl Shared {
@@ -167,6 +170,8 @@ impl Shared {
         events: Option<Sender<LoopEvent>>,
         turn_debug: Option<TurnDebug>,
         barge_in: bool,
+        tts_provider: &'static str,
+        tts_model: Option<String>,
     ) -> Arc<Self> {
         Arc::new(Self {
             turns: Mutex::new(BTreeMap::new()),
@@ -181,6 +186,8 @@ impl Shared {
             flush_playback: AtomicBool::new(false),
             assistant_turn: Mutex::new(None),
             interrupted: Mutex::new(HashSet::new()),
+            tts_provider,
+            tts_model,
         })
     }
 
@@ -328,7 +335,12 @@ impl Shared {
 
     fn note_audio(&self, chunk: &SynthesizedAudio, at: Instant, cancel: &Cancel) -> usize {
         if let Some(debug) = &self.turn_debug {
-            debug.note_tts(chunk.turn, &chunk.samples);
+            debug.note_tts(
+                chunk.turn,
+                &chunk.samples,
+                self.tts_provider,
+                self.tts_model.as_deref(),
+            );
         }
         let timings = {
             let mut map = self.turns.lock().expect("turn accumulator");
@@ -512,6 +524,8 @@ where
         tts,
         mut sink,
     } = stages;
+    let tts_provider = tts.name();
+    let tts_model = tts.model_id().map(str::to_string);
     let caps: QueueCaps = config.defaults.queues;
     let (frame_tx, frame_rx, frame_stats) = bounded("frames", caps.frames);
     let (utt_tx, utt_rx, utt_stats) = bounded("utterances", caps.utterances);
@@ -523,6 +537,8 @@ where
         config.events.clone(),
         config.turn_debug.clone(),
         config.barge_in,
+        tts_provider,
+        tts_model,
     );
     let mut joins: Vec<JoinHandle<()>> = Vec::new();
 

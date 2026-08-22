@@ -63,6 +63,8 @@ struct TurnDump {
     stt_language: Option<String>,
     llm_text: String,
     llm_meta: Option<LlmDebugMeta>,
+    tts_provider: Option<String>,
+    tts_model: Option<String>,
     timings: Option<TurnTimings>,
     written: bool,
 }
@@ -130,12 +132,15 @@ impl TurnDebug {
         inner.turns.entry(turn.0).or_default().llm_meta = Some(meta);
     }
 
-    /// PCM actually handed to the sink.
-    pub fn note_tts(&self, turn: TurnId, samples: &[i16]) {
+    /// PCM actually handed to the sink, plus the TTS provider facts for the
+    /// sidecar (provider and loaded weight id).
+    pub fn note_tts(&self, turn: TurnId, samples: &[i16], provider: &str, model: Option<&str>) {
         let mut inner = self.lock();
         let dump = inner.turns.entry(turn.0).or_default();
         dump.tts.extend_from_slice(samples);
         dump.tts_chunks += 1;
+        dump.tts_provider = Some(provider.to_string());
+        dump.tts_model = model.map(str::to_string);
     }
 
     /// Last audio chunk played; write the dump as completed.
@@ -256,7 +261,7 @@ fn render_sidecar(id: u64, outcome: TurnOutcome, dump: &TurnDump) -> String {
     let default_meta = LlmDebugMeta::default();
     let meta = dump.llm_meta.as_ref().unwrap_or(&default_meta);
     format!(
-        "{{\n  \"turn\": {id},\n  \"outcome\": {},\n  \"stt_text\": {},\n  \"stt_language\": {},\n  \"llm_text\": {},\n  \"llm_provider\": {},\n  \"llm_model\": {},\n  \"llm_endpoint\": {},\n  \"llm_request_id\": {},\n  \"tts_speak_text\": {},\n  \"timings\": {{\n    \"stt_ms\": {},\n    \"ttft_ms\": {},\n    \"ttfb_ms\": {},\n    \"total_ms\": {}\n  }},\n  \"capture_samples\": {},\n  \"capture_frames\": {},\n  \"capture_duration_ms\": {},\n  \"clean_samples\": {},\n  \"clean_frames\": {},\n  \"clean_duration_ms\": {},\n  \"utterance_samples\": {},\n  \"utterance_frames\": {},\n  \"utterance_duration_ms\": {},\n  \"tts_samples\": {},\n  \"tts_chunks\": {},\n  \"tts_duration_ms\": {}\n}}\n",
+        "{{\n  \"turn\": {id},\n  \"outcome\": {},\n  \"stt_text\": {},\n  \"stt_language\": {},\n  \"llm_text\": {},\n  \"llm_provider\": {},\n  \"llm_model\": {},\n  \"llm_endpoint\": {},\n  \"llm_request_id\": {},\n  \"tts_provider\": {},\n  \"tts_model\": {},\n  \"tts_speak_text\": {},\n  \"timings\": {{\n    \"stt_ms\": {},\n    \"ttft_ms\": {},\n    \"ttfb_ms\": {},\n    \"total_ms\": {}\n  }},\n  \"capture_samples\": {},\n  \"capture_frames\": {},\n  \"capture_duration_ms\": {},\n  \"clean_samples\": {},\n  \"clean_frames\": {},\n  \"clean_duration_ms\": {},\n  \"utterance_samples\": {},\n  \"utterance_frames\": {},\n  \"utterance_duration_ms\": {},\n  \"tts_samples\": {},\n  \"tts_chunks\": {},\n  \"tts_duration_ms\": {}\n}}\n",
         json_string(outcome.as_str()),
         json_string(stt),
         json_string(stt_language),
@@ -265,6 +270,8 @@ fn render_sidecar(id: u64, outcome: TurnOutcome, dump: &TurnDump) -> String {
         json_string(&meta.model),
         json_string(&meta.endpoint),
         json_string(&meta.request_id),
+        json_string(dump.tts_provider.as_deref().unwrap_or("")),
+        json_string(dump.tts_model.as_deref().unwrap_or("")),
         json_string(&speak),
         duration_ms(timings.stt),
         duration_ms(timings.ttft),
@@ -394,7 +401,7 @@ mod tests {
         debug.note_utterance(&utterance);
         debug.note_stt(turn, "hello", "en");
         debug.note_llm(turn, "<think>plan</think> hi **there**".into());
-        debug.note_tts(turn, &[9, 8, 7]);
+        debug.note_tts(turn, &[9, 8, 7], "kokoro", Some("kokoro"));
         debug
             .complete(
                 turn,
@@ -446,10 +453,16 @@ mod tests {
         let dir = unique_dir();
         let debug = TurnDebug::open(&dir).unwrap();
         debug.start_turn(TurnId(0));
-        debug.note_tts(TurnId(0), &[1, 2, 3]);
+        debug.note_tts(TurnId(0), &[1, 2, 3], "qwen", Some("qwen3-tts-1.7b-base"));
         debug.interrupt(TurnId(0)).unwrap();
         let json = fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
         assert!(json.contains("cancelled"));
+        // Row 31: TTS provider facts ride the same sidecar as the LLM's.
+        assert!(json.contains("\"tts_provider\": \"qwen\""), "{json}");
+        assert!(
+            json.contains("\"tts_model\": \"qwen3-tts-1.7b-base\""),
+            "{json}"
+        );
         let wav = read_wav(Cursor::new(
             fs::read(dir.join("turn-000").join("tts.wav")).unwrap(),
         ))

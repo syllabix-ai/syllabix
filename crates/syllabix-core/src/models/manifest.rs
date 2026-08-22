@@ -146,6 +146,22 @@ impl Manifest {
                     "d583ccff3cdca2f7fae535cb998ac07e9fcb90f09737b9a41fa2734ec44a8f0b",
                     522_240,
                 ),
+                asset(
+                    "qwen3-tts",
+                    ModelLayer::Tts,
+                    "Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf",
+                    "https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/resolve/main/Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf",
+                    "8d18c94acb2addd042f97da63c98be144eafa76d0d9495177eab65130cf85129",
+                    1_035_965_280,
+                ),
+                asset(
+                    "qwen3-tts-mmproj",
+                    ModelLayer::Tts,
+                    "mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
+                    "https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/resolve/main/mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
+                    "6fd65188839bcd6ecc91b277ad471e22a0edfada4699a0fe82f1165c18cfcce2",
+                    446_422_912,
+                ),
             ],
         }
     }
@@ -183,8 +199,9 @@ mod tests {
     fn v0_lists_every_launch_layer() {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
-        // Silero + five whisper ids + three GGUFs + Kokoro weights + voice.
-        assert_eq!(m.assets.len(), 11);
+        // Silero + five whisper ids + three GGUFs + Kokoro weights + voice
+        // + Qwen3-TTS backbone + mmproj.
+        assert_eq!(m.assets.len(), 13);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -208,6 +225,12 @@ mod tests {
         assert_eq!(m.asset("llama-3.2-1b").unwrap().layer, ModelLayer::Llm);
         assert_eq!(m.asset("kokoro").unwrap().layer, ModelLayer::Tts);
         assert_eq!(m.asset("kokoro-voice").unwrap().layer, ModelLayer::Tts);
+        assert_eq!(m.asset("qwen3-tts").unwrap().layer, ModelLayer::Tts);
+        assert_eq!(m.asset("qwen3-tts-mmproj").unwrap().layer, ModelLayer::Tts);
+        assert_eq!(
+            m.asset("qwen3-tts").unwrap().sha256,
+            "8d18c94acb2addd042f97da63c98be144eafa76d0d9495177eab65130cf85129"
+        );
         assert!(m.asset("missing").is_none());
         assert_eq!(SttModel::Small.as_str(), "small");
         for asset in &m.assets {

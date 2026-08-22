@@ -9,6 +9,8 @@ mod kokoro;
 #[cfg(not(coverage))]
 mod llama;
 #[cfg(not(coverage))]
+mod qwen;
+#[cfg(not(coverage))]
 mod real_loop;
 #[cfg(not(coverage))]
 mod whisper;

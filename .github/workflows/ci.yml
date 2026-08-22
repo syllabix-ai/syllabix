@@ -27,6 +27,9 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
   SYLLABIX_CACHE_DIR: ${{ github.workspace }}/.syllabix-cache
+  # Self-hosted macOS runners ship Homebrew Rust; rustup-init otherwise
+  # refuses to install the pinned toolchain over it.
+  RUSTUP_INIT_SKIP_PATH_CHECK: yes
 
 jobs:
   # Fast per-PR gate. OS-agnostic, runs on the self-hosted macOS runner
@@ -34,7 +37,12 @@ jobs:
   coverage:
     name: code coverage
     runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
-    timeout-minutes: 15
+    # Warm runs finish in ~3 min (2m03s instrumented compile + tests). The
+    # budget is headroom for a cold instrumented build (vendored C++ + all
+    # deps) after a runner restart or a target wipe. The earlier 15/20-minute
+    # reds were the rust-cache save upload, not compile time — see the gate
+    # on that step below.
+    timeout-minutes: 20
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     steps:
       # Use the PR head so reported lines map to the submitted diff.
@@ -50,10 +58,9 @@ jobs:
       - name: Ensure CMake (no-op when preinstalled on the runner)
         if: runner.os == 'macOS'
         run: command -v cmake || brew install cmake
-      - uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
+      # No model-weights cache here: cfg(coverage) never loads weights (all
+      # native modules are gated off in native_inference), so nothing can
+      # fill .syllabix-cache. weekly.yml keeps its cache for real inference.
       # Keep cargo-llvm-cov aligned with DEVELOPMENT.md and local verification.
       # `--cfg coverage` skips whisper.cpp / llama.cpp / Kokoro weight loads.
       - uses: taiki-e/install-action@v2
@@ -61,10 +68,20 @@ jobs:
           tool: cargo-llvm-cov@0.6.21
       # Coverage now runs on macOS (self-hosted) instead of hosted Linux; the
       # Linux baseline is re-checked weekly in weekly.yml (coverage-linux).
+      # Cache only when dispatched to the hosted pool. The self-hosted runner
+      # keeps target/ on disk between runs, so restore always missed ("No
+      # cache found") — while every green job uploaded ~/.cargo + ~1.1 GB of
+      # target/ over the home uplink (~17 min) until the job timeout killed
+      # it and turned the run red. Hosted runners are ephemeral, so there the
+      # cache is the compile-time win it is designed to be.
       - uses: Swatinem/rust-cache@v2
+        if: contains(inputs.pool || '', 'ubuntu-latest')
       - name: Run unit tests with coverage
         run: cargo llvm-cov --workspace --fail-under-lines 85 --cobertura --output-path coverage.xml
       - name: Store coverage report
+        # Best-effort evidence: the >=85% gate is enforced by the run step
+        # above, so a stalled artifact upload must not fail a green run.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: coverage-cobertura
@@ -85,8 +102,13 @@ jobs:
 
   clippy:
     name: clippy
+    # Serialize behind coverage: both jobs compile the whole workspace, and
+    # co-scheduling them on one self-hosted box starves clippy past its
+    # timeout. Running second also reuses the warm target dir the coverage
+    # build left on the self-hosted disk.
+    needs: coverage
     runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     steps:
       - uses: actions/checkout@v6
@@ -99,7 +121,11 @@ jobs:
       - name: Ensure CMake (no-op when preinstalled on the runner)
         if: runner.os == 'macOS'
         run: command -v cmake || brew install cmake
+      # Same gate as the coverage job: the cache is for ephemeral hosted
+      # runners; on self-hosted its save step alone cost ~17 min per green
+      # job and timed the run out.
       - uses: Swatinem/rust-cache@v2
+        if: contains(inputs.pool || '', 'ubuntu-latest')
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # The cross-platform test matrix (linux/windows/macos + Intel cross-build)

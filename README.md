@@ -77,10 +77,13 @@ pipeline:
     model: gpt-4o-mini                        # any id the endpoint serves
     base_url: https://api.openai.com/v1       # required for online
   tts:
-    provider: kokoro
+    provider: kokoro                          # kokoro (default) | qwen
+    language: en                              # optional; Qwen3-TTS voice language
 ```
 
 Endpoint examples: `https://api.openai.com/v1` (OpenAI), `https://api.groq.com/openai/v1` (Groq), `http://127.0.0.1:11434/v1` (Ollama), or any vLLM / llama-server URL. Nothing is defaulted for you: `online` without an explicit `base_url` fails at config load, and `local` rejects the field.
+
+**TTS providers:** `kokoro` (default, ~310 MB ONNX) and `qwen` (opt-in). `provider: qwen` speaks through the same local llama.cpp/ggml runtime as the LLM using Apache-2.0 [Qwen3-TTS-12Hz-1.7B-Base](https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF) weights (~1.5 GB with its speech tokenizer, fetched on first use only when selected). It is LM-based, so it reads numbers and currency the way a listener expects (`100` → "one hundred"), and `tts.language` selects among ten languages (en, zh, de, it, pt, es, fr, ja, ko, ru). Kokoro stays the zero-config default.
 
 - **The API key comes from the environment only:** it is never read from `syllabix.yaml` or a `.env` file, so project folders stay shareable and secret-free. Two ways to supply it:
 
