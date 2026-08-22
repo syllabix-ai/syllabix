@@ -124,16 +124,25 @@ pub fn build_tts(
     config: &AgentConfig,
 ) -> Result<LiveTts> {
     match config.tts {
-        crate::TtsProvider::Kokoro => Ok(LiveTts::Kokoro(KokoroTts::from_cache(
-            cache, fetcher, progress, cancel,
-        )?)),
-        crate::TtsProvider::Qwen => Ok(LiveTts::Qwen(QwenTts::from_cache(
-            cache,
-            fetcher,
-            progress,
-            cancel,
-            &config.tts_language,
-        )?)),
+        crate::TtsProvider::Local => match config.tts_model {
+            crate::TtsModel::Kokoro => Ok(LiveTts::Kokoro(KokoroTts::from_cache(
+                cache, fetcher, progress, cancel,
+            )?)),
+            qwen => Ok(LiveTts::Qwen(QwenTts::from_cache(
+                cache,
+                fetcher,
+                progress,
+                cancel,
+                &config.tts_language,
+                qwen,
+            )?)),
+        },
+        // Config parsing rejects `online`; this arm keeps the builder total
+        // for hand-built configs and states the posture contract.
+        crate::TtsProvider::Online => Err(Error::Config {
+            field: "pipeline.tts.provider".into(),
+            message: "online TTS is not supported yet; use provider \"local\"".into(),
+        }),
     }
 }
 

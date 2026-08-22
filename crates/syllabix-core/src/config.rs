@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_yaml::Value;
 
 use crate::defaults::{
-    BuiltinDefaults, LlmProvider, SttModel, SttProvider, TtsProvider, VadProvider,
+    BuiltinDefaults, LlmProvider, SttModel, SttProvider, TtsModel, TtsProvider, VadProvider,
 };
 use crate::error::{Error, Result};
 use crate::language::is_supported as is_supported_language;
@@ -47,8 +47,10 @@ pub struct AgentConfig {
     /// `provider: online`, forbidden for `provider: local`; the API key never
     /// lives here.
     pub llm_base_url: Option<String>,
-    /// TTS provider.
+    /// TTS provider (`local`; `online` is reserved and fails fast today).
     pub tts: TtsProvider,
+    /// TTS model id (`kokoro`, `qwen3-0.6`, or `qwen3-1.7`).
+    pub tts_model: TtsModel,
     /// TTS language code (`en`). Qwen3-TTS speaks this language; Kokoro
     /// ignores it (the ONNX voice is fixed).
     pub tts_language: String,
@@ -77,6 +79,7 @@ impl AgentConfig {
             thinking: defaults.llm_thinking,
             llm_base_url: None,
             tts: defaults.tts,
+            tts_model: defaults.tts_model,
             tts_language: "en".to_string(),
         }
     }
@@ -134,6 +137,7 @@ pipeline:
     thinking: {thinking}
 {base_url_line}  tts:
     provider: {tts}
+    model: {tts_model}
     language: {tts_language}
 ",
             name = self.name,
@@ -154,6 +158,7 @@ pipeline:
                 .map(|url| format!("    base_url: {url}\n"))
                 .unwrap_or_default(),
             tts = self.tts.as_str(),
+            tts_model = self.tts_model.as_str(),
             tts_language = self.tts_language,
         )
     }
@@ -262,8 +267,15 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     let llm_base_url = resolve_llm_base_url(llm, llm_provider)?;
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
-    deny_unknown(tts, "pipeline.tts", &["provider", "language"])?;
+    deny_unknown(tts, "pipeline.tts", &["provider", "model", "language"])?;
+    // Row 32: TTS adopts the row-30 posture words — `local` runs weights
+    // in-process, `online` is reserved vocabulary and fails fast until a
+    // cloud TTS row exists.
     let tts_provider = parse_tts(required_string(tts, "pipeline.tts.provider", "provider")?)?;
+    let tts_model = parse_tts_model(
+        tts_provider,
+        required_string(tts, "pipeline.tts.model", "model")?,
+    )?;
     // Row 31: Qwen3-TTS speaks this language; Kokoro ignores it. `auto` is an
     // STT concept and stays rejected here.
     let tts_language = match optional_string(tts, "pipeline.tts", "language")? {
@@ -286,6 +298,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         thinking,
         llm_base_url,
         tts: tts_provider,
+        tts_model,
         tts_language,
     })
 }
@@ -543,9 +556,29 @@ fn resolve_llm_base_url(
 
 fn parse_tts(value: &str) -> Result<TtsProvider> {
     match value {
-        "kokoro" => Ok(TtsProvider::Kokoro),
-        "qwen" => Ok(TtsProvider::Qwen),
-        other => Err(unsupported("pipeline.tts.provider", other, "kokoro, qwen")),
+        "local" => Ok(TtsProvider::Local),
+        "online" => Err(Error::Config {
+            field: "pipeline.tts.provider".into(),
+            message: "online TTS is not supported yet (weights never leave the machine today); \
+                      use provider \"local\""
+                .into(),
+        }),
+        other => Err(unsupported("pipeline.tts.provider", other, "local")),
+    }
+}
+
+/// `pipeline.tts.model`: the local weight menu. `kokoro` is the launch
+/// default; the two Qwen3-TTS ids fetch their GGUF on first use only.
+fn parse_tts_model(provider: TtsProvider, value: &str) -> Result<TtsModel> {
+    match provider {
+        TtsProvider::Local => TtsModel::parse(value).ok_or_else(|| {
+            unsupported("pipeline.tts.model", value, "kokoro, qwen3-0.6, qwen3-1.7")
+        }),
+        // parse_tts already rejected `online`; this arm keeps the type total.
+        TtsProvider::Online => Err(Error::Config {
+            field: "pipeline.tts.provider".into(),
+            message: "online TTS is not supported yet; use provider \"local\"".into(),
+        }),
     }
 }
 
@@ -597,6 +630,7 @@ mod tests {
         assert!(yaml.contains("language: en"));
         assert!(yaml.contains("model: llama-3.2-1b"));
         assert!(yaml.contains("thinking: false"));
+        assert!(yaml.contains("model: kokoro"));
         assert!(yaml.contains("threshold: 0.5"));
         assert!(yaml.contains("min_speech_ms: 100"));
         assert!(yaml.contains("end_silence_ms: 350"));
@@ -674,7 +708,8 @@ pipeline:
     provider: local
     model: llama-3.2-1b
   tts:
-    provider: kokoro
+    provider: local
+    model: kokoro
 "#;
         assert_eq!(AgentConfig::parse_yaml(yaml).unwrap(), AgentConfig::v0());
     }
@@ -732,7 +767,8 @@ pipeline:
     model: "{model}"
     base_url: {base_url}
   tts:
-    provider: kokoro
+    provider: local
+    model: kokoro
 "#
         )
     }
@@ -852,7 +888,8 @@ pipeline:
     provider: local
     model: qwen3.5-2b
   tts:
-    provider: kokoro
+    provider: local
+    model: kokoro
 "#;
         let err = AgentConfig::parse_yaml(yaml).unwrap_err();
         assert_eq!(err.to_string(), "pipeline.stt.language: missing field");
@@ -918,25 +955,72 @@ pipeline:
 
     #[test]
     fn wrong_provider_is_named() {
-        let yaml = AgentConfig::v0()
-            .to_yaml()
-            .replace("provider: kokoro", "provider: pansori");
+        let yaml = AgentConfig::v0().to_yaml().replace(
+            "  tts:\n    provider: local",
+            "  tts:\n    provider: pansori",
+        );
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.tts.provider"), "{err}");
         assert!(err.to_string().contains("pansori"), "{err}");
-        assert!(err.to_string().contains("kokoro, qwen"), "{err}");
+        assert!(err.to_string().contains("local"), "{err}");
     }
 
     #[test]
-    fn qwen_provider_selects_and_defaults_english() {
-        let yaml = AgentConfig::v0()
-            .to_yaml()
-            .replace("provider: kokoro", "provider: qwen");
-        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
-        assert_eq!(cfg.tts, TtsProvider::Qwen);
-        assert_eq!(cfg.tts_language, "en");
-        // The zero-config stack stays Kokoro by construction.
-        assert_eq!(AgentConfig::v0().tts, TtsProvider::Kokoro);
+    fn tts_model_menu_parses_and_rejects_unknown_ids() {
+        for model in TtsModel::ALL {
+            let yaml = AgentConfig::v0().to_yaml().replace(
+                "model: kokoro\n    language",
+                &format!("model: {}\n    language", model.as_str()),
+            );
+            let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+            assert_eq!(cfg.tts_model, model);
+        }
+        for bad in ["qwen", "neutts", "large"] {
+            let yaml = AgentConfig::v0()
+                .to_yaml()
+                .replace("model: kokoro", &format!("model: {bad}"));
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("pipeline.tts.model"),
+                "{bad}: {err}"
+            );
+            assert!(err.to_string().contains(bad), "{bad}: {err}");
+        }
+        // The retired row-31 engine names are providers no more; the error
+        // points at the new key.
+        for legacy in ["kokoro", "qwen"] {
+            let yaml = AgentConfig::v0().to_yaml().replace(
+                "  tts:\n    provider: local",
+                &format!("  tts:\n    provider: {legacy}"),
+            );
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("pipeline.tts.provider"),
+                "{legacy}: {err}"
+            );
+            assert!(err.to_string().contains("local"), "{legacy}: {err}");
+        }
+    }
+
+    #[test]
+    fn online_tts_fails_fast_with_the_posture_hint() {
+        let yaml = AgentConfig::v0().to_yaml().replace(
+            "  tts:\n    provider: local",
+            "  tts:\n    provider: online",
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.tts.provider"), "{err}");
+        assert!(err.to_string().contains("not supported yet"), "{err}");
+        // Even a valid model id cannot sneak through an unsupported posture.
+        let yaml = yaml.replace("model: kokoro", "model: qwen3-0.6");
+        assert!(AgentConfig::parse_yaml(&yaml).is_err());
+    }
+
+    #[test]
+    fn zero_config_stays_kokoro_by_construction() {
+        let cfg = AgentConfig::v0();
+        assert_eq!(cfg.tts, TtsProvider::Local);
+        assert_eq!(cfg.tts_model, TtsModel::Kokoro);
     }
 
     #[test]
@@ -944,22 +1028,25 @@ pipeline:
         for code in ["en", "fr", "de", "es", "ja", "zh"] {
             let yaml = AgentConfig::v0()
                 .to_yaml()
-                .replace("provider: kokoro", "provider: qwen")
+                .replace("model: kokoro", "model: qwen3-0.6")
                 .replace("language: en\n", &format!("language: {code}\n"));
             let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+            assert_eq!(cfg.tts_model, TtsModel::Qwen06);
             assert_eq!(cfg.tts_language, code);
         }
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("provider: kokoro", "provider: qwen");
-        assert!(yaml.contains("  tts:\n    provider: qwen\n    language: en"));
+            .replace("model: kokoro", "model: qwen3-1.7");
+        assert!(
+            yaml.contains("  tts:\n    provider: local\n    model: qwen3-1.7\n    language: en")
+        );
         let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
         assert_eq!(cfg.tts_language, "en");
 
         for bad in ["auto", "tlh"] {
             let yaml = AgentConfig::v0().to_yaml().replace(
-                "  tts:\n    provider: kokoro\n    language: en",
-                &format!("  tts:\n    provider: kokoro\n    language: {bad}"),
+                "  tts:\n    provider: local\n    model: kokoro\n    language: en",
+                &format!("  tts:\n    provider: local\n    model: kokoro\n    language: {bad}"),
             );
             let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
             assert!(
@@ -1057,7 +1144,7 @@ pipeline:
     fn non_string_provider_is_field_level() {
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("provider: kokoro", "provider: 1");
+            .replace("  tts:\n    provider: local", "  tts:\n    provider: 1");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.tts.provider"), "{err}");
         assert!(err.to_string().contains("must be a string"), "{err}");

@@ -2913,8 +2913,16 @@ struct clip_model_loader {
             case PROJECTOR_TYPE_QWEN3TTS_GEN:
                 {
                     // code_predictor
-                    model.gen_code_proj_in_w = get_tensor(string_format(TN_A_GEN_CODE_PROJ_IN, "weight"));
-                    model.gen_code_proj_in_b = get_tensor(string_format(TN_A_GEN_CODE_PROJ_IN, "bias"));
+                    // Syllabix local patch (sequence 32): proj_in is
+                    // optional. The gen graph null-guards both tensors
+                    // (identity passthrough in code_gen::project_in); the
+                    // 0.6B backbone conversion omits them because talker
+                    // hidden size == predictor hidden size. Loading them as
+                    // required fails every 0.6B mmproj with "unable to find
+                    // tensor a.gen.code.proj_in.weight". Keep when bumping
+                    // the pin; drop once upstream makes these optional.
+                    model.gen_code_proj_in_w = get_tensor(string_format(TN_A_GEN_CODE_PROJ_IN, "weight"), /*required=*/false);
+                    model.gen_code_proj_in_b = get_tensor(string_format(TN_A_GEN_CODE_PROJ_IN, "bias"), /*required=*/false);
                     model.gen_code_embd_w     = get_tensor(string_format(TN_A_GEN_CODE_EMBD,     "weight"));
                     model.gen_code_head_w     = get_tensor(string_format(TN_A_GEN_CODE_HEAD,     "weight"));
                     model.gen_code_out_embd_w = get_tensor(string_format(TN_A_GEN_CODE_OUT_EMBD, "weight"));

@@ -13,10 +13,12 @@
 # For a remote LLM use `provider: online` with a required `base_url`
 # (OpenAI, Groq, Ollama, vLLM, llama-server); the key comes from the
 # SYLLABIX_LLM_API_KEY environment variable — never from this file.
-# TTS: kokoro is the default. `provider: qwen` opts into LM-based speech
-# (reads "100" as words; ten languages) through the same local ggml path;
-# optional `language:` sets the voice language (en, zh, de, fr, es, pt, it,
-# ja, ko, ru). Weights fetch on first use only when selected.
+# TTS uses the same posture words as the LLM: `provider: local` runs weights
+# in-process. `model:` picks the voice engine — kokoro (default) or
+# `qwen3-0.6` / `qwen3-1.7`, LM-based speech that reads "100" as words in ten
+# languages (en, zh, de, fr, es, pt, it, ja, ko, ru). Optional `language:`
+# sets the qwen voice language. Weights fetch on first use only when
+# selected; `provider: online` is reserved for a future cloud TTS row.
 name: demo-agent
 pipeline:
   vad:
@@ -29,4 +31,5 @@ pipeline:
     provider: local
     model: llama-3.2-1b
   tts:
-    provider: kokoro
+    provider: local
+    model: kokoro

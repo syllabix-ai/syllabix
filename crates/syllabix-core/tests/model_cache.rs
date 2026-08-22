@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use sha2::{Digest, Sha256};
 use syllabix_core::{
     BlockedFetcher, Cancel, Fetcher, Manifest, ModelAsset, ModelCache, ModelLayer, NoProgress,
-    Result,
+    Result, TtsModel,
 };
 
 struct BytesFetcher {
@@ -185,7 +185,7 @@ fn resolving_one_llm_id_does_not_fetch_the_other() {
 #[test]
 fn v0_manifest_is_complete() {
     let m = Manifest::v0();
-    assert_eq!(m.assets.len(), 13);
+    assert_eq!(m.assets.len(), 15);
     assert!(m.asset("silero").is_some());
     assert!(m.asset("whisper-small").is_some());
     assert!(m.asset("whisper-medium").is_some());
@@ -197,7 +197,22 @@ fn v0_manifest_is_complete() {
     assert!(m.asset("llama-3.2-1b").is_some());
     assert!(m.asset("kokoro").is_some());
     assert!(m.asset("kokoro-voice").is_some());
-    // Row 31: fetched only when `tts.provider: qwen` is selected.
+    // Row 31: fetched only when the qwen TTS model is selected.
     assert!(m.asset("qwen3-tts").is_some());
+    // Row 32: the 0.6B backbone pairs with its own projector (the mmproj
+    // embeds the projection into each LM's embedding space).
     assert!(m.asset("qwen3-tts-mmproj").is_some());
+    assert!(m.asset("qwen3-tts-06b").is_some());
+    assert!(m.asset("qwen3-tts-06b-mmproj").is_some());
+}
+
+#[test]
+fn tts_model_menu_maps_to_manifest_assets() {
+    let m = Manifest::v0();
+    for model in TtsModel::ALL {
+        let asset = m
+            .asset(model.asset_id())
+            .unwrap_or_else(|| panic!("manifest must contain {}", model.asset_id()));
+        assert_eq!(asset.layer, ModelLayer::Tts, "{}", asset.id);
+    }
 }
