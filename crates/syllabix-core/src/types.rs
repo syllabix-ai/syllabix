@@ -164,6 +164,22 @@ pub struct HistoryTurn {
     pub assistant: String,
 }
 
+/// Provider facts for `--turn-debug` sidecars.
+///
+/// `endpoint` and `request_id` are empty for the local llama.cpp provider;
+/// they identify the cloud endpoint and response for row 30 (`openai`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LlmDebugMeta {
+    /// Config name of the provider (`llama.cpp`, `openai`).
+    pub provider: String,
+    /// Model id used for this run (GGUF asset id or served model name).
+    pub model: String,
+    /// Absolute chat-completions URL when the provider is remote.
+    pub endpoint: String,
+    /// Provider response id for the last completed request, when reported.
+    pub request_id: String,
+}
+
 /// One finished user+assistant cycle collected by the in-memory loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletedTurn {

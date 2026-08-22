@@ -1,4 +1,5 @@
-//! Built-in on-device stack. One provider per layer; no cloud variants in v0.
+//! Built-in on-device stack. One provider per layer; the only cloud path is
+//! the row-30 BYO-key LLM adapter (`pipeline.llm.provider: openai`).
 
 use crate::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES};
 
@@ -123,18 +124,25 @@ impl SttModel {
     }
 }
 
-/// The only v0 LLM.
+/// LLM execution models. `Local` runs weights in-process (llama.cpp GGUF,
+/// first-run cache); `Online` streams from any OpenAI-compatible
+/// `chat/completions` endpoint (`pipeline.llm.base_url`, BYO key). The words
+/// name the posture — where the user's words go — not the engine; VAD/STT/TTS
+/// adopt the same vocabulary in follow-up PRs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProvider {
-    /// llama.cpp GGUF, in-process.
-    LlamaCpp,
+    /// In-process GGUF engine. No network.
+    Local,
+    /// OpenAI-compatible remote endpoint.
+    Online,
 }
 
 impl LlmProvider {
     /// Config / log name.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::LlamaCpp => "llama.cpp",
+            Self::Local => "local",
+            Self::Online => "online",
         }
     }
 }
@@ -194,7 +202,7 @@ impl BuiltinDefaults {
             vad: VadProvider::Silero,
             stt: SttProvider::WhisperCpp,
             stt_model: SttModel::Small,
-            llm: LlmProvider::LlamaCpp,
+            llm: LlmProvider::Local,
             llm_model: "llama-3.2-1b",
             llm_thinking: false,
             tts: TtsProvider::Kokoro,
@@ -224,7 +232,7 @@ mod tests {
         assert_eq!(d.vad.as_str(), "silero");
         assert_eq!(d.stt.as_str(), "whisper.cpp");
         assert_eq!(d.stt_model.as_str(), "small");
-        assert_eq!(d.llm.as_str(), "llama.cpp");
+        assert_eq!(d.llm.as_str(), "local");
         assert_eq!(d.llm_model, "llama-3.2-1b");
         assert!(!d.llm_thinking);
         assert_eq!(d.tts.as_str(), "kokoro");
@@ -238,8 +246,11 @@ mod tests {
     fn one_provider_per_layer() {
         assert_eq!(VadProvider::Silero.as_str(), "silero");
         assert_eq!(SttProvider::WhisperCpp.as_str(), "whisper.cpp");
-        assert_eq!(LlmProvider::LlamaCpp.as_str(), "llama.cpp");
+        assert_eq!(LlmProvider::Local.as_str(), "local");
+        assert_eq!(LlmProvider::Online.as_str(), "online");
         assert_eq!(TtsProvider::Kokoro.as_str(), "kokoro");
+        // The zero-config stack stays on-device; online is yaml opt-in only.
+        assert_eq!(BuiltinDefaults::v0().llm, LlmProvider::Local);
     }
 
     #[test]

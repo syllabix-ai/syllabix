@@ -57,7 +57,45 @@ From this checkout, `cargo run -p syllabix -- run` talks on a machine with a mic
 | `syllabix run --barge-in` | Opt-in. VAD keeps running during TTS; user SpeechStart stops playback, flushes queued audio, and cancels LLM/TTS. Off by default. Combine with `--turn-debug` to dump interrupted turns. Whisper utterances always include 200 ms of post-AEC preroll. | Same |
 | `syllabix init [dir]` | Optional `syllabix.yaml` scaffold | Same |
 
-There is no `serve`, `bench`, cloud provider, or API key in v0. `run` does not require yaml. If `syllabix.yaml` is present, it must name the v0 on-device stack. `pipeline.stt.model` selects the whisper.cpp weights: `small` (default), `medium`, `large-v3-turbo`, or the published quantizations `medium-q5_0` / `large-v3-turbo-q5_0`; first run fetches only the selected id. `pipeline.stt.language` is a whisper-supported ISO code (`en`, `fr`, `de`, `ja`, …) or `auto` — with `auto`, the detected language shows in the TUI and turn-debug sidecar, and the agent replies in that language. Optional `pipeline.vad` keys (`threshold`, `min_speech_ms`, `end_silence_ms`, `preroll_ms`) tune Silero; omit them for the launch defaults. A minimal example lives at [`examples/demo-agent.yaml`](examples/demo-agent.yaml).
+There is no `serve` or `bench`. The default `run` needs no yaml, no API key, and no network after the first-run cache fills. If `syllabix.yaml` is present, it must name a known stack. `pipeline.stt.model` selects the whisper.cpp weights: `small` (default), `medium`, `large-v3-turbo`, or the published quantizations `medium-q5_0` / `large-v3-turbo-q5_0`; first run fetches only the selected id. `pipeline.stt.language` is a whisper-supported ISO code (`en`, `fr`, `de`, `ja`, …) or `auto` — with `auto`, the detected language shows in the TUI and turn-debug sidecar, and the agent replies in that language. Optional `pipeline.vad` keys (`threshold`, `min_speech_ms`, `end_silence_ms`, `preroll_ms`) tune Silero; omit them for the launch defaults. A minimal example lives at [`examples/demo-agent.yaml`](examples/demo-agent.yaml).
+
+### Optional: BYO-key online LLM (v0.1)
+
+The LLM slot has two execution models: `provider: local` (default) runs weights in-process from the first-run cache; `provider: online` streams from any OpenAI-compatible `chat/completions` endpoint. Audio never leaves the machine either way — with `online`, only transcript text reaches the server you choose:
+
+```yaml
+name: demo-agent
+pipeline:
+  vad:
+    provider: silero
+  stt:
+    provider: whisper.cpp
+    model: small
+    language: en
+  llm:
+    provider: online                          # local (default) | online
+    model: gpt-4o-mini                        # any id the endpoint serves
+    base_url: https://api.openai.com/v1       # required for online
+  tts:
+    provider: kokoro
+```
+
+Endpoint examples: `https://api.openai.com/v1` (OpenAI), `https://api.groq.com/openai/v1` (Groq), `http://127.0.0.1:11434/v1` (Ollama), or any vLLM / llama-server URL. Nothing is defaulted for you: `online` without an explicit `base_url` fails at config load, and `local` rejects the field.
+
+- **The API key comes from the environment only:** it is never read from `syllabix.yaml` or a `.env` file, so project folders stay shareable and secret-free. Two ways to supply it:
+
+  ```bash
+  # one-off run — nothing is persisted:
+  SYLLABIX_LLM_API_KEY=sk-… syllabix run
+
+  # current shell session (add to your shell profile to persist):
+  export SYLLABIX_LLM_API_KEY=sk-…
+  ```
+
+  With `provider: online` set and no key exported, `run` fails fast before opening any device.
+- **Keyless loopback endpoints:** Ollama, llama-server, and vLLM ignore auth — pass any placeholder value, e.g. `SYLLABIX_LLM_API_KEY=ollama syllabix run` with `base_url: http://127.0.0.1:11434/v1`. Your transcript still never leaves the machine.
+- Barge-in cancels the in-flight stream through the same cancel path as local generation. A failed turn speaks a short fallback ("Sorry, I could not reach the language model.") instead of hanging — there is no auto-retry. Hard connect/idle timeouts bound every turn.
+- VAD, AEC, STT, and TTS stay local in this mode; no cloud STT/TTS exists. `run --turn-debug` sidecars record the endpoint, model id, and the provider's request id for diagnosis.
 
 ## Develop
 
@@ -109,6 +147,8 @@ cargo run -p syllabix --release -- run --turn-debug target/turn-debug
 | Replies are cut off mid-sentence when you speak over them | That is barge-in — but only with `run --barge-in`, which keeps VAD listening during TTS. Without the flag the agent finishes its sentence first; that is the default, not a bug. |
 | The agent speaks Qwen's reasoning aloud | It should not: `<think>…</think>` is stripped before TTS and hidden in the TUI. Thinking stays off unless yaml sets `pipeline.llm.thinking: true`. If you hear chain-of-thought, capture it with `--turn-debug` (`turn.json` keeps the full `llm_text`) and file a bug. |
 | STT text does not match what you said | Run with `--turn-debug [dir]`, then listen to `utterance.wav` (what Whisper received, including the 200 ms onset preroll) versus `clean.wav` (post-AEC). If `utterance.wav` sounds wrong but `clean.wav` sounds right, report the sidecar `stt` text plus both files. |
+| `SYLLABIX_LLM_API_KEY is required…` at `run` start | Your yaml selects `pipeline.llm.provider: online`. Supply the key for one run (`SYLLABIX_LLM_API_KEY=sk-… syllabix run`) or export it (`export SYLLABIX_LLM_API_KEY=sk-…`). Keys are read from the environment only — never from yaml or a `.env` file. Switch the provider back to `local` for the on-device LLM. |
+| Every reply is "Sorry, I could not reach the language model." | The cloud turn failed (bad key → HTTP 401, endpoint down, or idle timeout) and the turn spoke its fallback instead of hanging. Check the key, the `base_url`, and the endpoint's status; `--turn-debug` sidecars carry the endpoint and request id. |
 | Linux build fails linking ALSA | Contributors need `libasound2-dev` (a declared OS library). Users of the Release binary never compile anything. |
 | macOS asks to approve microphone access | Grant it once in System Settings → Privacy & Security → Microphone; the binary requests access through CoreAudio. |
 | Downloaded binary won't verify | Re-download the artifact and `SHA256SUMS` from the same Release; the checksum command must pass before you run anything. |

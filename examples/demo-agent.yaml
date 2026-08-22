@@ -10,6 +10,9 @@
 #   language shows in the TUI/turn-debug and the agent replies in-language.
 # Other LLM ids: qwen3.5-0.8b / qwen3.5-2b (add `thinking: true` for Qwen
 # chain-of-thought; it is stripped before TTS either way).
+# For a remote LLM use `provider: online` with a required `base_url`
+# (OpenAI, Groq, Ollama, vLLM, llama-server); the key comes from the
+# SYLLABIX_LLM_API_KEY environment variable — never from this file.
 name: demo-agent
 pipeline:
   vad:
@@ -19,7 +22,7 @@ pipeline:
     model: small
     language: en
   llm:
-    provider: llama.cpp
+    provider: local
     model: llama-3.2-1b
   tts:
     provider: kokoro

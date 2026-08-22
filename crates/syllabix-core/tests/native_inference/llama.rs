@@ -33,7 +33,7 @@ fn joined(chunks: &[TokenChunk]) -> String {
 #[test]
 fn q4_km_gguf_loads_without_segfault() {
     let mut n = native();
-    assert_eq!(n.llm.name(), "llama.cpp");
+    assert_eq!(n.llm.name(), "local");
     assert!(VOICE_SYSTEM_PROMPT.contains("spoken"));
     let user = Transcript {
         turn: TurnId(0),

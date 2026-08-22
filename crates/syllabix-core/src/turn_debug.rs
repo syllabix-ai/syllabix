@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::audio::{write_wav, PcmFormat, WavPcm};
 use crate::error::{Error, Result};
 use crate::speech_text::speak_text_for_tts;
-use crate::types::{TurnId, TurnTimings, Utterance, DEFAULT_SAMPLE_RATE_HZ};
+use crate::types::{LlmDebugMeta, TurnId, TurnTimings, Utterance, DEFAULT_SAMPLE_RATE_HZ};
 
 /// Environment override for the default dump directory.
 pub const TURN_DEBUG_DIR_ENV: &str = "SYLLABIX_TURN_DEBUG_DIR";
@@ -62,6 +62,7 @@ struct TurnDump {
     stt_text: Option<String>,
     stt_language: Option<String>,
     llm_text: String,
+    llm_meta: Option<LlmDebugMeta>,
     timings: Option<TurnTimings>,
     written: bool,
 }
@@ -119,6 +120,14 @@ impl TurnDebug {
     pub fn note_llm(&self, turn: TurnId, text: String) {
         let mut inner = self.lock();
         inner.turns.entry(turn.0).or_default().llm_text = text;
+    }
+
+    /// Provider facts for the sidecar (provider, model, endpoint, request id).
+    /// Best-effort: a barge-in dump that already wrote keeps its outcome.
+    pub fn note_llm_meta(&self, turn: TurnId, meta: Option<LlmDebugMeta>) {
+        let Some(meta) = meta else { return };
+        let mut inner = self.lock();
+        inner.turns.entry(turn.0).or_default().llm_meta = Some(meta);
     }
 
     /// PCM actually handed to the sink.
@@ -244,12 +253,18 @@ fn render_sidecar(id: u64, outcome: TurnOutcome, dump: &TurnDump) -> String {
     let stt_language = dump.stt_language.as_deref().unwrap_or("");
     let speak = speak_text_for_tts(&dump.llm_text);
     let timings = dump.timings.unwrap_or_default();
+    let default_meta = LlmDebugMeta::default();
+    let meta = dump.llm_meta.as_ref().unwrap_or(&default_meta);
     format!(
-        "{{\n  \"turn\": {id},\n  \"outcome\": {},\n  \"stt_text\": {},\n  \"stt_language\": {},\n  \"llm_text\": {},\n  \"tts_speak_text\": {},\n  \"timings\": {{\n    \"stt_ms\": {},\n    \"ttft_ms\": {},\n    \"ttfb_ms\": {},\n    \"total_ms\": {}\n  }},\n  \"capture_samples\": {},\n  \"capture_frames\": {},\n  \"capture_duration_ms\": {},\n  \"clean_samples\": {},\n  \"clean_frames\": {},\n  \"clean_duration_ms\": {},\n  \"utterance_samples\": {},\n  \"utterance_frames\": {},\n  \"utterance_duration_ms\": {},\n  \"tts_samples\": {},\n  \"tts_chunks\": {},\n  \"tts_duration_ms\": {}\n}}\n",
+        "{{\n  \"turn\": {id},\n  \"outcome\": {},\n  \"stt_text\": {},\n  \"stt_language\": {},\n  \"llm_text\": {},\n  \"llm_provider\": {},\n  \"llm_model\": {},\n  \"llm_endpoint\": {},\n  \"llm_request_id\": {},\n  \"tts_speak_text\": {},\n  \"timings\": {{\n    \"stt_ms\": {},\n    \"ttft_ms\": {},\n    \"ttfb_ms\": {},\n    \"total_ms\": {}\n  }},\n  \"capture_samples\": {},\n  \"capture_frames\": {},\n  \"capture_duration_ms\": {},\n  \"clean_samples\": {},\n  \"clean_frames\": {},\n  \"clean_duration_ms\": {},\n  \"utterance_samples\": {},\n  \"utterance_frames\": {},\n  \"utterance_duration_ms\": {},\n  \"tts_samples\": {},\n  \"tts_chunks\": {},\n  \"tts_duration_ms\": {}\n}}\n",
         json_string(outcome.as_str()),
         json_string(stt),
         json_string(stt_language),
         json_string(&dump.llm_text),
+        json_string(&meta.provider),
+        json_string(&meta.model),
+        json_string(&meta.endpoint),
+        json_string(&meta.request_id),
         json_string(&speak),
         duration_ms(timings.stt),
         duration_ms(timings.ttft),
@@ -441,6 +456,52 @@ mod tests {
         .unwrap();
         assert_eq!(wav.samples, vec![1, 2, 3]);
         debug.finish_open().unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn llm_meta_lands_in_the_sidecar_even_for_skipped_turns() {
+        let dir = unique_dir();
+        let debug = TurnDebug::open(&dir).unwrap();
+        let turn = TurnId(3);
+        debug.start_turn(turn);
+        debug.note_stt(turn, "hello", "en");
+        debug.note_llm_meta(
+            turn,
+            Some(LlmDebugMeta {
+                provider: "online".into(),
+                model: "gpt-test".into(),
+                endpoint: "https://mock.example/v1/chat/completions".into(),
+                request_id: "req-7".into(),
+            }),
+        );
+        // Skipped turns write immediately; the meta must already be attached.
+        debug.skip(turn).unwrap();
+        let json = fs::read_to_string(dir.join("turn-003").join("turn.json")).unwrap();
+        assert!(json.contains("\"llm_provider\": \"online\""), "{json}");
+        assert!(json.contains("\"llm_model\": \"gpt-test\""), "{json}");
+        assert!(
+            json.contains("\"llm_endpoint\": \"https://mock.example/v1/chat/completions\""),
+            "{json}"
+        );
+        assert!(json.contains("\"llm_request_id\": \"req-7\""), "{json}");
+        // Local turns keep empty endpoint/request-id fields.
+        let local = TurnId(4);
+        debug.start_turn(local);
+        debug.note_stt(local, "hi", "en");
+        debug.note_llm_meta(
+            local,
+            Some(crate::types::LlmDebugMeta {
+                provider: "local".into(),
+                model: "llama-3.2-1b".into(),
+                ..Default::default()
+            }),
+        );
+        debug.skip(local).unwrap();
+        let json = fs::read_to_string(dir.join("turn-004").join("turn.json")).unwrap();
+        assert!(json.contains("\"llm_provider\": \"local\""), "{json}");
+        assert!(json.contains("\"llm_endpoint\": \"\""), "{json}");
+        assert!(json.contains("\"llm_request_id\": \"\""), "{json}");
         fs::remove_dir_all(&dir).unwrap();
     }
 
