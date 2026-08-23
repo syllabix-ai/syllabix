@@ -89,6 +89,15 @@ mod ffi {
             out_pcm: *mut *mut i16,
             out_n_samples: *mut i64,
         ) -> c_int;
+        pub fn syllabix_qwen_tts_synthesize_streaming(
+            tts: *mut QwenTtsHandle,
+            text: *const c_char,
+            lang: *const c_char,
+            abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+            abort_user: *mut c_void,
+            pcm_cb: Option<unsafe extern "C" fn(i32, *const f32, i64, c_int, *mut c_void) -> c_int>,
+            pcm_user: *mut c_void,
+        ) -> c_int;
         pub fn syllabix_qwen_tts_pcm_free(pcm: *mut i16);
     }
 }
@@ -351,6 +360,40 @@ pub enum QwenTtsError {
     Failed(String),
 }
 
+type QwenPcmCallback<'a> = dyn FnMut(i32, &[f32], bool) -> Result<(), QwenTtsError> + 'a;
+
+struct QwenPcmStream<'a> {
+    on_pcm: &'a mut QwenPcmCallback<'a>,
+    error: Option<QwenTtsError>,
+}
+
+unsafe extern "C" fn qwen_pcm_callback(
+    sample_rate: i32,
+    pcm: *const f32,
+    n_samples: i64,
+    is_last: c_int,
+    user: *mut c_void,
+) -> c_int {
+    if user.is_null() || n_samples < 0 || (n_samples > 0 && pcm.is_null()) {
+        return -1;
+    }
+    // Safety: `synthesize_streaming` keeps this stack value alive for the C call.
+    let stream = unsafe { &mut *(user as *mut QwenPcmStream<'_>) };
+    let samples = if n_samples == 0 {
+        &[]
+    } else {
+        // Safety: native owns this PCM until the callback returns.
+        unsafe { std::slice::from_raw_parts(pcm, n_samples as usize) }
+    };
+    match (stream.on_pcm)(sample_rate, samples, is_last != 0) {
+        Ok(()) => 0,
+        Err(err) => {
+            stream.error = Some(err);
+            1
+        }
+    }
+}
+
 /// In-process Qwen3-TTS context: backbone GGUF + mmproj through the shared
 /// ggml. One instance synthesizes sentences sequentially; each sentence is an
 /// independent generation on the underlying llama.cpp context.
@@ -452,6 +495,53 @@ impl QwenTtsContext {
             }
             1 => Err(QwenTtsError::Cancelled),
             _ => Err(QwenTtsError::Failed("Qwen3-TTS synthesis failed".into())),
+        }
+    }
+
+    /// Stream native-rate f32 PCM windows while Qwen is still generating.
+    ///
+    /// # Safety
+    /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
+    pub unsafe fn synthesize_streaming(
+        &mut self,
+        text: &str,
+        lang: &str,
+        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        abort_user: *mut c_void,
+        on_pcm: &mut QwenPcmCallback<'_>,
+    ) -> Result<(), QwenTtsError> {
+        if text.is_empty() {
+            return Err(QwenTtsError::Failed("empty speak text".into()));
+        }
+        let c_text =
+            CString::new(text).map_err(|_| QwenTtsError::Failed("text contains NUL".into()))?;
+        let c_lang =
+            CString::new(lang).map_err(|_| QwenTtsError::Failed("language contains NUL".into()))?;
+        let mut stream = QwenPcmStream {
+            on_pcm,
+            error: None,
+        };
+        let _ggml = ggml_lock();
+        let rc = unsafe {
+            ffi::syllabix_qwen_tts_synthesize_streaming(
+                self.raw,
+                c_text.as_ptr(),
+                c_lang.as_ptr(),
+                abort,
+                abort_user,
+                Some(qwen_pcm_callback),
+                (&mut stream as *mut QwenPcmStream<'_>).cast(),
+            )
+        };
+        if let Some(err) = stream.error {
+            return Err(err);
+        }
+        match rc {
+            0 => Ok(()),
+            1 => Err(QwenTtsError::Cancelled),
+            _ => Err(QwenTtsError::Failed(
+                "Qwen3-TTS streaming synthesis failed".into(),
+            )),
         }
     }
 }

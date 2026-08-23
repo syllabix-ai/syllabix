@@ -219,6 +219,15 @@ MTMD_API int32_t mtmd_helper_gen_audio_step_gen(
                         const float ** h_state_out,
                         bool * out_stop);
 
+// Returns only PCM produced since the previous call to take_output() or reset().
+// Unlike get_output(), this does not flush an incomplete vocoder window. The
+// data is raw f32 mono PCM and remains valid until the next helper call.
+MTMD_API int32_t mtmd_helper_gen_audio_take_output(
+                        mtmd_helper_gen_audio * ctx,
+                        int32_t * out_sample_rate,
+                        const float ** out_pcm,
+                        int64_t * out_n_samples);
+
 // out_data valid until next get_output() or reset() call
 // out_n_samples (optional, can be NULL) receives the number of generated PCM samples
 MTMD_API int32_t mtmd_helper_gen_audio_get_output(

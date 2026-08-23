@@ -89,6 +89,18 @@ impl crate::providers::Tts for LiveTts {
             Self::Qwen(tts) => tts.synthesize_chunk(token, cancel),
         }
     }
+
+    fn synthesize_chunk_into(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(crate::types::SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        match self {
+            Self::Kokoro(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
+            Self::Qwen(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
+        }
+    }
 }
 
 /// Silero + whisper.cpp + llama.cpp/Kokoro, resolved through the v0 manifest.

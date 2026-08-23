@@ -71,6 +71,21 @@ pub trait Tts: Send {
         token: &TokenChunk,
         cancel: &Cancel,
     ) -> Result<Vec<SynthesizedAudio>>;
+
+    /// Streaming form of [`Self::synthesize_chunk`]. Existing providers keep
+    /// their buffered implementation; native Qwen overrides this to release
+    /// vocoder windows while generation is still running.
+    fn synthesize_chunk_into(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        for audio in self.synthesize_chunk(token, cancel)? {
+            on_audio(audio)?;
+        }
+        Ok(())
+    }
 }
 
 /// Playback sink. Native speakers replace the collecting sink in a later PR.

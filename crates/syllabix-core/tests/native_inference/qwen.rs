@@ -1,4 +1,4 @@
-//! Row 31 merge gate, row-32 menu: Qwen3-TTS first-sentence audio,
+//! Row 31 merge gate, row-32 menu, row-33 incremental Qwen PCM,
 //! TTS→ASR round-trip through whisper.cpp, the numbers gate (`100` →
 //! "hundred"), native cancel, and the row-32 self-voice anchor (same seed ⇒
 //! identical PCM; the anchor engages on both backbones). Intelligibility is
@@ -98,7 +98,7 @@ fn speak(tts: &mut QwenTts, text: &str) -> Vec<i16> {
 }
 
 #[test]
-fn qwen_first_sentence_arrives_before_completion() {
+fn qwen_streams_pcm_before_full_generation_completes() {
     // Hold the process-global ggml slot for the whole test, like every
     // native module here: parallel test threads share one ggml.
     let _n = native();
@@ -108,24 +108,37 @@ fn qwen_first_sentence_arrives_before_completion() {
             tts.voice_anchor_engaged(),
             "{model:?}: self-voice anchor must engage at load"
         );
-        let first = tts
-            .synthesize_chunk(&token("Hello world. ", 0, false), &Cancel::new())
-            .expect("first sentence");
-        assert_eq!(first.len(), 1, "first sentence must emit before is_last");
-        assert!(!first[0].is_last);
+        let mut seen_nonfinal = false;
+        let mut last_count = 0;
+        let mut chunks = 0;
+        tts.synthesize_chunk_into(
+            &token(
+                &"Streaming vocoder audio must begin before this complete natural response finishes. ".repeat(5),
+                0,
+                true,
+            ),
+            &Cancel::new(),
+            &mut |audio| {
+                chunks += 1;
+                assert!(has_energy(&audio.samples) || audio.is_last);
+                if audio.is_last {
+                    last_count += 1;
+                } else {
+                    seen_nonfinal = true;
+                }
+                Ok(())
+            },
+        )
+        .expect("stream full Qwen response");
         assert!(
-            first[0].samples.len() >= 1_000,
-            "playable PCM should be more than a few samples, got {}",
-            first[0].samples.len()
+            chunks > 1,
+            "vocoder windows must reach playback incrementally"
         );
-        assert!(has_energy(&first[0].samples));
-
-        let rest = tts
-            .synthesize_chunk(&token("More later.", 1, true), &Cancel::new())
-            .expect("remainder");
-        assert_eq!(rest.len(), 1);
-        assert!(rest[0].is_last);
-        assert!(has_energy(&rest[0].samples));
+        assert!(
+            seen_nonfinal,
+            "first PCM must arrive before final completion"
+        );
+        assert_eq!(last_count, 1, "stream must close exactly once");
     }
 }
 
