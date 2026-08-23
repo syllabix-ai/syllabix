@@ -922,15 +922,13 @@ fn tts_loop<T: Tts>(
                 if shared.is_interrupted(token.turn) || cancel.is_stale(token.generation) {
                     continue;
                 }
-                match tts.synthesize_chunk(&token, cancel) {
-                    Ok(chunks) => {
-                        for audio in chunks {
-                            if cancel.is_stale(audio.generation) {
-                                continue;
-                            }
-                            ignore_cancel(tx.send_cancellable(audio, cancel), shared, cancel);
-                        }
+                match tts.synthesize_chunk_into(&token, cancel, &mut |audio| {
+                    if !cancel.is_stale(audio.generation) {
+                        ignore_cancel(tx.send_cancellable(audio, cancel), shared, cancel);
                     }
+                    Ok(())
+                }) {
+                    Ok(()) => {}
                     Err(Error::Cancelled) => {
                         shared.release_assistant(token.turn);
                         if cancel.is_shutdown() {

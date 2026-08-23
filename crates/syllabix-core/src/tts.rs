@@ -329,7 +329,63 @@ impl Tts for QwenTts {
         token: &TokenChunk,
         cancel: &Cancel,
     ) -> Result<Vec<SynthesizedAudio>> {
-        synthesize_chunk_shared(&self.engine, &mut self.core, token, cancel)
+        let mut out = Vec::new();
+        self.synthesize_chunk_into(token, cancel, &mut |audio| {
+            out.push(audio);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    fn synthesize_chunk_into(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        if cancel.is_stale(token.generation) {
+            self.core.reset();
+            return Err(Error::Cancelled);
+        }
+        if self.core.generation != Some(token.generation) || self.core.turn != Some(token.turn) {
+            self.core.reset();
+            self.core.generation = Some(token.generation);
+            self.core.turn = Some(token.turn);
+        }
+        self.core
+            .buffer
+            .push_str(&self.core.think.push(&token.text, token.is_last));
+        // Qwen owns prosody across punctuation. It receives the whole reply,
+        // not sentence or clause fragments, then streams its vocoder PCM.
+        if !token.is_last {
+            return Ok(());
+        }
+        let spoken = speak_text_for_tts(&self.core.buffer);
+        self.core.buffer.clear();
+        if spoken.is_empty() {
+            on_audio(self.core.emit(vec![0; 16], token, true))?;
+            return Ok(());
+        }
+        let mut emitted = false;
+        self.engine
+            .lock()
+            .expect("tts engine")
+            .synthesize_streaming(
+                &spoken,
+                cancel,
+                token.generation,
+                &mut |samples, is_last| {
+                    if samples.is_empty() && !is_last {
+                        return Ok(());
+                    }
+                    emitted = true;
+                    on_audio(self.core.emit(samples, token, is_last))
+                },
+            )?;
+        if !emitted {
+            on_audio(self.core.emit(vec![0; 16], token, true))?;
+        }
+        Ok(())
     }
 }
 
@@ -340,6 +396,16 @@ trait WaveformEngine: Send {
         cancel: &Cancel,
         generation: GenerationId,
     ) -> Result<Vec<i16>>;
+
+    fn synthesize_streaming(
+        &mut self,
+        sentence: &str,
+        cancel: &Cancel,
+        generation: GenerationId,
+        on_audio: &mut dyn FnMut(Vec<i16>, bool) -> Result<()>,
+    ) -> Result<()> {
+        on_audio(self.synthesize(sentence, cancel, generation)?, true)
+    }
 
     /// Whether a pinned speaker identity is active (Qwen3-TTS self-voice
     /// anchor; Kokoro's fixed ONNX voice counts trivially as `false` here
@@ -500,6 +566,74 @@ impl WaveformEngine for NativeQwen {
             }
             Err(QwenTtsError::Cancelled) => Err(Error::Cancelled),
             Err(QwenTtsError::Failed(_)) if cancel.is_shutdown() => Err(Error::Cancelled),
+            Err(QwenTtsError::Failed(message)) => Err(Error::Provider {
+                provider: "qwen",
+                message,
+            }),
+        }
+    }
+
+    fn synthesize_streaming(
+        &mut self,
+        sentence: &str,
+        cancel: &Cancel,
+        generation: GenerationId,
+        on_audio: &mut dyn FnMut(Vec<i16>, bool) -> Result<()>,
+    ) -> Result<()> {
+        if cancel.is_shutdown() || cancel.is_stale(generation) {
+            return Err(Error::Cancelled);
+        }
+        let abort_user = cancel as *const Cancel as *mut std::ffi::c_void;
+        let mut converter: Option<PcmConverter> = None;
+        let mut callback_error: Option<Error> = None;
+        let result = unsafe {
+            self.ctx.synthesize_streaming(
+                sentence,
+                &self.lang,
+                Some(abort_on_shutdown),
+                abort_user,
+                &mut |rate, pcm, is_last| {
+                    if cancel.is_shutdown() || cancel.is_stale(generation) {
+                        return Err(QwenTtsError::Cancelled);
+                    }
+                    let conv = converter.get_or_insert_with(|| {
+                        PcmConverter::new(
+                            PcmFormat {
+                                sample_rate_hz: rate.max(1) as u32,
+                                channels: 1,
+                            },
+                            PcmFormat {
+                                sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
+                                channels: 1,
+                            },
+                        )
+                        .expect("native Qwen rate is valid")
+                    });
+                    let mut out = f32_to_i16(&conv.push(pcm));
+                    if is_last {
+                        out.extend(f32_to_i16(&conv.flush()));
+                    }
+                    if !out.is_empty() || is_last {
+                        if let Err(err) = on_audio(out, is_last) {
+                            callback_error = Some(err);
+                            return Err(QwenTtsError::Cancelled);
+                        }
+                    }
+                    Ok(())
+                },
+            )
+        };
+        if let Some(err) = callback_error {
+            return Err(err);
+        }
+        match result {
+            Ok(()) => Ok(()),
+            Err(QwenTtsError::Cancelled) => Err(Error::Cancelled),
+            Err(QwenTtsError::Failed(_message))
+                if cancel.is_shutdown() || cancel.is_stale(generation) =>
+            {
+                Err(Error::Cancelled)
+            }
             Err(QwenTtsError::Failed(message)) => Err(Error::Provider {
                 provider: "qwen",
                 message,
@@ -773,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_name_and_buffering_match_contract() {
+    fn qwen_buffers_full_reply_and_preserves_punctuation_prosody() {
         let engine = ScriptedEngine::new();
         let log = Arc::clone(&engine.calls);
         let mut tts = QwenTts::with_engine(Box::new(engine), TtsModel::Qwen06);
@@ -784,17 +918,16 @@ mod tests {
         let first = tts
             .synthesize_chunk(&token("Hello world. ", 0, false), &Cancel::new())
             .unwrap();
-        assert_eq!(first.len(), 1);
-        assert!(!first[0].is_last);
+        assert!(first.is_empty(), "Qwen must not split at a period");
         let rest = tts
             .synthesize_chunk(&token("More later.", 1, true), &Cancel::new())
             .unwrap();
         assert_eq!(rest.len(), 1);
         assert!(rest[0].is_last);
-        // Think-strip and markdown-strip run before the qwen engine too.
+        // Think-strip and markdown-strip run before the full Qwen utterance.
         assert_eq!(
             log.lock().expect("calls").as_slice(),
-            ["Hello world.", "More later."]
+            ["Hello world. More later."]
         );
     }
 

@@ -54,6 +54,9 @@ static int qwen_generate(
     const char *lang,
     bool (*abort_cb)(void *user),
     void *abort_user,
+    int (*pcm_cb)(int32_t sample_rate, const float *pcm, int64_t n_samples,
+                  int is_last, void *user),
+    void *pcm_user,
     int32_t *out_sample_rate,
     int16_t **out_pcm,
     int64_t *out_n_samples);
@@ -214,7 +217,7 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
             struct llama_sampler *runtime_smpl = tts->smpl;
             tts->smpl = anchor_smpl;
             const int rc = qwen_generate(tts, SYLLABIX_QWEN_ANCHOR_TEXT, "en", NULL, NULL,
-                                         &rate, &pcm, &n_samples);
+                                         NULL, NULL, &rate, &pcm, &n_samples);
             tts->smpl = runtime_smpl;
             llama_sampler_free(anchor_smpl);
             if (rc == 0 && pcm != NULL && n_samples > 0 && rate > 0) {
@@ -279,11 +282,14 @@ static int qwen_generate(
     const char *lang,
     bool (*abort_cb)(void *user),
     void *abort_user,
+    int (*pcm_cb)(int32_t sample_rate, const float *pcm, int64_t n_samples,
+                  int is_last, void *user),
+    void *pcm_user,
     int32_t *out_sample_rate,
     int16_t **out_pcm,
     int64_t *out_n_samples) {
-    if (tts == NULL || tts->ctx == NULL || text == NULL || out_pcm == NULL
-        || out_sample_rate == NULL || out_n_samples == NULL) {
+    if (tts == NULL || tts->ctx == NULL || text == NULL
+        || (pcm_cb == NULL && (out_pcm == NULL || out_sample_rate == NULL || out_n_samples == NULL))) {
         return -1;
     }
     if (qwen_aborted(abort_cb, abort_user)) {
@@ -343,6 +349,19 @@ static int qwen_generate(
             QWEN_LOG("step_gen failed at frame %d\n", n_frames);
             return -3;
         }
+        if (pcm_cb != NULL) {
+            int32_t partial_rate = 0;
+            const float *partial_pcm = NULL;
+            int64_t partial_samples = 0;
+            if (mtmd_helper_gen_audio_take_output(tts->gen, &partial_rate, &partial_pcm,
+                                                  &partial_samples) != 0) {
+                return -4;
+            }
+            if (partial_samples > 0 && pcm_cb(partial_rate, partial_pcm, partial_samples,
+                                               0, pcm_user) != 0) {
+                return 1;
+            }
+        }
         if (h_next == NULL) {
             break; /* stopped without producing a frame */
         }
@@ -361,6 +380,15 @@ static int qwen_generate(
     if (mtmd_helper_gen_audio_get_output(tts->gen, &rate, &data, &data_len, &n_samples) != 0) {
         QWEN_LOG("get_output failed after %d frames\n", n_frames);
         return -4;
+    }
+    if (pcm_cb != NULL) {
+        const float *partial_pcm = NULL;
+        int64_t partial_samples = 0;
+        if (mtmd_helper_gen_audio_take_output(tts->gen, &rate, &partial_pcm,
+                                              &partial_samples) != 0) {
+            return -4;
+        }
+        return pcm_cb(rate, partial_pcm, partial_samples, 1, pcm_user) == 0 ? 0 : 1;
     }
     if (rate <= 0 || data == NULL || n_samples <= 0 || data_len < (size_t)n_samples * sizeof(float)) {
         QWEN_LOG("bad output rate=%d samples=%lld len=%zu\n", rate, (long long)n_samples, data_len);
@@ -398,8 +426,20 @@ int syllabix_qwen_tts_synthesize(
     int32_t *out_sample_rate,
     int16_t **out_pcm,
     int64_t *out_n_samples) {
-    return qwen_generate(tts, text, lang, abort_cb, abort_user,
+    return qwen_generate(tts, text, lang, abort_cb, abort_user, NULL, NULL,
                          out_sample_rate, out_pcm, out_n_samples);
+}
+
+int syllabix_qwen_tts_synthesize_streaming(
+    struct syllabix_qwen_tts *tts, const char *text, const char *lang,
+    bool (*abort_cb)(void *user), void *abort_user,
+    int (*pcm_cb)(int32_t sample_rate, const float *pcm, int64_t n_samples,
+                  int is_last, void *user), void *pcm_user) {
+    if (pcm_cb == NULL) {
+        return -1;
+    }
+    return qwen_generate(tts, text, lang, abort_cb, abort_user, pcm_cb, pcm_user,
+                         NULL, NULL, NULL);
 }
 
 void syllabix_qwen_tts_pcm_free(int16_t *pcm) {

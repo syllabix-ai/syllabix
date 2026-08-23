@@ -91,6 +91,7 @@ public:
     // those read what they need from h_state_in instead
     // set out_stop on end-of-speech, h_state_out must be null if no frame is generated
     virtual int32_t step_gen(llama_token sampled, const float * h_state_in, const float ** h_state_out, bool * out_stop) = 0;
+    virtual int32_t take_output(int32_t * out_sample_rate, const float ** out_pcm, int64_t * out_n_samples) = 0;
     virtual int32_t get_output(int32_t * out_sample_rate, const char ** out_data, size_t * out_data_len, int64_t * out_n_samples) = 0;
 
 protected:
@@ -114,6 +115,7 @@ public:
         codes_buf.clear();
         c2w_state.clear();
         audio_pcm.clear();
+        audio_emitted = 0;
         overlay.clear();
         h_state_buf.clear();
         out_buf.clear();
@@ -301,6 +303,14 @@ public:
         return 0;
     }
 
+    int32_t take_output(int32_t * out_sample_rate, const float ** out_pcm, int64_t * out_n_samples) override {
+        *out_sample_rate = info.sample_rate;
+        *out_pcm = audio_pcm.data() + audio_emitted;
+        *out_n_samples = (int64_t) (audio_pcm.size() - audio_emitted);
+        audio_emitted = audio_pcm.size();
+        return 0;
+    }
+
     int32_t get_output(int32_t * out_sample_rate, const char ** out_data, size_t * out_data_len, int64_t * out_n_samples) override {
         if (!flush_gen_wav()) {
             return 1;
@@ -452,6 +462,7 @@ private:
     std::vector<int32_t> codes_buf;
     std::vector<uint8_t> c2w_state;
     std::vector<float>   audio_pcm;
+    size_t               audio_emitted = 0;
     std::vector<float> overlay;
     std::vector<float> h_state_buf;
     mtmd_helper_gen_audio_outtype out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_WAV;
@@ -495,6 +506,7 @@ public:
         feats_buf.clear();
         dec_state.clear();
         audio_pcm.clear();
+        audio_emitted = 0;
         h_state_buf.clear();
         out_buf.clear();
         prompt_embd_buf.clear();
@@ -660,6 +672,14 @@ public:
         h_state_buf.assign(he, he + n_embd);
         *h_state_out = h_state_buf.data();
 
+        return 0;
+    }
+
+    int32_t take_output(int32_t * out_sample_rate, const float ** out_pcm, int64_t * out_n_samples) override {
+        *out_sample_rate = info.sample_rate;
+        *out_pcm = audio_pcm.data() + audio_emitted;
+        *out_n_samples = (int64_t) (audio_pcm.size() - audio_emitted);
+        audio_emitted = audio_pcm.size();
         return 0;
     }
 
@@ -988,6 +1008,7 @@ private:
     std::vector<float>   feats_buf;
     std::vector<uint8_t> dec_state;
     std::vector<float>   audio_pcm;
+    size_t               audio_emitted = 0;
     std::vector<float>   h_state_buf;
     mtmd_helper_gen_audio_outtype out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_WAV;
     std::vector<char> out_buf;
@@ -1051,6 +1072,14 @@ int32_t mtmd_helper_gen_audio_step_gen(mtmd_helper_gen_audio * ctx, llama_token 
         *out_stop = stop;
     }
     return ret;
+}
+
+int32_t mtmd_helper_gen_audio_take_output(mtmd_helper_gen_audio * ctx, int32_t * out_sample_rate,
+                                          const float ** out_pcm, int64_t * out_n_samples) {
+    if (!ctx->pipeline || !out_sample_rate || !out_pcm || !out_n_samples) {
+        return 1;
+    }
+    return ctx->pipeline->take_output(out_sample_rate, out_pcm, out_n_samples);
 }
 
 int32_t mtmd_helper_gen_audio_get_output(mtmd_helper_gen_audio * ctx, int32_t * out_sample_rate,

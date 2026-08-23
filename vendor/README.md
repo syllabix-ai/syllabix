@@ -20,4 +20,6 @@ Do not add a second `ggml` copy. Do not use `--allow-multiple-definition` or pos
 
 **Local patch (sequence 32), `tools/mtmd/clip.cpp`:** `PROJECTOR_TYPE_QWEN3TTS_GEN` loads `a.gen.code.proj_in.{weight,bias}` as optional (`get_tensor(..., /*required=*/false)`). The gen graph already null-guards both tensors (`code_gen::project_in` passes through untouched when absent); the row-32 0.6B backbone conversion omits them (talker hidden size == predictor hidden size there), and the required lookup rejected every 0.6B mmproj at load. No effect on the 1.7B files, which carry both tensors; keep the patch when bumping the pin, drop once upstream makes these optional.
 
+**Local patch (sequence 33), `tools/mtmd/mtmd-helper-gen.{h,cpp}`:** expose `mtmd_helper_gen_audio_take_output`, which returns only PCM newly produced by an already-completed vocoder window without flushing an incomplete window. The Qwen shim forwards those windows to Rust as generation continues, rather than waiting for `get_output()` to flush and return the entire utterance. Decoder state and the existing window sizes remain upstream-owned. Contribute this narrow helper API upstream; retain the patch only until it merges.
+
 CPU vs Metal tok/s for the three v0 GGUFs: [`llama-bench.md`](llama-bench.md).

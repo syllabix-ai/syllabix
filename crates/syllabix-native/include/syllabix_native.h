@@ -104,6 +104,19 @@ int syllabix_qwen_tts_synthesize(
     int32_t *out_sample_rate,
     int16_t **out_pcm,
     int64_t *out_n_samples);
+
+/* Incremental variant. pcm_cb receives native-rate f32 PCM after each
+ * vocoder window; its final invocation has is_last != 0 and may be empty.
+ * Return 0 to continue, 1 to cancel, or -1 for an error. */
+int syllabix_qwen_tts_synthesize_streaming(
+    struct syllabix_qwen_tts *tts,
+    const char *text,
+    const char *lang,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    int (*pcm_cb)(int32_t sample_rate, const float *pcm, int64_t n_samples,
+                  int is_last, void *user),
+    void *pcm_user);
 void syllabix_qwen_tts_pcm_free(int16_t *pcm);
 
 #ifdef __cplusplus
