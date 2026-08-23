@@ -122,10 +122,11 @@ Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo test --workspace   # launch-stack native inference (small / llama-3.2-1b / kokoro)
 ./scripts/ci-local.sh   # Linux stand-in for GitHub Actions (fmt through tests, then Linux dist + clean-machine + README smoke)
 ./scripts/check-repro.sh  # two dist builds; run when the dist profile or packaging script changes
-# `cargo llvm-cov --workspace --fail-under-lines 85` skips native inference (`cfg(coverage)`). Run `cargo test` for Whisper/Llama/Kokoro.
+# `cargo llvm-cov --workspace --fail-under-lines 85` skips native inference (`cfg(coverage)`).
+# Exclusive extra suites: SYLLABIX_NATIVE_MODELS=qwen3-0.6 cargo test -p syllabix-core --test native_inference
 ```
 
 Reference hardware profiles and measurement protocols (AEC zero-false-turns gate, barge-in p95, TTS→ASR intelligibility): [`docs/reference-profiles.md`](docs/reference-profiles.md).

@@ -19,7 +19,7 @@ use syllabix_core::{
     SttModel, TurnId, Utterance, WhisperStt, LIBRISPEECH_MIN_WORD_MATCH,
 };
 
-use crate::{hex, native};
+use crate::{hex, native, skip_unless_model};
 
 struct RecordedFixture {
     file: &'static str,
@@ -135,11 +135,12 @@ fn fixture_hashes_are_stable() {
 
 #[test]
 fn recorded_fixtures_match_documented_transcripts() {
+    skip_unless_model!("small");
     let mut n = native();
     for fixture in RECORDED_FIXTURES {
         let utterance = fixture_utterance(fixture);
         let transcript = n
-            .stt
+            .stt_mut()
             .transcribe(&utterance, &Cancel::new())
             .unwrap_or_else(|err| panic!("{} stt: {err}", fixture.file));
         let ratio = word_match_ratio(&transcript.text, fixture.expected);
@@ -168,14 +169,15 @@ fn recorded_fixtures_match_documented_transcripts() {
 
 #[test]
 fn whisper_replaces_fake_stt_in_the_loop() {
-    let n = native();
+    skip_unless_model!("small");
+    let mut n = native();
     let utterance = fixture_utterance(&JFK);
     let frames = utterance.frames.clone();
     let report = run_loop(
         LoopConfig::default(),
         PipelineStages {
             vad: FakeVad::new(),
-            stt: n.stt.clone(),
+            stt: n.stt().clone(),
             llm: FakeLlm::new(),
             tts: FakeTts,
             sink: CollectingSink::default(),
@@ -202,6 +204,7 @@ fn whisper_replaces_fake_stt_in_the_loop() {
 
 #[test]
 fn cancel_aborts_native_decode_and_context_stays_usable() {
+    skip_unless_model!("small");
     let mut n = native();
     let utterance = fixture_utterance(&JFK);
     let cancel = Cancel::new();
@@ -210,7 +213,7 @@ fn cancel_aborts_native_decode_and_context_stays_usable() {
         thread::sleep(Duration::from_millis(40));
         cancel_thread.shutdown();
     });
-    let result = n.stt.transcribe(&utterance, &cancel);
+    let result = n.stt_mut().transcribe(&utterance, &cancel);
     match result {
         Err(syllabix_core::Error::Cancelled) => {}
         Ok(transcript) => {
@@ -220,7 +223,7 @@ fn cancel_aborts_native_decode_and_context_stays_usable() {
         Err(err) => panic!("unexpected STT error: {err}"),
     }
     let again = n
-        .stt
+        .stt_mut()
         .transcribe(&utterance, &Cancel::new())
         .expect("whisper context remains usable after cancel");
     assert!(contains_words_in_order(&again.text, JFK.expected));
@@ -228,6 +231,7 @@ fn cancel_aborts_native_decode_and_context_stays_usable() {
 
 #[test]
 fn auto_language_detects_english_and_pins_the_code() {
+    skip_unless_model!("small");
     let cache = ModelCache::v0();
     let asset = cache.manifest().asset(SttModel::Small.asset_id()).unwrap();
     let path = cache

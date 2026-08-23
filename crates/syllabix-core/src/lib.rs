@@ -2,8 +2,9 @@
 //!
 //! Pull request 13 runs Silero → whisper.cpp → llama.cpp → Kokoro → fixture
 //! playback. Fake providers remain in the 30-turn in-memory tests. Native
-//! inference tests share one binary (`native_inference`) and skip weight loads
-//! under `cargo llvm-cov` (`cfg(coverage)`). Sequence 22 ships a `dist`
+//! inference tests share one binary (`native_inference`): default `cargo test`
+//! loads the launch stack only, `SYLLABIX_NATIVE_MODELS` selects exclusive yaml
+//! model ids, and `cargo llvm-cov` skips weight loads (`cfg(coverage)`). Sequence 22 ships a `dist`
 //! profile executable; model weights stay in the first-run cache. Sequence 23
 //! publishes those files as a GitHub Release.
 
