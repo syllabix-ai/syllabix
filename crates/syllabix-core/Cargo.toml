@@ -24,6 +24,9 @@ serde_json.workspace = true
 tracing.workspace = true
 syllabix-native.workspace = true
 sonora.workspace = true
+# Kokoro G2P: Misaki US lexicon in-process. default-features includes
+# espeak-ng (GPL + extra dylib) — keep that off.
+misaki-rs = { version = "=0.3.0", default-features = false }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 coreaudio-sys.workspace = true

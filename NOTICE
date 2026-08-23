@@ -93,14 +93,12 @@ Source: https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
 
 ## Data
 
-### CMUdict (compiled into the English grapheme-to-phoneme table)
+### Misaki English lexicons (compiled into the Kokoro grapheme-to-phoneme table)
 
-Copyright (C) 1990-2009 Carnegie Mellon University. All rights reserved.
-
-Permission is granted to use this dictionary without fee, subject to the
-cmusphinx distribution terms (redistributions of source must retain the
-copyright notice; no fee may be charged for the dictionary itself).
-Source: https://github.com/cmusphinx/cmudict
+Apache License 2.0. Copyright hexgrad.
+Source: https://github.com/hexgrad/misaki
+The in-process engine is `misaki-rs` (MIT), with the espeak-ng feature
+disabled so the binary does not link GPL code or an extra dylib.
 
 ## Rust dependencies
 
