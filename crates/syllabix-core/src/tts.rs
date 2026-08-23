@@ -236,7 +236,7 @@ impl Clone for QwenTts {
 
 impl QwenTts {
     /// Load the backbone GGUF + mmproj from disk and speak `language`.
-    /// `selected` picks the loaded weight for logs and turn-debug.
+    /// `selected` picks the loaded weight for logs and the diagnostics sidecar.
     pub fn from_paths(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,

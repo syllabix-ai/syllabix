@@ -111,7 +111,9 @@ cargo test -p syllabix-native n_gpu_layers_matches_os -- --nocapture
 cargo test --workspace
 # system info from the unit test should mention Metal; Whisper GPU is on.
 # Live tok/s vs the M4 tables above (tg32, default llama-3.2-1b, 4 threads):
-cargo run -p syllabix --release -- run --turn-debug /tmp/syllabix-turn-debug
+# enable diagnostics in syllabix.yaml (`diagnostics: {timestamps: true, audio: true}`)
+# then read llm_first_token offsets from target/turn-debug/turn-*/turn.json.
+cargo run -p syllabix --release -- run
 ```
 
 KleidiAI SME did not link (`___arm_tpidr2_save`). It stays off. Default GGUF stays `llama-3.2-1b`. Metal + Accelerate are the Darwin path.

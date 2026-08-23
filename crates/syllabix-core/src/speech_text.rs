@@ -16,7 +16,7 @@ pub fn strip_think_for_speech(text: &str) -> String {
     collapse_ws(&filter.push(text, true))
 }
 
-/// Think-strip, then Markdown-strip. Used by TTS and `--turn-debug` speak-text.
+/// Think-strip, then Markdown-strip. Used by TTS and the diagnostics speak-text.
 pub fn speak_text_for_tts(text: &str) -> String {
     strip_markdown_for_speech(&strip_think_for_speech(text))
 }

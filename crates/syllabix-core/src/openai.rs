@@ -32,7 +32,7 @@ pub const DEFAULT_LLM_BASE_URL: &str = "https://api.openai.com/v1";
 /// Config / log name for the remote execution model.
 pub const PROVIDER_NAME: &str = "online";
 
-/// Response header echoed into `--turn-debug` sidecars when present.
+/// Response header echoed into diagnostics sidecars when present.
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
 
 /// Hard connect timeout. A dead endpoint fails the turn instead of hanging.
@@ -204,7 +204,7 @@ fn build_agent(timeouts: OpenAiTimeouts) -> Agent {
 enum StreamEvent {
     /// One non-empty assistant delta.
     Delta(String),
-    /// Response id header captured for turn-debug.
+    /// Response id header captured for the diagnostics sidecar.
     RequestId(String),
     /// Server sent `data: [DONE]`.
     Finished,

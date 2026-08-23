@@ -102,7 +102,10 @@ run_help "${copied}" --help | grep -q "Local voice agent"
 run_help "${copied}" --help | grep -q "run"
 run_help "${copied}" --help | grep -q "init"
 echo "== run --help =="
-run_help "${copied}" run --help | grep -q -- "--turn-debug"
+if run_help "${copied}" run --help | grep -q -- "--turn-debug"; then
+  echo "run --help must not advertise --turn-debug (diagnostics are yaml-only since row 34)" >&2
+  exit 1
+fi
 run_help "${copied}" run --help | grep -q -- "--barge-in"
 echo "== --version =="
 run_help "${copied}" --version | grep -q "syllabix"

@@ -33,7 +33,7 @@ pub trait Llm: Send {
     /// Config name (`llama.cpp`, `openai`).
     fn name(&self) -> &'static str;
 
-    /// Provider facts for `--turn-debug` sidecars. `None` means the fake and
+    /// Provider facts for diagnostics sidecars. `None` means the fake and
     /// test providers; live engines report provider/model/endpoint/request-id.
     fn debug_meta(&self) -> Option<LlmDebugMeta> {
         None
@@ -56,7 +56,7 @@ pub trait Tts: Send {
     /// Config name (`kokoro`).
     fn name(&self) -> &'static str;
 
-    /// Weight id for `--turn-debug` sidecars. `None` means the fake and test
+    /// Weight id for diagnostics sidecars. `None` means the fake and test
     /// providers; live engines report the loaded asset id.
     fn model_id(&self) -> Option<&str> {
         None

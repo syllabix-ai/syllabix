@@ -31,7 +31,7 @@ pub struct AudioFrame {
     pub channels: u16,
     /// Interleaved PCM16 samples.
     pub samples: Vec<i16>,
-    /// Pre-AEC PCM for `--turn-debug`, same length as `samples` when present.
+    /// Pre-AEC PCM for the diagnostics WAVs, same length as `samples` when present.
     pub capture_pcm: Option<Vec<i16>>,
 }
 
@@ -164,7 +164,7 @@ pub struct HistoryTurn {
     pub assistant: String,
 }
 
-/// Provider facts for `--turn-debug` sidecars.
+/// Provider facts for diagnostics sidecars.
 ///
 /// `endpoint` and `request_id` are empty for the local llama.cpp provider;
 /// they identify the cloud endpoint and response for row 30 (`openai`).

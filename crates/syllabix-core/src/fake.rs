@@ -7,6 +7,7 @@ use crate::cancel::Cancel;
 use crate::defaults::BuiltinDefaults;
 use crate::error::{Error, Result};
 use crate::providers::{AudioSink, Llm, Stt, Tts, Vad};
+use crate::turn_debug::PlaybackWatch;
 use crate::types::{
     AudioFrame, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId, Utterance, VadEvent,
     DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
@@ -417,6 +418,19 @@ pub struct CollectingSink {
     pub chunks: Vec<SynthesizedAudio>,
     /// Times [`AudioSink::interrupt`] ran (barge-in flush).
     pub interrupted: usize,
+    watch: Option<PlaybackWatch>,
+}
+
+impl CollectingSink {
+    /// Collect audio while reporting playback edges to a timeline watch —
+    /// the fixture stand-in for the native speaker callback.
+    pub fn with_playback_watch(watch: Option<PlaybackWatch>) -> Self {
+        Self {
+            chunks: Vec::new(),
+            interrupted: 0,
+            watch,
+        }
+    }
 }
 
 impl AudioSink for CollectingSink {
@@ -426,6 +440,15 @@ impl AudioSink for CollectingSink {
         }
         if cancel.is_stale(audio.generation) {
             return Ok(());
+        }
+        if let Some(watch) = &self.watch {
+            // Synchronous "device": consuming the chunk is one callback tick;
+            // the final chunk drains immediately after.
+            watch.begin_turn(audio.turn);
+            watch.on_callback(audio.samples.len());
+            if audio.is_last {
+                watch.on_callback(0);
+            }
         }
         self.chunks.push(audio);
         Ok(())

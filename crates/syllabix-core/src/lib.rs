@@ -86,8 +86,8 @@ pub use tts::{
     TTS_ASR_MIN_WORD_MATCH,
 };
 pub use turn_debug::{
-    prepare_turn_debug_dir, resolve_turn_debug_dir, TurnDebug, TurnOutcome, DEFAULT_TURN_DEBUG_DIR,
-    TURN_DEBUG_DIR_ENV,
+    prepare_turn_debug_dir, PlaybackWatch, TimelineAnchor, TurnDebug, TurnOutcome,
+    DEFAULT_TURN_DEBUG_DIR,
 };
 pub use types::{
     AudioFrame, CompletedTurn, GenerationId, HistoryTurn, LlmDebugMeta, SynthesizedAudio,

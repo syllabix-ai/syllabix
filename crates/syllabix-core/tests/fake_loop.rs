@@ -11,9 +11,9 @@ use syllabix_core::{
     audio::{read_wav, PcmFormat},
     run_loop, run_loop_captured, scripted_frames, AudioCapture, AudioSink, BuiltinDefaults, Cancel,
     CollectingSink, Error, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt, FakeTts,
-    FakeVad, LoopConfig, LoopMode, PipelineStages, QueueCaps, Result, ScriptedStt,
-    SynthesizedAudio, TokenChunk, Tts, TurnDebug, TurnId, Vad, VadEvent, DEFAULT_CHANNELS,
-    DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    FakeVad, LoopConfig, LoopMode, PipelineStages, PlaybackWatch, QueueCaps, Result, ScriptedStt,
+    SynthesizedAudio, TimelineAnchor, TokenChunk, Tts, TurnDebug, TurnId, Vad, VadEvent,
+    DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
 fn run_with(
@@ -678,6 +678,110 @@ fn barge_in_turn_debug_writes_interrupted_turn() {
     );
     let second = std::fs::read_to_string(dir.join("turn-001").join("turn.json")).unwrap();
     assert!(second.contains("completed"), "{second}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn diagnostics_sidecar_carries_the_full_turn_timeline() {
+    let dir = unique_debug_dir();
+    let debug = TurnDebug::open(&dir).unwrap();
+    let watch = PlaybackWatch::new(debug.clone());
+    run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: Some(debug.clone()),
+            barge_in: false,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm: FakeLlm::new(),
+            tts: FakeTts,
+            sink: CollectingSink::with_playback_watch(Some(watch)),
+        },
+        scripted_frames(1, 2, 1),
+        Cancel::new(),
+    )
+    .expect("timeline loop");
+
+    // Sidecar: every anchor present, epoch zeroed, stage order preserved.
+    let sidecar = std::fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
+    for anchor in [
+        "speech_start_ms",
+        "speech_end_ms",
+        "stt_queued_ms",
+        "stt_done_ms",
+        "llm_start_ms",
+        "llm_first_token_ms",
+        "llm_last_token_ms",
+        "tts_first_pcm_ms",
+        "tts_last_pcm_ms",
+        "playback_first_ms",
+        "playback_done_ms",
+    ] {
+        assert!(
+            !sidecar.contains(&format!("\"{anchor}\": null")),
+            "{anchor} must be captured for a completed turn: {sidecar}"
+        );
+    }
+    assert!(sidecar.contains("\"speech_start_ms\": 0"), "{sidecar}");
+    let value_of = |key: &str| -> u128 {
+        let marker = format!("\"{key}\": ");
+        let start = sidecar
+            .find(&marker)
+            .unwrap_or_else(|| panic!("{key} in sidecar"))
+            + marker.len();
+        let rest = &sidecar[start..];
+        let end = rest.find([',', '\n']).expect("number ends");
+        rest[..end].trim().parse().expect("millis value")
+    };
+    assert!(value_of("speech_end_ms") <= value_of("stt_queued_ms"));
+    assert!(value_of("stt_done_ms") <= value_of("llm_start_ms"));
+    assert!(value_of("llm_start_ms") <= value_of("llm_first_token_ms"));
+    assert!(value_of("llm_first_token_ms") <= value_of("tts_first_pcm_ms"));
+    assert!(value_of("tts_first_pcm_ms") <= value_of("playback_first_ms"));
+    assert!(value_of("playback_first_ms") <= value_of("playback_done_ms"));
+
+    // Recorder accessor agrees with the rendered file.
+    let anchored = debug.anchored(TurnId(0));
+    assert_eq!(anchored[0].0, TimelineAnchor::SpeechStart);
+    assert_eq!(
+        anchored.last().map(|(a, _)| *a),
+        Some(TimelineAnchor::PlaybackDone)
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn interrupted_barge_in_turn_has_a_partial_timeline_without_drain() {
+    let dir = unique_debug_dir();
+    let debug = TurnDebug::open(&dir).unwrap();
+    run_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: Some(debug),
+            barge_in: true,
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm: FakeLlm::with_delay(Duration::from_millis(25)),
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(2, 2, 1),
+        Cancel::new(),
+    )
+    .expect("barge timeline");
+    let first = std::fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
+    assert!(first.contains("\"outcome\": \"cancelled\""), "{first}");
+    // The turn was cancelled mid-generation: no LLM/TTS/playback end anchors.
+    assert!(first.contains("\"llm_last_token_ms\": null"), "{first}");
+    assert!(first.contains("\"playback_done_ms\": null"), "{first}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

@@ -194,7 +194,7 @@ impl EchoController {
         self.lock().recording = true;
     }
 
-    /// Record aligned pre-AEC / post-AEC blocks for `--turn-debug` without a session dump.
+    /// Record aligned pre-AEC / post-AEC blocks for diagnostics without a session dump.
     pub fn enable_debug_tap(&mut self) {
         self.lock().tap_enabled = true;
     }

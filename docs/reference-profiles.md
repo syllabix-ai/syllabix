@@ -38,11 +38,21 @@ or raising Silero threshold/min-speech.
 
 ## 3. Barge-in p95 interrupt latency (profile A)
 
-```bash
-cargo run -p syllabix --release -- run --barge-in --turn-debug target/turn-debug
+Enable diagnostics in the project's `syllabix.yaml` (field guide:
+[`diagnostics.md`](diagnostics.md)), then run with the flag:
+
+```yaml
+diagnostics:
+  timestamps: true
+  audio: true
+  directory: target/turn-debug
 ```
 
-While the agent speaks, talk over it repeatedly. With `--turn-debug` each
+```bash
+cargo run -p syllabix --release -- run --barge-in
+```
+
+While the agent speaks, talk over it repeatedly. With diagnostics enabled each
 interrupted turn dumps the interrupted TTS plus your new utterance.
 
 Measurement: timestamped speech-onset event → playback silence. Launch gate
@@ -71,9 +81,11 @@ playback — that difference is itself a test
 
 ## 5. Latency lines
 
-The TUI reports STT, TTFT, TTFB, and total per turn. Record them from
-profile A runs when claiming speedups; do not quote wall-clock numbers from
-CI. LLM tok/s comparisons belong in `vendor/llama-bench.md`.
+The TUI reports STT, TTFT, TTFB, and total per turn (legacy enqueue-based
+clocks, unchanged since row 25). The finer, device-true numbers come from the
+row-34 timeline sidecars — see §10. Record them from profile A runs when
+claiming speedups; do not quote wall-clock numbers from CI. LLM tok/s
+comparisons belong in `vendor/llama-bench.md`.
 
 ## 6. Coverage and native inference (profile B)
 
@@ -188,3 +200,71 @@ backbone-size problem. The delta is recorded here for founder acceptance
 per the row-32 merge gate ("inside budget or founder-accepted delta").
 Metric note: with n=20 the p95 slot is the second-largest sample, which is
 why the 0.6B p95 sits below its p50.
+
+## 10. Turn timeline instrumentation (row 34, profile A)
+
+Diagnostics replace the retired `--turn-debug` flag (enable + field guide:
+[`diagnostics.md`](diagnostics.md)):
+
+```yaml
+# syllabix.yaml
+diagnostics:
+  timestamps: true   # turn-*/turn.json sidecars under `directory`
+  audio: true        # additionally capture/clean/utterance/tts.wav (implies timestamps)
+  directory: target/turn-debug
+```
+
+Each sidecar carries `"timeline"` — monotonic milliseconds from the turn's
+SpeechStart, captured at eleven stage boundaries: `speech_start`,
+`speech_end`, `stt_queued`, `stt_done`, `llm_start`, `llm_first_token`,
+`llm_last_token`, `tts_first_pcm`, `tts_last_pcm`, `playback_first` (first
+speaker-callback samples), and `playback_done` (final audible drain).
+Anchors a cancelled turn never reached render as `null`.
+
+### Segments
+
+| Segment | Formula | Reads as |
+|---|---|---|
+| `user_speech_ms` | speech_end − speech_start | How long the user spoke |
+| `vad_queue_wait_ms` | stt_queued − speech_end | Utterance sat in queue |
+| `stt_decode_ms` | stt_done − stt_queued | Whisper decode alone |
+| `stt_total_ms` | stt_done − speech_end | Silence-end → transcript |
+| `handoff_llm_ms` | llm_start − stt_done | Transcript → generation start |
+| `llm_ttft_ms` | llm_first_token − llm_start | Time-to-first-token |
+| `llm_stream_ms` | llm_last_token − llm_first_token | Generation duration |
+| `tts_lead_ms` | tts_first_pcm − llm_first_token | First token → first PCM (sentence buffering visible) |
+| `llm_end_to_first_pcm_ms` | tts_first_pcm − llm_last_token | Signed: negative ⇒ synthesis overlapped generation (Kokoro sentence streaming); positive ⇒ TTS waited for the whole cleaned reply (Qwen row-33 buffering) |
+| `tts_synthesis_ms` | tts_last_pcm − tts_first_pcm | Synthesis throughput |
+| `playback_handoff_ms` | playback_first − tts_first_pcm | PCM ready → device audible |
+| **`audible_latency_ms`** | **playback_first − speech_end** | **Silence-end → first audio out of the speaker — the G4 budget metric** |
+| `spoken_duration_ms` | playback_done − playback_first | Reply playback duration |
+| `total_turn_ms` | playback_done − speech_end | Full round-trip |
+
+The legacy TUI clocks are unchanged; `audible_latency_ms` will read higher
+than the old TTFB because it now includes device handoff — that delta is the
+instrumentation gap this row exists to expose.
+
+### Capture protocol
+
+Per configuration to measure (default stack first: whisper `small` +
+`llama-3.2-1b` + Kokoro; then `qwen3-0.6`, `qwen3-1.7`, `qwen3.5-0.8b`,
+`qwen3.5-2b`, and the `online` LLM if relevant):
+
+1. Write a scratch `syllabix.yaml` with diagnostics on.
+2. Hold ≥20 real conversations turns on profile A (built-in speakers, quiet room).
+3. Summarize:
+
+```bash
+python3 scripts/summarize-timelines.py target/turn-debug   # contributor-only tool
+```
+
+4. Record per-segment p50/p95 below.
+
+### Results
+
+*(to be filled by the reference-Air capture; the split decides the next
+latency optimization row)*
+
+| Configuration | n | audible_latency p50/p95 | llm_ttft p50/p95 | stt_total p50/p95 | llm_end_to_first_pcm p50/p95 |
+|---|---:|---:|---:|---:|---:|
+| default (kokoro + llama-3.2-1b) | | | | | |

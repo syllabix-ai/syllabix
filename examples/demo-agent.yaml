@@ -7,7 +7,7 @@
 # Other STT model ids: medium / large-v3-turbo and the published quantizations
 #   medium-q5_0 / large-v3-turbo-q5_0 (first run fetches only the selected id).
 # `language` is any whisper ISO code (fr, de, ja, …) or `auto`: the detected
-#   language shows in the TUI/turn-debug and the agent replies in-language.
+#   language shows in the TUI/diagnostics sidecar and the agent replies in-language.
 # Other LLM ids: qwen3.5-0.8b / qwen3.5-2b (add `thinking: true` for Qwen
 # chain-of-thought; it is stripped before TTS either way).
 # For a remote LLM use `provider: online` with a required `base_url`

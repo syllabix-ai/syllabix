@@ -1,5 +1,6 @@
 use assert_cmd::cargo::cargo_bin;
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str;
 use syllabix_core::{AgentConfig, CONFIG_FILE_NAME};
 
@@ -19,13 +20,13 @@ fn help_exits_zero_and_lists_commands() {
 }
 
 #[test]
-fn run_help_lists_turn_debug_and_barge_in() {
+fn run_help_lists_barge_in_but_not_turn_debug() {
     syllabix()
         .args(["run", "--help"])
         .assert()
         .success()
-        .stdout(str::contains("--turn-debug"))
-        .stdout(str::contains("--barge-in"));
+        .stdout(str::contains("--barge-in"))
+        .stdout(str::contains("--turn-debug").not());
 }
 
 #[test]

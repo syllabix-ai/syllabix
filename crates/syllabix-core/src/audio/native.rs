@@ -19,6 +19,7 @@ use crate::audio::ring::{device_ring_capacity_samples, SampleRing};
 use crate::cancel::Cancel;
 use crate::error::{Error, Result};
 use crate::providers::{AudioCapture, AudioSink};
+use crate::turn_debug::PlaybackWatch;
 use crate::types::{AudioFrame, SynthesizedAudio};
 
 /// Backend id for logs. The shipped loop uses this name once `run` is wired.
@@ -284,7 +285,11 @@ fn spawn_input(choice: DeviceChoice) -> Result<OpenedStream> {
     })
 }
 
-fn spawn_output(choice: DeviceChoice, tap_render: bool) -> Result<OpenedStream> {
+fn spawn_output(
+    choice: DeviceChoice,
+    tap_render: bool,
+    watch: Option<PlaybackWatch>,
+) -> Result<OpenedStream> {
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let stop = Arc::new((Mutex::new(false), Condvar::new()));
     let stop_thread = Arc::clone(&stop);
@@ -310,6 +315,7 @@ fn spawn_output(choice: DeviceChoice, tap_render: bool) -> Result<OpenedStream> 
                 &selected,
                 Arc::clone(&ring),
                 echo_ring.as_ref().map(Arc::clone),
+                watch,
             ) {
                 Ok(s) => s,
                 Err(err) => {
@@ -417,7 +423,7 @@ impl NativeCapture {
         self.echo.as_mut()
     }
 
-    /// Align pre-AEC PCM with each clean frame for `--turn-debug`.
+    /// Align pre-AEC PCM with each clean frame for the diagnostics WAVs.
     pub fn enable_pcm_tap(&mut self) {
         self.pcm_tap = true;
         if let Some(echo) = &mut self.echo {
@@ -528,6 +534,7 @@ pub struct NativePlayback {
     ring: Arc<SampleRing>,
     echo_ring: Option<Arc<SampleRing>>,
     conv: PcmConverter,
+    watch: Option<PlaybackWatch>,
     /// Selected device name.
     pub device_name: String,
     /// Device PCM layout after conversion.
@@ -537,22 +544,31 @@ pub struct NativePlayback {
 impl NativePlayback {
     /// Open the selected default (or first usable) output device.
     pub fn open() -> Result<Self> {
-        Self::open_inner(false).map(|(playback, _)| playback)
+        Self::open_inner(false, None).map(|(playback, _)| playback)
     }
 
     /// Open speakers and tap the exact rendered PCM for full-duplex AEC.
     pub fn open_with_echo() -> Result<(Self, EchoReference)> {
-        let (playback, reference) = Self::open_inner(true)?;
+        Self::open_with_echo_and_watch(None)
+    }
+
+    /// [`Self::open_with_echo`] plus timeline anchors for the speaker callback
+    /// (`playback_first` / `playback_done` in the diagnostics sidecar).
+    pub fn open_with_echo_and_watch(watch: Option<PlaybackWatch>) -> Result<(Self, EchoReference)> {
+        let (playback, reference) = Self::open_inner(true, watch)?;
         Ok((
             playback,
             reference.expect("render tap requested but not constructed"),
         ))
     }
 
-    fn open_inner(tap_render: bool) -> Result<(Self, Option<EchoReference>)> {
+    fn open_inner(
+        tap_render: bool,
+        watch: Option<PlaybackWatch>,
+    ) -> Result<(Self, Option<EchoReference>)> {
         let inv = CpalInventory::new();
         let choice = select_output(&inv)?;
-        let opened = spawn_output(choice, tap_render)?;
+        let opened = spawn_output(choice, tap_render, watch.clone())?;
         let reference = opened
             .echo_ring
             .as_ref()
@@ -564,6 +580,7 @@ impl NativePlayback {
                 device_format: opened.device_format,
                 ring: opened.ring,
                 echo_ring: opened.echo_ring,
+                watch,
                 _worker: opened.worker,
             },
             reference,
@@ -588,6 +605,9 @@ impl AudioSink for NativePlayback {
         if cancel.is_stale(audio.generation) {
             self.interrupt();
             return Ok(());
+        }
+        if let Some(watch) = &self.watch {
+            watch.begin_turn(audio.turn);
         }
         let f32s = i16_to_f32(&audio.samples);
         let mut device_pcm = self.conv.push(&f32s);
@@ -668,6 +688,7 @@ fn build_output_stream(
     selected: &SelectedCpalDevice,
     ring: Arc<SampleRing>,
     echo_ring: Option<Arc<SampleRing>>,
+    watch: Option<PlaybackWatch>,
 ) -> Result<Stream> {
     let err_fn = |err| {
         eprintln!("syllabix speaker error: {err}");
@@ -678,8 +699,13 @@ fn build_output_stream(
             .build_output_stream(
                 &selected.config,
                 move |data: &mut [f32], _| {
-                    let _ = ring.try_pop_slice(data);
+                    let rendered = ring.try_pop_slice(data);
+                    if let Some(watch) = &watch {
+                        watch.on_callback(rendered);
+                    }
                     if let Some(reference) = &echo_ring {
+                        // The device renders the whole buffer (zeros included);
+                        // the AEC reference must see exactly that.
                         let _ = reference.try_push_slice(data);
                     }
                 },
@@ -693,7 +719,10 @@ fn build_output_stream(
                 &selected.config,
                 move |data: &mut [i16], _| {
                     let mut f = vec![0.0f32; data.len()];
-                    let _ = ring.try_pop_slice(&mut f);
+                    let rendered = ring.try_pop_slice(&mut f);
+                    if let Some(watch) = &watch {
+                        watch.on_callback(rendered);
+                    }
                     let i = f32_to_i16(&f);
                     data.copy_from_slice(&i);
                     if let Some(reference) = &echo_ring {
@@ -710,7 +739,10 @@ fn build_output_stream(
                 &selected.config,
                 move |data: &mut [u16], _| {
                     let mut f = vec![0.0f32; data.len()];
-                    let _ = ring.try_pop_slice(&mut f);
+                    let rendered = ring.try_pop_slice(&mut f);
+                    if let Some(watch) = &watch {
+                        watch.on_callback(rendered);
+                    }
                     for (slot, sample) in data.iter_mut().zip(f.iter()) {
                         let scaled = (sample.clamp(-1.0, 1.0) + 1.0) * 0.5 * f32::from(u16::MAX);
                         *slot = scaled.round() as u16;
@@ -772,6 +804,7 @@ mod tests {
             ring: Arc::new(SampleRing::new(4_096)),
             echo_ring: None,
             conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
+            watch: None,
             device_name: "test speakers".into(),
             device_format,
         }
@@ -924,12 +957,94 @@ mod tests {
     }
 
     #[test]
+    fn play_attributes_callback_consumption_to_the_active_turn() {
+        let dir = std::env::temp_dir().join(format!(
+            "syllabix-native-watch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let recorder = crate::turn_debug::TurnDebug::open(&dir).expect("recorder");
+        let watch = crate::turn_debug::PlaybackWatch::new(recorder.clone());
+        // Seed the VAD epoch the pipeline always records for a real turn.
+        recorder.note_anchor(
+            crate::types::TurnId(3),
+            crate::turn_debug::TimelineAnchor::SpeechStart,
+            std::time::Instant::now(),
+        );
+        let device_format = PcmFormat::v0();
+        let mut playback = NativePlayback {
+            _worker: idle_worker(),
+            ring: Arc::new(SampleRing::new(4_096)),
+            echo_ring: None,
+            conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
+            watch: Some(watch.clone()),
+            device_name: "test speakers".into(),
+            device_format,
+        };
+        let cancel = Cancel::new();
+        let live_generation = cancel.generation();
+        playback
+            .play(
+                SynthesizedAudio {
+                    turn: crate::types::TurnId(3),
+                    generation: live_generation,
+                    index: 0,
+                    samples: vec![256; 64],
+                    is_last: false,
+                },
+                &cancel,
+            )
+            .expect("queue chunk");
+
+        // Simulate the device callback consuming what play() queued.
+        let mut out = [0.0f32; 64];
+        let rendered = playback.ring.try_pop_slice(&mut out);
+        assert!(rendered > 0);
+        watch.on_callback(rendered);
+
+        // Stale generations never touch the watch.
+        cancel.cancel_generation();
+        playback
+            .play(
+                SynthesizedAudio {
+                    turn: crate::types::TurnId(4),
+                    generation: live_generation, // pre-bump ⇒ now stale
+                    index: 1,
+                    samples: vec![256; 64],
+                    is_last: false,
+                },
+                &cancel,
+            )
+            .expect("stale play returns Ok");
+        watch.on_callback(0); // drain attributes to the still-active turn 3
+
+        let anchored = recorder.anchored(crate::types::TurnId(3));
+        assert_eq!(
+            anchored.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
+            vec![
+                crate::turn_debug::TimelineAnchor::SpeechStart,
+                crate::turn_debug::TimelineAnchor::PlaybackFirst,
+                crate::turn_debug::TimelineAnchor::PlaybackDone
+            ]
+        );
+        assert!(
+            recorder.anchored(crate::types::TurnId(4)).is_empty(),
+            "a stale chunk must not retarget the watch"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn play_stops_feeding_the_ring_when_generation_goes_stale() {
         let mut playback = NativePlayback {
             _worker: idle_worker(),
             ring: Arc::new(SampleRing::new(32)),
             echo_ring: None,
             conv: PcmConverter::new(PcmFormat::v0(), PcmFormat::v0()).expect("v0 converter"),
+            watch: None,
             device_name: "test speakers".into(),
             device_format: PcmFormat::v0(),
         };
