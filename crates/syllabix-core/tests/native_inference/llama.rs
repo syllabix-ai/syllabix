@@ -10,7 +10,7 @@ use syllabix_core::{
     VOICE_SYSTEM_PROMPT,
 };
 
-use crate::native;
+use crate::{native, skip_unless_model};
 
 fn collect(
     llm: &mut LlamaLlm,
@@ -32,17 +32,18 @@ fn joined(chunks: &[TokenChunk]) -> String {
 
 #[test]
 fn q4_km_gguf_loads_without_segfault() {
+    skip_unless_model!("llama-3.2-1b");
     let mut n = native();
-    assert_eq!(n.llm.name(), "local");
+    assert_eq!(n.llm().name(), "local");
     assert!(VOICE_SYSTEM_PROMPT.contains("spoken"));
     let user = Transcript {
         turn: TurnId(0),
         text: "Say the word hello.".into(),
         language: "en".into(),
     };
-    let chunks = collect(&mut n.llm, &[], &user, &Cancel::new()).expect("generate after load");
+    let chunks = collect(n.llm_mut(), &[], &user, &Cancel::new()).expect("generate after load");
     assert!(!chunks.is_empty(), "must stream at least one token chunk");
-    let window = n.llm.context_window().expect("native llama context");
+    let window = n.llm().context_window().expect("native llama context");
     assert!(window.0 > 0 && window.0 == window.1, "n_ctx={window:?}");
     assert!(
         chunks.last().expect("last").is_last,
@@ -59,13 +60,14 @@ fn q4_km_gguf_loads_without_segfault() {
 
 #[test]
 fn deterministic_fixture_streams_a_reply() {
+    skip_unless_model!("llama-3.2-1b");
     let mut n = native();
     let user = Transcript {
         turn: TurnId(1),
         text: "Reply with the single word ping.".into(),
         language: "en".into(),
     };
-    let chunks = collect(&mut n.llm, &[], &user, &Cancel::new()).expect("stream");
+    let chunks = collect(n.llm_mut(), &[], &user, &Cancel::new()).expect("stream");
     let text = joined(&chunks);
     assert!(
         !text.trim().is_empty(),
@@ -83,13 +85,14 @@ fn deterministic_fixture_streams_a_reply() {
 
 #[test]
 fn generate_preserves_configured_turn_history() {
+    skip_unless_model!("llama-3.2-1b");
     let mut n = native();
     let first = Transcript {
         turn: TurnId(0),
         text: "My favorite color is teal.".into(),
         language: "en".into(),
     };
-    let first_chunks = collect(&mut n.llm, &[], &first, &Cancel::new()).expect("turn 1");
+    let first_chunks = collect(n.llm_mut(), &[], &first, &Cancel::new()).expect("turn 1");
     let assistant: String = joined(&first_chunks);
     let history = vec![HistoryTurn {
         user: first.clone(),
@@ -100,9 +103,9 @@ fn generate_preserves_configured_turn_history() {
         text: "What color did I say?".into(),
         language: "en".into(),
     };
-    let log = n.llm.call_log();
+    let log = n.llm().call_log();
     log.lock().expect("clear").clear();
-    let second_chunks = collect(&mut n.llm, &history, &second, &Cancel::new()).expect("turn 2");
+    let second_chunks = collect(n.llm_mut(), &history, &second, &Cancel::new()).expect("turn 2");
     assert!(!joined(&second_chunks).trim().is_empty());
     let calls = log.lock().expect("calls");
     assert_eq!(calls.len(), 1);
@@ -116,6 +119,7 @@ fn generate_preserves_configured_turn_history() {
 
 #[test]
 fn cancel_aborts_native_generate_within_timeout() {
+    skip_unless_model!("llama-3.2-1b");
     let mut n = native();
     let user = Transcript {
         turn: TurnId(0),
@@ -130,7 +134,7 @@ fn cancel_aborts_native_generate_within_timeout() {
         cancel_thread.shutdown();
     });
     let started = Instant::now();
-    let result = collect(&mut n.llm, &[], &user, &cancel);
+    let result = collect(n.llm_mut(), &[], &user, &cancel);
     let elapsed = started.elapsed();
     assert!(
         elapsed <= LLAMA_CANCEL_TIMEOUT,
@@ -148,8 +152,9 @@ fn cancel_aborts_native_generate_within_timeout() {
 
 #[test]
 fn llama_replaces_fake_llm_in_the_loop() {
-    let n = native();
-    let log = n.llm.call_log();
+    skip_unless_model!("llama-3.2-1b");
+    let mut n = native();
+    let log = n.llm().call_log();
     log.lock().expect("clear").clear();
     let frames = scripted_frames(1, 2, 1);
     let report = run_loop(
@@ -157,7 +162,7 @@ fn llama_replaces_fake_llm_in_the_loop() {
         PipelineStages {
             vad: FakeVad::new(),
             stt: FakeStt,
-            llm: n.llm.clone(),
+            llm: n.llm().clone(),
             tts: FakeTts,
             sink: CollectingSink::default(),
         },
@@ -184,7 +189,9 @@ fn llama_replaces_fake_llm_in_the_loop() {
 
 #[test]
 fn populated_cache_reuses_the_gguf_offline() {
-    let _n = native();
+    skip_unless_model!("llama-3.2-1b");
+    let mut n = native();
+    let _ = n.llm();
     let cached = ModelCache::v0();
     let asset = cached.manifest().asset(LLAMA_32_1B_ASSET).unwrap();
     cached
@@ -199,7 +206,8 @@ fn populated_cache_reuses_the_gguf_offline() {
 
 #[test]
 fn yaml_qwen_08b_thinking_true_strips_think_for_speech() {
-    drop(native());
+    skip_unless_model!("qwen3.5-0.8b");
+    let _lock = native();
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
     let mut llm = LlamaLlm::from_cached_model(

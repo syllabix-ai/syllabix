@@ -11,8 +11,7 @@ use syllabix_core::{
     LOOP_RSS_GROWTH_CEILING_BYTES,
 };
 
-use crate::hex;
-use crate::native;
+use crate::{hex, native, skip_unless_launch_stack};
 
 const SPEECH_SHA256: &str = "e72f1ccf42dc827252141e927a0969793169fbe8039392e207285aa306f09daa";
 const REAL_TURNS: usize = 6;
@@ -57,7 +56,8 @@ fn six_turn_frames() -> Vec<syllabix_core::AudioFrame> {
 
 #[test]
 fn six_real_turns_complete_within_queue_and_memory_bounds() {
-    let n = native();
+    skip_unless_launch_stack!();
+    let mut n = native();
     let warmup_rss = process_rss_bytes();
     // Fresh Silero session: GRU hangover on the shared instance would stall later turns.
     let vad = SileroVad::from_cache(
@@ -80,9 +80,9 @@ fn six_real_turns_complete_within_queue_and_memory_bounds() {
         LoopConfig::default(),
         PipelineStages {
             vad,
-            stt: n.stt.clone(),
-            llm: n.llm.clone(),
-            tts: n.tts.clone(),
+            stt: n.stt().clone(),
+            llm: n.llm().clone(),
+            tts: n.tts().clone(),
             sink,
         },
         capture,

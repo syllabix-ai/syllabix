@@ -11,7 +11,7 @@ use syllabix_core::{
     KOKORO_ASSET, KOKORO_VOICE_ASSET, TTS_ASR_MIN_WORD_MATCH,
 };
 
-use crate::native;
+use crate::{native, skip_unless_model};
 
 fn token(text: &str, index: u32, is_last: bool) -> TokenChunk {
     TokenChunk {
@@ -43,8 +43,9 @@ fn pcm_to_utterance(samples: &[i16]) -> Utterance {
 
 #[test]
 fn first_sentence_audio_arrives_before_full_completion() {
-    let n = native();
-    let mut tts = n.tts.clone();
+    skip_unless_model!("kokoro");
+    let mut n = native();
+    let mut tts = n.tts().clone();
     // Row 32: `name()` carries the posture word; the engine identity stays
     // in `model_id()`.
     assert_eq!(tts.name(), "local");
@@ -77,6 +78,7 @@ fn first_sentence_audio_arrives_before_full_completion() {
 /// reference words count against the 80% in-order ratio.
 #[test]
 fn spoken_text_round_trips_through_whisper_at_eighty_percent() {
+    skip_unless_model!("kokoro");
     const TEXT: &str = "The children played outside in the garden after lunch.";
     let expected_owned = transcript_words(TEXT);
     let expected: Vec<&str> = expected_owned.iter().map(String::as_str).collect();
@@ -86,7 +88,7 @@ fn spoken_text_round_trips_through_whisper_at_eighty_percent() {
     );
 
     let mut n = native();
-    let mut tts = n.tts.clone();
+    let mut tts = n.tts().clone();
     let chunks = tts
         .synthesize_chunk(&token(TEXT, 0, true), &Cancel::new())
         .expect("kokoro synthesize");
@@ -101,7 +103,7 @@ fn spoken_text_round_trips_through_whisper_at_eighty_percent() {
     }
 
     let transcript = n
-        .stt
+        .stt_mut()
         .transcribe(&pcm_to_utterance(&pcm), &Cancel::new())
         .expect("whisper transcribe TTS audio");
     let ratio = word_match_ratio(&transcript.text, &expected);
@@ -117,7 +119,8 @@ fn spoken_text_round_trips_through_whisper_at_eighty_percent() {
 
 #[test]
 fn kokoro_replaces_fake_tts_in_the_loop() {
-    let n = native();
+    skip_unless_model!("kokoro");
+    let mut n = native();
     let frames = scripted_frames(1, 2, 1);
     let report = run_loop(
         LoopConfig::default(),
@@ -125,7 +128,7 @@ fn kokoro_replaces_fake_tts_in_the_loop() {
             vad: FakeVad::new(),
             stt: FakeStt,
             llm: FakeLlm::new(),
-            tts: n.tts.clone(),
+            tts: n.tts().clone(),
             sink: CollectingSink::default(),
         },
         frames,
@@ -149,7 +152,9 @@ fn kokoro_replaces_fake_tts_in_the_loop() {
 
 #[test]
 fn populated_cache_reuses_kokoro_offline() {
-    let _n = native();
+    skip_unless_model!("kokoro");
+    let mut n = native();
+    let _ = n.tts();
     let cached = ModelCache::v0();
     for id in [KOKORO_ASSET, KOKORO_VOICE_ASSET] {
         let asset = cached.manifest().asset(id).unwrap();

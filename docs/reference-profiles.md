@@ -91,7 +91,7 @@ comparisons belong in `vendor/llama-bench.md`.
 
 ```bash
 cargo llvm-cov --workspace --fail-under-lines 85 --cobertura --output-path coverage.xml
-cargo test --workspace   # last; native inference runs here exactly once
+cargo test --workspace   # last; launch-stack native inference runs here exactly once
 ```
 
 llvm-cov sets `--cfg coverage` and must not load whisper.cpp / llama.cpp /
@@ -143,7 +143,8 @@ after upstream splits it smaller.
 Sentence-level TTFB/RTF for the qwen provider land via the opt-in capture:
 
 ```bash
-SYLLABIX_CACHE_DIR=<cache> SYLLABIX_QWEN_LATENCY=1 \
+SYLLABIX_CACHE_DIR=<cache> SYLLABIX_NATIVE_LATENCY=1 \
+  SYLLABIX_NATIVE_MODELS=qwen3-0.6,qwen3-1.7 \
   cargo test --release -p syllabix-core --test native_inference \
   qwen_latency_capture -- --nocapture
 ```
@@ -179,7 +180,8 @@ Latency evidence lands via the same opt-in capture, which prints one line
 per backbone:
 
 ```bash
-SYLLABIX_CACHE_DIR=<cache> SYLLABIX_QWEN_LATENCY=1 \
+SYLLABIX_CACHE_DIR=<cache> SYLLABIX_NATIVE_LATENCY=1 \
+  SYLLABIX_NATIVE_MODELS=qwen3-0.6,qwen3-1.7 \
   cargo test --release -p syllabix-core --test native_inference \
   qwen_latency_capture -- --nocapture
 ```

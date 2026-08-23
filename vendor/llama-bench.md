@@ -108,7 +108,7 @@ Linux CI cannot compile Metal. On Apple Silicon, from this checkout:
 
 ```bash
 cargo test -p syllabix-native n_gpu_layers_matches_os -- --nocapture
-cargo test --workspace
+cargo test --workspace   # launch stack; extra yaml models via SYLLABIX_NATIVE_MODELS
 # system info from the unit test should mention Metal; Whisper GPU is on.
 # Live tok/s vs the M4 tables above (tg32, default llama-3.2-1b, 4 threads):
 # enable diagnostics in syllabix.yaml (`diagnostics: {timestamps: true, audio: true}`)

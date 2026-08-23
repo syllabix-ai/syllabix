@@ -1,3 +1,6 @@
+//! Optional Qwen3-TTS native gates. Run when `SYLLABIX_NATIVE_MODELS` lists
+//! `qwen3-0.6` and/or `qwen3-1.7`. Whisper `small` may load as the ASR scorer.
+//!
 //! Row 31 merge gate, row-32 menu, row-33 incremental Qwen PCM,
 //! TTS→ASR round-trip through whisper.cpp, the numbers gate (`100` →
 //! "hundred"), native cancel, and the row-32 self-voice anchor (same seed ⇒
@@ -14,7 +17,7 @@ use syllabix_core::{
     TTS_ASR_MIN_WORD_MATCH,
 };
 
-use crate::native;
+use crate::{native, native_latency_enabled, native_model_selected, skip_unless_any_model};
 
 /// One shared engine per backbone for this binary; the shared ggml
 /// serializes native work anyway. Seed pinned so failures reproduce.
@@ -53,7 +56,10 @@ fn qwen(model: TtsModel) -> QwenTts {
 
 /// Every backbone in the yaml menu must pass the same gates.
 fn qwen_backbones() -> Vec<TtsModel> {
-    vec![TtsModel::Qwen06, TtsModel::Qwen17]
+    [TtsModel::Qwen06, TtsModel::Qwen17]
+        .into_iter()
+        .filter(|model| native_model_selected(model.as_str()))
+        .collect()
 }
 
 fn token(text: &str, index: u32, is_last: bool) -> TokenChunk {
@@ -99,6 +105,7 @@ fn speak(tts: &mut QwenTts, text: &str) -> Vec<i16> {
 
 #[test]
 fn qwen_streams_pcm_before_full_generation_completes() {
+    skip_unless_any_model!("qwen3-0.6", "qwen3-1.7");
     // Hold the process-global ggml slot for the whole test, like every
     // native module here: parallel test threads share one ggml.
     let _n = native();
@@ -145,6 +152,7 @@ fn qwen_streams_pcm_before_full_generation_completes() {
 /// The intelligibility gate: Qwen3-TTS out, whisper.cpp `small` back in.
 #[test]
 fn qwen_speech_round_trips_through_whisper_at_eighty_percent() {
+    skip_unless_any_model!("qwen3-0.6", "qwen3-1.7");
     const TEXT: &str = "The quick brown fox jumps over the lazy dog near the river.";
     let expected_owned = transcript_words(TEXT);
     let expected: Vec<&str> = expected_owned.iter().map(String::as_str).collect();
@@ -155,7 +163,7 @@ fn qwen_speech_round_trips_through_whisper_at_eighty_percent() {
         let pcm = speak(&mut tts, TEXT);
 
         let transcript = n
-            .stt
+            .stt_mut()
             .transcribe(&pcm_to_utterance(&pcm), &Cancel::new())
             .expect("whisper transcribe qwen audio");
         let ratio = word_match_ratio(&transcript.text, &expected);
@@ -174,6 +182,7 @@ fn qwen_speech_round_trips_through_whisper_at_eighty_percent() {
 /// string. Kokoro's G2P gap reads "one zero zero"; the LM reads "one hundred".
 #[test]
 fn qwen_speaks_numbers_like_a_listener_expects() {
+    skip_unless_any_model!("qwen3-0.6", "qwen3-1.7");
     const TEXT: &str = "That costs 100 dollars.";
     let mut n = native();
     for model in qwen_backbones() {
@@ -181,7 +190,7 @@ fn qwen_speaks_numbers_like_a_listener_expects() {
         let pcm = speak(&mut tts, TEXT);
 
         let transcript = n
-            .stt
+            .stt_mut()
             .transcribe(&pcm_to_utterance(&pcm), &Cancel::new())
             .expect("whisper transcribe numbers audio");
         let normalized = transcript.text.to_lowercase();
@@ -212,6 +221,7 @@ fn qwen_speaks_numbers_like_a_listener_expects() {
 /// consistency across sentences).
 #[test]
 fn qwen_voice_is_deterministic_under_a_pinned_seed() {
+    skip_unless_any_model!("qwen3-0.6", "qwen3-1.7");
     let _n = native();
     const A_TEXT: &str = "The weather looks clear today.";
     const B_TEXT: &str = "A short reply is a good reply.";
@@ -260,6 +270,7 @@ fn qwen_voice_is_deterministic_under_a_pinned_seed() {
 /// not after the full render. The 5 s cap matches the LLM cancel bar.
 #[test]
 fn qwen_native_cancel_surfaces_within_five_seconds() {
+    skip_unless_any_model!("qwen3-0.6", "qwen3-1.7");
     let _n = native();
     for model in qwen_backbones() {
         let mut tts = qwen(model);
@@ -289,12 +300,14 @@ fn qwen_native_cancel_surfaces_within_five_seconds() {
 /// G4 evidence for the row-31 provider and the row-32 backbone: silence-end →
 /// first-audio (TTFB) and render speed over ≥20 sentences, per backbone size.
 /// Opt-in so the default suite stays fast:
-/// `SYLLABIX_QWEN_LATENCY=1 cargo test ... qwen_latency_capture -- --nocapture`
+/// `SYLLABIX_NATIVE_LATENCY=1 SYLLABIX_NATIVE_MODELS=qwen3-0.6 cargo test ... qwen_latency_capture -- --nocapture`
 #[test]
 fn qwen_latency_capture() {
-    if std::env::var_os("SYLLABIX_QWEN_LATENCY").is_none() {
+    if !native_latency_enabled() {
         return;
     }
+    // `native_models_from_env` already panics if latency is set without a Qwen TTS id.
+    let _n = native();
     const SENTENCES: [&str; 20] = [
         "The weather looks clear today.",
         "Remind me to call the dentist tomorrow.",

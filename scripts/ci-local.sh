@@ -32,7 +32,8 @@ else
 fi
 
 echo "== test =="
-# Native inference (whisper/llama/kokoro/six-turn) runs here once.
+# Launch-stack native inference (whisper small / llama 1B / kokoro / six-turn) once.
+# Optional yaml models are exclusive: SYLLABIX_NATIVE_MODELS=<ids> (not this script).
 cargo test --workspace
 
 echo "== dist package =="
