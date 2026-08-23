@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+    # ready_for_review: a draft skips every job (the `if` guards below), and
+    # marking it ready fires only this type — without it the PR keeps the
+    # stale SKIPPED checks until the next push. Keep the default types.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       pool:
