@@ -1,9 +1,11 @@
 # Reference test profiles and measurement protocols
 
-How Syllabix measures conversation quality. These are the protocols behind
-the launch definition of done in `V0_LAUNCH.md`. Every number claimed in a
-product PR must come from a command in this file, on one of the profiles
-below.
+How Syllabix measures conversation quality. This is the measurement lab,
+not the user README. Every number claimed in a product PR must come from a
+command in this file, on one of the profiles below. Launch gates that
+still need human machines (signed macOS artifacts, Windows first-open,
+measured cold start, end-to-end latency p50/p95) stay empty until someone
+runs the protocol — do not invent them in user-facing docs.
 
 ## 1. Reference profiles
 
@@ -108,8 +110,10 @@ SMOKE_RELEASE_URL=https://github.com/syllabix-ai/syllabix/releases/download/<tag
 
 covers checksum verify, clean-toolchain `--help`, `init`, and the offline
 second run. The spoken part stays human: download on the clean machine,
-`./syllabix run`, start talking within three minutes of putting the binary
-on disk, then block the network and confirm a second `run` still works.
+`./syllabix run`, talk, then block the network and confirm a second `run`
+still works. Cold-start wall time (binary on disk → first spoken reply) is
+recorded here when measured; the user README must not claim three minutes
+until that row is filled.
 
 ## 8. TTS provider compute placement (row 31, profile A)
 
@@ -203,9 +207,9 @@ per the row-32 merge gate ("inside budget or founder-accepted delta").
 Metric note: with n=20 the p95 slot is the second-largest sample, which is
 why the 0.6B p95 sits below its p50.
 
-## 10. Turn timeline instrumentation (row 34, profile A)
+## 10. Turn timeline instrumentation (profile A)
 
-Diagnostics replace the retired `--turn-debug` flag (enable + field guide:
+Diagnostics are yaml-only (enable + field guide:
 [`diagnostics.md`](diagnostics.md)):
 
 ```yaml
@@ -235,7 +239,7 @@ Anchors a cancelled turn never reached render as `null`.
 | `llm_ttft_ms` | llm_first_token − llm_start | Time-to-first-token |
 | `llm_stream_ms` | llm_last_token − llm_first_token | Generation duration |
 | `tts_lead_ms` | tts_first_pcm − llm_first_token | First token → first PCM (sentence buffering visible) |
-| `llm_end_to_first_pcm_ms` | tts_first_pcm − llm_last_token | Signed: negative ⇒ synthesis overlapped generation (Kokoro sentence streaming); positive ⇒ TTS waited for the whole cleaned reply (Qwen row-33 buffering) |
+| `llm_end_to_first_pcm_ms` | tts_first_pcm − llm_last_token | Signed: negative ⇒ synthesis overlapped generation (Kokoro sentence streaming); positive ⇒ TTS waited for the whole cleaned reply (Qwen whole-utterance buffering) |
 | `tts_synthesis_ms` | tts_last_pcm − tts_first_pcm | Synthesis throughput |
 | `playback_handoff_ms` | playback_first − tts_first_pcm | PCM ready → device audible |
 | **`audible_latency_ms`** | **playback_first − speech_end** | **Silence-end → first audio out of the speaker — the G4 budget metric** |

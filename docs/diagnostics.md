@@ -1,11 +1,10 @@
 # Diagnostics — turn timeline and audio capture
 
-Per-turn instrumentation introduced by sequence row 34. Diagnostics are
-yaml-only (the old `--turn-debug` flag is gone); default `run` records
-nothing. Measurement protocols, segment definitions, and p50/p95 targets
-live in [`reference-profiles.md`](reference-profiles.md) §10 — this file is
-the field guide: how to enable, what each anchor means, and what a real
-report looks like.
+Per-turn instrumentation. Diagnostics are yaml-only (there is no CLI flag);
+default `run` records nothing. Measurement protocols, segment definitions,
+and p50/p95 targets live in [`reference-profiles.md`](reference-profiles.md)
+§10 — this file is the field guide: how to enable, what each anchor means,
+and what a real report looks like.
 
 ## Enable
 
@@ -40,7 +39,7 @@ reached render as `null` (a barge-in-interrupted turn, for example, has no
 | `llm_start` | LLM worker began generating |
 | `llm_first_token` | First token streamed |
 | `llm_last_token` | Last token of the generation |
-| `tts_first_pcm` | First PCM the TTS worker synthesized (worker-side, includes row-33 incremental vocoder windows) |
+| `tts_first_pcm` | First PCM the TTS worker synthesized (worker-side, including incremental vocoder windows) |
 | `tts_last_pcm` | Final PCM chunk |
 | `playback_first` | Speaker callback first consumed samples of this turn |
 | `playback_done` | Speaker drained after the final chunk (final audible sample) |
@@ -111,6 +110,6 @@ Reading the sample:
 - **`vad_queue_wait_ms` / `handoff_llm_ms` ≈ 0** shows the bounded queues are
   not backing up on this machine; sustained non-zero values would point at
   queue sizing or a slow stage upstream.
-- **`audible_latency_ms` (~1.6 s p50)** is the G4-style silence-end → first
+- **`audible_latency_ms` (~1.6 s p50)** is the silence-end → first
   speaker-audio number; the split above says most of it sits in STT decode
   (~390 ms) plus LLM time-to-first-token (~200 ms) plus TTS lead/synthesis.
