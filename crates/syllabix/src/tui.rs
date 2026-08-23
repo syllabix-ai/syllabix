@@ -148,17 +148,12 @@ mod live_terminal {
         }
     }
 
-    pub fn run_conversation_tui(
-        config: AgentConfig,
-        cancel: Cancel,
-        turn_debug: Option<syllabix_core::TurnDebug>,
-        barge_in: bool,
-    ) -> Result<()> {
+    pub fn run_conversation_tui(config: AgentConfig, cancel: Cancel, barge_in: bool) -> Result<()> {
         let (event_tx, event_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let loop_cancel = cancel.clone();
         thread::spawn(move || {
-            let result = run_live(&config, loop_cancel, Some(event_tx), turn_debug, barge_in);
+            let result = run_live(&config, loop_cancel, Some(event_tx), barge_in);
             let _ = done_tx.send(result);
         });
 

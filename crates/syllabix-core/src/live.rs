@@ -13,7 +13,10 @@ use crate::turn_debug::TurnDebug;
 
 /// Load weights, open default devices, and run until shutdown or capture ends.
 ///
-/// A cloud LLM config (`pipeline.llm.provider: openai`) must already carry its
+/// Diagnostics come from yaml (`diagnostics.timestamps` / `diagnostics.audio`
+/// / `diagnostics.directory`); disabled by default, which writes nothing.
+///
+/// A cloud LLM config (`pipeline.llm.provider: online`) must already carry its
 /// key in the `SYLLABIX_LLM_API_KEY` environment variable; a missing or empty
 /// key fails here — before any device opens or any weight loads. Default
 /// keyless runs never read it.
@@ -24,13 +27,13 @@ pub fn run_live(
     config: &AgentConfig,
     cancel: Cancel,
     events: Option<Sender<LoopEvent>>,
-    turn_debug: Option<TurnDebug>,
     barge_in: bool,
 ) -> Result<LoopReport> {
     let llm_api_key = match config.llm {
         crate::LlmProvider::Online => Some(resolve_api_key(|name| std::env::var(name).ok())?),
         crate::LlmProvider::Local => None,
     };
+    let turn_debug = TurnDebug::from_config(config)?;
     run_live_inner(config, cancel, events, turn_debug, barge_in, llm_api_key)
 }
 
@@ -47,6 +50,7 @@ fn run_live_inner(
     use crate::models::{HttpFetcher, ModelCache, StderrProgress};
     use crate::pipeline::{run_loop_captured, LoopConfig, LoopMode, PipelineStages};
     use crate::real::load_real_providers;
+    use crate::turn_debug::PlaybackWatch;
     use crate::BuiltinDefaults;
 
     let cache = ModelCache::v0();
@@ -59,9 +63,15 @@ fn run_live_inner(
         config,
         llm_api_key.as_ref(),
     )?;
-    let (sink, echo_reference) = NativePlayback::open_with_echo()?;
+    let watch = turn_debug
+        .as_ref()
+        .map(|debug| PlaybackWatch::new(debug.clone()));
+    let wants_wavs = turn_debug
+        .as_ref()
+        .is_some_and(|debug| debug.collects_audio());
+    let (sink, echo_reference) = NativePlayback::open_with_echo_and_watch(watch)?;
     let mut capture = NativeCapture::open_with_echo(echo_reference)?;
-    if turn_debug.is_some() {
+    if wants_wavs {
         capture.enable_pcm_tap();
     }
     eprintln!(
@@ -110,8 +120,13 @@ fn run_live_inner(
         config.vad_min_speech_ms,
         config.vad_end_silence_ms,
         config.vad_preroll_ms,
+        config.diagnostics_timestamps,
+        config.diagnostics_audio,
         llm_api_key.is_some(),
     );
+    let watch = turn_debug
+        .as_ref()
+        .map(|debug| crate::turn_debug::PlaybackWatch::new(debug.clone()));
     run_loop(
         LoopConfig {
             events,
@@ -124,7 +139,7 @@ fn run_live_inner(
             stt: FakeStt,
             llm: FakeLlm::new(),
             tts: FakeTts,
-            sink: CollectingSink::default(),
+            sink: CollectingSink::with_playback_watch(watch),
         },
         scripted_frames(1, 2, 1),
         cancel,
@@ -143,7 +158,7 @@ mod tests {
     #[cfg(coverage)]
     #[test]
     fn coverage_run_live_completes_a_fake_turn() {
-        let report = super::run_live(&AgentConfig::v0(), crate::Cancel::new(), None, None, false)
+        let report = super::run_live(&AgentConfig::v0(), crate::Cancel::new(), None, false)
             .expect("fake live");
         assert_eq!(report.turns.len(), 1);
         assert_eq!(report.tasks_still_running, 0);
@@ -151,26 +166,52 @@ mod tests {
 
     #[cfg(coverage)]
     #[test]
-    fn coverage_run_live_turn_debug_writes_without_devices() {
+    fn coverage_run_live_diagnostics_writes_sidecar_and_wavs_without_devices() {
         let dir = std::env::temp_dir().join(format!(
-            "syllabix-live-turn-debug-{}-{}",
+            "syllabix-live-diagnostics-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
-        let debug = crate::TurnDebug::open(&dir).expect("open");
-        let report = super::run_live(
-            &AgentConfig::v0(),
-            crate::Cancel::new(),
-            None,
-            Some(debug),
-            false,
-        )
-        .expect("fake live debug");
+        let mut config = AgentConfig::v0();
+        config.diagnostics_timestamps = true;
+        config.diagnostics_audio = true;
+        config.diagnostics_directory = dir.clone();
+        let report = super::run_live(&config, crate::Cancel::new(), None, false)
+            .expect("fake live with diagnostics");
         assert_eq!(report.turns.len(), 1);
-        assert!(dir.join("turn-000").join("turn.json").is_file());
+        let turn_dir = dir.join("turn-000");
+        assert!(turn_dir.join("turn.json").is_file());
+        for name in ["capture.wav", "clean.wav", "utterance.wav", "tts.wav"] {
+            assert!(turn_dir.join(name).is_file(), "{name}");
+        }
+        let json =
+            std::fs::read_to_string(turn_dir.join("turn.json")).expect("diagnostics sidecar");
+        assert!(json.contains("\"speech_start_ms\": 0"), "{json}");
+        assert!(
+            json.contains("\"playback_first_ms\":"),
+            "watch-backed fixture sink records playback anchors: {json}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_run_live_disabled_diagnostics_writes_nothing() {
+        let dir = std::env::temp_dir().join(format!(
+            "syllabix-live-no-diagnostics-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut config = AgentConfig::v0();
+        // Disabled diagnostics must not create the directory at all.
+        config.diagnostics_directory = dir.join("never");
+        super::run_live(&config, crate::Cancel::new(), None, false).expect("fake live");
+        assert!(!dir.exists(), "no files when diagnostics are off");
     }
 }

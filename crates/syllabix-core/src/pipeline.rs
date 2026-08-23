@@ -12,7 +12,7 @@ use crate::defaults::{BuiltinDefaults, QueueCaps};
 use crate::error::{Error, Result};
 use crate::providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 use crate::queue::{bounded, BoundedSender, QueueReport};
-use crate::turn_debug::TurnDebug;
+use crate::turn_debug::{TimelineAnchor, TurnDebug};
 use crate::types::{
     AudioFrame, CompletedTurn, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId,
     TurnTimings, Utterance, VadEvent,
@@ -316,12 +316,14 @@ impl Shared {
             entry.token_count += 1;
             if entry.first_token_at.is_none() {
                 entry.first_token_at = Some(at);
+                if let Some(debug) = &self.turn_debug {
+                    debug.note_anchor(chunk.turn, TimelineAnchor::LlmFirstToken, at);
+                }
             }
             if chunk.is_last {
                 entry.text_done = true;
-            }
-            if chunk.is_last {
                 if let Some(debug) = &self.turn_debug {
+                    debug.note_last_anchor(chunk.turn, TimelineAnchor::LlmLastToken, at);
                     debug.note_llm(chunk.turn, entry.assistant_text.clone());
                 }
             }
@@ -729,6 +731,7 @@ fn vad_loop<V: Vad>(
                 *active = Some(*turn);
                 if let Some(debug) = &shared.turn_debug {
                     debug.start_turn(*turn);
+                    debug.note_anchor(*turn, TimelineAnchor::SpeechStart, Instant::now());
                 }
             }
         }
@@ -739,6 +742,7 @@ fn vad_loop<V: Vad>(
             if let VadEvent::SpeechEnd { utterance } = event {
                 if let Some(debug) = &shared.turn_debug {
                     debug.note_utterance(&utterance);
+                    debug.note_anchor(utterance.turn, TimelineAnchor::SpeechEnd, Instant::now());
                 }
                 shared.mark_assistant(utterance.turn);
                 *active = None;
@@ -800,9 +804,17 @@ fn stt_loop<S: Stt>(
                 if shared.is_interrupted(utterance.turn) {
                     continue;
                 }
-                shared.mark_utterance(utterance.turn, Instant::now());
+                let queued_at = Instant::now();
+                shared.mark_utterance(utterance.turn, queued_at);
+                if let Some(debug) = &shared.turn_debug {
+                    debug.note_anchor(utterance.turn, TimelineAnchor::SttQueued, queued_at);
+                }
                 match stt.transcribe(&utterance, cancel) {
                     Ok(transcript) => {
+                        let done_at = Instant::now();
+                        if let Some(debug) = &shared.turn_debug {
+                            debug.note_anchor(transcript.turn, TimelineAnchor::SttDone, done_at);
+                        }
                         if is_blank_stt(&transcript.text) {
                             if let Some(debug) = &shared.turn_debug {
                                 debug.note_stt(
@@ -818,7 +830,7 @@ fn stt_loop<S: Stt>(
                                 transcript.turn,
                                 transcript.text.clone(),
                                 &language,
-                                Instant::now(),
+                                done_at,
                             );
                             ignore_cancel(tx.send_cancellable(transcript, cancel), shared, cancel);
                         }
@@ -862,7 +874,11 @@ fn llm_loop<L: Llm>(
                     continue;
                 }
                 let mut assistant = String::new();
-                shared.mark_llm_start(user.turn, Instant::now());
+                let llm_started = Instant::now();
+                shared.mark_llm_start(user.turn, llm_started);
+                if let Some(debug) = &shared.turn_debug {
+                    debug.note_anchor(user.turn, TimelineAnchor::LlmStart, llm_started);
+                }
                 let gen_result = llm.generate(&history, &user, cancel, &mut |chunk| {
                     if cancel.is_stale(chunk.generation) {
                         return Err(Error::Cancelled);
@@ -924,6 +940,14 @@ fn tts_loop<T: Tts>(
                 }
                 match tts.synthesize_chunk_into(&token, cancel, &mut |audio| {
                     if !cancel.is_stale(audio.generation) {
+                        if let Some(debug) = &shared.turn_debug {
+                            let now = Instant::now();
+                            // First write wins; a single-chunk turn sets both.
+                            debug.note_anchor(audio.turn, TimelineAnchor::TtsFirstPcm, now);
+                            if audio.is_last {
+                                debug.note_last_anchor(audio.turn, TimelineAnchor::TtsLastPcm, now);
+                            }
+                        }
                         ignore_cancel(tx.send_cancellable(audio, cancel), shared, cancel);
                     }
                     Ok(())
@@ -1283,6 +1307,103 @@ mod tests {
             "{json}"
         );
         assert!(json.contains("\"llm_request_id\": \"req-42\""), "{json}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn completed_turn_timeline_is_complete_and_stage_ordered() {
+        let dir = std::env::temp_dir().join(format!(
+            "syllabix-pipeline-timeline-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let debug = TurnDebug::open(&dir).expect("open");
+        let watch = crate::turn_debug::PlaybackWatch::new(debug.clone());
+        run_loop(
+            LoopConfig {
+                turn_debug: Some(debug.clone()),
+                mode: LoopMode::StopAfterTurns(1),
+                ..LoopConfig::default()
+            },
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: FakeStt,
+                llm: FakeLlm::new(),
+                tts: FakeTts,
+                sink: CollectingSink::with_playback_watch(Some(watch)),
+            },
+            scripted_frames(1, 2, 1),
+            Cancel::new(),
+        )
+        .expect("loop");
+
+        let anchored = debug.anchored(TurnId(0));
+        let offset = |anchor: TimelineAnchor| {
+            anchored
+                .iter()
+                .find(|(name, _)| *name == anchor)
+                .map(|(_, at)| *at)
+                .unwrap_or_else(|| panic!("missing anchor {anchor:?}"))
+        };
+        // Every stage boundary was captured.
+        assert_eq!(anchored.len(), TimelineAnchor::ALL.len());
+        assert_eq!(offset(TimelineAnchor::SpeechStart), Duration::ZERO);
+        // Stage order; LLM/TTS may legitimately overlap, so only true
+        // happens-before edges are asserted.
+        assert!(offset(TimelineAnchor::SpeechStart) <= offset(TimelineAnchor::SpeechEnd));
+        assert!(offset(TimelineAnchor::SpeechEnd) <= offset(TimelineAnchor::SttQueued));
+        assert!(offset(TimelineAnchor::SttQueued) <= offset(TimelineAnchor::SttDone));
+        assert!(offset(TimelineAnchor::SttDone) <= offset(TimelineAnchor::LlmStart));
+        assert!(offset(TimelineAnchor::LlmStart) <= offset(TimelineAnchor::LlmFirstToken));
+        assert!(offset(TimelineAnchor::LlmFirstToken) <= offset(TimelineAnchor::TtsFirstPcm));
+        assert!(offset(TimelineAnchor::LlmLastToken) <= offset(TimelineAnchor::TtsLastPcm));
+        assert!(offset(TimelineAnchor::TtsFirstPcm) <= offset(TimelineAnchor::PlaybackFirst));
+        assert!(offset(TimelineAnchor::PlaybackFirst) <= offset(TimelineAnchor::PlaybackDone));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn blank_stt_turn_stops_the_timeline_after_stt() {
+        let dir = std::env::temp_dir().join(format!(
+            "syllabix-pipeline-blank-timeline-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let debug = TurnDebug::open(&dir).expect("open");
+        run_loop(
+            LoopConfig {
+                turn_debug: Some(debug.clone()),
+                mode: LoopMode::StopAfterTurns(1),
+                ..LoopConfig::default()
+            },
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: ScriptedStt::new([""]),
+                llm: FakeLlm::new(),
+                tts: FakeTts,
+                sink: CollectingSink::default(),
+            },
+            scripted_frames(1, 2, 1),
+            Cancel::new(),
+        )
+        .expect("loop");
+        let names: Vec<_> = debug.anchored(TurnId(0)).iter().map(|(a, _)| *a).collect();
+        assert_eq!(
+            names,
+            vec![
+                TimelineAnchor::SpeechStart,
+                TimelineAnchor::SpeechEnd,
+                TimelineAnchor::SttQueued,
+                TimelineAnchor::SttDone,
+            ],
+            "empty STT must not open the LLM/TTS/sink stages"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -10,8 +10,8 @@ This repository is the product. Founder docs live in [`syllabix-ai/syllabix_foun
 cargo run -p syllabix -- --help
 cargo run -p syllabix -- init     # optional syllabix.yaml
 cargo run -p syllabix -- run      # zero-config mic + speakers with full-duplex AEC
-cargo run -p syllabix -- run --turn-debug   # optional per-turn WAVs + sidecar
 cargo run -p syllabix -- run --barge-in     # interrupt TTS when the user speaks
+# per-turn timeline + WAVs are yaml diagnostics (see "Diagnostics" below)
 ```
 
 ## 3-minute path
@@ -53,11 +53,25 @@ From this checkout, `cargo run -p syllabix -- run` talks on a machine with a mic
 | Command | Now | Launch |
 | --- | --- | --- |
 | `syllabix run` | Zero-config local mic/speaker conversation, full-duplex AEC, and TUI timings | Same |
-| `syllabix run --turn-debug [dir]` | Opt-in. Writes `capture.wav` / `clean.wav` / `utterance.wav` / `tts.wav` and `turn.json` per turn under `dir`, `$SYLLABIX_TURN_DEBUG_DIR`, or `target/turn-debug`. Default `run` writes nothing. | Same |
-| `syllabix run --barge-in` | Opt-in. VAD keeps running during TTS; user SpeechStart stops playback, flushes queued audio, and cancels LLM/TTS. Off by default. Combine with `--turn-debug` to dump interrupted turns. Whisper utterances always include 200 ms of post-AEC preroll. | Same |
+| `syllabix run --barge-in` | Opt-in. VAD keeps running during TTS; user SpeechStart stops playback, flushes queued audio, and cancels LLM/TTS. Off by default. With diagnostics enabled, interrupted turns are dumped too. Whisper utterances always include 200 ms of post-AEC preroll. | Same |
 | `syllabix init [dir]` | Optional `syllabix.yaml` scaffold | Same |
 
-There is no `serve` or `bench`. The default `run` needs no yaml, no API key, and no network after the first-run cache fills. If `syllabix.yaml` is present, it must name a known stack. `pipeline.stt.model` selects the whisper.cpp weights: `small` (default), `medium`, `large-v3-turbo`, or the published quantizations `medium-q5_0` / `large-v3-turbo-q5_0`; first run fetches only the selected id. `pipeline.stt.language` is a whisper-supported ISO code (`en`, `fr`, `de`, `ja`, …) or `auto` — with `auto`, the detected language shows in the TUI and turn-debug sidecar, and the agent replies in that language. Optional `pipeline.vad` keys (`threshold`, `min_speech_ms`, `end_silence_ms`, `preroll_ms`) tune Silero; omit them for the launch defaults. A minimal example lives at [`examples/demo-agent.yaml`](examples/demo-agent.yaml).
+There is no `serve` or `bench`. The default `run` needs no yaml, no API key, and no network after the first-run cache fills. If `syllabix.yaml` is present, it must name a known stack. `pipeline.stt.model` selects the whisper.cpp weights: `small` (default), `medium`, `large-v3-turbo`, or the published quantizations `medium-q5_0` / `large-v3-turbo-q5_0`; first run fetches only the selected id. `pipeline.stt.language` is a whisper-supported ISO code (`en`, `fr`, `de`, `ja`, …) or `auto` — with `auto`, the detected language shows in the TUI and diagnostics sidecar, and the agent replies in that language. Optional `pipeline.vad` keys (`threshold`, `min_speech_ms`, `end_silence_ms`, `preroll_ms`) tune Silero; omit them for the launch defaults. A minimal example lives at [`examples/demo-agent.yaml`](examples/demo-agent.yaml).
+
+### Diagnostics: per-turn timeline and WAVs
+
+Turn diagnostics are yaml-only — there is no CLI flag:
+
+```yaml
+name: demo-agent
+# ... pipeline as above ...
+diagnostics:
+  timestamps: true            # write target/turn-debug/turn-*/turn.json sidecars
+  audio: true                 # additionally write capture/clean/utterance/tts WAVs (implies timestamps)
+  directory: target/turn-debug   # optional; this default needs no key
+```
+
+Default `run` writes nothing: with both keys false the directory is not even created. The full field guide — timeline anchors, a sample `summarize-timelines.py` report, and how to read it — lives in [`docs/diagnostics.md`](docs/diagnostics.md); segment formulas and the p50/p95 protocol are in [`docs/reference-profiles.md`](docs/reference-profiles.md) §10.
 
 ### Optional: BYO-key online LLM (v0.1)
 
@@ -99,7 +113,7 @@ Endpoint examples: `https://api.openai.com/v1` (OpenAI), `https://api.groq.com/o
   With `provider: online` set and no key exported, `run` fails fast before opening any device.
 - **Keyless loopback endpoints:** Ollama, llama-server, and vLLM ignore auth — pass any placeholder value, e.g. `SYLLABIX_LLM_API_KEY=ollama syllabix run` with `base_url: http://127.0.0.1:11434/v1`. Your transcript still never leaves the machine.
 - Barge-in cancels the in-flight stream through the same cancel path as local generation. A failed turn speaks a short fallback ("Sorry, I could not reach the language model.") instead of hanging — there is no auto-retry. Hard connect/idle timeouts bound every turn.
-- VAD, AEC, STT, and TTS stay local in this mode; no cloud STT/TTS exists. `run --turn-debug` sidecars record the endpoint, model id, and the provider's request id for diagnosis.
+- VAD, AEC, STT, and TTS stay local in this mode; no cloud STT/TTS exists. Diagnostics sidecars (`diagnostics:` in yaml) record the endpoint, model id, and the provider's request id for diagnosis.
 
 ## Develop
 
@@ -135,10 +149,18 @@ cargo test -p syllabix-core --test audio_io hardware_aec_1_minute_playback_has_z
 
 The microphone remains open throughout the test. Muting capture during playback does not pass this gate. The test writes `render.wav`, `capture.wav`, `clean.wav`, and `sidecar.json` to `$SYLLABIX_AEC_DEBUG_DIR` or `target/aec-debug`.
 
-To dump a live conversation for diagnosis (listen to `utterance.wav` against STT text and `tts.wav` against the LLM reply):
+To dump a live conversation for diagnosis (listen to `utterance.wav` against STT text and `tts.wav` against the LLM reply), drop this next to your run and start it — see [`docs/diagnostics.md`](docs/diagnostics.md) for the full field guide:
+
+```yaml
+# syllabix.yaml
+diagnostics:
+  timestamps: true
+  audio: true
+  directory: target/turn-debug
+```
 
 ```bash
-cargo run -p syllabix --release -- run --turn-debug target/turn-debug
+cargo run -p syllabix --release -- run
 ```
 
 ## Troubleshooting
@@ -149,10 +171,10 @@ cargo run -p syllabix --release -- run --turn-debug target/turn-debug
 | The agent interrupts itself on laptop speakers | Full-duplex AEC3 is on by default and calibrates automatically for ~10 s; let calibration finish before speaking. If it still self-interrupts, use headphones and include the device names from the startup line in a bug report. |
 | First `run` is slow | It fetches Silero, Whisper `small`, Llama 3.2 1B, and Kokoro into the model cache with progress lines. Later runs reuse the cache and never touch the network. |
 | Replies are cut off mid-sentence when you speak over them | That is barge-in — but only with `run --barge-in`, which keeps VAD listening during TTS. Without the flag the agent finishes its sentence first; that is the default, not a bug. |
-| The agent speaks Qwen's reasoning aloud | It should not: `<think>…</think>` is stripped before TTS and hidden in the TUI. Thinking stays off unless yaml sets `pipeline.llm.thinking: true`. If you hear chain-of-thought, capture it with `--turn-debug` (`turn.json` keeps the full `llm_text`) and file a bug. |
-| STT text does not match what you said | Run with `--turn-debug [dir]`, then listen to `utterance.wav` (what Whisper received, including the 200 ms onset preroll) versus `clean.wav` (post-AEC). If `utterance.wav` sounds wrong but `clean.wav` sounds right, report the sidecar `stt` text plus both files. |
+| The agent speaks Qwen's reasoning aloud | It should not: `<think>…</think>` is stripped before TTS and hidden in the TUI. Thinking stays off unless yaml sets `pipeline.llm.thinking: true`. If you hear chain-of-thought, capture it with diagnostics enabled (`turn.json` keeps the full `llm_text`) and file a bug. |
+| STT text does not match what you said | Enable `diagnostics: {timestamps: true, audio: true}`, then listen to `utterance.wav` (what Whisper received, including the 200 ms onset preroll) versus `clean.wav` (post-AEC). If `utterance.wav` sounds wrong but `clean.wav` sounds right, report the sidecar `stt_text` plus both files. |
 | `SYLLABIX_LLM_API_KEY is required…` at `run` start | Your yaml selects `pipeline.llm.provider: online`. Supply the key for one run (`SYLLABIX_LLM_API_KEY=sk-… syllabix run`) or export it (`export SYLLABIX_LLM_API_KEY=sk-…`). Keys are read from the environment only — never from yaml or a `.env` file. Switch the provider back to `local` for the on-device LLM. |
-| Every reply is "Sorry, I could not reach the language model." | The cloud turn failed (bad key → HTTP 401, endpoint down, or idle timeout) and the turn spoke its fallback instead of hanging. Check the key, the `base_url`, and the endpoint's status; `--turn-debug` sidecars carry the endpoint and request id. |
+| Every reply is "Sorry, I could not reach the language model." | The cloud turn failed (bad key → HTTP 401, endpoint down, or idle timeout) and the turn spoke its fallback instead of hanging. Check the key, the `base_url`, and the endpoint's status; diagnostics sidecars carry the endpoint and request id. |
 | Linux build fails linking ALSA | Contributors need `libasound2-dev` (a declared OS library). Users of the Release binary never compile anything. |
 | macOS asks to approve microphone access | Grant it once in System Settings → Privacy & Security → Microphone; the binary requests access through CoreAudio. |
 | Downloaded binary won't verify | Re-download the artifact and `SHA256SUMS` from the same Release; the checksum command must pass before you run anything. |
