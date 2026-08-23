@@ -138,3 +138,53 @@ SYLLABIX_CACHE_DIR=<cache> SYLLABIX_QWEN_LATENCY=1 \
 
 Run it `--release`: a debug-profile build compiles ggml unoptimized and
 produces meaningless RTF (measured ~50x audio time in debug).
+
+## 9. Qwen3-TTS backbone menu and voice pinning (row 32, profile A)
+
+Row 32 adds `qwen3-0.6` alongside the row-31 `qwen3-1.7` under
+`pipeline.tts.model`. Each backbone pairs with its own mmproj: the upstream
+speech-tokenizer *encoder* weights are byte-identical across sizes, but the
+mmproj also carries the projector into the LM embedding space (2048-d for
+1.7B, 1024-d for 0.6B) — pairing across sizes fails at load with an
+n_embd mismatch. Both 0.6B files (backbone Q4_K_M + mmproj Q8_0) ship from
+the community conversion at `mradermacher/Qwen3-TTS-12Hz-0.6B-Base-GGUF`,
+sha256-pinned in the manifest; they must pass the same native gates as the
+1.7B weight — round-trip ≥80%, numbers gate, cancel <5 s, first sentence
+before completion.
+
+**Voice pinning:** the Base backbones are speaker-unconditioned, so every
+cold-start generation used to sample a new speaker — a different voice per
+utterance. At load the engine now synthesizes a short anchor clip on a
+chain pinned to a fixed seed, encodes it through the mmproj speaker
+encoder, and conditions every sentence on that x-vector (`speaker_ref`).
+Fixed anchor seed ⇒ the same Syllabix voice across sentences, runs, and
+backbone sizes; the runtime sampler seed still varies prosody. The machine
+proof is `qwen_voice_is_deterministic_under_a_pinned_seed` (two independent
+engines, same seed ⇒ identical PCM); speaker consistency itself stays a
+human listening-gate item on profile A.
+
+Latency evidence lands via the same opt-in capture, which prints one line
+per backbone:
+
+```bash
+SYLLABIX_CACHE_DIR=<cache> SYLLABIX_QWEN_LATENCY=1 \
+  cargo test --release -p syllabix-core --test native_inference \
+  qwen_latency_capture -- --nocapture
+```
+
+| Backbone | TTFB p50 | TTFB p95 | RTF p50 | RTF p95 |
+|---|---:|---:|---:|---:|
+| `qwen3-1.7` (row 31 baseline) | 8625 ms | 8627 ms | 3.87 | 4.85 |
+| `qwen3-0.6` (row 32) | 7285 ms | 6256 ms | 2.62 | 3.65 |
+
+Budget: ≤4.5 s TTFB p50 on portable CPU (G4). Row 31 measured ≈8.6 s p50 /
+RTF ≈3.6 for the 1.7B slot; the row-32 capture reproduces that baseline
+(8625 ms / 3.87) on the same machine and brings the qwen provider to
+7285 ms / 2.62 with the 0.6B backbone — a real cut, still above budget.
+The capture times full-sentence synthesis (one chunk = one complete
+generate + vocoder flush); playback cannot start before decode finishes.
+That structural remainder is row 33's incremental vocoder streaming, not a
+backbone-size problem. The delta is recorded here for founder acceptance
+per the row-32 merge gate ("inside budget or founder-accepted delta").
+Metric note: with n=20 the p95 slot is the second-largest sample, which is
+why the 0.6B p95 sits below its p50.

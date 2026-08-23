@@ -453,12 +453,13 @@ mod tests {
         let dir = unique_dir();
         let debug = TurnDebug::open(&dir).unwrap();
         debug.start_turn(TurnId(0));
-        debug.note_tts(TurnId(0), &[1, 2, 3], "qwen", Some("qwen3-tts-1.7b-base"));
+        debug.note_tts(TurnId(0), &[1, 2, 3], "local", Some("qwen3-tts-1.7b-base"));
         debug.interrupt(TurnId(0)).unwrap();
         let json = fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
         assert!(json.contains("cancelled"));
         // Row 31: TTS provider facts ride the same sidecar as the LLM's.
-        assert!(json.contains("\"tts_provider\": \"qwen\""), "{json}");
+        // Row 32: the provider field carries the posture word.
+        assert!(json.contains("\"tts_provider\": \"local\""), "{json}");
         assert!(
             json.contains("\"tts_model\": \"qwen3-tts-1.7b-base\""),
             "{json}"

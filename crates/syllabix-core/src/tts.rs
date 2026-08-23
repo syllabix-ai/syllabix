@@ -13,7 +13,7 @@ use syllabix_native::{QwenTtsContext, QwenTtsError};
 
 use crate::audio::{f32_to_i16, PcmConverter, PcmFormat};
 use crate::cancel::Cancel;
-use crate::defaults::BuiltinDefaults;
+use crate::defaults::{BuiltinDefaults, TtsModel};
 use crate::error::{Error, Result};
 use crate::g2p::{english_to_kokoro_ids, pad_input_ids, KOKORO_MAX_PHONEME_TOKENS};
 use crate::models::{Fetcher, ModelCache, Progress};
@@ -33,11 +33,18 @@ pub const KOKORO_NATIVE_RATE_HZ: u32 = 24_000;
 /// Manifest id for the Qwen3-TTS backbone GGUF.
 pub const QWEN_TTS_ASSET: &str = "qwen3-tts";
 
-/// Manifest id for the Qwen3-TTS speech-tokenizer projector.
-pub const QWEN_TTS_MMPROJ_ASSET: &str = "qwen3-tts-mmproj";
+/// Manifest id for the row-32 0.6B Qwen3-TTS backbone GGUF. Pairs with
+/// [`QWEN_TTS_06B_MMPROJ_ASSET`].
+pub const QWEN_TTS_06B_ASSET: &str = "qwen3-tts-06b";
 
-/// The blessed Qwen3-TTS backbone weight (row 31).
-pub const QWEN_TTS_MODEL_ID: &str = "qwen3-tts-1.7b-base";
+/// Manifest id for the 0.6B speech-tokenizer projector. The tokenizer
+/// *encoder* is byte-identical across both backbone sizes, but the mmproj
+/// also carries the projector into the LM embedding space (2048-d vs
+/// 1024-d), so each backbone needs its own mmproj file.
+pub const QWEN_TTS_06B_MMPROJ_ASSET: &str = "qwen3-tts-06b-mmproj";
+
+/// Manifest id for the Qwen3-TTS speech-tokenizer projector (1.7B pairing).
+pub const QWEN_TTS_MMPROJ_ASSET: &str = "qwen3-tts-mmproj";
 
 /// Text → TTS → Whisper round-trip: at least 80% of reference words, in order.
 pub const TTS_ASR_MIN_WORD_MATCH: f64 = 0.8;
@@ -208,10 +215,13 @@ impl Tts for KokoroTts {
     }
 }
 
-/// Row 31 adapter: Qwen3-TTS through the shared llama.cpp/ggml path.
+/// Row 31 adapter, row-32 model menu: Qwen3-TTS through the shared
+/// llama.cpp/ggml path. The native engine pins a self-generated voice anchor
+/// at load, so one speaker holds across every sentence of every run.
 pub struct QwenTts {
     core: ChunkState,
     engine: Arc<Mutex<Box<dyn WaveformEngine>>>,
+    model: TtsModel,
 }
 
 impl Clone for QwenTts {
@@ -219,19 +229,23 @@ impl Clone for QwenTts {
         Self {
             core: ChunkState::default(),
             engine: Arc::clone(&self.engine),
+            model: self.model,
         }
     }
 }
 
 impl QwenTts {
     /// Load the backbone GGUF + mmproj from disk and speak `language`.
+    /// `selected` picks the loaded weight for logs and turn-debug.
     pub fn from_paths(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
         language: &str,
+        selected: TtsModel,
     ) -> Result<Self> {
-        // Runtime sampling is randomized (llama.cpp default seed).
-        Self::from_paths_with_seed(model, mmproj, language, u32::MAX)
+        // Runtime sampling is randomized (llama.cpp default seed); the voice
+        // identity comes from the native engine's pinned self-voice anchor.
+        Self::from_paths_with_seed(model, mmproj, language, selected, u32::MAX)
     }
 
     /// [`QwenTts::from_paths`] with a pinned sampler seed. The native
@@ -241,57 +255,73 @@ impl QwenTts {
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
         language: &str,
+        selected: TtsModel,
         seed: u32,
     ) -> Result<Self> {
         let engine = NativeQwen::load_with_seed(model.as_ref(), mmproj.as_ref(), language, seed)?;
-        Ok(Self::from_engine(Box::new(engine)))
+        Ok(Self::from_engine(Box::new(engine), selected))
     }
 
-    /// Resolve the two Qwen3-TTS assets from the manifest cache, then load.
+    /// Resolve the selected Qwen3-TTS backbone plus its matching mmproj from
+    /// the manifest cache, then load. Only the selected pair is fetched.
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
         progress: &mut dyn Progress,
         cancel: &Cancel,
         language: &str,
+        selected: TtsModel,
     ) -> Result<Self> {
-        let model = cache
-            .manifest()
-            .asset(QWEN_TTS_ASSET)
-            .ok_or_else(|| Error::ModelCache {
-                message: "manifest does not contain the qwen3-tts asset".into(),
-            })?;
+        let backbone =
+            cache
+                .manifest()
+                .asset(selected.asset_id())
+                .ok_or_else(|| Error::ModelCache {
+                    message: format!(
+                        "manifest does not contain the {} asset",
+                        selected.asset_id()
+                    ),
+                })?;
+        let mmproj_id = selected.mmproj_asset_id().unwrap_or(QWEN_TTS_MMPROJ_ASSET);
         let mmproj = cache
             .manifest()
-            .asset(QWEN_TTS_MMPROJ_ASSET)
+            .asset(mmproj_id)
             .ok_or_else(|| Error::ModelCache {
-                message: "manifest does not contain the qwen3-tts-mmproj asset".into(),
+                message: format!("manifest does not contain the {mmproj_id} asset"),
             })?;
-        let model_path = cache.resolve(model, fetcher, progress, cancel)?;
+        let model_path = cache.resolve(backbone, fetcher, progress, cancel)?;
         let mmproj_path = cache.resolve(mmproj, fetcher, progress, cancel)?;
-        Self::from_paths(model_path, mmproj_path, language)
+        Self::from_paths(model_path, mmproj_path, language, selected)
     }
 
-    fn from_engine(engine: Box<dyn WaveformEngine>) -> Self {
+    fn from_engine(engine: Box<dyn WaveformEngine>, model: TtsModel) -> Self {
         Self {
             core: ChunkState::default(),
             engine: Arc::new(Mutex::new(engine)),
+            model,
         }
     }
 
     #[cfg(test)]
-    fn with_engine(engine: Box<dyn WaveformEngine>) -> Self {
-        Self::from_engine(engine)
+    fn with_engine(engine: Box<dyn WaveformEngine>, model: TtsModel) -> Self {
+        Self::from_engine(engine, model)
+    }
+
+    /// Whether the native self-voice anchor engaged at load. `false` means
+    /// synthesis fell back to unconditioned sampling (voice may drift).
+    pub fn voice_anchor_engaged(&self) -> bool {
+        self.engine.lock().expect("tts engine").has_voice_anchor()
     }
 }
 
 impl Tts for QwenTts {
     fn name(&self) -> &'static str {
-        "qwen"
+        // Row 32: the sidecar carries the posture word, matching the LLM.
+        "local"
     }
 
     fn model_id(&self) -> Option<&str> {
-        Some(QWEN_TTS_MODEL_ID)
+        Some(self.model.model_id())
     }
 
     fn synthesize_chunk(
@@ -310,6 +340,13 @@ trait WaveformEngine: Send {
         cancel: &Cancel,
         generation: GenerationId,
     ) -> Result<Vec<i16>>;
+
+    /// Whether a pinned speaker identity is active (Qwen3-TTS self-voice
+    /// anchor; Kokoro's fixed ONNX voice counts trivially as `false` here
+    /// because identity is baked into the weights, not sampled).
+    fn has_voice_anchor(&self) -> bool {
+        false
+    }
 }
 
 struct OrtKokoro {
@@ -413,6 +450,7 @@ impl WaveformEngine for OrtKokoro {
 struct NativeQwen {
     ctx: QwenTtsContext,
     lang: String,
+    voice_active: bool,
 }
 
 impl NativeQwen {
@@ -428,6 +466,7 @@ impl NativeQwen {
             }
         })?;
         Ok(Self {
+            voice_active: ctx.has_voice(),
             ctx,
             lang: language.to_string(),
         })
@@ -435,6 +474,10 @@ impl NativeQwen {
 }
 
 impl WaveformEngine for NativeQwen {
+    fn has_voice_anchor(&self) -> bool {
+        self.voice_active
+    }
+
     fn synthesize(
         &mut self,
         sentence: &str,
@@ -716,7 +759,10 @@ mod tests {
     #[test]
     fn name_matches_v0_and_clone_drops_buffer() {
         let mut tts = KokoroTts::with_engine(Box::new(ScriptedEngine::new()));
-        assert_eq!(tts.name(), "kokoro");
+        // Row 32: `name()` carries the posture word; the engine identity
+        // stays in `model_id()`.
+        assert_eq!(tts.name(), "local");
+        assert_eq!(tts.model_id(), Some("kokoro"));
         tts.synthesize_chunk(&token("Hello ", 0, false), &Cancel::new())
             .unwrap();
         let mut cloned = tts.clone();
@@ -730,8 +776,11 @@ mod tests {
     fn qwen_name_and_buffering_match_contract() {
         let engine = ScriptedEngine::new();
         let log = Arc::clone(&engine.calls);
-        let mut tts = QwenTts::with_engine(Box::new(engine));
-        assert_eq!(tts.name(), "qwen");
+        let mut tts = QwenTts::with_engine(Box::new(engine), TtsModel::Qwen06);
+        // Row 32: the sidecar carries the posture word, matching the LLM.
+        assert_eq!(tts.name(), "local");
+        assert_eq!(tts.model_id(), Some("qwen3-tts-0.6b-base"));
+        assert!(!tts.voice_anchor_engaged(), "scripted engine has no anchor");
         let first = tts
             .synthesize_chunk(&token("Hello world. ", 0, false), &Cancel::new())
             .unwrap();
@@ -750,10 +799,17 @@ mod tests {
     }
 
     #[test]
+    fn qwen_model_ids_follow_the_menu() {
+        let engine = ScriptedEngine::new();
+        let tts = QwenTts::with_engine(Box::new(engine), TtsModel::Qwen17);
+        assert_eq!(tts.model_id(), Some("qwen3-tts-1.7b-base"));
+    }
+
+    #[test]
     fn qwen_strips_think_and_markdown_before_synthesis() {
         let engine = ScriptedEngine::new();
         let log = Arc::clone(&engine.calls);
-        let mut tts = QwenTts::with_engine(Box::new(engine));
+        let mut tts = QwenTts::with_engine(Box::new(engine), TtsModel::Qwen06);
         tts.synthesize_chunk(
             &token("<think>chain</think> It costs **$5**.", 0, true),
             &Cancel::new(),
@@ -767,7 +823,7 @@ mod tests {
 
     #[test]
     fn qwen_cancel_paths_match_kokoro() {
-        let mut tts = QwenTts::with_engine(Box::new(ScriptedEngine::new()));
+        let mut tts = QwenTts::with_engine(Box::new(ScriptedEngine::new()), TtsModel::Qwen06);
         let cancel = Cancel::new();
         cancel.shutdown();
         let err = tts
@@ -775,7 +831,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
 
-        let mut tts = QwenTts::with_engine(Box::new(ScriptedEngine::new()));
+        let mut tts = QwenTts::with_engine(Box::new(ScriptedEngine::new()), TtsModel::Qwen06);
         let cancel = Cancel::new();
         cancel.cancel_generation();
         let err = tts
@@ -784,7 +840,7 @@ mod tests {
         assert!(matches!(err, Error::Cancelled));
 
         // Empty final turn still closes.
-        let mut tts = QwenTts::with_engine(Box::new(ScriptedEngine::new()));
+        let mut tts = QwenTts::with_engine(Box::new(ScriptedEngine::new()), TtsModel::Qwen06);
         let chunks = tts
             .synthesize_chunk(&token("", 0, true), &Cancel::new())
             .unwrap();
@@ -816,12 +872,13 @@ mod tests {
             &mut crate::models::NoProgress,
             &Cancel::new(),
             "en",
+            TtsModel::Qwen06,
         ) {
             Err(err) => err,
             Ok(_) => panic!("empty manifest should fail"),
         };
         assert!(matches!(err, Error::ModelCache { .. }));
-        assert!(err.to_string().contains("qwen3-tts"));
+        assert!(err.to_string().contains("qwen3-tts-06b"));
     }
 
     #[test]

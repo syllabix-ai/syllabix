@@ -45,7 +45,10 @@ fn pcm_to_utterance(samples: &[i16]) -> Utterance {
 fn first_sentence_audio_arrives_before_full_completion() {
     let n = native();
     let mut tts = n.tts.clone();
-    assert_eq!(tts.name(), "kokoro");
+    // Row 32: `name()` carries the posture word; the engine identity stays
+    // in `model_id()`.
+    assert_eq!(tts.name(), "local");
+    assert_eq!(tts.model_id(), Some("kokoro"));
     let first = tts
         .synthesize_chunk(&token("Hello world. ", 0, false), &Cancel::new())
         .expect("first sentence");

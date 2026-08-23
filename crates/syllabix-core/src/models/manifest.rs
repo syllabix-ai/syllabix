@@ -43,6 +43,9 @@ pub struct ModelAsset {
 }
 
 /// Versioned set of assets. Bump `version` when the file set or hashes change.
+/// (Row 32 deliberately kept `v1` across a purely additive asset: existing
+/// file names and hashes were untouched, and a bump would force every user to
+/// re-fetch all weights into a fresh cache directory.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     /// Cache subdirectory (`models/v{version}`).
@@ -162,6 +165,28 @@ impl Manifest {
                     "6fd65188839bcd6ecc91b277ad471e22a0edfada4699a0fe82f1165c18cfcce2",
                     446_422_912,
                 ),
+                // Row 32: the smaller Qwen3-TTS backbone plus its own
+                // speech-tokenizer projector. The upstream tokenizer
+                // *encoder* is byte-identical across both sizes, but the
+                // mmproj also carries the projector into the LM embedding
+                // space (2048-d for 1.7B, 1024-d for 0.6B), so each
+                // backbone pairs with its own mmproj file.
+                asset(
+                    "qwen3-tts-06b",
+                    ModelLayer::Tts,
+                    "Qwen3-TTS-12Hz-0.6B-Base.Q4_K_M.gguf",
+                    "https://huggingface.co/mradermacher/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/Qwen3-TTS-12Hz-0.6B-Base.Q4_K_M.gguf",
+                    "2dec66bcf1595f48a6dfb64c14e7e8437315e1606eba03094ed7372e60a4b9af",
+                    361_023_168,
+                ),
+                asset(
+                    "qwen3-tts-06b-mmproj",
+                    ModelLayer::Tts,
+                    "Qwen3-TTS-12Hz-0.6B-Base.mmproj-Q8_0.gguf",
+                    "https://huggingface.co/mradermacher/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main/Qwen3-TTS-12Hz-0.6B-Base.mmproj-Q8_0.gguf",
+                    "202c1fbf3a0f00b7586ca45b8328d696cc6cd980c3798979eaa4fefe8efd8320",
+                    401_129_632,
+                ),
             ],
         }
     }
@@ -200,8 +225,8 @@ mod tests {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
         // Silero + five whisper ids + three GGUFs + Kokoro weights + voice
-        // + Qwen3-TTS backbone + mmproj.
-        assert_eq!(m.assets.len(), 13);
+        // + two Qwen3-TTS backbones, each with its own mmproj.
+        assert_eq!(m.assets.len(), 15);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -227,6 +252,21 @@ mod tests {
         assert_eq!(m.asset("kokoro-voice").unwrap().layer, ModelLayer::Tts);
         assert_eq!(m.asset("qwen3-tts").unwrap().layer, ModelLayer::Tts);
         assert_eq!(m.asset("qwen3-tts-mmproj").unwrap().layer, ModelLayer::Tts);
+        assert_eq!(m.asset("qwen3-tts-06b").unwrap().layer, ModelLayer::Tts);
+        assert_eq!(
+            m.asset("qwen3-tts-06b-mmproj").unwrap().layer,
+            ModelLayer::Tts
+        );
+        assert_eq!(
+            m.asset("qwen3-tts-06b").unwrap().sha256,
+            "2dec66bcf1595f48a6dfb64c14e7e8437315e1606eba03094ed7372e60a4b9af"
+        );
+        assert_eq!(m.asset("qwen3-tts-06b").unwrap().size_bytes, 361_023_168);
+        // The 0.6B backbone is ~3x smaller than the 1.7B one.
+        assert!(
+            m.asset("qwen3-tts-06b").unwrap().size_bytes * 2
+                < m.asset("qwen3-tts").unwrap().size_bytes
+        );
         assert_eq!(
             m.asset("qwen3-tts").unwrap().sha256,
             "8d18c94acb2addd042f97da63c98be144eafa76d0d9495177eab65130cf85129"

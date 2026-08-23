@@ -27,13 +27,51 @@
 #define SYLLABIX_QWEN_MAX_FRAMES 512
 #define SYLLABIX_QWEN_N_BATCH 512
 
+/* Row 32 voice anchor. The Base backbones are speaker-unconditioned: every
+ * cold-start generation samples a new speaker, so per-sentence generation
+ * changed voices mid-reply. Fix: at load, synthesize one short clip with
+ * this fixed seed, run it through the mmproj speaker encoder, and prepend
+ * the resulting x-vector to every later prompt (mtmd-helper gen_audio
+ * already supports `speaker_ref` and keeps the voice primed across chunk
+ * rewinds). Fixed seed => same anchor => the same Syllabix voice on every
+ * machine, every run, both backbone sizes. */
+#define SYLLABIX_QWEN_VOICE_SEED 20260822u
+static const char SYLLABIX_QWEN_ANCHOR_TEXT[] =
+    "Hello, this is your local assistant. I keep one steady voice.";
+
 struct syllabix_qwen_tts {
     struct llama_model *model;
     struct llama_context *ctx;
     mtmd_context *mctx;
     struct llama_sampler *smpl;
     mtmd_helper_gen_audio *gen;
+    mtmd_bitmap *voice; /* self-generated speaker reference; NULL = fallback */
 };
+
+static int qwen_generate(
+    struct syllabix_qwen_tts *tts,
+    const char *text,
+    const char *lang,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    int32_t *out_sample_rate,
+    int16_t **out_pcm,
+    int64_t *out_n_samples);
+
+/* Upstream tools/tts chain (top-k -> top-p -> temp -> dist(seed)). Built per
+ * use so the voice anchor can pin its own seed without touching the runtime
+ * sampler state. */
+static struct llama_sampler *qwen_make_sampler(unsigned int seed) {
+    struct llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    if (smpl == NULL) {
+        return NULL;
+    }
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(SYLLABIX_QWEN_TOP_K));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_p(SYLLABIX_QWEN_TOP_P, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp(SYLLABIX_QWEN_TEMP));
+    llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed));
+    return smpl;
+}
 
 static void qwen_silent_log(enum ggml_log_level level, const char *text, void *user_data) {
     (void)level;
@@ -134,21 +172,8 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
         return NULL;
     }
 
-    struct llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    if (smpl == NULL) {
-        mtmd_free(mctx);
-        llama_free(ctx);
-        llama_model_free(model);
-        return NULL;
-    }
-    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(SYLLABIX_QWEN_TOP_K));
-    llama_sampler_chain_add(smpl, llama_sampler_init_top_p(SYLLABIX_QWEN_TOP_P, 1));
-    llama_sampler_chain_add(smpl, llama_sampler_init_temp(SYLLABIX_QWEN_TEMP));
-    llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed));
-
     mtmd_helper_gen_audio *gen = mtmd_helper_gen_audio_init(ctx, mctx);
     if (gen == NULL) {
-        llama_sampler_free(smpl);
         mtmd_free(mctx);
         llama_free(ctx);
         llama_model_free(model);
@@ -158,7 +183,6 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
     struct syllabix_qwen_tts *tts = (struct syllabix_qwen_tts *)malloc(sizeof(struct syllabix_qwen_tts));
     if (tts == NULL) {
         mtmd_helper_gen_audio_free(gen);
-        llama_sampler_free(smpl);
         mtmd_free(mctx);
         llama_free(ctx);
         llama_model_free(model);
@@ -167,10 +191,56 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
     tts->model = model;
     tts->ctx = ctx;
     tts->mctx = mctx;
-    tts->smpl = smpl;
+    tts->smpl = qwen_make_sampler(seed);
     tts->gen = gen;
+    tts->voice = NULL;
+    if (tts->smpl == NULL) {
+        syllabix_qwen_tts_free(tts);
+        return NULL;
+    }
     QWEN_LOG("loaded; n_ctx=%d n_embd=%d\n", (int)llama_n_ctx(ctx), (int)llama_model_n_embd(model));
+
+    /* Row 32 voice anchor: one unconditioned clip generated on a chain
+     * pinned to SYLLABIX_QWEN_VOICE_SEED becomes the speaker reference
+     * every later sentence is conditioned on, so the voice does not drift
+     * with the runtime sampler seed. Any failure degrades to the row-31
+     * free-sampling behavior; it never fails the load. */
+    {
+        int32_t rate = 0;
+        int16_t *pcm = NULL;
+        int64_t n_samples = 0;
+        struct llama_sampler *anchor_smpl = qwen_make_sampler(SYLLABIX_QWEN_VOICE_SEED);
+        if (anchor_smpl != NULL) {
+            struct llama_sampler *runtime_smpl = tts->smpl;
+            tts->smpl = anchor_smpl;
+            const int rc = qwen_generate(tts, SYLLABIX_QWEN_ANCHOR_TEXT, "en", NULL, NULL,
+                                         &rate, &pcm, &n_samples);
+            tts->smpl = runtime_smpl;
+            llama_sampler_free(anchor_smpl);
+            if (rc == 0 && pcm != NULL && n_samples > 0 && rate > 0) {
+                float *f32 = (float *)malloc((size_t)n_samples * sizeof(float));
+                if (f32 != NULL) {
+                    for (int64_t i = 0; i < n_samples; i++) {
+                        f32[i] = (float)pcm[i] / 32767.0f;
+                    }
+                    /* mtmd_bitmap_init_from_audio copies; the scratch buffer
+                     * is ours to free. */
+                    tts->voice = mtmd_bitmap_init_from_audio((size_t)n_samples, f32);
+                    free(f32);
+                }
+            }
+        }
+        if (pcm != NULL) {
+            syllabix_qwen_tts_pcm_free(pcm);
+        }
+        QWEN_LOG("voice anchor %s\n",
+                 tts->voice != NULL ? "engaged" : "unavailable (unconditioned fallback)");
+    }
     return tts;
+}
+
+int syllabix_qwen_tts_has_voice(const struct syllabix_qwen_tts *tts) {
+    return tts != NULL && tts->voice != NULL ? 1 : 0;
 }
 
 void syllabix_qwen_tts_free(struct syllabix_qwen_tts *tts) {
@@ -182,6 +252,9 @@ void syllabix_qwen_tts_free(struct syllabix_qwen_tts *tts) {
     }
     if (tts->smpl != NULL) {
         llama_sampler_free(tts->smpl);
+    }
+    if (tts->voice != NULL) {
+        mtmd_bitmap_free(tts->voice);
     }
     if (tts->mctx != NULL) {
         mtmd_free(tts->mctx);
@@ -195,11 +268,12 @@ void syllabix_qwen_tts_free(struct syllabix_qwen_tts *tts) {
     free(tts);
 }
 
-/* 0 = ok, 1 = cancelled, -1 = error.
- * `out_pcm` receives malloc'd mono i16 (clipped exactly like the upstream
- * WAV writer: clamp to [-1, 1], scale by 32767). Free with
+/* 0 = ok, 1 = cancelled, -1 = error. One independent generation; the
+ * speaker reference comes from tts->voice (NULL during anchor generation
+ * itself). `out_pcm` receives malloc'd mono i16 (clipped exactly like the
+ * upstream WAV writer: clamp to [-1, 1], scale by 32767). Free with
  * syllabix_qwen_tts_pcm_free. `lang` may be NULL or empty for `en`. */
-int syllabix_qwen_tts_synthesize(
+static int qwen_generate(
     struct syllabix_qwen_tts *tts,
     const char *text,
     const char *lang,
@@ -225,7 +299,7 @@ int syllabix_qwen_tts_synthesize(
     inp.seq_id = 0;
     inp.prompt = text;
     inp.prompt_len = strlen(text);
-    inp.speaker_ref = NULL; /* voice cloning is out of scope for row 31 */
+    inp.speaker_ref = tts->voice;
     inp.lang = (lang != NULL && lang[0] != '\0') ? lang : "en";
     inp.top_k = SYLLABIX_QWEN_TOP_K;
     inp.top_p = SYLLABIX_QWEN_TOP_P;
@@ -312,6 +386,20 @@ int syllabix_qwen_tts_synthesize(
     *out_pcm = pcm;
     *out_n_samples = n_samples;
     return 0;
+}
+
+/* Public entry: same contract, with the pinned voice reference engaged. */
+int syllabix_qwen_tts_synthesize(
+    struct syllabix_qwen_tts *tts,
+    const char *text,
+    const char *lang,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    int32_t *out_sample_rate,
+    int16_t **out_pcm,
+    int64_t *out_n_samples) {
+    return qwen_generate(tts, text, lang, abort_cb, abort_user,
+                         out_sample_rate, out_pcm, out_n_samples);
 }
 
 void syllabix_qwen_tts_pcm_free(int16_t *pcm) {

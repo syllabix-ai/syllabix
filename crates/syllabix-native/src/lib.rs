@@ -78,6 +78,7 @@ mod ffi {
             seed: u32,
         ) -> *mut QwenTtsHandle;
         pub fn syllabix_qwen_tts_free(tts: *mut QwenTtsHandle);
+        pub fn syllabix_qwen_tts_has_voice(tts: *const QwenTtsHandle) -> c_int;
         pub fn syllabix_qwen_tts_synthesize(
             tts: *mut QwenTtsHandle,
             text: *const c_char,
@@ -391,6 +392,16 @@ impl QwenTtsContext {
             ));
         }
         Ok(Self { raw })
+    }
+
+    /// 1 when the self-voice anchor engaged at load; 0 means generation fell
+    /// back to unconditioned sampling. Diagnostics and native tests.
+    pub fn has_voice(&self) -> bool {
+        if self.raw.is_null() {
+            return false;
+        }
+        let _ggml = ggml_lock();
+        unsafe { ffi::syllabix_qwen_tts_has_voice(self.raw) == 1 }
     }
 
     /// Synthesize one sentence into mono i16 PCM plus its sample rate.

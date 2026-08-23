@@ -36,7 +36,8 @@ mod vad;
 pub use cancel::Cancel;
 pub use config::{AgentConfig, CONFIG_FILE_NAME};
 pub use defaults::{
-    BuiltinDefaults, LlmProvider, QueueCaps, SttModel, SttProvider, TtsProvider, VadProvider,
+    BuiltinDefaults, LlmProvider, QueueCaps, SttModel, SttProvider, TtsModel, TtsProvider,
+    VadProvider,
 };
 pub use dist::{
     artifact_name_for_target, artifact_name_for_uname, format_sha256sums_line,
@@ -80,8 +81,9 @@ pub use stt::{
     LIBRISPEECH_MIN_WORD_MATCH, STT_LANGUAGE,
 };
 pub use tts::{
-    KokoroTts, QwenTts, KOKORO_ASSET, KOKORO_NATIVE_RATE_HZ, KOKORO_VOICE_ASSET, QWEN_TTS_ASSET,
-    QWEN_TTS_MMPROJ_ASSET, TTS_ASR_MIN_WORD_MATCH,
+    KokoroTts, QwenTts, KOKORO_ASSET, KOKORO_NATIVE_RATE_HZ, KOKORO_VOICE_ASSET,
+    QWEN_TTS_06B_ASSET, QWEN_TTS_06B_MMPROJ_ASSET, QWEN_TTS_ASSET, QWEN_TTS_MMPROJ_ASSET,
+    TTS_ASR_MIN_WORD_MATCH,
 };
 pub use turn_debug::{
     prepare_turn_debug_dir, resolve_turn_debug_dir, TurnDebug, TurnOutcome, DEFAULT_TURN_DEBUG_DIR,

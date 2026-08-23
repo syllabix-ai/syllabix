@@ -147,22 +147,83 @@ impl LlmProvider {
     }
 }
 
-/// TTS providers. Kokoro stays the launch default; Qwen3-TTS is the row-31
-/// yaml opt-in for LM-based speech (numbers, currency, ten languages).
+/// TTS execution models. `Local` runs weights in-process — Kokoro ONNX or
+/// Qwen3-TTS through the shared llama.cpp/ggml path; `Online` is reserved for
+/// a future cloud TTS row and fails fast at config load today. The words name
+/// the posture — where the user's words go — matching [`LlmProvider`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsProvider {
-    /// Kokoro ONNX.
-    Kokoro,
-    /// Qwen3-TTS-12Hz through the shared llama.cpp/ggml path.
-    Qwen,
+    /// In-process weights. No network.
+    Local,
+    /// OpenAI-compatible remote endpoint. Not supported yet; reserved.
+    Online,
 }
 
 impl TtsProvider {
     /// Config / log name.
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Local => "local",
+            Self::Online => "online",
+        }
+    }
+}
+
+/// TTS model menu under `provider: local`. Kokoro stays the launch default;
+/// the two Qwen3-TTS backbones are yaml opt-ins through the shared ggml.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TtsModel {
+    /// Kokoro ONNX (`af_heart`, English).
+    Kokoro,
+    /// Qwen3-TTS-12Hz-0.6B-Base GGUF (~344 MB fetch).
+    Qwen06,
+    /// Qwen3-TTS-12Hz-1.7B-Base GGUF (row 31 weight).
+    Qwen17,
+}
+
+impl TtsModel {
+    /// Every menu id, in documentation order.
+    pub const ALL: [TtsModel; 3] = [TtsModel::Kokoro, TtsModel::Qwen06, TtsModel::Qwen17];
+
+    /// Config / log name.
+    pub fn as_str(self) -> &'static str {
+        match self {
             Self::Kokoro => "kokoro",
-            Self::Qwen => "qwen",
+            Self::Qwen06 => "qwen3-0.6",
+            Self::Qwen17 => "qwen3-1.7",
+        }
+    }
+
+    /// Parse a yaml `pipeline.tts.model` id.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.as_str() == value)
+    }
+
+    /// Manifest asset holding this model's primary weights.
+    pub fn asset_id(self) -> &'static str {
+        match self {
+            Self::Kokoro => crate::tts::KOKORO_ASSET,
+            Self::Qwen06 => crate::tts::QWEN_TTS_06B_ASSET,
+            Self::Qwen17 => crate::tts::QWEN_TTS_ASSET,
+        }
+    }
+
+    /// Manifest id of the matching speech-tokenizer projector (qwen ids
+    /// only; Kokoro has none).
+    pub fn mmproj_asset_id(self) -> Option<&'static str> {
+        match self {
+            Self::Kokoro => None,
+            Self::Qwen06 => Some(crate::tts::QWEN_TTS_06B_MMPROJ_ASSET),
+            Self::Qwen17 => Some(crate::tts::QWEN_TTS_MMPROJ_ASSET),
+        }
+    }
+
+    /// Turn-debug / log identity of the loaded weights.
+    pub fn model_id(self) -> &'static str {
+        match self {
+            Self::Kokoro => crate::tts::KOKORO_ASSET,
+            Self::Qwen06 => "qwen3-tts-0.6b-base",
+            Self::Qwen17 => "qwen3-tts-1.7b-base",
         }
     }
 }
@@ -186,6 +247,8 @@ pub struct BuiltinDefaults {
     pub llm_thinking: bool,
     /// TTS provider.
     pub tts: TtsProvider,
+    /// TTS model (`kokoro` default; `qwen3-0.6` / `qwen3-1.7` opt-in).
+    pub tts_model: TtsModel,
     /// STT language code (`en`). YAML may set this; v0 allows only `en`.
     pub language: &'static str,
     /// Capture/playback sample rate.
@@ -209,7 +272,8 @@ impl BuiltinDefaults {
             llm: LlmProvider::Local,
             llm_model: "llama-3.2-1b",
             llm_thinking: false,
-            tts: TtsProvider::Kokoro,
+            tts: TtsProvider::Local,
+            tts_model: TtsModel::Kokoro,
             language: "en",
             sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
             channels: DEFAULT_CHANNELS,
@@ -239,7 +303,8 @@ mod tests {
         assert_eq!(d.llm.as_str(), "local");
         assert_eq!(d.llm_model, "llama-3.2-1b");
         assert!(!d.llm_thinking);
-        assert_eq!(d.tts.as_str(), "kokoro");
+        assert_eq!(d.tts.as_str(), "local");
+        assert_eq!(d.tts_model.as_str(), "kokoro");
         assert_eq!(d.language, "en");
         assert_eq!(d.sample_rate_hz, 16_000);
         assert_eq!(d.channels, 1);
@@ -252,9 +317,30 @@ mod tests {
         assert_eq!(SttProvider::WhisperCpp.as_str(), "whisper.cpp");
         assert_eq!(LlmProvider::Local.as_str(), "local");
         assert_eq!(LlmProvider::Online.as_str(), "online");
-        assert_eq!(TtsProvider::Kokoro.as_str(), "kokoro");
+        assert_eq!(TtsProvider::Local.as_str(), "local");
+        assert_eq!(TtsProvider::Online.as_str(), "online");
         // The zero-config stack stays on-device; online is yaml opt-in only.
         assert_eq!(BuiltinDefaults::v0().llm, LlmProvider::Local);
+        assert_eq!(BuiltinDefaults::v0().tts, TtsProvider::Local);
+    }
+
+    #[test]
+    fn tts_menu_ids_round_trip() {
+        let ids = ["kokoro", "qwen3-0.6", "qwen3-1.7"];
+        for (model, id) in TtsModel::ALL.into_iter().zip(ids) {
+            assert_eq!(model.as_str(), id);
+            assert_eq!(TtsModel::parse(id), Some(model));
+            assert!(TtsModel::parse(&format!("{id}-nope")).is_none());
+        }
+        // The retired row-31 provider values are not model ids either.
+        for bad in ["qwen", "pansori", "neutts"] {
+            assert!(TtsModel::parse(bad).is_none(), "{bad}");
+        }
+        assert_eq!(
+            BuiltinDefaults::v0().tts_model,
+            TtsModel::Kokoro,
+            "`kokoro` stays the launch default"
+        );
     }
 
     #[test]
