@@ -44,6 +44,10 @@ pub struct AgentConfig {
     pub llm_model: String,
     /// Qwen thinking. Default false; yaml `thinking: true` enables it.
     pub thinking: bool,
+    /// LLM system prompt template (`pipeline.llm.system_prompt`). `{language}`
+    /// is replaced at generate time with the STT language's English name.
+    /// Omitted yaml uses the launch default.
+    pub system_prompt: String,
     /// OpenAI-compatible endpoint (`pipeline.llm.base_url`). Required for
     /// `provider: online`, forbidden for `provider: local`; the API key never
     /// lives here.
@@ -86,6 +90,7 @@ impl AgentConfig {
             llm: defaults.llm,
             llm_model: defaults.llm_model.to_string(),
             thinking: defaults.llm_thinking,
+            system_prompt: crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             llm_base_url: None,
             tts: defaults.tts,
             tts_model: defaults.tts_model,
@@ -156,6 +161,7 @@ pipeline:
     provider: {llm}
     model: {llm_model}
     thinking: {thinking}
+    system_prompt: {system_prompt}
 {base_url_line}  tts:
     provider: {tts}
     model: {tts_model}
@@ -173,6 +179,7 @@ pipeline:
             llm = self.llm.as_str(),
             llm_model = self.llm_model,
             thinking = self.thinking,
+            system_prompt = yaml_double_quoted(&self.system_prompt),
             base_url_line = self
                 .llm_base_url
                 .as_deref()
@@ -292,7 +299,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     deny_unknown(
         llm,
         "pipeline.llm",
-        &["provider", "model", "thinking", "base_url"],
+        &["provider", "model", "thinking", "system_prompt", "base_url"],
     )?;
     let llm_provider = parse_llm(required_string(llm, "pipeline.llm.provider", "provider")?)?;
     let llm_model = parse_llm_model(
@@ -300,6 +307,10 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         required_string(llm, "pipeline.llm.model", "model")?,
     )?;
     let thinking = optional_bool(llm, "pipeline.llm", "thinking", false)?;
+    let system_prompt = match optional_string(llm, "pipeline.llm", "system_prompt")? {
+        Some(value) => parse_system_prompt(&value)?,
+        None => crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
+    };
     // Row 30: the endpoint is explicit for `online` (OpenAI, Groq, Ollama,
     // vLLM, llama-server); the key may not live here either way —
     // `SYLLABIX_LLM_API_KEY` env only, never yaml, never `.env`.
@@ -340,6 +351,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         llm: llm_provider,
         llm_model: llm_model.to_string(),
         thinking,
+        system_prompt,
         llm_base_url,
         tts: tts_provider,
         tts_model,
@@ -510,6 +522,34 @@ fn optional_string(map: &serde_yaml::Mapping, prefix: &str, key: &str) -> Result
             field: format!("{prefix}.{key}"),
             message: "must be a string".into(),
         })
+}
+
+fn parse_system_prompt(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(Error::Config {
+            field: "pipeline.llm.system_prompt".into(),
+            message: "must be a non-empty string".into(),
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Double-quoted yaml scalar so colons and `{language}` stay one value.
+fn yaml_double_quoted(value: &str) -> String {
+    let mut out = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn missing(field: &str) -> Error {
@@ -700,6 +740,8 @@ mod tests {
         assert!(yaml.contains("language: en"));
         assert!(yaml.contains("model: llama-3.2-1b"));
         assert!(yaml.contains("thinking: false"));
+        assert!(yaml.contains("system_prompt:"));
+        assert!(yaml.contains("{language}"));
         assert!(yaml.contains("model: kokoro"));
         assert!(yaml.contains("threshold: 0.5"));
         assert!(yaml.contains("min_speech_ms: 100"));
@@ -716,6 +758,10 @@ mod tests {
         let config = AgentConfig::parse_yaml(&text).expect("example parses");
         assert_eq!(config, AgentConfig::v0());
         assert!(!config.thinking, "thinking stays off by default");
+        assert_eq!(
+            config.system_prompt,
+            crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE
+        );
         // The example is the minimal shape: no VAD tunables spelled out.
         assert!(
             !text.contains("threshold:") && !text.contains("min_speech_ms:"),
@@ -819,6 +865,100 @@ pipeline:
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.thinking"), "{err}");
         assert!(err.to_string().contains("boolean"), "{err}");
+    }
+
+    #[test]
+    fn yaml_system_prompt_overrides_the_launch_default() {
+        let yaml = AgentConfig::v0().to_yaml().replace(
+            &format!(
+                "system_prompt: {}",
+                super::yaml_double_quoted(crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE)
+            ),
+            "system_prompt: \"You are a cooking coach. Reply in spoken {language}.\"",
+        );
+        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(
+            cfg.system_prompt,
+            "You are a cooking coach. Reply in spoken {language}."
+        );
+        let round = AgentConfig::parse_yaml(&cfg.to_yaml()).unwrap();
+        assert_eq!(round.system_prompt, cfg.system_prompt);
+    }
+
+    #[test]
+    fn yaml_system_prompt_literal_block_is_accepted() {
+        let yaml = r#"
+name: demo-agent
+pipeline:
+  vad:
+    provider: silero
+  stt:
+    provider: whisper.cpp
+    model: small
+    language: en
+  llm:
+    provider: local
+    model: llama-3.2-1b
+    system_prompt: |
+      You are a cooking coach.
+      Keep answers short enough to say aloud.
+  tts:
+    provider: local
+    model: kokoro
+"#;
+        let cfg = AgentConfig::parse_yaml(yaml).unwrap();
+        assert_eq!(
+            cfg.system_prompt,
+            "You are a cooking coach.\nKeep answers short enough to say aloud."
+        );
+    }
+
+    #[test]
+    fn empty_system_prompt_is_field_level() {
+        let yaml = AgentConfig::v0().to_yaml().replace(
+            &format!(
+                "system_prompt: {}",
+                super::yaml_double_quoted(crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE)
+            ),
+            "system_prompt: \"   \"",
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("pipeline.llm.system_prompt"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("non-empty"), "{err}");
+    }
+
+    #[test]
+    fn system_prompt_must_be_a_string() {
+        let yaml = AgentConfig::v0().to_yaml().replace(
+            &format!(
+                "system_prompt: {}",
+                super::yaml_double_quoted(crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE)
+            ),
+            "system_prompt: 1",
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("pipeline.llm.system_prompt"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("string"), "{err}");
+    }
+
+    #[test]
+    fn yaml_system_prompt_round_trips_quotes_and_whitespace() {
+        let mut cfg = AgentConfig::v0();
+        cfg.system_prompt = "Say \"hi\"\nthen a tab\there and a slash \\ and cr\r.".into();
+        let yaml = cfg.to_yaml();
+        assert!(yaml.contains("\\\""), "{yaml}");
+        assert!(yaml.contains("\\n"), "{yaml}");
+        assert!(yaml.contains("\\t"), "{yaml}");
+        assert!(yaml.contains("\\\\"), "{yaml}");
+        assert!(yaml.contains("\\r"), "{yaml}");
+        let round = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(round.system_prompt, cfg.system_prompt);
     }
 
     fn online_yaml(model: &str, base_url: &str) -> String {

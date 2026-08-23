@@ -112,6 +112,9 @@ pub struct OpenAiSettings {
     pub endpoint: String,
     /// Model id sent verbatim; the endpoint decides what it serves.
     pub model: String,
+    /// System prompt template (`pipeline.llm.system_prompt`). `{language}` is
+    /// replaced at generate time, same as the local engine.
+    pub system_prompt: String,
 }
 
 impl OpenAiSettings {
@@ -124,6 +127,7 @@ impl OpenAiSettings {
         Self {
             endpoint: join_endpoint(&base),
             model: config.llm_model.clone(),
+            system_prompt: config.system_prompt.clone(),
         }
     }
 }
@@ -240,7 +244,13 @@ impl Llm for OpenAiLlm {
             return Err(Error::Cancelled);
         }
         let generation = cancel.generation();
-        let body = request_body(&self.settings.model, history, user).to_string();
+        let body = request_body(
+            &self.settings.model,
+            history,
+            user,
+            &self.settings.system_prompt,
+        )
+        .to_string();
 
         // One worker per turn owns the blocking HTTP read; the generate loop
         // polls events so barge-in cancel surfaces within POLL_TICK. Setting
@@ -501,7 +511,12 @@ fn delta_content(value: &serde_json::Value) -> Option<String> {
 
 /// Same message shape as the local engine: system prompt pins the reply
 /// language, rolling history keeps the last turns, newest question last.
-fn request_body(model: &str, history: &[HistoryTurn], user: &Transcript) -> serde_json::Value {
+fn request_body(
+    model: &str,
+    history: &[HistoryTurn],
+    user: &Transcript,
+    system_prompt: &str,
+) -> serde_json::Value {
     let kept = if history.len() > LLAMA_MAX_HISTORY_TURNS {
         &history[history.len() - LLAMA_MAX_HISTORY_TURNS..]
     } else {
@@ -510,7 +525,7 @@ fn request_body(model: &str, history: &[HistoryTurn], user: &Transcript) -> serd
     let mut messages = Vec::with_capacity(2 + kept.len() * 2);
     messages.push(serde_json::json!({
         "role": "system",
-        "content": crate::llm::system_prompt_for(&user.language),
+        "content": crate::llm::render_system_prompt(system_prompt, &user.language),
     }));
     for turn in kept {
         messages.push(serde_json::json!({"role": "user", "content": turn.user.text}));
@@ -566,6 +581,7 @@ mod tests {
             OpenAiSettings {
                 endpoint,
                 model: "gpt-test".into(),
+                system_prompt: crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             },
             Zeroizing::new(TEST_KEY.into()),
             OpenAiTimeouts {
@@ -736,7 +752,7 @@ mod tests {
         assert!(lowered.contains("accept: text/event-stream"), "{request}");
         assert!(request.contains("\"model\":\"gpt-test\""), "{request}");
         assert!(request.contains("\"stream\":true"), "{request}");
-        assert!(request.contains("voice assistant"), "{request}");
+        assert!(request.contains("smart assistant"), "{request}");
         // serde_json orders map keys alphabetically: messages, model, stream.
         assert!(request.contains("---BODY---{\"messages\":"), "{request}");
     }
@@ -942,6 +958,10 @@ mod tests {
             format!("{DEFAULT_LLM_BASE_URL}/chat/completions")
         );
         assert_eq!(OpenAiSettings::from_config(&config).model, "gpt-test");
+        assert_eq!(
+            OpenAiSettings::from_config(&config).system_prompt,
+            crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE
+        );
         config.llm_base_url = Some("https://api.groq.com/openai/v1".into());
         assert_eq!(
             OpenAiSettings::from_config(&config).endpoint,
@@ -1027,13 +1047,23 @@ mod tests {
             .collect();
         let mut french = user("bonjour");
         french.language = "fr".into();
-        let body = request_body("gpt-test", &history, &french);
+        let body = request_body(
+            "gpt-test",
+            &history,
+            &french,
+            crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE,
+        );
         let serialized = body.to_string();
         assert!(serialized.contains("spoken French"), "{serialized}");
         assert!(serialized.contains("\"u2\""), "{serialized}");
         assert!(!serialized.contains("\"u1\""), "{serialized}");
         assert!(serialized.contains("\"bonjour\""), "{serialized}");
-        let fresh = request_body("gpt-test", &[], &user("hi"));
+        let fresh = request_body(
+            "gpt-test",
+            &[],
+            &user("hi"),
+            crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE,
+        );
         assert_eq!(
             fresh["messages"]
                 .as_array()

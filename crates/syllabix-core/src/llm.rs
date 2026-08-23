@@ -23,22 +23,43 @@ pub const QWEN35_2B_ASSET: &str = "qwen3.5-2b";
 /// Manifest id for the yaml-only Llama 3.2 1B instruct GGUF.
 pub const LLAMA_32_1B_ASSET: &str = "llama-3.2-1b";
 
-/// Short spoken-English system prompt. No Markdown.
-pub const VOICE_SYSTEM_PROMPT: &str = "You are a voice assistant on a laptop. Reply in short spoken English, one or two sentences. Do not use markdown, lists, headings, or emoji.";
+/// `{language}` in a yaml `system_prompt` is replaced with the STT language's
+/// English name (`French`, `German`, …) at generate time. Unknown or `auto`
+/// codes (which never reach the LLM in a real run) stay `English`.
+pub const LANGUAGE_PLACEHOLDER: &str = "{language}";
 
-/// System prompt for the turn's STT language.
+/// Default system prompt template. Written by `init`; used when yaml omits
+/// `pipeline.llm.system_prompt`. Shared by `local` GGUF and `online`
+/// chat/completions: the reply is still spoken, so the prompt is voice-native
+/// rather than naming where the weights run.
+pub const VOICE_SYSTEM_PROMPT_TEMPLATE: &str = "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji.";
+
+/// English rendering of [`VOICE_SYSTEM_PROMPT_TEMPLATE`]. Zero-config `run`
+/// with STT `en` sends this byte-for-byte.
+pub const VOICE_SYSTEM_PROMPT: &str = "You are a smart assistant. This is a spoken conversation. Reply in spoken English, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji.";
+
+/// Render a system-prompt template for the turn's STT language.
 ///
-/// English keeps [`VOICE_SYSTEM_PROMPT`] byte-for-byte. Any other whisper
-/// language pins its English name so the LLM replies in-language; unknown or
-/// `auto` codes (which never reach the LLM in a real run) fall back to English.
+/// `{language}` is substituted when present. Custom yaml that omits the
+/// placeholder still gets a spoken-language pin for a known non-English
+/// code, so STT `language:` / `auto` keep working. Unknown/`auto` codes
+/// leave a placeholder-free template unchanged.
+pub fn render_system_prompt(template: &str, language: &str) -> String {
+    let name = crate::language::language_name(language).unwrap_or("English");
+    if template.contains(LANGUAGE_PLACEHOLDER) {
+        template.replace(LANGUAGE_PLACEHOLDER, name)
+    } else if language != crate::stt::STT_LANGUAGE
+        && crate::language::language_name(language).is_some()
+    {
+        format!("{template} Reply in spoken {name}.")
+    } else {
+        template.to_string()
+    }
+}
+
+/// System prompt for the turn's STT language using the launch default template.
 pub fn system_prompt_for(language: &str) -> String {
-    if language == crate::stt::STT_LANGUAGE {
-        return VOICE_SYSTEM_PROMPT.to_string();
-    }
-    match crate::language::language_name(language) {
-        Some(name) => format!("You are a voice assistant on a laptop. Reply in short spoken {name}, one or two sentences. Do not use markdown, lists, headings, or emoji."),
-        None => VOICE_SYSTEM_PROMPT.to_string(),
-    }
+    render_system_prompt(VOICE_SYSTEM_PROMPT_TEMPLATE, language)
 }
 
 /// Rolling history kept in the prompt.
@@ -59,6 +80,7 @@ pub struct LlamaLlm {
     calls: Arc<Mutex<Vec<LlmCall>>>,
     thinking: bool,
     model_id: String,
+    system_prompt: String,
 }
 
 impl Clone for LlamaLlm {
@@ -68,6 +90,7 @@ impl Clone for LlamaLlm {
             calls: Arc::clone(&self.calls),
             thinking: self.thinking,
             model_id: self.model_id.clone(),
+            system_prompt: self.system_prompt.clone(),
         }
     }
 }
@@ -85,6 +108,7 @@ impl LlamaLlm {
                 .file_stem()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default(),
+            system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
         })
     }
 
@@ -145,6 +169,12 @@ impl LlamaLlm {
         self.thinking
     }
 
+    /// Yaml `pipeline.llm.system_prompt` (or the launch default template).
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = prompt.into();
+        self
+    }
+
     /// `(n_ctx, n_ctx_train)` after a real GGUF load.
     pub fn context_window(&self) -> Option<(i32, i32)> {
         self.engine.lock().expect("llama engine").context_window()
@@ -157,6 +187,7 @@ impl LlamaLlm {
             calls: Arc::new(Mutex::new(Vec::new())),
             thinking: false,
             model_id: BuiltinDefaults::v0().llm_model.to_string(),
+            system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
         }
     }
 
@@ -209,7 +240,7 @@ impl Llm for LlamaLlm {
         let mut messages = Vec::with_capacity(2 + kept.len() * 2);
         messages.push(ChatMessage {
             role: "system".into(),
-            content: system_prompt_for(&user.language),
+            content: render_system_prompt(&self.system_prompt, &user.language),
         });
         for turn in kept {
             messages.push(ChatMessage {
@@ -408,10 +439,14 @@ mod tests {
 
     #[test]
     fn system_prompt_pins_the_reply_language() {
+        assert_eq!(
+            render_system_prompt(VOICE_SYSTEM_PROMPT_TEMPLATE, "en"),
+            VOICE_SYSTEM_PROMPT
+        );
         assert_eq!(system_prompt_for("en"), VOICE_SYSTEM_PROMPT);
         assert_eq!(
             system_prompt_for("fr"),
-            "You are a voice assistant on a laptop. Reply in short spoken French, one or two sentences. Do not use markdown, lists, headings, or emoji."
+            "You are a smart assistant. This is a spoken conversation. Reply in spoken French, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji."
         );
         assert_eq!(system_prompt_for("de"), system_prompt_for("de"));
         assert!(system_prompt_for("de").contains("German"));
@@ -421,6 +456,27 @@ mod tests {
         assert_eq!(system_prompt_for("auto"), VOICE_SYSTEM_PROMPT);
         assert_eq!(system_prompt_for("klingon"), VOICE_SYSTEM_PROMPT);
         assert!(!system_prompt_for("fr").contains("**"));
+        assert!(!VOICE_SYSTEM_PROMPT.contains(LANGUAGE_PLACEHOLDER));
+        assert!(VOICE_SYSTEM_PROMPT_TEMPLATE.contains(LANGUAGE_PLACEHOLDER));
+    }
+
+    #[test]
+    fn yaml_system_prompt_keeps_persona_and_still_pins_language() {
+        let custom = "You are a cooking coach. Keep answers short.";
+        assert_eq!(
+            render_system_prompt(custom, "en"),
+            custom,
+            "English (and unknown codes) leave a placeholder-free template alone"
+        );
+        assert_eq!(
+            render_system_prompt(custom, "fr"),
+            "You are a cooking coach. Keep answers short. Reply in spoken French."
+        );
+        assert_eq!(
+            render_system_prompt("Speak in {language} only.", "ja"),
+            "Speak in Japanese only."
+        );
+        assert_eq!(render_system_prompt(custom, "auto"), custom);
     }
 
     #[test]
@@ -439,7 +495,8 @@ mod tests {
         assert!(is_v0_llm_model(QWEN35_2B_ASSET));
         assert!(is_v0_llm_model(LLAMA_32_1B_ASSET));
         assert!(!is_v0_llm_model("mistral"));
-        assert!(VOICE_SYSTEM_PROMPT.contains("voice"));
+        assert!(VOICE_SYSTEM_PROMPT.contains("smart assistant"));
+        assert!(VOICE_SYSTEM_PROMPT.contains("spoken"));
         assert!(!VOICE_SYSTEM_PROMPT.contains("**"));
         assert_eq!(LLAMA_CANCEL_TIMEOUT, Duration::from_secs(5));
     }
@@ -471,6 +528,29 @@ mod tests {
         assert_eq!(prompt[0].content, VOICE_SYSTEM_PROMPT);
         assert_eq!(prompt[1].role, "user");
         assert_eq!(prompt[1].content, "hi");
+    }
+
+    #[test]
+    fn configured_system_prompt_is_sent_to_the_engine() {
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["ok".into()],
+            delay: Duration::ZERO,
+            last_messages: Arc::clone(&messages),
+        }))
+        .with_system_prompt("You are a cooking coach. Reply in spoken {language}.");
+        llm.generate(
+            &[],
+            &user_in(1, "hi", "es"),
+            &Cancel::new(),
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+        let prompt = messages.lock().unwrap();
+        assert_eq!(
+            prompt[0].content,
+            "You are a cooking coach. Reply in spoken Spanish."
+        );
     }
 
     #[test]
