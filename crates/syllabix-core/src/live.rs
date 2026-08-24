@@ -116,6 +116,7 @@ fn run_live_inner(
         config.stt_model.asset_id(),
         config.llm_model.as_str(),
         config.thinking,
+        config.system_prompt.as_str(),
         config.vad_threshold,
         config.vad_min_speech_ms,
         config.vad_end_silence_ms,

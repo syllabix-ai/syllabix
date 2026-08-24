@@ -35,6 +35,8 @@ pipeline:
     provider: local
     model: llama-3.2-1b
     thinking: false
+    # optional; omit for the launch default. `{language}` → STT language name.
+    system_prompt: "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji."
   tts:
     provider: local
     model: kokoro
@@ -70,6 +72,8 @@ Omit any VAD tunable to keep the launch default. First `run` fetches only the se
 | `qwen3.5-2b` | Fetched when selected |
 
 `thinking: true` enables Qwen chain-of-thought. Thinking text is never spoken and is hidden in the TUI. Unknown local ids fail at load.
+
+Optional `system_prompt` sets the spoken persona for both `local` and `online`. `{language}` is replaced at generate time with the STT language’s English name (`English`, `French`, …). Omit the key (or run with no yaml) for the launch default above. `syllabix init` writes it so you can edit it. Empty or non-string values fail at load.
 
 ### Online (BYO key)
 

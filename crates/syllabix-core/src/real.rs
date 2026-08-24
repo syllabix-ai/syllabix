@@ -169,14 +169,17 @@ pub fn build_llm(
     llm_api_key: Option<&Zeroizing<String>>,
 ) -> Result<LiveLlm> {
     match config.llm {
-        crate::LlmProvider::Local => Ok(LiveLlm::Local(LlamaLlm::from_cached_model(
-            cache,
-            fetcher,
-            progress,
-            cancel,
-            &config.llm_model,
-            config.thinking,
-        )?)),
+        crate::LlmProvider::Local => Ok(LiveLlm::Local(
+            LlamaLlm::from_cached_model(
+                cache,
+                fetcher,
+                progress,
+                cancel,
+                &config.llm_model,
+                config.thinking,
+            )?
+            .with_system_prompt(config.system_prompt.clone()),
+        )),
         crate::LlmProvider::Online => {
             let key = llm_api_key.ok_or_else(|| Error::Config {
                 field: API_KEY_ENV.into(),

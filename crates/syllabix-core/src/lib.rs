@@ -54,8 +54,9 @@ pub use fake::{
 pub use g2p::{english_to_ipa, english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
 pub use live::run_live;
 pub use llm::{
-    is_v0_llm_model, system_prompt_for, LlamaLlm, LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT,
-    LLAMA_MAX_HISTORY_TURNS, QWEN35_08B_ASSET, QWEN35_2B_ASSET, VOICE_SYSTEM_PROMPT,
+    is_v0_llm_model, render_system_prompt, system_prompt_for, LlamaLlm, LLAMA_32_1B_ASSET,
+    LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS, QWEN35_08B_ASSET, QWEN35_2B_ASSET,
+    VOICE_SYSTEM_PROMPT, VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
 pub use memory::{process_rss_bytes, LOOP_RSS_GROWTH_CEILING_BYTES};
 pub use models::{
