@@ -2,16 +2,16 @@
 
 `syllabix run` works with **no yaml**. Use `syllabix init [dir]` (or copy [`examples/demo-agent.yaml`](../examples/demo-agent.yaml)) when you want a project folder.
 
-Unknown keys fail at load. Do not put API keys, `n_predict`, `n_ctx`, sample rate, or frame size in yaml.
+Unknown keys fail at load.
 
 ## Default stack (zero-config)
 
 | Layer | Default |
 | --- | --- |
-| VAD | Silero ONNX (threshold 0.5, min speech 100 ms, end silence 350 ms, Whisper preroll 200 ms) |
+| VAD | Silero (threshold 0.5, min speech 100 ms, end silence 350 ms, Whisper preroll 200 ms) |
 | STT | whisper.cpp `small`, language `en` |
 | LLM | llama.cpp, Llama 3.2 1B, thinking off |
-| TTS | Kokoro ONNX |
+| TTS | Kokoro |
 | Echo | Full-duplex AEC3, on |
 
 `run --barge-in` is a CLI flag, not a yaml key. Off by default.
@@ -85,7 +85,7 @@ pipeline:
 
 `base_url` examples: `https://api.openai.com/v1`, `https://api.groq.com/openai/v1`, `http://127.0.0.1:11434/v1` (Ollama), or any vLLM / llama-server URL. Nothing is defaulted: `online` without `base_url` fails at load; `local` rejects the field.
 
-The key is **environment only** — never yaml, never a `.env` file:
+Set the key in the environment:
 
 ```bash
 SYLLABIX_LLM_API_KEY=sk-… syllabix run
@@ -94,16 +94,14 @@ SYLLABIX_LLM_API_KEY=sk-… syllabix run
 
 Missing or empty key with `provider: online` fails at `run` start before devices or weights load. Keyless loopback (Ollama, llama-server, vLLM) still needs a placeholder: `SYLLABIX_LLM_API_KEY=ollama syllabix run`.
 
-A failed cloud turn speaks a short fallback instead of hanging. There is no auto-retry. Barge-in cancels the in-flight stream the same way as local generation.
-
 ## TTS
 
 `pipeline.tts.provider` is `local` (in-process) or `online` (reserved; fails fast).
 
 | `model` (under `local`) | Notes |
 | --- | --- |
-| `kokoro` | Default (~310 MB ONNX) |
-| `qwen3-0.6` | Qwen3-TTS 0.6B; fetched when selected |
+| `kokoro` | Default (~310 MB) |
+| `qwen3-0.6` | Qwen3-TTS 0.6B + speech tokenizer; fetched when selected |
 | `qwen3-1.7` | Qwen3-TTS 1.7B + speech tokenizer; fetched when selected |
 
 Qwen engines read numbers and currency as words (`100` → “one hundred”), speak ten languages via optional `tts.language` (`en`, `zh`, `de`, `it`, `pt`, `es`, `fr`, `ja`, `ko`, `ru`), and pin one voice across sentences. Kokoro stays the zero-config default.

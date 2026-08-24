@@ -1,7 +1,5 @@
 # Contributing
 
-Product code lives in this repository. Agent process, launch sequence, and learnings live in [`syllabix-ai/syllabix_founder_documents`](https://github.com/syllabix-ai/syllabix_founder_documents).
-
 ## Build
 
 Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share one `ggml` compiled into the binary (Darwin Metal + Accelerate; Linux/Windows portable CPU). Linux also needs ALSA headers (`libasound2-dev`).
@@ -22,7 +20,25 @@ Exclusive extra native suites (not the default `cargo test --workspace` bar):
 SYLLABIX_NATIVE_MODELS=qwen3-0.6 cargo test -p syllabix-core --test native_inference
 ```
 
-Model weights are not in git and are not packed into the `dist` executable. A versioned manifest lists Silero, the whisper.cpp STT menu, Llama 3.2 1B (default), Qwen3.5-0.8B, Qwen3.5-2B, Kokoro, and the Qwen3-TTS backbones. Zero-config `run` fetches only the selected ids. The cache writes into `$SYLLABIX_CACHE_DIR/models/v1` when the env var is set, otherwise `~/.cache/syllabix/models/v1`, verifies SHA-256, and reuses files offline.
+## Models
+
+Weights download on first use of each id: HTTPS from the URL pinned in the binary, SHA-256 check, then reuse from cache. Default `run` fetches only the launch stack. Yaml-selected ids fetch the first time that id is used. `--help` and `init` download nothing.
+
+Cache directory:
+
+- `$SYLLABIX_CACHE_DIR/models/v1` if set
+- otherwise `~/.cache/syllabix/models/v1`
+- Windows: `%LOCALAPPDATA%\syllabix\cache\models\v1`
+
+| When | Files | Source |
+| --- | --- | --- |
+| First default `run` | Silero VAD | GitHub `snakers4/silero-vad` |
+| | Whisper `small` | Hugging Face `ggerganov/whisper.cpp` |
+| | Llama 3.2 1B Instruct Q4_K_M | Hugging Face `bartowski/Llama-3.2-1B-Instruct-GGUF` |
+| | Kokoro + default voice | Hugging Face `onnx-community/Kokoro-82M-v1.0-ONNX` |
+| `pipeline.stt.model` other than `small` | Matching `ggml-*.bin` | Hugging Face `ggerganov/whisper.cpp` |
+| `pipeline.llm.model` `qwen3.5-0.8b` / `qwen3.5-2b` | Matching Q4_K_M GGUF | Hugging Face `bartowski` Qwen GGUFs |
+| `pipeline.tts.model` `qwen3-0.6` / `qwen3-1.7` | Backbone GGUF + speech-tokenizer mmproj | Hugging Face `mradermacher` (0.6B) / `ggml-org` (1.7B) |
 
 CPU vs Metal tok/s for the three default GGUFs: [`vendor/llama-bench.md`](../vendor/llama-bench.md). ggml vendor pins and local patches: [`vendor/README.md`](../vendor/README.md). Measurement protocols: [`reference-profiles.md`](reference-profiles.md).
 
@@ -74,8 +90,8 @@ GitHub Release files are the four artifact names plus `SHA256SUMS`. `.github/wor
 
 After a Release is published, validate the documented download path: `SMOKE_RELEASE_URL=https://github.com/syllabix-ai/syllabix/releases/download/<tag> scripts/smoke-setup.sh syllabix-Linux-x86_64` (repeat per OS you can touch).
 
-Linux contributors who hit a missing ALSA link need `libasound2-dev`. Users of the Release binary never compile anything.
+Linux contributors who hit a missing ALSA link need `libasound2-dev`.
 
 ## CI
 
-Per-PR CI is fmt, clippy, and llvm-cov ≥85% on the self-hosted macOS runner (no native weight load). Weekly CI runs `cargo test --workspace` on Linux / Windows / macOS, including launch-stack native inference.
+Per-PR CI is fmt, clippy, and llvm-cov ≥85% without loading native weights. Weekly CI runs `cargo test --workspace` on Linux / Windows / macOS, including launch-stack native inference.
