@@ -1,24 +1,5 @@
-# Minimal Syllabix example — the launch config shape from V0_LAUNCH.md.
-# Copy into a project folder as syllabix.yaml, or generate the canonical
-# version with `syllabix init`. `syllabix run` needs no yaml at all.
-#
-# Omitted VAD keys fall back to the launch defaults:
-#   threshold 0.5, min_speech_ms 100, end_silence_ms 350, preroll_ms 200.
-# Other STT model ids: medium / large-v3-turbo and the published quantizations
-#   medium-q5_0 / large-v3-turbo-q5_0 (first run fetches only the selected id).
-# `language` is any whisper ISO code (fr, de, ja, …) or `auto`: the detected
-#   language shows in the TUI/diagnostics sidecar and the agent replies in-language.
-# Other LLM ids: qwen3.5-0.8b / qwen3.5-2b (add `thinking: true` for Qwen
-# chain-of-thought; it is stripped before TTS either way).
-# For a remote LLM use `provider: online` with a required `base_url`
-# (OpenAI, Groq, Ollama, vLLM, llama-server); the key comes from the
-# SYLLABIX_LLM_API_KEY environment variable — never from this file.
-# TTS uses the same posture words as the LLM: `provider: local` runs weights
-# in-process. `model:` picks the voice engine — kokoro (default) or
-# `qwen3-0.6` / `qwen3-1.7`, LM-based speech that reads "100" as words in ten
-# languages (en, zh, de, fr, es, pt, it, ja, ko, ru). Optional `language:`
-# sets the qwen voice language. Weights fetch on first use only when
-# selected; `provider: online` is reserved for a future cloud TTS row.
+# Minimal example. Copy as syllabix.yaml, or run `syllabix init`.
+# `syllabix run` needs no yaml. Menu of keys: docs/configuration.md
 name: demo-agent
 pipeline:
   vad:

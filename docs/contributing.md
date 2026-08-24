@@ -1,0 +1,99 @@
+# Contributing
+
+## Build
+
+Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share one `ggml` compiled into the binary (Darwin Metal + Accelerate; Linux/Windows portable CPU). Linux also needs ALSA headers (`libasound2-dev`).
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace   # launch-stack native inference (small / llama-3.2-1b / kokoro)
+./scripts/ci-local.sh    # Linux stand-in for GitHub Actions (fmt through tests, then Linux dist + smoke)
+./scripts/check-repro.sh # two dist builds; run when the dist profile or packaging script changes
+```
+
+`cargo llvm-cov --workspace --fail-under-lines 85` skips native inference (`cfg(coverage)`).
+
+Exclusive extra native suites (not the default `cargo test --workspace` bar):
+
+```bash
+SYLLABIX_NATIVE_MODELS=qwen3-0.6 cargo test -p syllabix-core --test native_inference
+```
+
+## Models
+
+Weights download on first use of each id: HTTPS from the URL pinned in the binary, SHA-256 check, then reuse from cache. Default `run` fetches only the launch stack. Yaml-selected ids fetch the first time that id is used. `--help` and `init` download nothing.
+
+Cache directory:
+
+- `$SYLLABIX_CACHE_DIR/models/v1` if set
+- otherwise `~/.cache/syllabix/models/v1`
+- Windows: `%LOCALAPPDATA%\syllabix\cache\models\v1`
+
+| When | Files | Source |
+| --- | --- | --- |
+| First default `run` | Silero VAD | https://github.com/snakers4/silero-vad |
+| | Whisper `small` | https://huggingface.co/ggerganov/whisper.cpp |
+| | Llama 3.2 1B Instruct Q4_K_M | https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF |
+| | Kokoro + default voice | https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX |
+| `pipeline.stt.model` other than `small` | Matching `ggml-*.bin` | https://huggingface.co/ggerganov/whisper.cpp |
+| `pipeline.llm.model` `qwen3.5-0.8b` | Q4_K_M GGUF | https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF |
+| `pipeline.llm.model` `qwen3.5-2b` | Q4_K_M GGUF | https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF |
+| `pipeline.tts.model` `qwen3-0.6` | Backbone GGUF + speech-tokenizer mmproj | https://huggingface.co/mradermacher/Qwen3-TTS-12Hz-0.6B-Base-GGUF |
+| `pipeline.tts.model` `qwen3-1.7` | Backbone GGUF + speech-tokenizer mmproj | https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF |
+
+CPU vs Metal tok/s for the three default GGUFs: [`vendor/llama-bench.md`](../vendor/llama-bench.md). ggml vendor pins and local patches: [`vendor/README.md`](../vendor/README.md). Measurement protocols: [`reference-profiles.md`](reference-profiles.md).
+
+## Live devices
+
+From this checkout, `cargo run -p syllabix -- run` talks on a machine with a microphone and speakers.
+
+```bash
+cargo run -p syllabix -- run
+cargo test -p syllabix-core --test audio_io hardware_record_and_play_if_devices_exist -- --ignored --nocapture
+```
+
+The echo gate needs a quiet laptop with its built-in microphone and speakers selected. Do not wear headphones or speak during this command. It allows 10 seconds for automatic calibration, then plays the versioned speech fixture continuously for 1 minute and requires Silero to detect zero false user turns:
+
+```bash
+cargo test -p syllabix-core --test audio_io hardware_aec_1_minute_playback_has_zero_false_turns -- --ignored --exact --nocapture
+```
+
+The microphone remains open throughout. Muting capture during playback does not pass. Debug dumps: `$SYLLABIX_AEC_DEBUG_DIR` or `target/aec-debug`.
+
+To dump a live conversation, enable diagnostics in `syllabix.yaml` and run a release binary — see [diagnostics.md](diagnostics.md):
+
+```yaml
+diagnostics:
+  timestamps: true
+  audio: true
+  directory: target/turn-debug
+```
+
+```bash
+cargo run -p syllabix --release -- run
+python3 scripts/summarize-timelines.py target/turn-debug
+```
+
+## Packaging (maintainers)
+
+GitHub Release files are the four artifact names plus `SHA256SUMS`. `.github/workflows/release.yml` publishes them on `v*` tags. Pull requests do not package dist binaries. If Actions cannot run, build each target with `scripts/package-release.sh` and attach with `scripts/publish-release.sh v0.1.0`.
+
+```bash
+./scripts/package-release.sh                         # host triple
+./scripts/package-release.sh x86_64-unknown-linux-gnu
+./scripts/check-clean-artifact.sh dist/syllabix-Linux-x86_64
+./scripts/smoke-offline-setup.sh dist/syllabix-Linux-x86_64
+./scripts/check-repro.sh
+./scripts/publish-release.sh v0.1.0
+```
+
+`cargo build -p syllabix --profile dist` is thin-LTO, one codegen unit, debuginfo stripped. Default `release` is unchanged for `ci-local.sh`.
+
+After a Release is published, validate the documented download path: `SMOKE_RELEASE_URL=https://github.com/syllabix-ai/syllabix/releases/download/<tag> scripts/smoke-setup.sh syllabix-Linux-x86_64` (repeat per OS you can touch).
+
+Linux contributors who hit a missing ALSA link need `libasound2-dev`.
+
+## CI
+
+Per-PR CI is fmt, clippy, and llvm-cov ≥85% without loading native weights. Weekly CI runs `cargo test --workspace` on Linux / Windows / macOS, including launch-stack native inference.
