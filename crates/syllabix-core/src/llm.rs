@@ -75,10 +75,6 @@ pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// unfinished turn. Each emitted token resets this timer.
 pub const LLAMA_TOKEN_STALL_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// A handful of newlines can separate paragraphs; a run beyond this is a
-/// degenerate reply and should finish the turn rather than fill the TUI.
-const MAX_CONSECUTIVE_WHITESPACE_TOKENS: u32 = 4;
-
 /// True when `id` is a v0 llama.cpp GGUF.
 pub fn is_v0_llm_model(id: &str) -> bool {
     id == QWEN35_08B_ASSET || id == QWEN35_2B_ASSET || id == LLAMA_32_1B_ASSET
@@ -268,32 +264,15 @@ impl Llm for LlamaLlm {
         });
 
         let mut index = 0u32;
-        let mut whitespace_tokens = 0u32;
-        let mut stopped_for_whitespace = false;
-        let disable_qwen_thinking = disable_qwen_thinking(&self.model_id, self.thinking);
-        let result = self.engine.lock().expect("llama engine").generate(
+        let append_thinking_off_suffix =
+            !self.thinking && is_thinking_tag_supported_model(&self.model_id);
+        self.engine.lock().expect("llama engine").generate(
             &messages,
-            disable_qwen_thinking,
+            append_thinking_off_suffix,
             cancel,
             &mut |text, is_last| {
                 if cancel.is_stale(generation) {
                     return Err(Error::Cancelled);
-                }
-                if !is_last && text.trim().is_empty() {
-                    whitespace_tokens += 1;
-                    if whitespace_tokens >= MAX_CONSECUTIVE_WHITESPACE_TOKENS {
-                        stopped_for_whitespace = true;
-                        on_token(TokenChunk {
-                            turn: user.turn,
-                            generation,
-                            index,
-                            text: String::new(),
-                            is_last: true,
-                        })?;
-                        return Err(Error::Cancelled);
-                    }
-                } else {
-                    whitespace_tokens = 0;
                 }
                 on_token(TokenChunk {
                     turn: user.turn,
@@ -305,12 +284,7 @@ impl Llm for LlamaLlm {
                 index += 1;
                 Ok(())
             },
-        );
-        match result {
-            Ok(()) => {}
-            Err(Error::Cancelled) if stopped_for_whitespace => {}
-            Err(err) => return Err(err),
-        }
+        )?;
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
@@ -322,7 +296,7 @@ trait Engine: Send {
     fn generate(
         &mut self,
         messages: &[ChatMessage],
-        thinking: bool,
+        append_thinking_off_suffix: bool,
         cancel: &Cancel,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()>;
@@ -350,7 +324,7 @@ impl Engine for LlamaEngine {
     fn generate(
         &mut self,
         messages: &[ChatMessage],
-        disable_qwen_thinking: bool,
+        append_thinking_off_suffix: bool,
         cancel: &Cancel,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()> {
@@ -363,7 +337,7 @@ impl Engine for LlamaEngine {
             self.ctx.generate(
                 messages,
                 LlamaGenerate {
-                    disable_qwen_thinking,
+                    append_thinking_off_suffix,
                     n_threads: thread_count(),
                 },
                 Some(abort_on_stall),
@@ -458,8 +432,8 @@ fn thread_count() -> i32 {
         .unwrap_or(1)
 }
 
-fn disable_qwen_thinking(model_id: &str, thinking: bool) -> bool {
-    !thinking && (model_id == QWEN35_08B_ASSET || model_id == QWEN35_2B_ASSET)
+fn is_thinking_tag_supported_model(model_id: &str) -> bool {
+    matches!(model_id, QWEN35_08B_ASSET | QWEN35_2B_ASSET)
 }
 
 #[cfg(test)]
@@ -875,11 +849,10 @@ mod tests {
     }
 
     #[test]
-    fn only_qwen_gets_the_thinking_off_prompt_suffix() {
-        assert!(disable_qwen_thinking(QWEN35_08B_ASSET, false));
-        assert!(disable_qwen_thinking(QWEN35_2B_ASSET, false));
-        assert!(!disable_qwen_thinking(LLAMA_32_1B_ASSET, false));
-        assert!(!disable_qwen_thinking(QWEN35_08B_ASSET, true));
+    fn only_thinking_tag_models_get_the_thinking_off_prompt_suffix() {
+        assert!(is_thinking_tag_supported_model(QWEN35_08B_ASSET));
+        assert!(is_thinking_tag_supported_model(QWEN35_2B_ASSET));
+        assert!(!is_thinking_tag_supported_model(LLAMA_32_1B_ASSET));
     }
 
     #[test]
@@ -889,24 +862,6 @@ mod tests {
         *state.last_token.lock().unwrap() = Instant::now() - LLAMA_TOKEN_STALL_TIMEOUT;
         assert!(unsafe { abort_on_stall((&state as *const GenerationAbort).cast_mut().cast()) });
         assert!(state.timed_out());
-    }
-
-    #[test]
-    fn whitespace_token_flood_finishes_the_turn() {
-        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
-            pieces: vec!["\n".into(); (MAX_CONSECUTIVE_WHITESPACE_TOKENS + 3) as usize],
-            delay: Duration::ZERO,
-            last_messages: Arc::new(Mutex::new(Vec::new())),
-        }));
-        let mut chunks = Vec::new();
-        llm.generate(&[], &user(0, "hi"), &Cancel::new(), &mut |chunk| {
-            chunks.push(chunk);
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(chunks.len(), MAX_CONSECUTIVE_WHITESPACE_TOKENS as usize);
-        assert!(chunks.last().unwrap().is_last);
-        assert!(chunks.last().unwrap().text.is_empty());
     }
 
     #[test]

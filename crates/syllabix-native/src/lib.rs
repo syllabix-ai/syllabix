@@ -246,10 +246,9 @@ impl Drop for WhisperContext {
 
 /// Options for one greedy llama.cpp generate.
 pub struct LlamaGenerate {
-    /// Append Qwen's empty think block to disable its chain-of-thought mode.
-    /// This is deliberately model-specific: Llama does not use this prompt
-    /// convention.
-    pub disable_qwen_thinking: bool,
+    /// Append an empty think block to disable thinking where the model's chat
+    /// format supports that convention.
+    pub append_thinking_off_suffix: bool,
     /// llama.cpp thread count.
     pub n_threads: i32,
 }
@@ -330,7 +329,11 @@ impl LlamaContext {
                 role_ptrs.as_ptr(),
                 content_ptrs.as_ptr(),
                 messages.len() as c_int,
-                if opts.disable_qwen_thinking { 0 } else { 1 },
+                if opts.append_thinking_off_suffix {
+                    0
+                } else {
+                    1
+                },
                 opts.n_threads,
                 abort,
                 abort_user,
