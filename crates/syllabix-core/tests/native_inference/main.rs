@@ -12,6 +12,8 @@
 //! TTS→ASR scorer when a TTS id is selected.
 
 #[cfg(not(coverage))]
+mod eval;
+#[cfg(not(coverage))]
 mod kokoro;
 #[cfg(not(coverage))]
 mod llama;

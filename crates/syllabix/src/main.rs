@@ -1,3 +1,4 @@
+mod bench;
 mod cli;
 mod tui;
 
@@ -11,6 +12,8 @@ fn main() {
     let default_filter = match cli.command {
         cli::Commands::Run { .. } => "warn",
         cli::Commands::Init { .. } => "info",
+        // The harness prints its own progress; keep tracing quiet.
+        cli::Commands::Bench { .. } => "warn",
     };
     init_tracing(default_filter);
 

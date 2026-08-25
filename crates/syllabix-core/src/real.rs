@@ -57,6 +57,7 @@ impl Llm for LiveLlm {
 }
 
 /// The configured TTS implementation for one live run.
+#[derive(Clone)]
 pub enum LiveTts {
     /// Kokoro ONNX (launch default).
     Kokoro(KokoroTts),

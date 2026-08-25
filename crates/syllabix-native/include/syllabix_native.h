@@ -56,8 +56,7 @@ int syllabix_llama_n_ctx_train(const struct syllabix_llama *llm);
 /*
  * 0 = ok, 1 = cancelled, -1 = error.
  * `roles`/`contents` are parallel arrays (`system` / `user` / `assistant`).
- * `thinking` is 0 to append an empty `<think></think>` closer for models
- * whose chat format supports it; callers use 1 for every other model.
+ * `thinking` is 0 to disable Qwen think (empty `<think></think>` closer).
  * Generate until EOS, cancel, or the model's context window is full.
  * `token_cb` is invoked in order; the last call has `is_last != 0`.
  * `token_cb` returns 0 to continue, 1 to cancel, -1 on error.

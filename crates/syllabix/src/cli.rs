@@ -1,9 +1,10 @@
 //! `syllabix` command-line interface.
 
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use std::path::PathBuf;
 use syllabix_core::{run_live, AgentConfig, Cancel, Result};
 
+use crate::bench;
 #[cfg(not(coverage))]
 use crate::tui;
 #[cfg(not(coverage))]
@@ -24,10 +25,11 @@ pub struct Cli {
     pub command: Commands,
 }
 
-/// Top-level commands. Launch CLI surface is `run` and optional `init` only.
+/// Top-level commands. The stranger surface is `run` plus optional `init`.
 ///
 /// Diagnostics (turn timeline + WAVs) are yaml-only since row 34:
 /// `diagnostics: {timestamps, audio, directory}` in `syllabix.yaml`.
+/// `bench` is a contributor command (issue #45) hidden from this help.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Start a local voice conversation (zero config).
@@ -42,6 +44,29 @@ pub enum Commands {
         #[arg(value_name = "DIR")]
         dir: Option<PathBuf>,
     },
+    /// Contributor performance harness: scenario fixtures → JSONL ledger.
+    #[command(
+        hide = true,
+        group(
+            ArgGroup::new("model-axis")
+                .args(["stt", "llm", "tts"])
+                .multiple(false)
+        )
+    )]
+    Bench {
+        /// Output JSONL path (default: docs/eval/runs/<profile>-<os>-<arch>-<sha>.jsonl).
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+        /// STT yaml id for a one-axis profile swap (default: small).
+        #[arg(long, value_name = "ID")]
+        stt: Option<String>,
+        /// LLM yaml id for a one-axis profile swap (default: llama-3.2-1b).
+        #[arg(long, value_name = "ID")]
+        llm: Option<String>,
+        /// TTS yaml id for a one-axis profile swap (default: kokoro).
+        #[arg(long, value_name = "ID")]
+        tts: Option<String>,
+    },
 }
 
 /// Dispatch a parsed CLI invocation.
@@ -49,7 +74,17 @@ pub fn execute(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Run { barge_in } => run(barge_in),
         Commands::Init { dir } => init(dir),
+        Commands::Bench { out, stt, llm, tts } => bench_command(out, stt, llm, tts),
     }
+}
+
+fn bench_command(
+    out: Option<PathBuf>,
+    stt: Option<String>,
+    llm: Option<String>,
+    tts: Option<String>,
+) -> Result<()> {
+    bench::run(bench::BenchArgs { out, stt, llm, tts })
 }
 
 fn run(barge_in: bool) -> Result<()> {
@@ -109,6 +144,7 @@ mod tests {
         match cli.command {
             Commands::Run { barge_in } => assert!(!barge_in),
             Commands::Init { .. } => panic!("expected run"),
+            Commands::Bench { .. } => panic!("expected run"),
         }
     }
 
@@ -132,6 +168,7 @@ mod tests {
         match cli.command {
             Commands::Init { dir } => assert!(dir.is_none()),
             Commands::Run { .. } => panic!("expected init"),
+            Commands::Bench { .. } => panic!("expected init"),
         }
     }
 
@@ -143,6 +180,7 @@ mod tests {
                 assert_eq!(dir.as_deref(), Some(std::path::Path::new("demo-agent")));
             }
             Commands::Run { .. } => panic!("expected init"),
+            Commands::Bench { .. } => panic!("expected init"),
         }
     }
 
@@ -153,7 +191,74 @@ mod tests {
         assert!(help.contains("run"), "{help}");
         assert!(help.contains("init"), "{help}");
         assert!(!help.contains("serve"), "{help}");
+        // `bench` is contributor-only (issue #45): hidden from stranger help.
         assert!(!help.contains("bench"), "{help}");
+    }
+
+    #[test]
+    fn bench_is_hidden_but_parseable() {
+        let cli = Cli::try_parse_from(["syllabix", "bench"]).expect("parse bare bench");
+        match cli.command {
+            Commands::Bench { out, stt, llm, tts } => {
+                assert!(out.is_none() && stt.is_none() && llm.is_none() && tts.is_none());
+            }
+            _ => panic!("expected bench"),
+        }
+        let cli = Cli::try_parse_from([
+            "syllabix",
+            "bench",
+            "--out",
+            "/tmp/run.jsonl",
+            "--llm",
+            "qwen3.5-0.8b",
+        ])
+        .expect("parse full bench");
+        match cli.command {
+            Commands::Bench { out, stt, llm, tts } => {
+                assert_eq!(out.as_deref(), Some(std::path::Path::new("/tmp/run.jsonl")));
+                assert!(stt.is_none());
+                assert_eq!(llm.as_deref(), Some("qwen3.5-0.8b"));
+                assert!(tts.is_none());
+            }
+            _ => panic!("expected bench"),
+        }
+        // The hidden subcommand still documents its own flags on demand.
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("bench")
+            .expect("hidden bench exists")
+            .render_help()
+            .to_string();
+        assert!(help.contains("--out"), "{help}");
+        assert!(help.contains("--stt"), "{help}");
+    }
+
+    #[test]
+    fn bench_rejects_multiple_model_axis_overrides() {
+        for args in [
+            [
+                "syllabix",
+                "bench",
+                "--stt",
+                "medium",
+                "--llm",
+                "qwen3.5-0.8b",
+            ]
+            .as_slice(),
+            ["syllabix", "bench", "--stt", "medium", "--tts", "qwen3-0.6"].as_slice(),
+            [
+                "syllabix",
+                "bench",
+                "--llm",
+                "qwen3.5-0.8b",
+                "--tts",
+                "qwen3-0.6",
+            ]
+            .as_slice(),
+        ] {
+            let err = Cli::try_parse_from(args).expect_err("multiple axes must fail");
+            assert!(err.to_string().contains("cannot be used"), "{err}");
+        }
     }
 
     #[test]
@@ -174,6 +279,7 @@ mod tests {
         match cli.command {
             Commands::Run { barge_in } => assert!(barge_in),
             Commands::Init { .. } => panic!("expected run"),
+            Commands::Bench { .. } => panic!("expected run"),
         }
     }
 
@@ -207,6 +313,26 @@ mod tests {
             command: Commands::Run { barge_in: false },
         })
         .expect("coverage run");
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn execute_bench_uses_fake_providers_and_writes_jsonl() {
+        let dir = unique_dir("syllabix-coverage-bench");
+        std::fs::create_dir_all(&dir).expect("create output directory");
+        let out = dir.join("run.jsonl");
+        execute(Cli {
+            command: Commands::Bench {
+                out: Some(out.clone()),
+                stt: Some("medium".into()),
+                llm: None,
+                tts: None,
+            },
+        })
+        .expect("coverage bench");
+        let rows = std::fs::read_to_string(&out).expect("JSONL output");
+        assert_eq!(rows.lines().count(), 6);
+        std::fs::remove_dir_all(dir).expect("remove output directory");
     }
 
     #[test]
