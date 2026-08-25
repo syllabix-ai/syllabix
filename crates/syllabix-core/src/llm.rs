@@ -2,7 +2,9 @@
 
 use std::os::raw::c_void;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use syllabix_native::{ChatMessage, LlamaContext, LlamaError, LlamaGenerate};
 
@@ -68,6 +70,10 @@ pub const LLAMA_MAX_HISTORY_TURNS: usize = 8;
 /// Native cancel must surface as [`Error::Cancelled`] within this window.
 /// Full GGUF `n_ctx` makes one `llama_decode` heavier than the old 2048-slot cap.
 pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// End a stalled local generation promptly, rather than leaving the TUI on an
+/// unfinished turn. Each emitted token resets this timer.
+pub const LLAMA_TOKEN_STALL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// True when `id` is a v0 llama.cpp GGUF.
 pub fn is_v0_llm_model(id: &str) -> bool {
@@ -258,9 +264,11 @@ impl Llm for LlamaLlm {
         });
 
         let mut index = 0u32;
+        let append_thinking_off_suffix =
+            !self.thinking && is_thinking_tag_supported_model(&self.model_id);
         self.engine.lock().expect("llama engine").generate(
             &messages,
-            self.thinking,
+            append_thinking_off_suffix,
             cancel,
             &mut |text, is_last| {
                 if cancel.is_stale(generation) {
@@ -288,7 +296,7 @@ trait Engine: Send {
     fn generate(
         &mut self,
         messages: &[ChatMessage],
-        thinking: bool,
+        append_thinking_off_suffix: bool,
         cancel: &Cancel,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()>;
@@ -316,27 +324,31 @@ impl Engine for LlamaEngine {
     fn generate(
         &mut self,
         messages: &[ChatMessage],
-        thinking: bool,
+        append_thinking_off_suffix: bool,
         cancel: &Cancel,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
-        let abort_user = cancel as *const Cancel as *mut c_void;
+        let abort = GenerationAbort::new(cancel);
+        let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
         match unsafe {
             self.ctx.generate(
                 messages,
                 LlamaGenerate {
-                    thinking,
+                    append_thinking_off_suffix,
                     n_threads: thread_count(),
                 },
-                Some(abort_on_shutdown),
+                Some(abort_on_stall),
                 abort_user,
-                &mut |text, is_last| match on_piece(text, is_last) {
-                    Ok(()) => Ok(()),
-                    Err(Error::Cancelled) => Err(LlamaError::Cancelled),
-                    Err(err) => Err(LlamaError::Failed(err.to_string())),
+                &mut |text, is_last| {
+                    abort.note_token();
+                    match on_piece(text, is_last) {
+                        Ok(()) => Ok(()),
+                        Err(Error::Cancelled) => Err(LlamaError::Cancelled),
+                        Err(err) => Err(LlamaError::Failed(err.to_string())),
+                    }
                 },
             )
         } {
@@ -346,6 +358,12 @@ impl Engine for LlamaEngine {
                 } else {
                     Ok(())
                 }
+            }
+            Err(LlamaError::Cancelled) if abort.timed_out() => {
+                // A terminal empty chunk lets TTS emit its tiny completion
+                // chunk, so the pipeline records timings and returns to
+                // listening instead of leaving the TUI mid-turn.
+                on_piece("", true)
             }
             Err(LlamaError::Cancelled) => Err(Error::Cancelled),
             Err(LlamaError::Failed(_)) if cancel.is_shutdown() => Err(Error::Cancelled),
@@ -361,18 +379,61 @@ impl Engine for LlamaEngine {
     }
 }
 
-unsafe extern "C" fn abort_on_shutdown(user_data: *mut c_void) -> bool {
+struct GenerationAbort<'a> {
+    cancel: &'a Cancel,
+    last_token: Mutex<Instant>,
+    timed_out: AtomicBool,
+}
+
+impl<'a> GenerationAbort<'a> {
+    fn new(cancel: &'a Cancel) -> Self {
+        Self {
+            cancel,
+            last_token: Mutex::new(Instant::now()),
+            timed_out: AtomicBool::new(false),
+        }
+    }
+
+    fn note_token(&self) {
+        *self.last_token.lock().expect("llama token timer") = Instant::now();
+    }
+
+    fn timed_out(&self) -> bool {
+        self.timed_out.load(Ordering::SeqCst)
+    }
+}
+
+unsafe extern "C" fn abort_on_stall(user_data: *mut c_void) -> bool {
     if user_data.is_null() {
         return false;
     }
-    // Safety: `user_data` is `&Cancel` for the duration of `llama_decode`.
-    unsafe { (*(user_data as *const Cancel)).is_shutdown() }
+    // Safety: `user_data` is a `GenerationAbort` for the duration of this
+    // llama.cpp call.
+    let state = unsafe { &*(user_data as *const GenerationAbort<'_>) };
+    if state.cancel.is_shutdown() {
+        return true;
+    }
+    if state
+        .last_token
+        .lock()
+        .expect("llama token timer")
+        .elapsed()
+        >= LLAMA_TOKEN_STALL_TIMEOUT
+    {
+        state.timed_out.store(true, Ordering::SeqCst);
+        return true;
+    }
+    false
 }
 
 fn thread_count() -> i32 {
     std::thread::available_parallelism()
         .map(|n| n.get().min(4) as i32)
         .unwrap_or(1)
+}
+
+fn is_thinking_tag_supported_model(model_id: &str) -> bool {
+    matches!(model_id, QWEN35_08B_ASSET | QWEN35_2B_ASSET)
 }
 
 #[cfg(test)]
@@ -785,6 +846,22 @@ mod tests {
         .unwrap();
         assert_eq!(chunks.len(), 200);
         assert!(chunks.last().unwrap().is_last);
+    }
+
+    #[test]
+    fn only_thinking_tag_models_get_the_thinking_off_prompt_suffix() {
+        assert!(is_thinking_tag_supported_model(QWEN35_08B_ASSET));
+        assert!(is_thinking_tag_supported_model(QWEN35_2B_ASSET));
+        assert!(!is_thinking_tag_supported_model(LLAMA_32_1B_ASSET));
+    }
+
+    #[test]
+    fn stalled_abort_is_reported() {
+        let cancel = Cancel::new();
+        let state = GenerationAbort::new(&cancel);
+        *state.last_token.lock().unwrap() = Instant::now() - LLAMA_TOKEN_STALL_TIMEOUT;
+        assert!(unsafe { abort_on_stall((&state as *const GenerationAbort).cast_mut().cast()) });
+        assert!(state.timed_out());
     }
 
     #[test]

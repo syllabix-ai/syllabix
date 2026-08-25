@@ -65,7 +65,16 @@ impl ThinkFilter {
                 out.push_str(&self.pending);
                 self.pending.clear();
             } else {
-                let held = incomplete_tag_suffix(&self.pending, THINK_OPEN);
+                // Closing tags can arrive split across decoded token pieces
+                // even when no opening tag was observed. Hold either tag so a
+                // stray `</think>` cannot leak into the transcript or TTS.
+                let open = incomplete_tag_suffix(&self.pending, THINK_OPEN);
+                let close = incomplete_tag_suffix(&self.pending, THINK_CLOSE);
+                let held = if close.len() > open.len() {
+                    close
+                } else {
+                    open
+                };
                 let emit_end = self.pending.len() - held.len();
                 out.push_str(&self.pending[..emit_end]);
                 self.pending = self.pending[emit_end..].to_string();
@@ -362,5 +371,12 @@ mod tests {
         assert_eq!(filter.push("still hidden</th", false), "");
         assert_eq!(filter.push("ink>Spoken now.", true), "Spoken now.");
         assert!(!filter.in_think());
+    }
+
+    #[test]
+    fn think_filter_holds_a_split_stray_closing_tag() {
+        let mut filter = ThinkFilter::default();
+        assert_eq!(filter.push("answer</thi", false), "answer");
+        assert_eq!(filter.push("nk> done", true), " done");
     }
 }
