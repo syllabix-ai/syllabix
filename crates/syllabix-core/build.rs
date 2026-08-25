@@ -27,10 +27,10 @@ fn emit_git_rerun_paths(root: &Path) {
     };
     let head = git_dir.join("HEAD");
     println!("cargo:rerun-if-changed={}", head.display());
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir.join("packed-refs").display()
-    );
+    let packed_refs = git_dir.join("packed-refs");
+    if packed_refs.exists() {
+        println!("cargo:rerun-if-changed={}", packed_refs.display());
+    }
     if let Ok(text) = fs::read_to_string(&head) {
         if let Some(reference) = text.trim().strip_prefix("ref: ") {
             println!(
