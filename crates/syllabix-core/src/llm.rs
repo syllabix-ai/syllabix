@@ -4,7 +4,7 @@ use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use syllabix_native::{ChatMessage, LlamaContext, LlamaError, LlamaGenerate};
+use syllabix_native::{ChatMessage, LlamaContext, LlamaError, LlamaGenerate, LlamaPerf};
 
 use crate::cancel::Cancel;
 use crate::defaults::BuiltinDefaults;
@@ -180,45 +180,25 @@ impl LlamaLlm {
         self.engine.lock().expect("llama engine").context_window()
     }
 
-    #[cfg(test)]
-    fn with_engine(engine: Box<dyn Engine>) -> Self {
-        Self {
-            engine: Arc::new(Mutex::new(engine)),
-            calls: Arc::new(Mutex::new(Vec::new())),
-            thinking: false,
-            model_id: BuiltinDefaults::v0().llm_model.to_string(),
-            system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
-        }
+    /// Run one fixed-prompt generation and return llama.cpp's native compute
+    /// counters. This is intentionally direct: no VAD, STT, TTS, queue, or
+    /// playback work is included in the component benchmark.
+    pub fn benchmark_generate(&mut self, prompt: &str, cancel: &Cancel) -> Result<LlamaPerf> {
+        let user = Transcript {
+            turn: crate::types::TurnId(0),
+            text: prompt.to_string(),
+            language: crate::stt::STT_LANGUAGE.to_string(),
+        };
+        self.generate_inner(&[], &user, cancel, &mut |_chunk| Ok(()))
     }
 
-    #[cfg(test)]
-    fn with_thinking(mut self, thinking: bool) -> Self {
-        self.thinking = thinking;
-        self
-    }
-}
-
-impl Llm for LlamaLlm {
-    fn name(&self) -> &'static str {
-        BuiltinDefaults::v0().llm.as_str()
-    }
-
-    fn debug_meta(&self) -> Option<LlmDebugMeta> {
-        Some(LlmDebugMeta {
-            provider: BuiltinDefaults::v0().llm.as_str().into(),
-            model: self.model_id.clone(),
-            endpoint: String::new(),
-            request_id: String::new(),
-        })
-    }
-
-    fn generate(
+    fn generate_inner(
         &mut self,
         history: &[HistoryTurn],
         user: &Transcript,
         cancel: &Cancel,
         on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
-    ) -> Result<()> {
+    ) -> Result<LlamaPerf> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
@@ -258,7 +238,7 @@ impl Llm for LlamaLlm {
         });
 
         let mut index = 0u32;
-        self.engine.lock().expect("llama engine").generate(
+        let perf = self.engine.lock().expect("llama engine").generate(
             &messages,
             self.thinking,
             cancel,
@@ -278,9 +258,53 @@ impl Llm for LlamaLlm {
             },
         )?;
         if cancel.is_shutdown() {
-            return Err(Error::Cancelled);
+            Err(Error::Cancelled)
+        } else {
+            Ok(perf)
         }
-        Ok(())
+    }
+
+    #[cfg(test)]
+    fn with_engine(engine: Box<dyn Engine>) -> Self {
+        Self {
+            engine: Arc::new(Mutex::new(engine)),
+            calls: Arc::new(Mutex::new(Vec::new())),
+            thinking: false,
+            model_id: BuiltinDefaults::v0().llm_model.to_string(),
+            system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_thinking(mut self, thinking: bool) -> Self {
+        self.thinking = thinking;
+        self
+    }
+}
+
+impl Llm for LlamaLlm {
+    fn name(&self) -> &'static str {
+        BuiltinDefaults::v0().llm.as_str()
+    }
+
+    fn debug_meta(&self) -> Option<LlmDebugMeta> {
+        Some(LlmDebugMeta {
+            provider: BuiltinDefaults::v0().llm.as_str().into(),
+            model: self.model_id.clone(),
+            endpoint: String::new(),
+            request_id: String::new(),
+        })
+    }
+
+    fn generate(
+        &mut self,
+        history: &[HistoryTurn],
+        user: &Transcript,
+        cancel: &Cancel,
+        on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
+    ) -> Result<()> {
+        self.generate_inner(history, user, cancel, on_token)
+            .map(|_| ())
     }
 }
 
@@ -291,7 +315,7 @@ trait Engine: Send {
         thinking: bool,
         cancel: &Cancel,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
-    ) -> Result<()>;
+    ) -> Result<LlamaPerf>;
 
     fn context_window(&self) -> Option<(i32, i32)> {
         None
@@ -319,7 +343,7 @@ impl Engine for LlamaEngine {
         thinking: bool,
         cancel: &Cancel,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
-    ) -> Result<()> {
+    ) -> Result<LlamaPerf> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
@@ -340,11 +364,11 @@ impl Engine for LlamaEngine {
                 },
             )
         } {
-            Ok(()) => {
+            Ok(perf) => {
                 if cancel.is_shutdown() {
                     Err(Error::Cancelled)
                 } else {
-                    Ok(())
+                    Ok(perf)
                 }
             }
             Err(LlamaError::Cancelled) => Err(Error::Cancelled),
@@ -395,7 +419,7 @@ mod tests {
             _thinking: bool,
             cancel: &Cancel,
             on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
-        ) -> Result<()> {
+        ) -> Result<LlamaPerf> {
             *self.last_messages.lock().expect("messages") = messages.to_vec();
             if !self.delay.is_zero() {
                 let start = std::time::Instant::now();
@@ -412,12 +436,16 @@ mod tests {
             let last = self.pieces.len().saturating_sub(1);
             if self.pieces.is_empty() {
                 on_piece("", true)?;
-                return Ok(());
+                return Ok(LlamaPerf::default());
             }
             for (i, piece) in self.pieces.iter().enumerate() {
                 on_piece(piece, i == last)?;
             }
-            Ok(())
+            Ok(LlamaPerf {
+                prompt_tokens: messages.len() as u32,
+                generated_tokens: self.pieces.len() as u32,
+                ..LlamaPerf::default()
+            })
         }
     }
 

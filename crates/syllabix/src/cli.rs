@@ -1,6 +1,6 @@
 //! `syllabix` command-line interface.
 
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use syllabix_core::{run_live, AgentConfig, Cancel, Result};
 
@@ -44,26 +44,22 @@ pub enum Commands {
         #[arg(value_name = "DIR")]
         dir: Option<PathBuf>,
     },
-    /// Contributor performance harness: scenario fixtures → JSONL ledger.
-    #[command(
-        hide = true,
-        group(
-            ArgGroup::new("model-axis")
-                .args(["stt", "llm", "tts"])
-                .multiple(false)
-        )
-    )]
+    /// Contributor performance harness: component fixtures → JSONL ledger.
+    #[command(hide = true)]
     Bench {
+        /// Component to measure (default: all independent components).
+        #[arg(value_enum, default_value_t = BenchComponent::All)]
+        component: BenchComponent,
         /// Output JSONL path (default: docs/eval/runs/<profile>-<os>-<arch>-<sha>.jsonl).
         #[arg(long, value_name = "PATH")]
         out: Option<PathBuf>,
-        /// STT yaml id for a one-axis profile swap (default: small).
+        /// STT yaml id (default: small).
         #[arg(long, value_name = "ID")]
         stt: Option<String>,
-        /// LLM yaml id for a one-axis profile swap (default: llama-3.2-1b).
+        /// LLM yaml id (default: llama-3.2-1b).
         #[arg(long, value_name = "ID")]
         llm: Option<String>,
-        /// TTS yaml id for a one-axis profile swap (default: kokoro).
+        /// TTS yaml id (default: kokoro).
         #[arg(long, value_name = "ID")]
         tts: Option<String>,
     },
@@ -74,17 +70,52 @@ pub fn execute(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Run { barge_in } => run(barge_in),
         Commands::Init { dir } => init(dir),
-        Commands::Bench { out, stt, llm, tts } => bench_command(out, stt, llm, tts),
+        Commands::Bench {
+            component,
+            out,
+            stt,
+            llm,
+            tts,
+        } => bench_command(component, out, stt, llm, tts),
     }
 }
 
 fn bench_command(
+    component: BenchComponent,
     out: Option<PathBuf>,
     stt: Option<String>,
     llm: Option<String>,
     tts: Option<String>,
 ) -> Result<()> {
-    bench::run(bench::BenchArgs { out, stt, llm, tts })
+    bench::run(bench::BenchArgs {
+        component: component.into(),
+        out,
+        stt,
+        llm,
+        tts,
+    })
+}
+
+/// Independently measurable contributors to the local voice stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum BenchComponent {
+    All,
+    Stt,
+    Llm,
+    Tts,
+    TtsAsr,
+}
+
+impl From<BenchComponent> for bench::Component {
+    fn from(value: BenchComponent) -> Self {
+        match value {
+            BenchComponent::All => bench::Component::All,
+            BenchComponent::Stt => bench::Component::Stt,
+            BenchComponent::Llm => bench::Component::Llm,
+            BenchComponent::Tts => bench::Component::Tts,
+            BenchComponent::TtsAsr => bench::Component::TtsAsr,
+        }
+    }
 }
 
 fn run(barge_in: bool) -> Result<()> {
@@ -199,7 +230,14 @@ mod tests {
     fn bench_is_hidden_but_parseable() {
         let cli = Cli::try_parse_from(["syllabix", "bench"]).expect("parse bare bench");
         match cli.command {
-            Commands::Bench { out, stt, llm, tts } => {
+            Commands::Bench {
+                component,
+                out,
+                stt,
+                llm,
+                tts,
+            } => {
+                assert_eq!(component, BenchComponent::All);
                 assert!(out.is_none() && stt.is_none() && llm.is_none() && tts.is_none());
             }
             _ => panic!("expected bench"),
@@ -214,7 +252,14 @@ mod tests {
         ])
         .expect("parse full bench");
         match cli.command {
-            Commands::Bench { out, stt, llm, tts } => {
+            Commands::Bench {
+                component,
+                out,
+                stt,
+                llm,
+                tts,
+            } => {
+                assert_eq!(component, BenchComponent::All);
                 assert_eq!(out.as_deref(), Some(std::path::Path::new("/tmp/run.jsonl")));
                 assert!(stt.is_none());
                 assert_eq!(llm.as_deref(), Some("qwen3.5-0.8b"));
@@ -234,30 +279,33 @@ mod tests {
     }
 
     #[test]
-    fn bench_rejects_multiple_model_axis_overrides() {
-        for args in [
-            [
-                "syllabix",
-                "bench",
-                "--stt",
-                "medium",
-                "--llm",
-                "qwen3.5-0.8b",
-            ]
-            .as_slice(),
-            ["syllabix", "bench", "--stt", "medium", "--tts", "qwen3-0.6"].as_slice(),
-            [
-                "syllabix",
-                "bench",
-                "--llm",
-                "qwen3.5-0.8b",
-                "--tts",
-                "qwen3-0.6",
-            ]
-            .as_slice(),
-        ] {
-            let err = Cli::try_parse_from(args).expect_err("multiple axes must fail");
-            assert!(err.to_string().contains("cannot be used"), "{err}");
+    fn bench_accepts_component_and_independent_model_overrides() {
+        let cli = Cli::try_parse_from([
+            "syllabix",
+            "bench",
+            "llm",
+            "--stt",
+            "medium",
+            "--llm",
+            "qwen3.5-0.8b",
+            "--tts",
+            "qwen3-0.6",
+        ])
+        .expect("component profile parses");
+        match cli.command {
+            Commands::Bench {
+                component,
+                stt,
+                llm,
+                tts,
+                ..
+            } => {
+                assert_eq!(component, BenchComponent::Llm);
+                assert_eq!(stt.as_deref(), Some("medium"));
+                assert_eq!(llm.as_deref(), Some("qwen3.5-0.8b"));
+                assert_eq!(tts.as_deref(), Some("qwen3-0.6"));
+            }
+            _ => panic!("expected bench"),
         }
     }
 
@@ -323,6 +371,7 @@ mod tests {
         let out = dir.join("run.jsonl");
         execute(Cli {
             command: Commands::Bench {
+                component: BenchComponent::All,
                 out: Some(out.clone()),
                 stt: Some("medium".into()),
                 llm: None,

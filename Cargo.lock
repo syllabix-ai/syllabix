@@ -1759,8 +1759,10 @@ dependencies = [
  "predicates",
  "ratatui",
  "serde",
+ "serde_json",
  "serde_yaml",
  "syllabix-core",
+ "syllabix-native",
  "tracing",
  "tracing-subscriber",
 ]

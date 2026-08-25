@@ -53,6 +53,15 @@ void syllabix_llama_free(struct syllabix_llama *llm);
 int syllabix_llama_n_ctx(const struct syllabix_llama *llm);
 int syllabix_llama_n_ctx_train(const struct syllabix_llama *llm);
 
+/* Per-invocation llama.cpp compute counters.  These deliberately exclude
+ * model load and Rust-side prompt construction. */
+struct syllabix_llama_perf {
+    double prompt_ms;
+    double decode_ms;
+    int prompt_tokens;
+    int generated_tokens;
+};
+
 /*
  * 0 = ok, 1 = cancelled, -1 = error.
  * `roles`/`contents` are parallel arrays (`system` / `user` / `assistant`).
@@ -71,7 +80,8 @@ int syllabix_llama_generate(
     bool (*abort_cb)(void *user),
     void *abort_user,
     int (*token_cb)(const char *piece, int is_last, void *user),
-    void *token_user);
+    void *token_user,
+    struct syllabix_llama_perf *perf_out);
 
 /* Qwen3-TTS (row 31; row 32 voice anchor). Backbone GGUF + mmproj through
  * the shared ggml. Sampling mirrors upstream tools/tts defaults; `seed`

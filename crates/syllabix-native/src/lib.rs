@@ -28,6 +28,15 @@ mod ffi {
     }
 
     #[repr(C)]
+    #[derive(Default)]
+    pub struct LlamaPerfRaw {
+        pub prompt_ms: f64,
+        pub decode_ms: f64,
+        pub prompt_tokens: c_int,
+        pub generated_tokens: c_int,
+    }
+
+    #[repr(C)]
     pub struct QwenTtsHandle {
         _private: [u8; 0],
     }
@@ -70,6 +79,7 @@ mod ffi {
             abort_user: *mut c_void,
             token_cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
             token_user: *mut c_void,
+            perf_out: *mut LlamaPerfRaw,
         ) -> c_int;
         pub fn syllabix_qwen_tts_load(
             model_path: *const c_char,
@@ -252,6 +262,15 @@ pub struct LlamaGenerate {
     pub n_threads: i32,
 }
 
+/// Native llama.cpp compute counters for one generation.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LlamaPerf {
+    pub prompt_ms: f64,
+    pub decode_ms: f64,
+    pub prompt_tokens: u32,
+    pub generated_tokens: u32,
+}
+
 /// In-process llama.cpp context loaded from a GGUF.
 pub struct LlamaContext {
     raw: *mut ffi::LlamaHandle,
@@ -298,7 +317,7 @@ impl LlamaContext {
         abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
         abort_user: *mut c_void,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<(), LlamaError>,
-    ) -> Result<(), LlamaError> {
+    ) -> Result<LlamaPerf, LlamaError> {
         if messages.is_empty() {
             return Err(LlamaError::Failed("no chat messages".into()));
         }
@@ -321,6 +340,7 @@ impl LlamaContext {
         let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
 
         let mut sink = TokenSink { on_piece };
+        let mut perf = ffi::LlamaPerfRaw::default();
         let _ggml = ggml_lock();
         let rc = unsafe {
             ffi::syllabix_llama_generate(
@@ -334,10 +354,16 @@ impl LlamaContext {
                 abort_user,
                 Some(on_token_piece),
                 (&mut sink as *mut TokenSink).cast(),
+                &mut perf,
             )
         };
         match rc {
-            0 => Ok(()),
+            0 => Ok(LlamaPerf {
+                prompt_ms: perf.prompt_ms,
+                decode_ms: perf.decode_ms,
+                prompt_tokens: perf.prompt_tokens.max(0) as u32,
+                generated_tokens: perf.generated_tokens.max(0) as u32,
+            }),
             1 => Err(LlamaError::Cancelled),
             _ => Err(LlamaError::Failed("llama.cpp generate failed".into())),
         }

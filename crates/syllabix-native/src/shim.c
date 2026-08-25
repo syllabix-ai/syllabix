@@ -273,7 +273,8 @@ int syllabix_llama_generate(
     bool (*abort_cb)(void *user),
     void *abort_user,
     int (*token_cb)(const char *piece, int is_last, void *user),
-    void *token_user) {
+    void *token_user,
+    struct syllabix_llama_perf *perf_out) {
     if (llm == NULL || llm->ctx == NULL || llm->model == NULL || roles == NULL || contents == NULL
         || n_messages < 1 || token_cb == NULL) {
         return -1;
@@ -282,9 +283,14 @@ int syllabix_llama_generate(
         return 1;
     }
 
+    if (perf_out != NULL) {
+        memset(perf_out, 0, sizeof(*perf_out));
+    }
+
     llama_set_n_threads(llm->ctx, n_threads, n_threads);
     llama_set_abort_callback(llm->ctx, abort_cb, abort_user);
     llama_memory_clear(llama_get_memory(llm->ctx), true);
+    llama_perf_context_reset(llm->ctx);
 
     struct llama_chat_message *chat =
         (struct llama_chat_message *)calloc((size_t)n_messages, sizeof(struct llama_chat_message));
@@ -436,6 +442,13 @@ int syllabix_llama_generate(
 
     llama_sampler_free(smpl);
     llama_set_abort_callback(llm->ctx, NULL, NULL);
+    if (perf_out != NULL) {
+        const struct llama_perf_context_data perf = llama_perf_context(llm->ctx);
+        perf_out->prompt_ms = perf.t_p_eval_ms;
+        perf_out->decode_ms = perf.t_eval_ms;
+        perf_out->prompt_tokens = perf.n_p_eval;
+        perf_out->generated_tokens = perf.n_eval;
+    }
     if (aborted(abort_cb, abort_user) && status != -1) {
         return 1;
     }
