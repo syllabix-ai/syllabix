@@ -3,6 +3,7 @@
 use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use syllabix_native::{ChatMessage, LlamaContext, LlamaError, LlamaGenerate, LlamaPerf};
 
@@ -81,6 +82,13 @@ pub struct LlamaLlm {
     thinking: bool,
     model_id: String,
     system_prompt: String,
+}
+
+/// Native counters and first-token latency for one standalone LLM run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LlmBenchmark {
+    pub perf: LlamaPerf,
+    pub ttft: Duration,
 }
 
 impl Clone for LlamaLlm {
@@ -183,13 +191,22 @@ impl LlamaLlm {
     /// Run one fixed-prompt generation and return llama.cpp's native compute
     /// counters. This is intentionally direct: no VAD, STT, TTS, queue, or
     /// playback work is included in the component benchmark.
-    pub fn benchmark_generate(&mut self, prompt: &str, cancel: &Cancel) -> Result<LlamaPerf> {
+    pub fn benchmark_generate(&mut self, prompt: &str, cancel: &Cancel) -> Result<LlmBenchmark> {
         let user = Transcript {
             turn: crate::types::TurnId(0),
             text: prompt.to_string(),
             language: crate::stt::STT_LANGUAGE.to_string(),
         };
-        self.generate_inner(&[], &user, cancel, &mut |_chunk| Ok(()))
+        let start = Instant::now();
+        let mut first_token = None;
+        let perf = self.generate_inner(&[], &user, cancel, &mut |_chunk| {
+            first_token.get_or_insert_with(|| start.elapsed());
+            Ok(())
+        })?;
+        Ok(LlmBenchmark {
+            perf,
+            ttft: first_token.unwrap_or_else(|| start.elapsed()),
+        })
     }
 
     fn generate_inner(

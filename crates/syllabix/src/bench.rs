@@ -86,6 +86,8 @@ struct Timing {
     prompt_tokens_per_second: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_tokens_per_second: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttft_ms: Option<u64>,
 }
 #[derive(Debug, Clone, Serialize)]
 struct Config {
@@ -244,12 +246,15 @@ fn run_llm_component(config: &Config, fingerprint: &Fingerprint) -> Record {
         let _ = llm.benchmark_generate(LLM_PROMPT, &Cancel::new());
     }
     let mut wall = Vec::new();
+    let mut ttft = Vec::new();
     let mut perf = syllabix_native::LlamaPerf::default();
     for _ in 0..MEASURED_ITERATIONS {
         let start = Instant::now();
-        perf = llm
+        let result = llm
             .benchmark_generate(LLM_PROMPT, &Cancel::new())
             .expect("loaded LLM generates");
+        perf = result.perf;
+        ttft.push(result.ttft.as_millis() as u64);
         wall.push(ms(start));
     }
     let prompt_tps = (perf.prompt_ms > 0.0 && perf.prompt_tokens > 0)
@@ -265,7 +270,7 @@ fn run_llm_component(config: &Config, fingerprint: &Fingerprint) -> Record {
         perf.generated_tokens > 0,
         format!("generated_tokens={}", perf.generated_tokens),
     )
-    .with_tps(prompt_tps, generation_tps)
+    .with_llm_metrics(prompt_tps, generation_tps, median(ttft))
 }
 
 fn run_tts_component(config: &Config, fingerprint: &Fingerprint, with_asr: bool) -> Vec<Record> {
@@ -471,10 +476,16 @@ fn unavailable(
     }
 }
 impl Record {
-    fn with_tps(mut self, prompt: Option<f64>, generation: Option<f64>) -> Self {
+    fn with_llm_metrics(
+        mut self,
+        prompt: Option<f64>,
+        generation: Option<f64>,
+        ttft_ms: u64,
+    ) -> Self {
         if let Some(timing) = &mut self.timing {
             timing.prompt_tokens_per_second = prompt;
             timing.generation_tokens_per_second = generation;
+            timing.ttft_ms = Some(ttft_ms);
         }
         self
     }
@@ -503,6 +514,7 @@ fn timing(
         generated_tokens: perf.map(|value| value.generated_tokens),
         prompt_tokens_per_second: None,
         generation_tokens_per_second: None,
+        ttft_ms: None,
     }
 }
 fn median(mut values: Vec<u64>) -> u64 {
