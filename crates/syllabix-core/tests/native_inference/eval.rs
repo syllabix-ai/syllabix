@@ -54,6 +54,7 @@ impl BenchProviders for NativeProviders {
 }
 
 #[test]
+#[ignore = "benchmark evidence is opt-in and never a code-test merge gate"]
 fn eval_scenarios_run_and_score() {
     skip_unless_launch_stack!();
 
