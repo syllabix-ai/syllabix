@@ -13,7 +13,14 @@ use syllabix_core::{
 
 use crate::{native, skip_unless_launch_stack};
 
-struct NativeProviders;
+/// Clones of the process-global engines. The `native()` mutex must stay held
+/// by the test for the whole run: these clones share one llama.cpp context,
+/// and another native test generating on that ctx corrupts decode.
+struct NativeProviders {
+    stt: WhisperStt,
+    llm: LlamaLlm,
+    tts: KokoroTts,
+}
 
 impl BenchProviders for NativeProviders {
     type Vad = SileroVad;
@@ -34,15 +41,15 @@ impl BenchProviders for NativeProviders {
     }
 
     fn stt(&mut self) -> Result<WhisperStt> {
-        Ok(native().stt().clone())
+        Ok(self.stt.clone())
     }
 
     fn llm(&mut self) -> Result<LlamaLlm> {
-        Ok(native().llm().clone())
+        Ok(self.llm.clone())
     }
 
     fn tts(&mut self) -> KokoroTts {
-        native().tts().clone()
+        self.tts.clone()
     }
 }
 
@@ -50,15 +57,13 @@ impl BenchProviders for NativeProviders {
 fn eval_scenarios_run_and_score() {
     skip_unless_launch_stack!();
 
-    // Warm every engine once before timing anything.
-    {
-        let mut models = native();
-        let _ = models.stt();
-        let _ = models.llm();
-        let _ = models.tts();
-    }
-
-    let mut providers = NativeProviders;
+    // Hold the ggml/native lock until every scenario (and TTS→ASR) finishes.
+    let mut models = native();
+    let mut providers = NativeProviders {
+        stt: models.stt().clone(),
+        llm: models.llm().clone(),
+        tts: models.tts().clone(),
+    };
     let records = run_bench(
         &mut providers,
         syllabix_core::eval::builtin_scenarios(),
@@ -97,4 +102,5 @@ fn eval_scenarios_run_and_score() {
         }
     }
     assert!(failures.is_empty(), "scenarios failed gates: {failures:?}");
+    drop(models);
 }
