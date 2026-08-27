@@ -185,7 +185,7 @@ fn resolving_one_llm_id_does_not_fetch_the_other() {
 #[test]
 fn v0_manifest_is_complete() {
     let m = Manifest::v0();
-    assert_eq!(m.assets.len(), 15);
+    assert_eq!(m.assets.len(), 24);
     assert!(m.asset("silero").is_some());
     assert!(m.asset("whisper-small").is_some());
     assert!(m.asset("whisper-medium").is_some());
@@ -204,6 +204,15 @@ fn v0_manifest_is_complete() {
     assert!(m.asset("qwen3-tts-mmproj").is_some());
     assert!(m.asset("qwen3-tts-06b").is_some());
     assert!(m.asset("qwen3-tts-06b-mmproj").is_some());
+    // A1's internal feasibility assets stay outside the YAML TTS menu and
+    // omit the voice-registration encoder.
+    assert!(m.asset("audio8-slow-ar").is_some());
+    assert!(m.asset("audio8-fast-ar").is_some());
+    assert!(m.asset("audio8-codec-decoder").is_some());
+    assert!(m.asset("audio8-tokenizer").is_some());
+    assert!(m.asset("audio8-runtime-manifest").is_some());
+    assert!(m.asset("audio8-reference-codes").is_some());
+    assert!(m.asset("audio8-registration-encoder").is_none());
 }
 
 #[test]
