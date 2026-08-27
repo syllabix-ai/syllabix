@@ -11,10 +11,6 @@
 pub mod audio;
 pub mod models;
 
-// A1's real ONNX recurrence is exercised exclusively by the opt-in native
-// suite; coverage builds must never load its 430 MB external data set.
-#[cfg(not(coverage))]
-mod audio8;
 mod cancel;
 mod config;
 mod defaults;
@@ -38,8 +34,6 @@ mod turn_debug;
 mod types;
 mod vad;
 
-#[cfg(not(coverage))]
-pub use audio8::{Audio8Native, AUDIO8_MAX_FRAMES, AUDIO8_SAMPLE_RATE_HZ};
 pub use cancel::Cancel;
 pub use config::{AgentConfig, CONFIG_FILE_NAME};
 pub use defaults::{

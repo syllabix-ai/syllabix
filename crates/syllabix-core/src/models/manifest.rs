@@ -187,21 +187,6 @@ impl Manifest {
                     "202c1fbf3a0f00b7586ca45b8328d696cc6cd980c3798979eaa4fefe8efd8320",
                     401_129_632,
                 ),
-                // Audio8 A1 is an isolated native-feasibility runtime. These
-                // assets are not fetched by the launch path and are not a
-                // yaml-selectable TTS model until A2 closes. Audio8's ONNX
-                // prompt contract requires the upstream packaged fixed
-                // reference codes; the voice-registration encoder is
-                // intentionally absent.
-                asset("audio8-slow-ar", ModelLayer::Tts, "slow_ar_int8.onnx", "https://huggingface.co/Audio8/audio8-TTS-0.1B-ONNX-INT8/resolve/e1c07e8a3725077e3ab80ad8578e5787e8a23c6c/slow_ar_int8.onnx", "5aa5263d5c7e94cc58c81c969710045d313b4de87deae847f5388c126722bd3a", 4_820_700),
-                asset("audio8-slow-ar-data", ModelLayer::Tts, "slow_ar_int8.onnx.data", "https://huggingface.co/Audio8/audio8-TTS-0.1B-ONNX-INT8/resolve/e1c07e8a3725077e3ab80ad8578e5787e8a23c6c/slow_ar_int8.onnx.data", "4cf0f7ee7d5a9e817caaed310cc2f62dc08ebd37a1b87300dd4255ff0c45dace", 133_471_232),
-                asset("audio8-fast-ar", ModelLayer::Tts, "fast_ar_int8.onnx", "https://huggingface.co/Audio8/audio8-TTS-0.1B-ONNX-INT8/resolve/e1c07e8a3725077e3ab80ad8578e5787e8a23c6c/fast_ar_int8.onnx", "6cfc5c8e85d83d27d508d11351d8ca7d2749d6ff2990dc9efd048f86c27ff371", 511_306),
-                asset("audio8-fast-ar-data", ModelLayer::Tts, "fast_ar_int8.onnx.data", "https://huggingface.co/Audio8/audio8-TTS-0.1B-ONNX-INT8/resolve/e1c07e8a3725077e3ab80ad8578e5787e8a23c6c/fast_ar_int8.onnx.data", "cef092e658d8daad329117f9e9c3b09730deb3e39ea6f6634cd4d1ec8426eb9d", 36_718_592),
-                asset("audio8-codec-decoder", ModelLayer::Tts, "codec_decoder_fp16.onnx", "https://huggingface.co/Audio8/audio8-TTS-0.1B-ONNX-INT8/resolve/e1c07e8a3725077e3ab80ad8578e5787e8a23c6c/codec_decoder_fp16.onnx", "25379b866ad555b9a55226c46325344d2ebfafea1b474c29de5223a9d01ea533", 594_319),
-                asset("audio8-codec-decoder-data", ModelLayer::Tts, "codec_decoder_fp16.onnx.data", "https://huggingface.co/Audio8/audio8-TTS-0.1B-ONNX-INT8/resolve/e1c07e8a3725077e3ab80ad8578e5787e8a23c6c/codec_decoder_fp16.onnx.data", "b9bc968a84f41b86a9a3d19bc6c42b00b5de576512a87501d0c66ff7f896c954", 260_741_440),
-                asset("audio8-tokenizer", ModelLayer::Tts, "audio8-tokenizer.json", "https://huggingface.co/Audio8/audio8-TTS-0.1B-ONNX-INT8/resolve/e1c07e8a3725077e3ab80ad8578e5787e8a23c6c/tokenizer/tokenizer.json", "f1c5ac4973f74a007635d81dafcb2cf0e5c4578c7426f48f53ab0ebf5b978bef", 5_852_397),
-                asset("audio8-runtime-manifest", ModelLayer::Tts, "audio8-runtime_manifest.json", "https://huggingface.co/Audio8/audio8-TTS-0.1B-ONNX-INT8/resolve/e1c07e8a3725077e3ab80ad8578e5787e8a23c6c/runtime_manifest.json", "c7dc8c2490bcad21739ac01994f0ed2dfc71f76e8e9695239c9606eac03e6b62", 1_424),
-                asset("audio8-reference-codes", ModelLayer::Tts, "audio8-reference_codes.npy", "https://huggingface.co/Audio8/audio8-TTS-0.1B-ONNX-INT8/resolve/e1c07e8a3725077e3ab80ad8578e5787e8a23c6c/reference_codes.npy", "7a4fbf777804d88df906982b2b055f579229b0a2044208a4c9bc7680948c4471", 8_928),
             ],
         }
     }
@@ -240,9 +225,8 @@ mod tests {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
         // Silero + five whisper ids + three GGUFs + Kokoro weights + voice
-        // + two Qwen3-TTS backbones, each with its own mmproj, + Audio8 A1's
-        // nine runtime-only assets (not its voice-registration encoder).
-        assert_eq!(m.assets.len(), 24);
+        // + two Qwen3-TTS backbones, each with its own mmproj.
+        assert_eq!(m.assets.len(), 15);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -273,20 +257,6 @@ mod tests {
             m.asset("qwen3-tts-06b-mmproj").unwrap().layer,
             ModelLayer::Tts
         );
-        for id in [
-            "audio8-slow-ar",
-            "audio8-slow-ar-data",
-            "audio8-fast-ar",
-            "audio8-fast-ar-data",
-            "audio8-codec-decoder",
-            "audio8-codec-decoder-data",
-            "audio8-tokenizer",
-            "audio8-runtime-manifest",
-            "audio8-reference-codes",
-        ] {
-            assert_eq!(m.asset(id).unwrap().layer, ModelLayer::Tts, "{id}");
-        }
-        assert!(m.asset("audio8-registration-encoder").is_none());
         assert_eq!(
             m.asset("qwen3-tts-06b").unwrap().sha256,
             "2dec66bcf1595f48a6dfb64c14e7e8437315e1606eba03094ed7372e60a4b9af"

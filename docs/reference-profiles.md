@@ -192,31 +192,20 @@ SYLLABIX_CACHE_DIR=<cache> SYLLABIX_NATIVE_LATENCY=1 \
 
 | Backbone | TTFB p50 | TTFB p95 | RTF p50 | RTF p95 |
 |---|---:|---:|---:|---:|
-| `qwen3-1.7` (row 31 baseline) | 9055 ms | 9307 ms | 3.89 | 4.79 |
-| `qwen3-0.6` (row 32) | 7804 ms | 6991 ms | 3.02 | 3.81 |
-
-For native-speed context, these are local release measurements from the same
-MacBook Air, but they use each model's focused fixture rather than the Qwen
-20-sentence percentile capture:
-
-| Model | Fixture audio | Synthesis time | RTF | Measurement caveat |
-|---|---:|---:|---:|---|
-| Kokoro | 3.200 s | 1058 ms | 0.33 | One sentence-streaming fixture; output is 16 kHz PCM. |
-| Audio8 0.1B (A1) | 0.743 s | 2525 ms first / 2549 ms warm | 3.399 / 3.431 | Bounded 16-frame greedy decode; full codec decode, not streaming. |
+| `qwen3-1.7` (row 31 baseline) | 8625 ms | 8627 ms | 3.87 | 4.85 |
+| `qwen3-0.6` (row 32) | 7285 ms | 6256 ms | 2.62 | 3.65 |
 
 Budget: ≤4.5 s TTFB p50 on portable CPU (G4). Row 31 measured ≈8.6 s p50 /
-RTF ≈3.9 for the 1.7B slot; the refreshed 2026-08-27 release capture on the
-MacBook Air records 9055 ms / 3.89. The 0.6B backbone is faster at
-7804 ms / 3.02, but remains above the budget and is not competitive with
-Kokoro's roughly 0.33 RTF on the same machine.
+RTF ≈3.6 for the 1.7B slot; the row-32 capture reproduces that baseline
+(8625 ms / 3.87) on the same machine and brings the qwen provider to
+7285 ms / 2.62 with the 0.6B backbone — a real cut, still above budget.
 The capture times full-sentence synthesis (one chunk = one complete
 generate + vocoder flush); playback cannot start before decode finishes.
 That structural remainder is row 33's incremental vocoder streaming, not a
 backbone-size problem. The delta is recorded here for founder acceptance
 per the row-32 merge gate ("inside budget or founder-accepted delta").
-RTF varies with the sampled output length and the machine's thermal state;
-the 20-sentence p50/p95 values above are the release-capture evidence, not a
-latency guarantee.
+Metric note: with n=20 the p95 slot is the second-largest sample, which is
+why the 0.6B p95 sits below its p50.
 
 ## 10. Turn timeline instrumentation (profile A)
 
@@ -285,37 +274,3 @@ latency optimization row)*
 | Configuration | n | audible_latency p50/p95 | llm_ttft p50/p95 | stt_total p50/p95 | llm_end_to_first_pcm p50/p95 |
 |---|---:|---:|---:|---:|---:|
 | default (kokoro + llama-3.2-1b) | | | | | |
-
-## 11. Audio8 native feasibility (A1)
-
-Audio8 is not a release-selectable TTS model in this stage. This is an
-in-process Rust proof of the upstream 0.1B ONNX INT8 graph contract: bounded
-greedy SlowAR/FastAR recurrence plus the FP16 codec decoder. It uses the
-already-linked ONNX Runtime CPU provider; there is no Python, subprocess,
-HTTP service, or voice-registration encoder.
-
-Pinned upstream package: `Audio8/audio8-TTS-0.1B-ONNX-INT8` revision
-`e1c07e8a3725077e3ab80ad8578e5787e8a23c6c`. The compiled model manifest
-contains the exact source URLs, SHA-256 hashes, and byte sizes for its nine
-runtime files. It deliberately excludes `registration/`.
-
-Run the native fixture in a release build after the cache fills:
-
-```bash
-SYLLABIX_NATIVE_MODELS=audio8 \
-  cargo test --release -p syllabix-core --test native_inference \
-  audio8_loads_and_emits_deterministic_native_pcm -- --nocapture
-```
-
-The fixture runs the same short English text twice with greedy decoding. It
-requires finite 44.1 kHz PCM and an identical PCM SHA-256 in both runs.
-
-| Profile | Model load | Fixture PCM | Fixture hash | First PCM (full decode) | RTF first / second | RSS |
-|---|---:|---:|---|---:|---:|---|
-| A — MacBook Air, release build | 1,698 ms | 32,768 samples (0.743 s) | `77576f8d18a6047f8199ee51878ba38e9470235150c63e934c18dcdf94a86b03` | 2,525 ms | 3.399 / 3.431 | unavailable (the current RSS helper is Linux-only) |
-| B — Linux x64 | pending CI/manual native run | | | | | `/proc/self/status` |
-| Windows x64 | pending CI/manual native run | | | | | pending platform probe |
-
-This is feasibility evidence, not an Audio8 latency or listening-quality
-claim. A2 must stream PCM into the existing queue and prove cancellation;
-A3 owns the ≥20-turn comparison and any default-model decision.
