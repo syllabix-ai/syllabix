@@ -37,6 +37,10 @@ serde = { version = "=1.0.217", features = ["derive"] }
 serde_yaml = "=0.9.34"
 # Row 30: SSE chat-completions payloads for the OpenAI-compatible adapter.
 serde_json = "=1.0.134"
+# Audio8's published ONNX package carries a Hugging Face tokenizer.json.
+# This is a Rust tokenizer implementation; it does not introduce a Python
+# runtime or a second model runtime.
+tokenizers = { version = "=0.22.0", default-features = false, features = ["fancy-regex"] }
 # ratatui 0.26 + crossterm 0.27 are the established v0 TUI pair.
 crossterm = "=0.27.0"
 ratatui = { version = "=0.26.3", default-features = false, features = ["crossterm"] }
