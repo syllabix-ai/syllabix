@@ -91,18 +91,6 @@ the default zero-config run.
 Apache License 2.0. Copyright (c) 2024 hexgrad.
 Source: https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
 
-### Audio8 TTS Preview 0.1B ONNX INT8 (A1 native feasibility only)
-
-Apache License 2.0. Copyright Audio8.
-Source revision: `e1c07e8a3725077e3ab80ad8578e5787e8a23c6c` at
-https://huggingface.co/Audio8/audio8-TTS-0.1B-ONNX-INT8
-
-The A1 test uses only the SlowAR/FastAR graphs, codec decoder, tokenizer,
-runtime manifest, and the upstream packaged fixed reference-code asset. It
-does not fetch the voice-registration encoder, expose voice registration, or
-make Audio8 selectable in the released product. Upstream NOTICE attribution:
-Audio8 TTS is inspired by the DualAR design used in Fish Audio S2 Pro.
-
 ## Data
 
 ### Misaki English lexicons (compiled into the Kokoro grapheme-to-phoneme table)

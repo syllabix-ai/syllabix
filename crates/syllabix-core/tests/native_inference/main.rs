@@ -12,8 +12,6 @@
 //! TTS→ASR scorer when a TTS id is selected.
 
 #[cfg(not(coverage))]
-mod audio8;
-#[cfg(not(coverage))]
 mod kokoro;
 #[cfg(not(coverage))]
 mod llama;
@@ -40,14 +38,13 @@ use syllabix_core::{
 const LAUNCH_NATIVE_IDS: [&str; 3] = ["small", LLAMA_32_1B_ASSET, "kokoro"];
 
 /// Yaml ids that currently have a native suite.
-const SUITED_NATIVE_IDS: [&str; 7] = [
+const SUITED_NATIVE_IDS: [&str; 6] = [
     "small",
     LLAMA_32_1B_ASSET,
     "kokoro",
     "qwen3-0.6",
     "qwen3-1.7",
     QWEN35_08B_ASSET,
-    "audio8",
 ];
 
 fn all_yaml_model_ids() -> BTreeSet<&'static str> {
@@ -61,9 +58,6 @@ fn all_yaml_model_ids() -> BTreeSet<&'static str> {
     for model in TtsModel::ALL {
         ids.insert(model.as_str());
     }
-    // A1 is deliberately not YAML-selectable yet; this private native-suite
-    // id is the cross-platform feasibility proof before A2 exposes it.
-    ids.insert("audio8");
     ids
 }
 
