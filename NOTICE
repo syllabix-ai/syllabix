@@ -91,6 +91,19 @@ the default zero-config run.
 Apache License 2.0. Copyright (c) 2024 hexgrad.
 Source: https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
 
+### Pocket TTS English ONNX feasibility assets (internal P1 suite only)
+
+Creative Commons Attribution 4.0 International (CC BY 4.0). Model weights
+and published speaker states are the work of Kyutai. The P1 native suite
+uses the English `english_2026-04` ONNX mirror at the immutable
+`81b240f24f896f4cc480dc90858d1f72c9b7d64a` revision:
+https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts
+
+The mirror attributes the source model to `kyutai/pocket-tts`, the ONNX graph
+export to `KevinAHM/pocket-tts-onnx`, and the fixed `alba` speaker state to
+`kyutai/pocket-tts-without-voice-cloning`. P1 does not expose voice cloning,
+user voice registration, or Pocket TTS as a product-selectable model.
+
 ## Data
 
 ### Misaki English lexicons (compiled into the Kokoro grapheme-to-phoneme table)

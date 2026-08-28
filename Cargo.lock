@@ -1776,6 +1776,7 @@ dependencies = [
  "jobserver",
  "misaki-rs",
  "ort",
+ "ort-sys",
  "serde",
  "serde_json",
  "serde_yaml",
