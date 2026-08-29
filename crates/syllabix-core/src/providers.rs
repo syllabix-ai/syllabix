@@ -3,8 +3,8 @@
 use crate::cancel::Cancel;
 use crate::error::Result;
 use crate::types::{
-    AudioFrame, HistoryTurn, LlmDebugMeta, SynthesizedAudio, TokenChunk, Transcript, Utterance,
-    VadEvent,
+    AudioFrame, HistoryTurn, LlmDebugMeta, SynthesizedAudio, TokenChunk, Transcript, TurnId,
+    Utterance, VadEvent,
 };
 
 /// Voice-activity detector. Consumes frames, emits speech-start and speech-stop.
@@ -92,6 +92,17 @@ pub trait Tts: Send {
 pub trait AudioSink: Send {
     /// Play or collect one chunk. Must check `cancel`.
     fn play(&mut self, audio: SynthesizedAudio, cancel: &Cancel) -> Result<()>;
+
+    /// Wait until a completed turn has drained from the output device.
+    ///
+    /// Fixture sinks consume synchronously, so their default implementation is
+    /// immediate. Native playback waits for the first silent callback after
+    /// the final samples were submitted. The pipeline uses this boundary
+    /// before default-mode VAD resumes, preventing the speaker tail from
+    /// becoming the next user turn.
+    fn finish_turn(&mut self, _turn: TurnId, _cancel: &Cancel) -> Result<()> {
+        Ok(())
+    }
 
     /// Duck/stop queued playback. Default is a no-op for collecting sinks.
     fn interrupt(&mut self) {}

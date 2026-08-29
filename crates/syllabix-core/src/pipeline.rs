@@ -1,6 +1,6 @@
 //! In-memory conversation loop: VAD → STT → LLM → TTS → sink with bounded queues.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -19,6 +19,9 @@ use crate::types::{
 };
 
 const POLL: Duration = Duration::from_millis(5);
+/// While default mode suppresses VAD, retain a small bounded clean-audio
+/// window so a user who starts talking as playback ends is not clipped.
+const SUPPRESSED_FRAME_WINDOW_MULTIPLIER: usize = 4;
 
 /// Empty or whitespace Whisper text must not start LLM/TTS.
 pub fn is_blank_stt(text: &str) -> bool {
@@ -560,8 +563,12 @@ where
         let shared = Arc::clone(&shared);
         let live = Arc::clone(&shared.live_tasks);
         let utt_tx = utt_tx.clone();
+        let deferred_frame_cap = caps
+            .frames
+            .saturating_mul(SUPPRESSED_FRAME_WINDOW_MULTIPLIER)
+            .max(1);
         joins.push(spawn("syllabix-vad", live, move || {
-            vad_loop(vad, frame_rx, utt_tx, &cancel, &shared)
+            vad_loop(vad, frame_rx, utt_tx, deferred_frame_cap, &cancel, &shared)
         }));
     }
     drop(utt_tx);
@@ -715,10 +722,17 @@ fn vad_loop<V: Vad>(
     mut vad: V,
     rx: crate::queue::BoundedReceiver<AudioFrame>,
     tx: BoundedSender<Utterance>,
+    deferred_frame_cap: usize,
     cancel: &Cancel,
     shared: &Shared,
 ) {
     let mut active: Option<TurnId> = None;
+    // Default mode does not treat speech during playback as barge-in, but
+    // capture must keep flowing through AEC. Retain only a bounded recent
+    // clean-audio window for VAD after speaker drain; the queue itself stays
+    // available to the native capture worker instead of retaining an
+    // unsynchronised tail.
+    let mut deferred_frames = VecDeque::with_capacity(deferred_frame_cap);
     let emit = |events: Vec<VadEvent>,
                 tx: &BoundedSender<Utterance>,
                 cancel: &Cancel,
@@ -757,10 +771,28 @@ fn vad_loop<V: Vad>(
             return;
         }
         if shared.pause_vad.load(Ordering::SeqCst) {
-            thread::sleep(POLL);
+            match rx.recv_timeout(POLL) {
+                Ok(frame) => {
+                    if deferred_frames.len() == deferred_frame_cap {
+                        deferred_frames.pop_front();
+                    }
+                    deferred_frames.push_back(frame);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    // The capture worker can finish while the final speaker
+                    // buffer is still draining. Keep the bounded window until
+                    // the sink releases VAD, then process it below.
+                    thread::sleep(POLL);
+                }
+            }
             continue;
         }
-        match rx.recv_timeout(POLL) {
+        let frame = deferred_frames
+            .pop_front()
+            .map(Ok)
+            .unwrap_or_else(|| rx.recv_timeout(POLL));
+        match frame {
             Ok(frame) => {
                 let tap = shared.turn_debug.as_ref().map(|_| frame.clone());
                 match vad.push_frame(frame) {
@@ -1013,6 +1045,20 @@ fn sink_loop<K: AudioSink>(
                         }
                         let completed = shared.note_audio(&audio, Instant::now(), cancel);
                         if is_last {
+                            match sink.finish_turn(turn, cancel) {
+                                Ok(()) => {}
+                                Err(Error::Cancelled) => {
+                                    shared.release_assistant(turn);
+                                    if cancel.is_shutdown() {
+                                        return;
+                                    }
+                                    continue;
+                                }
+                                Err(err) => {
+                                    shared.fail(err, cancel);
+                                    return;
+                                }
+                            }
                             shared.release_assistant(turn);
                             maybe_stop_after(mode, completed, cancel);
                         }
@@ -1230,6 +1276,59 @@ mod tests {
         assert!(report.turns.is_empty());
         assert!(report.skipped_turns >= 1);
         assert!(calls.lock().expect("llm log").is_empty());
+    }
+
+    #[test]
+    fn final_audio_waits_for_sink_drain_before_releasing_default_vad() {
+        use std::sync::atomic::AtomicBool;
+
+        struct DrainSink {
+            played_final: Arc<AtomicBool>,
+            finished: Arc<AtomicBool>,
+        }
+
+        impl crate::providers::AudioSink for DrainSink {
+            fn play(&mut self, audio: SynthesizedAudio, _cancel: &Cancel) -> Result<()> {
+                if audio.is_last {
+                    self.played_final.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            }
+
+            fn finish_turn(&mut self, _turn: TurnId, _cancel: &Cancel) -> Result<()> {
+                assert!(
+                    self.played_final.load(Ordering::SeqCst),
+                    "the final PCM must enter the sink before its drain wait"
+                );
+                self.finished.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let played_final = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let report = run_loop(
+            LoopConfig {
+                mode: LoopMode::StopAfterTurns(1),
+                ..LoopConfig::default()
+            },
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: FakeStt,
+                llm: FakeLlm::new(),
+                tts: FakeTts,
+                sink: DrainSink {
+                    played_final: Arc::clone(&played_final),
+                    finished: Arc::clone(&finished),
+                },
+            },
+            scripted_frames(1, 2, 1),
+            Cancel::new(),
+        )
+        .expect("draining loop");
+
+        assert_eq!(report.turns.len(), 1);
+        assert!(finished.load(Ordering::SeqCst));
     }
 
     /// Wraps [`FakeLlm`] and reports provider facts the way live engines do.

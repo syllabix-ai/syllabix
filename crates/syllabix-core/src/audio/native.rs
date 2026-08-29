@@ -6,6 +6,7 @@
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
@@ -20,7 +21,99 @@ use crate::cancel::Cancel;
 use crate::error::{Error, Result};
 use crate::providers::{AudioCapture, AudioSink};
 use crate::turn_debug::PlaybackWatch;
-use crate::types::{AudioFrame, SynthesizedAudio};
+use crate::types::{AudioFrame, GenerationId, SynthesizedAudio, TurnId};
+
+/// Tracks the callback after a turn's final samples have entered the device
+/// ring. It is deliberately separate from diagnostics: default `run` needs
+/// the same drain boundary even when timeline recording is off.
+#[derive(Clone)]
+struct PlaybackDrain {
+    inner: Arc<(Mutex<PlaybackDrainState>, Condvar)>,
+}
+
+#[derive(Default)]
+struct PlaybackDrainState {
+    final_turn: Option<TurnId>,
+    generation: Option<GenerationId>,
+    final_enqueued: bool,
+    final_enqueued_after_callback: u64,
+    callback_count: u64,
+    drained_turn: Option<TurnId>,
+}
+
+impl PlaybackDrain {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new((Mutex::new(PlaybackDrainState::default()), Condvar::new())),
+        }
+    }
+
+    fn begin_final(&self, turn: TurnId, generation: GenerationId) {
+        let mut state = self.inner.0.lock().expect("playback drain");
+        state.final_turn = Some(turn);
+        state.generation = Some(generation);
+        state.final_enqueued = false;
+        state.final_enqueued_after_callback = state.callback_count;
+        state.drained_turn = None;
+    }
+
+    fn final_enqueued(&self, turn: TurnId) {
+        let mut state = self.inner.0.lock().expect("playback drain");
+        if state.final_turn == Some(turn) {
+            state.final_enqueued = true;
+            // A callback can pop silence just before the producer writes the
+            // final PCM. Require a later callback so that stale observation
+            // cannot release VAD before the new samples are consumed.
+            state.final_enqueued_after_callback = state.callback_count;
+        }
+    }
+
+    fn on_callback(&self, rendered: usize) {
+        let mut state = self.inner.0.lock().expect("playback drain");
+        state.callback_count += 1;
+        if rendered == 0
+            && state.final_enqueued
+            && state.callback_count > state.final_enqueued_after_callback
+        {
+            if let Some(turn) = state.final_turn.take() {
+                state.final_enqueued = false;
+                state.drained_turn = Some(turn);
+                self.inner.1.notify_all();
+            }
+        }
+    }
+
+    fn wait_for(&self, turn: TurnId, cancel: &Cancel) -> Result<()> {
+        let mut state = self.inner.0.lock().expect("playback drain");
+        loop {
+            if state.drained_turn == Some(turn) || state.final_turn != Some(turn) {
+                return Ok(());
+            }
+            if cancel.is_shutdown()
+                || state
+                    .generation
+                    .is_some_and(|generation| cancel.is_stale(generation))
+            {
+                return Err(Error::Cancelled);
+            }
+            let (next, _) = self
+                .inner
+                .1
+                .wait_timeout(state, Duration::from_millis(5))
+                .expect("playback drain");
+            state = next;
+        }
+    }
+
+    fn clear(&self) {
+        let mut state = self.inner.0.lock().expect("playback drain");
+        state.final_turn = None;
+        state.generation = None;
+        state.final_enqueued = false;
+        state.final_enqueued_after_callback = state.callback_count;
+        self.inner.1.notify_all();
+    }
+}
 
 /// Backend id for logs. The shipped loop uses this name once `run` is wired.
 pub fn backend_name() -> &'static str {
@@ -289,6 +382,7 @@ fn spawn_output(
     choice: DeviceChoice,
     tap_render: bool,
     watch: Option<PlaybackWatch>,
+    drain: PlaybackDrain,
 ) -> Result<OpenedStream> {
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let stop = Arc::new((Mutex::new(false), Condvar::new()));
@@ -316,6 +410,7 @@ fn spawn_output(
                 Arc::clone(&ring),
                 echo_ring.as_ref().map(Arc::clone),
                 watch,
+                drain,
             ) {
                 Ok(s) => s,
                 Err(err) => {
@@ -535,6 +630,7 @@ pub struct NativePlayback {
     echo_ring: Option<Arc<SampleRing>>,
     conv: PcmConverter,
     watch: Option<PlaybackWatch>,
+    drain: PlaybackDrain,
     /// Selected device name.
     pub device_name: String,
     /// Device PCM layout after conversion.
@@ -568,7 +664,8 @@ impl NativePlayback {
     ) -> Result<(Self, Option<EchoReference>)> {
         let inv = CpalInventory::new();
         let choice = select_output(&inv)?;
-        let opened = spawn_output(choice, tap_render, watch.clone())?;
+        let drain = PlaybackDrain::new();
+        let opened = spawn_output(choice, tap_render, watch.clone(), drain.clone())?;
         let reference = opened
             .echo_ring
             .as_ref()
@@ -581,6 +678,7 @@ impl NativePlayback {
                 ring: opened.ring,
                 echo_ring: opened.echo_ring,
                 watch,
+                drain,
                 _worker: opened.worker,
             },
             reference,
@@ -609,12 +707,15 @@ impl AudioSink for NativePlayback {
         if let Some(watch) = &self.watch {
             watch.begin_turn(audio.turn);
         }
+        if audio.is_last {
+            self.drain.begin_final(audio.turn, audio.generation);
+        }
         let f32s = i16_to_f32(&audio.samples);
         let mut device_pcm = self.conv.push(&f32s);
         if audio.is_last {
             device_pcm.extend(self.conv.flush());
         }
-        match self
+        let result = match self
             .ring
             .push_slice_cancellable(&device_pcm, cancel, audio.generation)
         {
@@ -624,12 +725,21 @@ impl AudioSink for NativePlayback {
                 Ok(())
             }
             Err(err) => Err(err),
+        };
+        if result.is_ok() && audio.is_last {
+            self.drain.final_enqueued(audio.turn);
         }
+        result
+    }
+
+    fn finish_turn(&mut self, turn: TurnId, cancel: &Cancel) -> Result<()> {
+        self.drain.wait_for(turn, cancel)
     }
 
     fn interrupt(&mut self) {
         self.ring.clear();
         self.conv.reset();
+        self.drain.clear();
     }
 }
 
@@ -689,6 +799,7 @@ fn build_output_stream(
     ring: Arc<SampleRing>,
     echo_ring: Option<Arc<SampleRing>>,
     watch: Option<PlaybackWatch>,
+    drain: PlaybackDrain,
 ) -> Result<Stream> {
     let err_fn = |err| {
         eprintln!("syllabix speaker error: {err}");
@@ -703,6 +814,7 @@ fn build_output_stream(
                     if let Some(watch) = &watch {
                         watch.on_callback(rendered);
                     }
+                    drain.on_callback(rendered);
                     if let Some(reference) = &echo_ring {
                         // The device renders the whole buffer (zeros included);
                         // the AEC reference must see exactly that.
@@ -723,6 +835,7 @@ fn build_output_stream(
                     if let Some(watch) = &watch {
                         watch.on_callback(rendered);
                     }
+                    drain.on_callback(rendered);
                     let i = f32_to_i16(&f);
                     data.copy_from_slice(&i);
                     if let Some(reference) = &echo_ring {
@@ -743,6 +856,7 @@ fn build_output_stream(
                     if let Some(watch) = &watch {
                         watch.on_callback(rendered);
                     }
+                    drain.on_callback(rendered);
                     for (slot, sample) in data.iter_mut().zip(f.iter()) {
                         let scaled = (sample.clamp(-1.0, 1.0) + 1.0) * 0.5 * f32::from(u16::MAX);
                         *slot = scaled.round() as u16;
@@ -805,6 +919,7 @@ mod tests {
             echo_ring: None,
             conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
             watch: None,
+            drain: PlaybackDrain::new(),
             device_name: "test speakers".into(),
             device_format,
         }
@@ -936,6 +1051,63 @@ mod tests {
     }
 
     #[test]
+    fn final_turn_waits_for_the_silent_callback_after_its_pcm() {
+        let drain = PlaybackDrain::new();
+        let cancel = Cancel::new();
+        let turn = crate::types::TurnId(7);
+        let generation = cancel.generation();
+        drain.begin_final(turn, generation);
+        drain.final_enqueued(turn);
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let wait_drain = drain.clone();
+        let wait_cancel = cancel.clone();
+        let waiter = std::thread::spawn(move || {
+            wait_drain.wait_for(turn, &wait_cancel).expect("drain wait");
+            done_tx.send(()).expect("notify drain");
+        });
+
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err(),
+            "a queued final chunk must not release VAD before device consumption"
+        );
+        drain.on_callback(128);
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err(),
+            "the callback carrying final PCM is not yet a drain"
+        );
+        drain.on_callback(0);
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("silent callback releases waiter");
+        waiter.join().expect("drain waiter");
+    }
+
+    #[test]
+    fn final_turn_wait_exits_when_barge_in_cancels_generation() {
+        let drain = PlaybackDrain::new();
+        let cancel = Cancel::new();
+        let turn = crate::types::TurnId(7);
+        let generation = cancel.generation();
+        drain.begin_final(turn, generation);
+        drain.final_enqueued(turn);
+        let wait_drain = drain.clone();
+        let wait_cancel = cancel.clone();
+        let waiter = std::thread::spawn(move || wait_drain.wait_for(turn, &wait_cancel));
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cancel.cancel_generation();
+        assert!(matches!(
+            waiter.join().expect("drain waiter"),
+            Err(Error::Cancelled)
+        ));
+    }
+
+    #[test]
     fn interrupt_clears_queued_playback() {
         let mut playback = test_playback();
         let cancel = Cancel::new();
@@ -981,6 +1153,7 @@ mod tests {
             echo_ring: None,
             conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
             watch: Some(watch.clone()),
+            drain: PlaybackDrain::new(),
             device_name: "test speakers".into(),
             device_format,
         };
@@ -1045,6 +1218,7 @@ mod tests {
             echo_ring: None,
             conv: PcmConverter::new(PcmFormat::v0(), PcmFormat::v0()).expect("v0 converter"),
             watch: None,
+            drain: PlaybackDrain::new(),
             device_name: "test speakers".into(),
             device_format: PcmFormat::v0(),
         };
