@@ -1,14 +1,18 @@
 //! P1 Pocket TTS native feasibility gate. This test-only id deliberately
 //! precedes any YAML or pipeline exposure; P2 owns that contract.
 
-use std::time::{Duration, Instant};
+use std::{
+    env, fs,
+    process::Command,
+    time::{Duration, Instant},
+};
 use syllabix_core::{
     audio::FrameSplitter, transcript_words, word_match_ratio, Cancel, GenerationId, HttpFetcher,
-    ModelCache, PocketTts, StderrProgress, Stt, TokenChunk, Tts, TurnId, Utterance,
-    POCKET_TTS_TEXT_CONDITIONER_ASSET, TTS_ASR_MIN_WORD_MATCH,
+    ModelCache, PocketTts, StderrProgress, Stt, SttModel, TokenChunk, Tts, TurnId, Utterance,
+    WhisperStt, POCKET_TTS_TEXT_CONDITIONER_ASSET, TTS_ASR_MIN_WORD_MATCH,
 };
 
-use crate::{native, native_latency_enabled, skip_unless_model, TTS_LATENCY_SENTENCES};
+use crate::{native_latency_enabled, skip_unless_model, TTS_LATENCY_SENTENCES};
 
 // Pocket remains an opt-in repair candidate. Its P3 promotion decision keeps
 // the shared 80% gate; this lower native floor only prevents regressions below
@@ -45,6 +49,62 @@ fn speak(tts: &mut PocketTts, text: &str) -> Vec<i16> {
         .expect("Pocket TTS synthesize");
     assert!(!chunks.is_empty(), "Pocket TTS must emit audio");
     chunks.into_iter().flat_map(|chunk| chunk.samples).collect()
+}
+
+const WORD_MATCH_TEXT: &str = "The children played outside in the garden after lunch.";
+const WORD_MATCH_CHILD: &str = "SYLLABIX_POCKET_WORD_MATCH_CHILD";
+const WORD_MATCH_PCM: &str = "SYLLABIX_POCKET_WORD_MATCH_PCM";
+const WORD_MATCH_TRANSCRIPT: &str = "SYLLABIX_POCKET_WORD_MATCH_TRANSCRIPT";
+
+fn pcm_path() -> std::path::PathBuf {
+    env::temp_dir().join(format!(
+        "syllabix-pocket-word-match-{}.pcm",
+        std::process::id()
+    ))
+}
+
+fn transcript_path() -> std::path::PathBuf {
+    env::temp_dir().join(format!(
+        "syllabix-pocket-word-match-{}.txt",
+        std::process::id()
+    ))
+}
+
+fn run_word_match_child(test: &str, pcm: &std::path::Path, transcript: Option<&std::path::Path>) {
+    let mut child = Command::new(env::current_exe().expect("native test executable"));
+    child
+        .arg(test)
+        .arg("--exact")
+        .env(WORD_MATCH_CHILD, "1")
+        .env(WORD_MATCH_PCM, pcm);
+    if let Some(transcript) = transcript {
+        child.env(WORD_MATCH_TRANSCRIPT, transcript);
+    }
+    let output = child.output().expect("start isolated word-match child");
+    assert!(
+        output.status.success(),
+        "isolated word-match child must pass: status={}\nstdout={}\nstderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn write_pcm(path: &std::path::Path, samples: &[i16]) {
+    let mut bytes = Vec::with_capacity(samples.len() * 2);
+    for sample in samples {
+        bytes.extend(sample.to_le_bytes());
+    }
+    fs::write(path, bytes).expect("write Pocket PCM fixture");
+}
+
+fn read_pcm(path: &std::path::Path) -> Vec<i16> {
+    let bytes = fs::read(path).expect("read Pocket PCM fixture");
+    assert!(bytes.len().is_multiple_of(2), "PCM fixture must be i16 LE");
+    bytes
+        .chunks_exact(2)
+        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+        .collect()
 }
 
 fn percentile(mut values: Vec<f64>, percentile: f64) -> f64 {
@@ -145,29 +205,83 @@ fn pinned_onnx_graph_set_loads_and_text_fixture_is_deterministic() {
 #[test]
 fn pocket_speech_round_trips_through_whisper_at_eighty_percent() {
     skip_unless_model!("pocket-tts");
-    const TEXT: &str = "The children played outside in the garden after lunch.";
-    let expected_owned = transcript_words(TEXT);
+    let pcm = pcm_path();
+    let transcript = transcript_path();
+    run_word_match_child("pocket_tts::pocket_word_match_synthesis_child", &pcm, None);
+    run_word_match_child(
+        "pocket_tts::pocket_word_match_transcription_child",
+        &pcm,
+        Some(&transcript),
+    );
+    fs::remove_file(&pcm).expect("remove Pocket PCM fixture");
+
+    let expected_owned = transcript_words(WORD_MATCH_TEXT);
     let expected: Vec<&str> = expected_owned.iter().map(String::as_str).collect();
-    let cache = ModelCache::v0();
-    let mut progress = StderrProgress::new();
-    let mut tts = PocketTts::from_cache(&cache, &HttpFetcher, &mut progress, &Cancel::new())
-        .expect("load Pocket TTS");
-    let pcm = speak(&mut tts, TEXT);
-    let mut native = native();
-    let transcript = native
-        .stt_mut()
-        .transcribe(&pcm_to_utterance(&pcm), &Cancel::new())
-        .expect("whisper transcribe Pocket TTS audio");
-    let ratio = word_match_ratio(&transcript.text, &expected);
+    let transcript = fs::read_to_string(&transcript).expect("read Whisper transcript");
+    let ratio = word_match_ratio(&transcript, &expected);
+    fs::remove_file(transcript_path()).expect("remove Whisper transcript fixture");
+    eprintln!(
+        "Pocket TTS→Whisper word match: {:.1}% ({:?} vs {:?})",
+        ratio * 100.0,
+        transcript,
+        expected,
+    );
     assert!(
         ratio >= POCKET_TTS_ASR_REPAIR_MIN_WORD_MATCH,
         "Pocket TTS→ASR {:?} matched {:.1}% of {:?} (need {:.0}% repair floor; P3 needs {:.0}%)",
-        transcript.text,
+        transcript,
         ratio * 100.0,
         expected,
         POCKET_TTS_ASR_REPAIR_MIN_WORD_MATCH * 100.0,
         TTS_ASR_MIN_WORD_MATCH * 100.0,
     );
+}
+
+/// Runs in a fresh process so ONNX Pocket TTS and Whisper never coexist.
+/// The parent test above owns the Whisper comparison and score.
+#[test]
+fn pocket_word_match_synthesis_child() {
+    if env::var_os(WORD_MATCH_CHILD).is_none() {
+        return;
+    }
+    skip_unless_model!("pocket-tts");
+    let path = env::var_os(WORD_MATCH_PCM).expect("parent must set PCM path");
+    let cache = ModelCache::v0();
+    let mut progress = StderrProgress::new();
+    let mut tts = PocketTts::from_cache(&cache, &HttpFetcher, &mut progress, &Cancel::new())
+        .expect("load Pocket TTS");
+    write_pcm(
+        &std::path::PathBuf::from(path),
+        &speak(&mut tts, WORD_MATCH_TEXT),
+    );
+}
+
+/// Runs in another fresh process so the scorer does not inherit ONNX state.
+#[test]
+fn pocket_word_match_transcription_child() {
+    if env::var_os(WORD_MATCH_CHILD).is_none() {
+        return;
+    }
+    let pcm = read_pcm(&std::path::PathBuf::from(
+        env::var_os(WORD_MATCH_PCM).expect("parent must set PCM path"),
+    ));
+    let output = std::path::PathBuf::from(
+        env::var_os(WORD_MATCH_TRANSCRIPT).expect("parent must set transcript path"),
+    );
+    let cache = ModelCache::v0();
+    let mut progress = StderrProgress::new();
+    let mut stt = WhisperStt::from_cache(
+        &cache,
+        &HttpFetcher,
+        &mut progress,
+        &Cancel::new(),
+        SttModel::Small,
+    )
+    .expect("load selected Whisper scorer");
+    let transcript = stt
+        .transcribe(&pcm_to_utterance(&pcm), &Cancel::new())
+        .expect("Whisper transcribe Pocket TTS audio");
+    fs::write(output, transcript.text).expect("write Whisper transcript");
 }
 
 /// P3 reproducible evidence capture. The callback measures actual first PCM,
