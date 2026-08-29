@@ -18,6 +18,7 @@ use crate::stt::WhisperStt;
 use crate::tts::{KokoroTts, QwenTts};
 use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, Transcript};
 use crate::vad::SileroVad;
+use crate::PocketTts;
 
 /// The configured LLM implementation for one live run.
 pub enum LiveLlm {
@@ -62,6 +63,8 @@ pub enum LiveTts {
     Kokoro(KokoroTts),
     /// Qwen3-TTS through the shared ggml (row 31).
     Qwen(QwenTts),
+    /// Pocket TTS through the existing ONNX Runtime (P2).
+    Pocket(Box<PocketTts>),
 }
 
 impl crate::providers::Tts for LiveTts {
@@ -69,6 +72,7 @@ impl crate::providers::Tts for LiveTts {
         match self {
             Self::Kokoro(tts) => tts.name(),
             Self::Qwen(tts) => tts.name(),
+            Self::Pocket(tts) => tts.name(),
         }
     }
 
@@ -76,6 +80,7 @@ impl crate::providers::Tts for LiveTts {
         match self {
             Self::Kokoro(tts) => tts.model_id(),
             Self::Qwen(tts) => tts.model_id(),
+            Self::Pocket(tts) => tts.model_id(),
         }
     }
 
@@ -87,6 +92,7 @@ impl crate::providers::Tts for LiveTts {
         match self {
             Self::Kokoro(tts) => tts.synthesize_chunk(token, cancel),
             Self::Qwen(tts) => tts.synthesize_chunk(token, cancel),
+            Self::Pocket(tts) => tts.synthesize_chunk(token, cancel),
         }
     }
 
@@ -99,6 +105,7 @@ impl crate::providers::Tts for LiveTts {
         match self {
             Self::Kokoro(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
             Self::Qwen(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
+            Self::Pocket(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
         }
     }
 }
@@ -140,6 +147,9 @@ pub fn build_tts(
             crate::TtsModel::Kokoro => Ok(LiveTts::Kokoro(KokoroTts::from_cache(
                 cache, fetcher, progress, cancel,
             )?)),
+            crate::TtsModel::PocketTts => Ok(LiveTts::Pocket(Box::new(PocketTts::from_cache(
+                cache, fetcher, progress, cancel,
+            )?))),
             qwen => Ok(LiveTts::Qwen(QwenTts::from_cache(
                 cache,
                 fetcher,

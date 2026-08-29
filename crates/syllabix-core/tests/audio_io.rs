@@ -659,6 +659,15 @@ fn load_mono16k_f32(path: &Path) -> Vec<f32> {
 fn silero_speech_starts(samples: &[f32]) -> u64 {
     use syllabix_core::{HttpFetcher, ModelCache, SileroVad, StderrProgress, Vad, VadEvent};
 
+    // Both delayed-fixture tests run in parallel and use the versioned shared
+    // cache. Resolve atomically per test, not concurrently, so one test cannot
+    // observe the other's in-progress `.part` replacement as a corrupt model.
+    static SILERO_CACHE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+    let _guard = SILERO_CACHE_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("Silero cache lock");
     let mut vad = SileroVad::from_cache(
         &ModelCache::v0(),
         &HttpFetcher,

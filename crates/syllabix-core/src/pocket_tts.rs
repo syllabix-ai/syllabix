@@ -17,9 +17,13 @@ use std::{
 use serde::Deserialize;
 
 use ort::{session::Session, AsPointer};
+use sentencepiece_rs::SentencePieceProcessor;
 
+use crate::audio::{f32_to_i16, PcmConverter, PcmFormat};
 use crate::models::{Fetcher, ModelCache, Progress};
-use crate::{Cancel, Error, Result};
+use crate::providers::Tts;
+use crate::speech_text::{speak_text_for_tts, take_sentences, ThinkFilter};
+use crate::{Cancel, Error, GenerationId, Result, SynthesizedAudio, TokenChunk, TurnId};
 
 pub const POCKET_TTS_BUNDLE_ASSET: &str = "pocket-tts-bundle";
 pub const POCKET_TTS_BOS_ASSET: &str = "pocket-tts-bos";
@@ -50,6 +54,12 @@ pub struct PocketTts {
     flow_state: Vec<StateSpec>,
     mimi_state: Vec<StateSpec>,
     voice: PathBuf,
+    tokenizer: SentencePieceProcessor,
+    think: ThinkFilter,
+    buffer: String,
+    turn: Option<TurnId>,
+    generation: Option<GenerationId>,
+    next_index: u32,
 }
 
 impl PocketTts {
@@ -86,7 +96,168 @@ impl PocketTts {
             flow_state,
             mimi_state,
             voice: voice.clone(),
+            tokenizer: SentencePieceProcessor::open(tokenizer)
+                .map_err(|err| provider(&format!("could not load tokenizer.model: {err}")))?,
+            think: ThinkFilter::default(),
+            buffer: String::new(),
+            turn: None,
+            generation: None,
+            next_index: 0,
         })
+    }
+
+    fn reset_turn(&mut self) {
+        self.think = ThinkFilter::default();
+        self.buffer.clear();
+        self.turn = None;
+        self.generation = None;
+        self.next_index = 0;
+    }
+
+    fn start_turn(&mut self, token: &TokenChunk, cancel: &Cancel) -> Result<()> {
+        if cancel.is_stale(token.generation) {
+            self.reset_turn();
+            return Err(Error::Cancelled);
+        }
+        if self.turn != Some(token.turn) || self.generation != Some(token.generation) {
+            self.reset_turn();
+            self.turn = Some(token.turn);
+            self.generation = Some(token.generation);
+        }
+        Ok(())
+    }
+
+    /// Generate Pocket TTS frames for one cleaned sentence. The exported Flow
+    /// LM is recurrent: text conditioning is supplied once, then every latent
+    /// frame is fed back through its returned state. Mimi is likewise kept
+    /// stateful so individual frames can reach playback as they are decoded.
+    fn synthesize_sentence_into(
+        &mut self,
+        text: &str,
+        token: &TokenChunk,
+        is_last_sentence: bool,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        let ids = self
+            .tokenizer
+            .encode_to_ids(text)
+            .map_err(|err| provider(&format!("could not tokenize Pocket TTS text: {err}")))?
+            .into_iter()
+            .map(|id| id as i64)
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let token_count = ids.len();
+        let outputs = self
+            .text_conditioner
+            .run(ort::inputs!["token_ids" => ([1_usize, ids.len()], ids)].map_err(ort_error)?)
+            .map_err(ort_error)?;
+        let embeddings = RawTensor::f32(
+            vec![1, token_count as i64, 1024],
+            outputs[0]
+                .try_extract_tensor::<f32>()
+                .map_err(ort_error)?
+                .iter()
+                .copied()
+                .collect(),
+        );
+        let mut flow_state = voice_state(&self.flow_state, &self.voice)?;
+        let mut mimi_state = self
+            .mimi_state
+            .iter()
+            .map(StateSpec::initial)
+            .collect::<Vec<_>>();
+        let mut previous = RawTensor::f32(vec![1, 0, 32], vec![]);
+        let mut converter = PcmConverter::new(
+            PcmFormat {
+                sample_rate_hz: 24_000,
+                channels: 1,
+            },
+            PcmFormat {
+                sample_rate_hz: 16_000,
+                channels: 1,
+            },
+        )?;
+        // The upstream export limits text chunks to 50 tokens. One generated
+        // frame is 80 ms, and this conservative cap bounds CPU work while the
+        // EOS head remains the normal stopping condition.
+        let max_frames = (text.chars().count().saturating_mul(2)).clamp(8, 250);
+        let mut first = true;
+        for frame in 0..max_frames {
+            if cancel.is_stale(token.generation) || cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            let empty_text = RawTensor::f32(vec![1, 0, 1024], vec![]);
+            let text_input = if first { &embeddings } else { &empty_text };
+            let mut main = RawRunner::new(&mut self.flow_main)?;
+            let mut inputs = vec![("sequence", &previous), ("text_embeddings", text_input)];
+            inputs.extend(
+                self.flow_state
+                    .iter()
+                    .zip(&flow_state)
+                    .map(|(s, v)| (s.input_name.as_str(), v)),
+            );
+            let mut names = vec!["conditioning", "eos_logit"];
+            names.extend(self.flow_state.iter().map(|s| s.output_name.as_str()));
+            let result = main.run(&inputs, &names)?;
+            let conditioning = result[0].clone();
+            let eos = result[1]
+                .f32_data()?
+                .first()
+                .copied()
+                .unwrap_or(f32::NEG_INFINITY);
+            flow_state = result.into_iter().skip(2).collect();
+            let x = RawTensor::f32(vec![1, 32], vec![0.0; 32]);
+            let s = RawTensor::f32(vec![1, 1], vec![0.0]);
+            let t = RawTensor::f32(vec![1, 1], vec![1.0]);
+            let mut flow = RawRunner::new(&mut self.flow)?;
+            let latent = flow
+                .run(
+                    &[("c", &conditioning), ("s", &s), ("t", &t), ("x", &x)],
+                    &["flow_dir"],
+                )?
+                .into_iter()
+                .next()
+                .ok_or_else(|| provider("flow graph returned no latent"))?;
+            previous = RawTensor::f32(vec![1, 1, 32], latent.f32_data()?.to_vec());
+
+            let mut decoder = RawRunner::new(&mut self.decoder)?;
+            let mut decoder_inputs = vec![("latent", &previous)];
+            decoder_inputs.extend(
+                self.mimi_state
+                    .iter()
+                    .zip(&mimi_state)
+                    .map(|(s, v)| (s.input_name.as_str(), v)),
+            );
+            let mut decoder_names = vec!["audio_frame"];
+            decoder_names.extend(self.mimi_state.iter().map(|s| s.output_name.as_str()));
+            let decoded = decoder.run(&decoder_inputs, &decoder_names)?;
+            let audio = decoded[0].f32_data()?;
+            let mut pcm = f32_to_i16(&converter.push(audio));
+            mimi_state = decoded.into_iter().skip(1).collect();
+            let eos_reached = frame > 0 && eos >= 0.0;
+            if eos_reached || frame + 1 == max_frames {
+                pcm.extend(f32_to_i16(&converter.flush()));
+            }
+            if !pcm.is_empty() {
+                let index = self.next_index;
+                self.next_index += 1;
+                on_audio(SynthesizedAudio {
+                    turn: token.turn,
+                    generation: token.generation,
+                    index,
+                    samples: pcm,
+                    is_last: is_last_sentence && (eos_reached || frame + 1 == max_frames),
+                })?;
+            }
+            if eos_reached {
+                break;
+            }
+            first = false;
+        }
+        Ok(())
     }
 
     /// Deterministic native fixture for all three target families. The token
@@ -194,6 +365,73 @@ impl PocketTts {
         );
         let audio = decoder.run(&inputs, &["audio_frame"])?;
         Ok(audio[0].f32_data()?.to_vec())
+    }
+}
+
+impl Tts for PocketTts {
+    fn name(&self) -> &'static str {
+        "local"
+    }
+
+    fn model_id(&self) -> Option<&str> {
+        Some("pocket-tts")
+    }
+
+    fn synthesize_chunk(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+    ) -> Result<Vec<SynthesizedAudio>> {
+        let mut out = Vec::new();
+        self.synthesize_chunk_into(token, cancel, &mut |audio| {
+            out.push(audio);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    fn synthesize_chunk_into(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        self.start_turn(token, cancel)?;
+        self.buffer
+            .push_str(&self.think.push(&token.text, token.is_last));
+        let sentences = take_sentences(&mut self.buffer, token.is_last);
+        let last = sentences.len().saturating_sub(1);
+        let mut emitted = false;
+        for (i, sentence) in sentences.into_iter().enumerate() {
+            if cancel.is_stale(token.generation) || cancel.is_shutdown() {
+                self.reset_turn();
+                return Err(Error::Cancelled);
+            }
+            let spoken = speak_text_for_tts(&sentence);
+            if spoken.is_empty() {
+                continue;
+            }
+            self.synthesize_sentence_into(
+                &spoken,
+                token,
+                token.is_last && i == last,
+                cancel,
+                on_audio,
+            )?;
+            emitted = true;
+        }
+        if token.is_last && !emitted {
+            let index = self.next_index;
+            self.next_index += 1;
+            on_audio(SynthesizedAudio {
+                turn: token.turn,
+                generation: token.generation,
+                index,
+                samples: vec![0; 16],
+                is_last: true,
+            })?;
+        }
+        Ok(())
     }
 }
 
