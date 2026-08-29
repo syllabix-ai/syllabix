@@ -1,9 +1,10 @@
 //! P1 Pocket TTS native feasibility gate. This test-only id deliberately
 //! precedes any YAML or pipeline exposure; P2 owns that contract.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use syllabix_core::{
-    Cancel, HttpFetcher, ModelCache, PocketTts, StderrProgress, POCKET_TTS_TEXT_CONDITIONER_ASSET,
+    Cancel, GenerationId, HttpFetcher, ModelCache, PocketTts, StderrProgress, TokenChunk, Tts,
+    TurnId, POCKET_TTS_TEXT_CONDITIONER_ASSET,
 };
 
 use crate::skip_unless_model;
@@ -52,4 +53,43 @@ fn pinned_onnx_graph_set_loads_and_text_fixture_is_deterministic() {
             .as_str(),
         "tts"
     );
+
+    let chunks = first
+        .synthesize_chunk(
+            &TokenChunk {
+                turn: TurnId(1),
+                generation: GenerationId(0),
+                index: 0,
+                text: "A short streamed reply.".into(),
+                is_last: true,
+            },
+            &Cancel::new(),
+        )
+        .expect("Pocket TTS must stream a real sentence into pipeline PCM");
+    assert!(!chunks.is_empty());
+    assert!(chunks.iter().all(|chunk| !chunk.samples.is_empty()));
+    assert!(chunks.last().is_some_and(|chunk| chunk.is_last));
+
+    let cancel = Cancel::new();
+    let trigger = cancel.clone();
+    let interrupter = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(25));
+        trigger.cancel_generation();
+    });
+    let started = Instant::now();
+    let err = first
+        .synthesize_chunk(
+            &TokenChunk {
+                turn: TurnId(2),
+                generation: GenerationId(0),
+                index: 0,
+                text: "This sentence is deliberately long enough to interrupt while Pocket TTS is decoding its recurrent frames.".into(),
+                is_last: true,
+            },
+            &cancel,
+        )
+        .expect_err("barge-in cancellation must abort Pocket TTS");
+    interrupter.join().expect("interrupter thread");
+    assert!(matches!(err, syllabix_core::Error::Cancelled));
+    assert!(started.elapsed() < Duration::from_secs(5));
 }

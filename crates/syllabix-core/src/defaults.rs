@@ -170,7 +170,7 @@ impl TtsProvider {
 }
 
 /// TTS model menu under `provider: local`. Kokoro stays the launch default;
-/// the two Qwen3-TTS backbones are yaml opt-ins through the shared ggml.
+/// the Qwen3-TTS backbones and Pocket TTS are yaml opt-ins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsModel {
     /// Kokoro ONNX (`af_heart`, English).
@@ -179,11 +179,18 @@ pub enum TtsModel {
     Qwen06,
     /// Qwen3-TTS-12Hz-1.7B-Base GGUF (row 31 weight).
     Qwen17,
+    /// Pocket TTS English ONNX graph set.
+    PocketTts,
 }
 
 impl TtsModel {
     /// Every menu id, in documentation order.
-    pub const ALL: [TtsModel; 3] = [TtsModel::Kokoro, TtsModel::Qwen06, TtsModel::Qwen17];
+    pub const ALL: [TtsModel; 4] = [
+        TtsModel::Kokoro,
+        TtsModel::Qwen06,
+        TtsModel::Qwen17,
+        TtsModel::PocketTts,
+    ];
 
     /// Config / log name.
     pub fn as_str(self) -> &'static str {
@@ -191,6 +198,7 @@ impl TtsModel {
             Self::Kokoro => "kokoro",
             Self::Qwen06 => "qwen3-0.6",
             Self::Qwen17 => "qwen3-1.7",
+            Self::PocketTts => "pocket-tts",
         }
     }
 
@@ -205,6 +213,7 @@ impl TtsModel {
             Self::Kokoro => crate::tts::KOKORO_ASSET,
             Self::Qwen06 => crate::tts::QWEN_TTS_06B_ASSET,
             Self::Qwen17 => crate::tts::QWEN_TTS_ASSET,
+            Self::PocketTts => crate::pocket_tts::POCKET_TTS_TEXT_CONDITIONER_ASSET,
         }
     }
 
@@ -215,6 +224,7 @@ impl TtsModel {
             Self::Kokoro => None,
             Self::Qwen06 => Some(crate::tts::QWEN_TTS_06B_MMPROJ_ASSET),
             Self::Qwen17 => Some(crate::tts::QWEN_TTS_MMPROJ_ASSET),
+            Self::PocketTts => None,
         }
     }
 
@@ -224,6 +234,7 @@ impl TtsModel {
             Self::Kokoro => crate::tts::KOKORO_ASSET,
             Self::Qwen06 => "qwen3-tts-0.6b-base",
             Self::Qwen17 => "qwen3-tts-1.7b-base",
+            Self::PocketTts => "pocket-tts",
         }
     }
 }
@@ -326,7 +337,7 @@ mod tests {
 
     #[test]
     fn tts_menu_ids_round_trip() {
-        let ids = ["kokoro", "qwen3-0.6", "qwen3-1.7"];
+        let ids = ["kokoro", "qwen3-0.6", "qwen3-1.7", "pocket-tts"];
         for (model, id) in TtsModel::ALL.into_iter().zip(ids) {
             assert_eq!(model.as_str(), id);
             assert_eq!(TtsModel::parse(id), Some(model));

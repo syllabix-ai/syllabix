@@ -105,10 +105,11 @@ Missing or empty key with `provider: online` fails at `run` start before devices
 | `model` (under `local`) | Notes |
 | --- | --- |
 | `kokoro` | Default (~310 MB) |
+| `pocket-tts` | English Pocket TTS ONNX graph set + fixed Alba voice (~150 MB); fetched when selected |
 | `qwen3-0.6` | Qwen3-TTS 0.6B + speech tokenizer; fetched when selected |
 | `qwen3-1.7` | Qwen3-TTS 1.7B + speech tokenizer; fetched when selected |
 
-Qwen engines read numbers and currency as words (`100` → “one hundred”), speak ten languages via optional `tts.language` (`en`, `zh`, `de`, `it`, `pt`, `es`, `fr`, `ja`, `ko`, `ru`), and pin one voice across sentences. Kokoro stays the zero-config default.
+Pocket TTS uses the pinned English SentencePiece tokenizer and the shipped fixed Alba voice; it accepts no user voice data or voice-registration input. Qwen engines read numbers and currency as words (`100` → “one hundred”), speak ten languages via optional `tts.language` (`en`, `zh`, `de`, `it`, `pt`, `es`, `fr`, `ja`, `ko`, `ru`), and pin one voice across sentences. Kokoro stays the zero-config default.
 
 ## Diagnostics
 

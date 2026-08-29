@@ -54,7 +54,7 @@ pub struct AgentConfig {
     pub llm_base_url: Option<String>,
     /// TTS provider (`local`; `online` is reserved and fails fast today).
     pub tts: TtsProvider,
-    /// TTS model id (`kokoro`, `qwen3-0.6`, or `qwen3-1.7`).
+    /// TTS model id (`kokoro`, `qwen3-0.6`, `qwen3-1.7`, or `pocket-tts`).
     pub tts_model: TtsModel,
     /// TTS language code (`en`). Qwen3-TTS speaks this language; Kokoro
     /// ignores it (the ONNX voice is fixed).
@@ -678,11 +678,15 @@ fn parse_tts(value: &str) -> Result<TtsProvider> {
 }
 
 /// `pipeline.tts.model`: the local weight menu. `kokoro` is the launch
-/// default; the two Qwen3-TTS ids fetch their GGUF on first use only.
+/// default; opt-in model ids fetch their assets on first use only.
 fn parse_tts_model(provider: TtsProvider, value: &str) -> Result<TtsModel> {
     match provider {
         TtsProvider::Local => TtsModel::parse(value).ok_or_else(|| {
-            unsupported("pipeline.tts.model", value, "kokoro, qwen3-0.6, qwen3-1.7")
+            unsupported(
+                "pipeline.tts.model",
+                value,
+                "kokoro, qwen3-0.6, qwen3-1.7, pocket-tts",
+            )
         }),
         // parse_tts already rejected `online`; this arm keeps the type total.
         TtsProvider::Online => Err(Error::Config {
