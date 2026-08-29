@@ -18,6 +18,7 @@ zeroize.workspace = true
 jobserver.workspace = true
 getrandom.workspace = true
 ort = "=2.0.0-rc.9"
+ort-sys.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 serde_json.workspace = true

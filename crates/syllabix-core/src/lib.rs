@@ -24,6 +24,13 @@ mod llm;
 mod memory;
 mod openai;
 mod pipeline;
+// P1 runs only from the native-inference gate. llvm-cov deliberately skips
+// native weights and graph execution, so it compiles the public API stub.
+#[cfg(not(coverage))]
+mod pocket_tts;
+#[cfg(coverage)]
+#[path = "pocket_tts_coverage.rs"]
+mod pocket_tts;
 mod providers;
 mod queue;
 mod real;
@@ -70,6 +77,11 @@ pub use openai::{
 pub use pipeline::{
     is_blank_stt, run_loop, run_loop_captured, LoopConfig, LoopEvent, LoopMode, LoopReport,
     PipelineStages,
+};
+pub use pocket_tts::{
+    PocketTts, POCKET_TTS_BOS_ASSET, POCKET_TTS_BUNDLE_ASSET, POCKET_TTS_FLOW_ASSET,
+    POCKET_TTS_FLOW_MAIN_ASSET, POCKET_TTS_MIMI_DECODER_ASSET, POCKET_TTS_TEXT_CONDITIONER_ASSET,
+    POCKET_TTS_TOKENIZER_ASSET, POCKET_TTS_VOICE_ASSET,
 };
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};

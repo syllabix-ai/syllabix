@@ -7,7 +7,8 @@
 //! Default `cargo test` is the launch stack only (Silero, Whisper `small`,
 //! Llama 3.2 1B, Kokoro). Set `SYLLABIX_NATIVE_MODELS` to a comma-separated
 //! list of yaml `pipeline.*.model` ids to run **only** those native suites
-//! (exclusive). Unknown ids fail fast. Ids with no native suite yet fail
+//! (exclusive). P1 additionally accepts the internal-only `pocket-tts`
+//! feasibility id; it is not a YAML model until P2. Unknown ids fail fast. Ids with no native suite yet fail
 //! with `no native suite for <id>`. Whisper `small` may still load as a
 //! TTS→ASR scorer when a TTS id is selected.
 
@@ -15,6 +16,8 @@
 mod kokoro;
 #[cfg(not(coverage))]
 mod llama;
+#[cfg(not(coverage))]
+mod pocket_tts;
 #[cfg(not(coverage))]
 mod qwen;
 #[cfg(not(coverage))]
@@ -38,13 +41,14 @@ use syllabix_core::{
 const LAUNCH_NATIVE_IDS: [&str; 3] = ["small", LLAMA_32_1B_ASSET, "kokoro"];
 
 /// Yaml ids that currently have a native suite.
-const SUITED_NATIVE_IDS: [&str; 6] = [
+const SUITED_NATIVE_IDS: [&str; 7] = [
     "small",
     LLAMA_32_1B_ASSET,
     "kokoro",
     "qwen3-0.6",
     "qwen3-1.7",
     QWEN35_08B_ASSET,
+    "pocket-tts",
 ];
 
 fn all_yaml_model_ids() -> BTreeSet<&'static str> {
@@ -58,6 +62,9 @@ fn all_yaml_model_ids() -> BTreeSet<&'static str> {
     for model in TtsModel::ALL {
         ids.insert(model.as_str());
     }
+    // P1 is deliberately not selectable from `pipeline.tts.model`; native
+    // feasibility needs an exclusive test id before P2 exposes that surface.
+    ids.insert("pocket-tts");
     ids
 }
 

@@ -149,6 +149,74 @@ impl Manifest {
                     "d583ccff3cdca2f7fae535cb998ac07e9fcb90f09737b9a41fa2734ec44a8f0b",
                     522_240,
                 ),
+                // P1 Pocket TTS feasibility contract. These are deliberately
+                // not selectable from yaml until P2: the native suite alone
+                // resolves them. The fixed precomputed voice means P1 never
+                // accepts microphone/user audio or performs voice registration.
+                asset(
+                    "pocket-tts-bundle",
+                    ModelLayer::Tts,
+                    "pocket-tts-english-bundle.json",
+                    "https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts/resolve/81b240f24f896f4cc480dc90858d1f72c9b7d64a/english_2026-04/bundle.json",
+                    "bab643150f437f37df080a710520ff39ed9ebd9a339f8ebdc739f7eddfc28b3f",
+                    24_381,
+                ),
+                asset(
+                    "pocket-tts-bos",
+                    ModelLayer::Tts,
+                    "pocket-tts-english-bos_before_voice.npy",
+                    "https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts/resolve/81b240f24f896f4cc480dc90858d1f72c9b7d64a/english_2026-04/bos_before_voice.npy",
+                    "f46edf4f7007b7ba4ea58831f49d003e59e167b4641c44bb3addfe9231a780b1",
+                    4_224,
+                ),
+                asset(
+                    "pocket-tts-tokenizer",
+                    ModelLayer::Tts,
+                    "pocket-tts-english-tokenizer.model",
+                    "https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts/resolve/81b240f24f896f4cc480dc90858d1f72c9b7d64a/english_2026-04/tokenizer.model",
+                    "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6",
+                    59_339,
+                ),
+                asset(
+                    "pocket-tts-text-conditioner",
+                    ModelLayer::Tts,
+                    "pocket-tts-english-text_conditioner.onnx",
+                    "https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts/resolve/81b240f24f896f4cc480dc90858d1f72c9b7d64a/english_2026-04/text_conditioner.onnx",
+                    "4ecee995fb69f85c7a7493d11f7b5ee15d9950facc7ab3f5c9c49ef1e03847bb",
+                    16_388_344,
+                ),
+                asset(
+                    "pocket-tts-flow-main",
+                    ModelLayer::Tts,
+                    "pocket-tts-english-flow_lm_main_int8.onnx",
+                    "https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts/resolve/81b240f24f896f4cc480dc90858d1f72c9b7d64a/english_2026-04/flow_lm_main_int8.onnx",
+                    "f9bd8106b79a0192c1c43399ab938fb24900a95c1c599870d75a884e99000116",
+                    76_341_079,
+                ),
+                asset(
+                    "pocket-tts-flow",
+                    ModelLayer::Tts,
+                    "pocket-tts-english-flow_lm_flow_int8.onnx",
+                    "https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts/resolve/81b240f24f896f4cc480dc90858d1f72c9b7d64a/english_2026-04/flow_lm_flow_int8.onnx",
+                    "3dd781ee5abee9e195320bf0106bebd6372a852b3b36352524ee78b40554635d",
+                    9_962_530,
+                ),
+                asset(
+                    "pocket-tts-mimi-decoder",
+                    ModelLayer::Tts,
+                    "pocket-tts-english-mimi_decoder.onnx",
+                    "https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts/resolve/81b240f24f896f4cc480dc90858d1f72c9b7d64a/english_2026-04/mimi_decoder.onnx",
+                    "86f038caa02a96a0ff9c25526a0ff43a4906c418197ed72d3e30f720ac7ce802",
+                    41_471_926,
+                ),
+                asset(
+                    "pocket-tts-voice-alba",
+                    ModelLayer::Tts,
+                    "pocket-tts-english-alba.safetensors",
+                    "https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts/resolve/81b240f24f896f4cc480dc90858d1f72c9b7d64a/english_2026-04/voices/alba.safetensors",
+                    "69c32db63ca56843d994f81f343f62e0bf2d73f7e4c9bc73e44bb1110b1d8845",
+                    6_194_424,
+                ),
                 asset(
                     "qwen3-tts",
                     ModelLayer::Tts,
@@ -225,8 +293,9 @@ mod tests {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
         // Silero + five whisper ids + three GGUFs + Kokoro weights + voice
-        // + two Qwen3-TTS backbones, each with its own mmproj.
-        assert_eq!(m.assets.len(), 15);
+        // + eight internal-only P1 Pocket TTS assets + two Qwen3-TTS
+        // backbones, each with its own mmproj.
+        assert_eq!(m.assets.len(), 23);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -250,6 +319,11 @@ mod tests {
         assert_eq!(m.asset("llama-3.2-1b").unwrap().layer, ModelLayer::Llm);
         assert_eq!(m.asset("kokoro").unwrap().layer, ModelLayer::Tts);
         assert_eq!(m.asset("kokoro-voice").unwrap().layer, ModelLayer::Tts);
+        assert_eq!(m.asset("pocket-tts-bundle").unwrap().layer, ModelLayer::Tts);
+        assert_eq!(
+            m.asset("pocket-tts-voice-alba").unwrap().size_bytes,
+            6_194_424
+        );
         assert_eq!(m.asset("qwen3-tts").unwrap().layer, ModelLayer::Tts);
         assert_eq!(m.asset("qwen3-tts-mmproj").unwrap().layer, ModelLayer::Tts);
         assert_eq!(m.asset("qwen3-tts-06b").unwrap().layer, ModelLayer::Tts);
