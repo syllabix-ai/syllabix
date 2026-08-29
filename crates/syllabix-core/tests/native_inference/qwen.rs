@@ -17,7 +17,10 @@ use syllabix_core::{
     TTS_ASR_MIN_WORD_MATCH,
 };
 
-use crate::{native, native_latency_enabled, native_model_selected, skip_unless_any_model};
+use crate::{
+    native, native_latency_enabled, native_model_selected, skip_unless_any_model,
+    TTS_LATENCY_SENTENCES,
+};
 
 /// One shared engine per backbone for this binary; the shared ggml
 /// serializes native work anyway. Seed pinned so failures reproduce.
@@ -297,10 +300,8 @@ fn qwen_native_cancel_surfaces_within_five_seconds() {
     }
 }
 
-/// G4 evidence for the row-31 provider and the row-32 backbone: silence-end →
-/// first-audio (TTFB) and render speed over ≥20 sentences, per backbone size.
-/// Opt-in so the default suite stays fast:
-/// `SYLLABIX_NATIVE_LATENCY=1 SYLLABIX_NATIVE_MODELS=qwen3-0.6 cargo test ... qwen_latency_capture -- --nocapture`
+/// P3 reproducible evidence for each Qwen backbone. The first callback marks
+/// TTFB; whole-sentence completion would incorrectly report decode time.
 #[test]
 fn qwen_latency_capture() {
     if !native_latency_enabled() {
@@ -308,58 +309,43 @@ fn qwen_latency_capture() {
     }
     // `native_models_from_env` already panics if latency is set without a Qwen TTS id.
     let _n = native();
-    const SENTENCES: [&str; 20] = [
-        "The weather looks clear today.",
-        "Remind me to call the dentist tomorrow.",
-        "That restaurant opens at six.",
-        "A short reply is a good reply.",
-        "Please summarize the article in two sentences.",
-        "The train leaves before noon.",
-        "Coffee first, questions later.",
-        "The meeting moved to Thursday afternoon.",
-        "Turn left at the next intersection.",
-        "This podcast episode runs about an hour.",
-        "She finished the marathon in four hours.",
-        "The package arrives sometime next week.",
-        "Backup files live in the cloud folder.",
-        "He plays guitar in a local band.",
-        "Dinner smells almost ready.",
-        "The report needs one more revision.",
-        "Their flight landed late last night.",
-        "Sunrise happens earlier in the summer.",
-        "The library closes at eight.",
-        "Write the note before you forget it.",
-    ];
     fn percentile(mut v: Vec<f64>, f: f64) -> f64 {
         v.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
-        v[((v.len() as f64) * f).min((v.len() - 1) as f64) as usize]
+        let rank = f / 100.0 * (v.len() - 1) as f64;
+        let low = rank.floor() as usize;
+        let high = rank.ceil() as usize;
+        v[low] * (high as f64 - rank) + v[high] * (rank - low as f64)
     }
     for model in qwen_backbones() {
         let mut tts = qwen(model);
-        let mut ttfb_ms: Vec<u128> = Vec::new();
+        let mut ttfb_ms = Vec::new();
         let mut rtf: Vec<f64> = Vec::new();
-        for text in SENTENCES {
+        for text in TTS_LATENCY_SENTENCES {
             let start = Instant::now();
-            let chunks = tts
-                .synthesize_chunk(&token(text, 0, true), &Cancel::new())
-                .expect("latency turn");
+            let mut first_pcm = None;
+            let mut samples = 0usize;
+            tts.synthesize_chunk_into(&token(text, 0, true), &Cancel::new(), &mut |audio| {
+                first_pcm.get_or_insert_with(|| start.elapsed());
+                samples += audio.samples.len();
+                Ok(())
+            })
+            .expect("latency turn");
             let elapsed = start.elapsed().as_secs_f64();
-            let samples: usize = chunks.iter().map(|c| c.samples.len()).sum();
             let audio_s = samples as f64 / 16_000.0; // v0 contract rate
-            ttfb_ms.push(start.elapsed().as_millis());
+            ttfb_ms.push(first_pcm.expect("first PCM").as_secs_f64() * 1_000.0);
             if audio_s > 0.0 {
                 rtf.push(elapsed / audio_s);
             }
-            assert!(!chunks.is_empty());
+            assert!(samples > 0, "Qwen latency sample must be voiced");
         }
         println!(
-            "qwen latency [{}]: n={} ttfb_ms p50={} p95={}; rtf p50={:.2} p95={:.2}",
+            "tts latency [{}]: n={} ttfb_ms p50={:.0} p95={:.0}; rtf p50={:.2} p95={:.2}",
             model.as_str(),
             ttfb_ms.len(),
-            ttfb_ms[((ttfb_ms.len() as f64) * 0.5).min((ttfb_ms.len() - 1) as f64) as usize],
-            ttfb_ms[((ttfb_ms.len() as f64) * 0.95).min((ttfb_ms.len() - 1) as f64) as usize],
-            percentile(rtf.clone(), 0.50),
-            percentile(rtf, 0.95),
+            percentile(ttfb_ms.clone(), 50.0),
+            percentile(ttfb_ms, 95.0),
+            percentile(rtf.clone(), 50.0),
+            percentile(rtf, 95.0),
         );
     }
 }

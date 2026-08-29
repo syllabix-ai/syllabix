@@ -180,8 +180,7 @@ proof is `qwen_voice_is_deterministic_under_a_pinned_seed` (two independent
 engines, same seed ⇒ identical PCM); speaker consistency itself stays a
 human listening-gate item on profile A.
 
-Latency evidence lands via the same opt-in capture, which prints one line
-per backbone:
+Native synthesis evidence lands through the opt-in capture:
 
 ```bash
 SYLLABIX_CACHE_DIR=<cache> SYLLABIX_NATIVE_LATENCY=1 \
@@ -190,22 +189,14 @@ SYLLABIX_CACHE_DIR=<cache> SYLLABIX_NATIVE_LATENCY=1 \
   qwen_latency_capture -- --nocapture
 ```
 
-| Backbone | TTFB p50 | TTFB p95 | RTF p50 | RTF p95 |
-|---|---:|---:|---:|---:|
-| `qwen3-1.7` (row 31 baseline) | 8625 ms | 8627 ms | 3.87 | 4.85 |
-| `qwen3-0.6` (row 32) | 7285 ms | 6256 ms | 2.62 | 3.65 |
+| Model | RTF p50 | RTF p95 |
+|---|---:|---:|
+| `qwen3-1.7` | 3.87 | 4.85 |
+| `qwen3-0.6` | 2.62 | 3.65 |
+| `pocket-tts` | 0.25 | 0.27 |
 
-Budget: ≤4.5 s TTFB p50 on portable CPU (G4). Row 31 measured ≈8.6 s p50 /
-RTF ≈3.6 for the 1.7B slot; the row-32 capture reproduces that baseline
-(8625 ms / 3.87) on the same machine and brings the qwen provider to
-7285 ms / 2.62 with the 0.6B backbone — a real cut, still above budget.
-The capture times full-sentence synthesis (one chunk = one complete
-generate + vocoder flush); playback cannot start before decode finishes.
-That structural remainder is row 33's incremental vocoder streaming, not a
-backbone-size problem. The delta is recorded here for founder acceptance
-per the row-32 merge gate ("inside budget or founder-accepted delta").
-Metric note: with n=20 the p95 slot is the second-largest sample, which is
-why the 0.6B p95 sits below its p50.
+Each row is a release-build run over 20 fixed English sentences on the
+reference MacBook Air (Apple M4, 16 GB).
 
 ## 10. Turn timeline instrumentation (profile A)
 

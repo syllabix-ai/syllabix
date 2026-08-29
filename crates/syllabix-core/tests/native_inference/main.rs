@@ -51,6 +51,34 @@ const SUITED_NATIVE_IDS: [&str; 7] = [
     "pocket-tts",
 ];
 
+/// P3 runs every selectable local TTS model over this same fixed corpus.
+/// Keep it spoken and ordinary: the live listening gate owns format-heavy
+/// prompts and real conversations, while this captures reproducible native
+/// synthesis latency and throughput.
+#[cfg(not(coverage))]
+pub(crate) const TTS_LATENCY_SENTENCES: [&str; 20] = [
+    "The weather looks clear today.",
+    "Remind me to call the dentist tomorrow.",
+    "That restaurant opens at six.",
+    "A short reply is a good reply.",
+    "Please summarize the article in two sentences.",
+    "The train leaves before noon.",
+    "Coffee first, questions later.",
+    "The meeting moved to Thursday afternoon.",
+    "Turn left at the next intersection.",
+    "This podcast episode runs about an hour.",
+    "She finished the marathon in four hours.",
+    "The package arrives sometime next week.",
+    "Backup files live in the cloud folder.",
+    "He plays guitar in a local band.",
+    "Dinner smells almost ready.",
+    "The report needs one more revision.",
+    "Their flight landed late last night.",
+    "Sunrise happens earlier in the summer.",
+    "The library closes at eight.",
+    "Write the note before you forget it.",
+];
+
 fn all_yaml_model_ids() -> BTreeSet<&'static str> {
     let mut ids = BTreeSet::new();
     for model in SttModel::ALL {
@@ -101,11 +129,16 @@ fn parse_native_models(raw: Option<&str>) -> Result<BTreeSet<String>, String> {
     Ok(selected)
 }
 
-/// `SYLLABIX_NATIVE_LATENCY=1` is exclusive to selected Qwen TTS ids.
-fn latency_requires_qwen_tts(selected: &BTreeSet<String>, latency: bool) -> Result<(), String> {
-    if latency && !(selected.contains("qwen3-0.6") || selected.contains("qwen3-1.7")) {
+/// `SYLLABIX_NATIVE_LATENCY=1` is exclusive to selected local TTS ids.
+fn latency_requires_tts(selected: &BTreeSet<String>, latency: bool) -> Result<(), String> {
+    if latency
+        && !(selected.contains("kokoro")
+            || selected.contains("pocket-tts")
+            || selected.contains("qwen3-0.6")
+            || selected.contains("qwen3-1.7"))
+    {
         return Err(
-            "SYLLABIX_NATIVE_LATENCY=1 requires qwen3-0.6 and/or qwen3-1.7 in SYLLABIX_NATIVE_MODELS"
+            "SYLLABIX_NATIVE_LATENCY=1 requires a local TTS id (kokoro, pocket-tts, qwen3-0.6, or qwen3-1.7) in SYLLABIX_NATIVE_MODELS"
                 .into(),
         );
     }
@@ -114,7 +147,7 @@ fn latency_requires_qwen_tts(selected: &BTreeSet<String>, latency: bool) -> Resu
 
 fn native_models_from_env() -> Result<BTreeSet<String>, String> {
     let selected = parse_native_models(std::env::var("SYLLABIX_NATIVE_MODELS").ok().as_deref())?;
-    latency_requires_qwen_tts(&selected, native_latency_env_set())?;
+    latency_requires_tts(&selected, native_latency_env_set())?;
     Ok(selected)
 }
 
@@ -335,13 +368,17 @@ fn suited_native_ids_are_yaml_ids() {
 }
 
 #[test]
-fn latency_without_qwen_tts_fails() {
+fn latency_without_tts_fails() {
     let launch = parse_native_models(None).expect("launch");
-    let err = latency_requires_qwen_tts(&launch, true).expect_err("no qwen");
+    latency_requires_tts(&launch, true).expect("kokoro is a TTS model");
+    let stt = parse_native_models(Some("small")).expect("stt");
+    let err = latency_requires_tts(&stt, true).expect_err("no TTS");
     assert!(err.contains("SYLLABIX_NATIVE_LATENCY"), "{err}");
     let qwen = parse_native_models(Some("qwen3-0.6")).expect("qwen");
-    latency_requires_qwen_tts(&qwen, true).expect("qwen + latency");
-    latency_requires_qwen_tts(&launch, false).expect("no latency");
+    latency_requires_tts(&qwen, true).expect("qwen + latency");
+    let pocket = parse_native_models(Some("pocket-tts")).expect("pocket");
+    latency_requires_tts(&pocket, true).expect("pocket + latency");
+    latency_requires_tts(&stt, false).expect("no latency");
 }
 
 #[cfg(coverage)]

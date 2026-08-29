@@ -45,6 +45,13 @@ const ASSETS: [&str; 8] = [
     POCKET_TTS_VOICE_ASSET,
 ];
 
+// The pinned English 2026-04 Pocket export retains the upstream flow model's
+// one-step decoder and end-of-speech calibration. These are model semantics,
+// not Syllabix tuning knobs: a zero seed collapses flow-matching diversity and
+// a higher EOS threshold lets the autoregressive loop run into repeated tails.
+const FLOW_STEPS: usize = 1;
+const EOS_THRESHOLD: f32 = -4.0;
+
 /// P1 loader for the pinned English ONNX graph set.
 pub struct PocketTts {
     text_conditioner: Session,
@@ -169,7 +176,10 @@ impl PocketTts {
             .iter()
             .map(StateSpec::initial)
             .collect::<Vec<_>>();
-        let mut previous = RawTensor::f32(vec![1, 0, 32], vec![]);
+        // The FlowLM uses a NaN sentinel for the first autoregressive input;
+        // its learned audio-BOS embedding replaces that sentinel internally.
+        // Later iterations feed back the generated latent below.
+        let mut previous = RawTensor::f32(vec![1, 1, 32], vec![f32::NAN; 32]);
         let mut converter = PcmConverter::new(
             PcmFormat {
                 sample_rate_hz: 24_000,
@@ -209,18 +219,31 @@ impl PocketTts {
                 .copied()
                 .unwrap_or(f32::NEG_INFINITY);
             flow_state = result.into_iter().skip(2).collect();
-            let x = RawTensor::f32(vec![1, 32], vec![0.0; 32]);
-            let s = RawTensor::f32(vec![1, 1], vec![0.0]);
-            let t = RawTensor::f32(vec![1, 1], vec![1.0]);
-            let mut flow = RawRunner::new(&mut self.flow)?;
-            let latent = flow
-                .run(
-                    &[("c", &conditioning), ("s", &s), ("t", &t), ("x", &x)],
-                    &["flow_dir"],
-                )?
-                .into_iter()
-                .next()
-                .ok_or_else(|| provider("flow graph returned no latent"))?;
+            // Flow matching starts each audio frame from fresh Gaussian noise,
+            // then integrates the learned velocity field. Reusing an all-zero
+            // seed made distinct frames converge on the same fragment.
+            let mut latent = standard_normal_tensor(32)?;
+            for step in 0..FLOW_STEPS {
+                let s = RawTensor::f32(vec![1, 1], vec![step as f32 / FLOW_STEPS as f32]);
+                let t = RawTensor::f32(vec![1, 1], vec![(step + 1) as f32 / FLOW_STEPS as f32]);
+                let mut flow = RawRunner::new(&mut self.flow)?;
+                let direction = flow
+                    .run(
+                        &[("c", &conditioning), ("s", &s), ("t", &t), ("x", &latent)],
+                        &["flow_dir"],
+                    )?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| provider("flow graph returned no latent"))?;
+                let scale = 1.0 / FLOW_STEPS as f32;
+                let values = latent
+                    .f32_data()?
+                    .iter()
+                    .zip(direction.f32_data()?)
+                    .map(|(current, velocity)| current + velocity * scale)
+                    .collect();
+                latent = RawTensor::f32(vec![1, 32], values);
+            }
             previous = RawTensor::f32(vec![1, 1, 32], latent.f32_data()?.to_vec());
 
             let mut decoder = RawRunner::new(&mut self.decoder)?;
@@ -237,7 +260,7 @@ impl PocketTts {
             let audio = decoded[0].f32_data()?;
             let mut pcm = f32_to_i16(&converter.push(audio));
             mimi_state = decoded.into_iter().skip(1).collect();
-            let eos_reached = frame > 0 && eos >= 0.0;
+            let eos_reached = frame > 0 && eos >= EOS_THRESHOLD;
             if eos_reached || frame + 1 == max_frames {
                 pcm.extend(f32_to_i16(&converter.flush()));
             }
@@ -831,6 +854,34 @@ fn copy_voice_f32(
     }
 }
 
+/// Sample one standard-normal latent using the OS CSPRNG. Pocket TTS is a
+/// flow-matching model, so each generated audio frame needs a new noise seed;
+/// a fixed zero vector is not a valid inference input.
+fn standard_normal_tensor(width: usize) -> Result<RawTensor> {
+    let mut bytes = vec![0_u8; width.saturating_add(width % 2) * 4];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|err| provider(&format!("could not sample Pocket TTS noise: {err}")))?;
+    let uniforms = bytes
+        .chunks_exact(4)
+        .map(|chunk| {
+            // Keep away from zero so Box-Muller remains finite.
+            (u32::from_le_bytes(chunk.try_into().expect("four bytes")) as f64 + 1.0)
+                / (u32::MAX as f64 + 2.0)
+        })
+        .collect::<Vec<_>>();
+    let mut values = Vec::with_capacity(width);
+    for pair in uniforms.chunks_exact(2) {
+        let radius = (-2.0 * pair[0].ln()).sqrt();
+        let angle = std::f64::consts::TAU * pair[1];
+        values.push((radius * angle.cos()) as f32);
+        if values.len() < width {
+            values.push((radius * angle.sin()) as f32);
+        }
+    }
+    debug_assert_eq!(values.len(), width);
+    Ok(RawTensor::f32(vec![1, width as i64], values))
+}
+
 fn provider(message: &str) -> Error {
     Error::Provider {
         provider: "pocket-tts",
@@ -850,5 +901,13 @@ mod tests {
     fn p1_asset_set_is_complete_and_internal() {
         assert_eq!(ASSETS.len(), 8);
         assert!(ASSETS.iter().all(|id| id.starts_with("pocket-tts-")));
+    }
+
+    #[test]
+    fn flow_noise_is_finite_and_has_the_requested_shape() {
+        let noise = standard_normal_tensor(31).expect("OS randomness");
+        assert_eq!(noise.shape, vec![1, 31]);
+        assert!(noise.f32.iter().all(|value| value.is_finite()));
+        assert!(noise.f32.iter().any(|value| *value != 0.0));
     }
 }
