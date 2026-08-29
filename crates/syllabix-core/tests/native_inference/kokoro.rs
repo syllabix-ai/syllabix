@@ -4,6 +4,8 @@
 //! in-order word match (same matcher as the LibriSpeech STT fixtures). Markdown
 //! cleanup is a unit test in `kokoro_tts.rs` so coverage still sees it.
 
+use std::time::Instant;
+
 use syllabix_core::{
     audio::FrameSplitter, run_loop, scripted_frames, transcript_words, word_match_ratio,
     BlockedFetcher, Cancel, CollectingSink, FakeLlm, FakeStt, FakeVad, GenerationId, LoopConfig,
@@ -11,7 +13,7 @@ use syllabix_core::{
     KOKORO_ASSET, KOKORO_VOICE_ASSET, TTS_ASR_MIN_WORD_MATCH,
 };
 
-use crate::{native, skip_unless_model};
+use crate::{native, native_latency_enabled, skip_unless_model, TTS_LATENCY_SENTENCES};
 
 fn token(text: &str, index: u32, is_last: bool) -> TokenChunk {
     TokenChunk {
@@ -168,4 +170,47 @@ fn populated_cache_reuses_kokoro_offline() {
             .expect("populated cache must not need the network");
         assert!(path.exists());
     }
+}
+
+/// P3 reproducible Kokoro baseline. First PCM is observed at the streaming
+/// callback, so it remains comparable with Pocket and Qwen captures.
+#[test]
+fn kokoro_latency_capture() {
+    if !native_latency_enabled() || !crate::native_model_selected("kokoro") {
+        return;
+    }
+    let mut native = native();
+    let mut tts = native.tts().clone();
+    let mut ttfb_ms = Vec::new();
+    let mut rtf = Vec::new();
+    for text in TTS_LATENCY_SENTENCES {
+        let started = Instant::now();
+        let mut first_pcm = None;
+        let mut samples = 0usize;
+        tts.synthesize_chunk_into(&token(text, 0, true), &Cancel::new(), &mut |audio| {
+            first_pcm.get_or_insert_with(|| started.elapsed());
+            samples += audio.samples.len();
+            Ok(())
+        })
+        .expect("Kokoro latency synthesis");
+        let elapsed = started.elapsed().as_secs_f64();
+        assert!(samples > 0, "Kokoro latency sample must be voiced");
+        ttfb_ms.push(first_pcm.expect("first PCM").as_secs_f64() * 1_000.0);
+        rtf.push(elapsed / (samples as f64 / 16_000.0));
+    }
+    let percentile = |mut values: Vec<f64>, p: f64| {
+        values.sort_by(|a, b| a.partial_cmp(b).expect("finite metric"));
+        let rank = p / 100.0 * (values.len() - 1) as f64;
+        let low = rank.floor() as usize;
+        let high = rank.ceil() as usize;
+        values[low] * (high as f64 - rank) + values[high] * (rank - low as f64)
+    };
+    println!(
+        "tts latency [kokoro]: n={} ttfb_ms p50={:.0} p95={:.0}; rtf p50={:.2} p95={:.2}",
+        ttfb_ms.len(),
+        percentile(ttfb_ms.clone(), 50.0),
+        percentile(ttfb_ms, 95.0),
+        percentile(rtf.clone(), 50.0),
+        percentile(rtf, 95.0),
+    );
 }
