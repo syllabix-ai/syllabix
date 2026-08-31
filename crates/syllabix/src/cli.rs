@@ -2,6 +2,8 @@
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+#[cfg(coverage)]
+use syllabix_core::Error;
 use syllabix_core::{run_live, AgentConfig, Cancel, Result};
 
 #[cfg(not(coverage))]
@@ -42,6 +44,13 @@ pub enum Commands {
         #[arg(value_name = "DIR")]
         dir: Option<PathBuf>,
     },
+    /// Run contributor-only, component-level native performance measurements.
+    #[command(hide = true)]
+    Bench {
+        /// Destination JSONL file. The command refuses to overwrite it.
+        #[arg(long, value_name = "FILE")]
+        out: PathBuf,
+    },
 }
 
 /// Dispatch a parsed CLI invocation.
@@ -49,6 +58,12 @@ pub fn execute(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Run { barge_in } => run(barge_in),
         Commands::Init { dir } => init(dir),
+        #[cfg(not(coverage))]
+        Commands::Bench { out } => crate::bench::run(out),
+        // Bench is contributor-only native work. Coverage must neither load
+        // benchmark models nor execute its corpus/writer tests.
+        #[cfg(coverage)]
+        Commands::Bench { .. } => Err(Error::not_implemented("bench")),
     }
 }
 
@@ -109,6 +124,7 @@ mod tests {
         match cli.command {
             Commands::Run { barge_in } => assert!(!barge_in),
             Commands::Init { .. } => panic!("expected run"),
+            Commands::Bench { .. } => panic!("expected run"),
         }
     }
 
@@ -132,6 +148,7 @@ mod tests {
         match cli.command {
             Commands::Init { dir } => assert!(dir.is_none()),
             Commands::Run { .. } => panic!("expected init"),
+            Commands::Bench { .. } => panic!("expected init"),
         }
     }
 
@@ -143,6 +160,17 @@ mod tests {
                 assert_eq!(dir.as_deref(), Some(std::path::Path::new("demo-agent")));
             }
             Commands::Run { .. } => panic!("expected init"),
+            Commands::Bench { .. } => panic!("expected init"),
+        }
+    }
+
+    #[test]
+    fn parses_hidden_bench_with_an_output_file() {
+        let cli =
+            Cli::try_parse_from(["syllabix", "bench", "--out", "run.jsonl"]).expect("parse bench");
+        match cli.command {
+            Commands::Bench { out } => assert_eq!(out, PathBuf::from("run.jsonl")),
+            _ => panic!("expected bench"),
         }
     }
 
@@ -174,6 +202,7 @@ mod tests {
         match cli.command {
             Commands::Run { barge_in } => assert!(barge_in),
             Commands::Init { .. } => panic!("expected run"),
+            Commands::Bench { .. } => panic!("expected run"),
         }
     }
 

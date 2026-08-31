@@ -1,3 +1,5 @@
+#[cfg(not(coverage))]
+mod bench;
 mod cli;
 mod tui;
 
@@ -11,6 +13,7 @@ fn main() {
     let default_filter = match cli.command {
         cli::Commands::Run { .. } => "warn",
         cli::Commands::Init { .. } => "info",
+        cli::Commands::Bench { .. } => "info",
     };
     init_tracing(default_filter);
 
