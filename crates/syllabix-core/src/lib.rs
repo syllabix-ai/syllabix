@@ -85,7 +85,7 @@ pub use pocket_tts::{
 };
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
-pub use real::{build_llm, load_real_providers, LiveLlm};
+pub use real::{build_llm, build_tts, load_real_providers, LiveLlm, LiveTts};
 pub use speech_text::{
     speak_text_for_tts, strip_markdown_for_speech, strip_think_for_speech, take_sentences,
     ThinkFilter,
