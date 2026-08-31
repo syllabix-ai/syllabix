@@ -65,6 +65,13 @@ pub enum Commands {
         #[arg(long, value_name = "FILE")]
         out: PathBuf,
     },
+    /// Private worker used to isolate one local LLM's host-memory measurement.
+    #[command(hide = true)]
+    BenchLlmWorker {
+        /// Temporary JSONL file written for the parent `bench` process.
+        #[arg(long, value_name = "FILE")]
+        out: PathBuf,
+    },
 }
 
 /// Dispatch a parsed CLI invocation.
@@ -78,6 +85,8 @@ pub fn execute(cli: Cli) -> Result<()> {
         Commands::BenchAsrWorker { out } => crate::bench::run_asr_worker(out),
         #[cfg(not(coverage))]
         Commands::BenchTtsWorker { out } => crate::bench::run_tts_worker(out),
+        #[cfg(not(coverage))]
+        Commands::BenchLlmWorker { out } => crate::bench::run_llm_worker(out),
         // Bench is contributor-only native work. Coverage must neither load
         // benchmark models nor execute its corpus/writer tests.
         #[cfg(coverage)]
@@ -86,6 +95,8 @@ pub fn execute(cli: Cli) -> Result<()> {
         Commands::BenchAsrWorker { .. } => Err(Error::not_implemented("bench")),
         #[cfg(coverage)]
         Commands::BenchTtsWorker { .. } => Err(Error::not_implemented("bench")),
+        #[cfg(coverage)]
+        Commands::BenchLlmWorker { .. } => Err(Error::not_implemented("bench")),
     }
 }
 
@@ -149,6 +160,7 @@ mod tests {
             Commands::Bench { .. } => panic!("expected run"),
             Commands::BenchAsrWorker { .. } => panic!("expected run"),
             Commands::BenchTtsWorker { .. } => panic!("expected run"),
+            Commands::BenchLlmWorker { .. } => panic!("expected run"),
         }
     }
 
@@ -175,6 +187,7 @@ mod tests {
             Commands::Bench { .. } => panic!("expected init"),
             Commands::BenchAsrWorker { .. } => panic!("expected init"),
             Commands::BenchTtsWorker { .. } => panic!("expected init"),
+            Commands::BenchLlmWorker { .. } => panic!("expected init"),
         }
     }
 
@@ -189,6 +202,7 @@ mod tests {
             Commands::Bench { .. } => panic!("expected init"),
             Commands::BenchAsrWorker { .. } => panic!("expected init"),
             Commands::BenchTtsWorker { .. } => panic!("expected init"),
+            Commands::BenchLlmWorker { .. } => panic!("expected init"),
         }
     }
 
@@ -223,6 +237,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_private_llm_benchmark_worker() {
+        let cli = Cli::try_parse_from(["syllabix", "bench-llm-worker", "--out", "worker.jsonl"])
+            .expect("parse worker");
+        match cli.command {
+            Commands::BenchLlmWorker { out } => assert_eq!(out, PathBuf::from("worker.jsonl")),
+            _ => panic!("expected LLM worker"),
+        }
+    }
+
+    #[test]
     fn help_lists_run_and_init() {
         let mut command = Cli::command();
         let help = command.render_help().to_string();
@@ -253,6 +277,7 @@ mod tests {
             Commands::Bench { .. } => panic!("expected run"),
             Commands::BenchAsrWorker { .. } => panic!("expected run"),
             Commands::BenchTtsWorker { .. } => panic!("expected run"),
+            Commands::BenchLlmWorker { .. } => panic!("expected run"),
         }
     }
 

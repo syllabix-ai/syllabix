@@ -16,6 +16,7 @@ fn main() {
         cli::Commands::Bench { .. } => "info",
         cli::Commands::BenchAsrWorker { .. } => "info",
         cli::Commands::BenchTtsWorker { .. } => "info",
+        cli::Commands::BenchLlmWorker { .. } => "info",
     };
     init_tracing(default_filter);
 

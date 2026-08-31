@@ -10,10 +10,10 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames, FrameSplitter, WavPcm},
-    build_llm, build_tts, contains_words_in_order, process_rss_bytes, word_match_ratio,
-    AgentConfig, Cancel, Error, HistoryTurn, HttpFetcher, Llm, ModelCache, Result, StderrProgress,
-    Stt, SttModel, TokenChunk, Transcript, Tts, TurnId, Utterance, WhisperStt,
-    DEFAULT_SAMPLE_RATE_HZ, TTS_ASR_MIN_WORD_MATCH,
+    build_tts, contains_words_in_order, process_rss_bytes, word_match_ratio, AgentConfig, Cancel,
+    Error, HistoryTurn, HttpFetcher, LlamaLlm, Llm, ModelCache, Result, StderrProgress, Stt,
+    SttModel, TokenChunk, Transcript, Tts, TurnId, Utterance, WhisperStt, DEFAULT_SAMPLE_RATE_HZ,
+    TTS_ASR_MIN_WORD_MATCH,
 };
 
 const SCHEMA_VERSION: u8 = 3;
@@ -34,6 +34,10 @@ struct Scenario {
     history: Vec<HistoryCase>,
     #[serde(default)]
     numbers: bool,
+    #[serde(default)]
+    required_keywords_any: Vec<String>,
+    #[serde(default)]
+    forbidden_keywords: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +70,14 @@ struct Record {
     #[serde(skip_serializing_if = "Option::is_none")]
     output_units: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generated_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_tokens_per_second: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generated_tokens_per_second: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     word_match: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     word_match_threshold: Option<f64>,
@@ -77,6 +89,8 @@ struct Record {
     real_time_factor: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     transcript: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     memory_before_load_bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,26 +119,12 @@ pub(crate) fn run(out: PathBuf) -> Result<()> {
         });
     }
 
-    let cancel = Cancel::new();
-    let cache = ModelCache::v0();
-    let mut progress = StderrProgress::new();
-    let scenarios = scenarios()?;
-    let fingerprint = fingerprint();
     let mut records = Vec::new();
 
-    // ASR and TTS each run in a dedicated process so host-RSS snapshots are
-    // one model lifetime. Local LLM timings stay direct until B4.
+    // Each selected provider runs in a dedicated process so host-RSS snapshots
+    // cover one model lifetime rather than earlier components.
     records.extend(run_named_worker("bench-asr-worker")?);
-    {
-        let mut llm = build_llm(&cache, &HttpFetcher, &mut progress, &cancel, &config, None)?;
-        records.extend(benchmark_llm(
-            &mut llm,
-            &config,
-            &cancel,
-            &fingerprint,
-            &scenarios,
-        )?);
-    }
+    records.extend(run_named_worker("bench-llm-worker")?);
     records.extend(run_named_worker("bench-tts-worker")?);
     write_jsonl(&out, &records)?;
     println!(
@@ -165,6 +165,48 @@ pub(crate) fn run_asr_worker(out: PathBuf) -> Result<()> {
         &cancel,
         &fingerprint(),
         &scenarios,
+        memory_before_load,
+        memory_after_load,
+    )?;
+    write_jsonl(&out, &records)
+}
+
+/// Private `bench-llm-worker` entry point. It owns precisely one local GGUF
+/// for comparable before-load, after-load, and peak host-RSS measurements.
+pub(crate) fn run_llm_worker(out: PathBuf) -> Result<()> {
+    if out.exists() {
+        return Err(Error::Config {
+            field: "bench.worker.out".into(),
+            message: format!("refusing to overwrite {}", out.display()),
+        });
+    }
+    let config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
+    if !matches!(config.llm, syllabix_core::LlmProvider::Local) {
+        return Err(Error::Config {
+            field: "pipeline.llm.provider".into(),
+            message: "bench measures local component ids only".into(),
+        });
+    }
+    let cancel = Cancel::new();
+    let cache = ModelCache::v0();
+    let mut progress = StderrProgress::new();
+    let memory_before_load = required_rss("before LLM model load")?;
+    let mut llm = LlamaLlm::from_cached_model(
+        &cache,
+        &HttpFetcher,
+        &mut progress,
+        &cancel,
+        &config.llm_model,
+        config.thinking,
+    )?
+    .with_system_prompt(config.system_prompt.clone());
+    let memory_after_load = required_rss("after LLM model load")?;
+    let records = benchmark_llm(
+        &mut llm,
+        &config,
+        &cancel,
+        &fingerprint(),
+        &scenarios()?,
         memory_before_load,
         memory_after_load,
     )?;
@@ -280,12 +322,17 @@ fn benchmark_stt(
             // whisper.cpp returns a completed transcript, not partial text.
             first_output_ms: Some(elapsed_ms),
             output_units: Some(transcript.text.len()),
+            prompt_tokens: None,
+            generated_tokens: None,
+            prompt_tokens_per_second: None,
+            generated_tokens_per_second: None,
             word_match: Some(ratio),
             word_match_threshold: Some(scenario.min_word_match),
             input_audio_ms: Some(input_audio_ms),
             generated_audio_ms: None,
             real_time_factor: Some(real_time_factor(elapsed_ms, input_audio_ms)),
             transcript: Some(transcript.text),
+            response: None,
             memory_before_load_bytes: Some(memory_before_load),
             memory_after_load_bytes: Some(memory_after_load),
             memory_peak_bytes: None,
@@ -299,65 +346,113 @@ fn benchmark_stt(
 }
 
 fn benchmark_llm(
-    llm: &mut impl Llm,
+    llm: &mut LlamaLlm,
     config: &AgentConfig,
     cancel: &Cancel,
     fingerprint: &Fingerprint,
     scenarios: &[Scenario],
+    memory_before_load: usize,
+    memory_after_load: usize,
 ) -> Result<Vec<Record>> {
-    scenarios
+    let mut records = Vec::new();
+    let mut memory_peak = memory_after_load;
+    for (index, scenario) in scenarios
         .iter()
         .filter(|scenario| scenario.component == "llm")
         .enumerate()
-        .map(|(index, scenario)| {
-            let started = Instant::now();
-            let mut first_output_ms = None;
-            let mut output = String::new();
-            let user = Transcript {
-                turn: TurnId(index as u64),
-                text: scenario.text.clone(),
-                language: config.language.clone(),
-            };
-            let history: Vec<HistoryTurn> = scenario
-                .history
-                .iter()
-                .enumerate()
-                .map(|(turn, prior)| HistoryTurn {
-                    user: Transcript {
-                        turn: TurnId(turn as u64),
-                        text: prior.user.clone(),
-                        language: config.language.clone(),
-                    },
-                    assistant: prior.assistant.clone(),
-                })
-                .collect();
-            llm.generate(&history, &user, cancel, &mut |token| {
-                first_output_ms.get_or_insert_with(|| started.elapsed().as_millis());
-                output.push_str(&token.text);
-                Ok(())
-            })?;
-            Ok(Record {
-                schema_version: SCHEMA_VERSION,
-                fingerprint: fingerprint.clone(),
-                component: "llm".into(),
-                model: config.llm_model.clone(),
-                case: scenario.case.clone(),
-                elapsed_ms: started.elapsed().as_millis(),
-                first_output_ms,
-                output_units: Some(output.split_whitespace().count()),
-                word_match: None,
-                word_match_threshold: None,
-                input_audio_ms: None,
-                generated_audio_ms: None,
-                real_time_factor: None,
-                transcript: None,
-                memory_before_load_bytes: None,
-                memory_after_load_bytes: None,
-                memory_peak_bytes: None,
-                passed: !output.trim().is_empty() && !output.contains("<think>"),
+    {
+        let started = Instant::now();
+        let mut first_output_ms = None;
+        let mut output = String::new();
+        let mut generated_tokens = 0usize;
+        let user = Transcript {
+            turn: TurnId(index as u64),
+            text: scenario.text.clone(),
+            language: config.language.clone(),
+        };
+        let history: Vec<HistoryTurn> = scenario
+            .history
+            .iter()
+            .enumerate()
+            .map(|(turn, prior)| HistoryTurn {
+                user: Transcript {
+                    turn: TurnId(turn as u64),
+                    text: prior.user.clone(),
+                    language: config.language.clone(),
+                },
+                assistant: prior.assistant.clone(),
             })
-        })
-        .collect()
+            .collect();
+        let prompt_tokens = llm.benchmark_prompt_tokens(&history, &user)?;
+        llm.generate(&history, &user, cancel, &mut |token| {
+            first_output_ms.get_or_insert_with(|| started.elapsed().as_millis());
+            generated_tokens += 1;
+            output.push_str(&token.text);
+            Ok(())
+        })?;
+        let elapsed_ms = started.elapsed().as_millis();
+        memory_peak = memory_peak.max(required_rss("during LLM benchmark")?);
+        let passed = llm_response_passes(scenario, &output);
+        records.push(Record {
+            schema_version: SCHEMA_VERSION,
+            fingerprint: fingerprint.clone(),
+            component: "llm".into(),
+            model: config.llm_model.clone(),
+            case: scenario.case.clone(),
+            elapsed_ms,
+            first_output_ms,
+            output_units: Some(generated_tokens),
+            prompt_tokens: Some(prompt_tokens),
+            generated_tokens: Some(generated_tokens),
+            // Prompt throughput is prefill-to-first-token. Generation
+            // throughput starts after that first emitted token.
+            prompt_tokens_per_second: Some(tokens_per_second(
+                prompt_tokens,
+                first_output_ms.unwrap_or(elapsed_ms),
+            )),
+            generated_tokens_per_second: Some(tokens_per_second(
+                generated_tokens,
+                elapsed_ms.saturating_sub(first_output_ms.unwrap_or(elapsed_ms)),
+            )),
+            word_match: None,
+            word_match_threshold: None,
+            input_audio_ms: None,
+            generated_audio_ms: None,
+            real_time_factor: None,
+            transcript: None,
+            response: Some(output),
+            memory_before_load_bytes: None,
+            memory_after_load_bytes: None,
+            memory_peak_bytes: None,
+            passed,
+        });
+    }
+    for record in &mut records {
+        record.memory_before_load_bytes = Some(memory_before_load);
+        record.memory_after_load_bytes = Some(memory_after_load);
+        record.memory_peak_bytes = Some(memory_peak);
+    }
+    Ok(records)
+}
+
+fn tokens_per_second(tokens: usize, elapsed_ms: u128) -> f64 {
+    tokens as f64 / (elapsed_ms.max(1) as f64 / 1_000.0)
+}
+
+fn llm_response_passes(scenario: &Scenario, response: &str) -> bool {
+    let response = response.to_lowercase();
+    !response.trim().is_empty()
+        && !response.contains("<think>")
+        && !response.contains("</think>")
+        && (scenario.required_keywords_any.is_empty()
+            || scenario
+                .required_keywords_any
+                .iter()
+                .any(|keyword| response.contains(&keyword.to_lowercase())))
+        && scenario
+            .forbidden_keywords
+            .iter()
+            .all(|keyword| !response.contains(&keyword.to_lowercase()))
 }
 
 fn benchmark_tts(
@@ -407,12 +502,17 @@ fn benchmark_tts(
             elapsed_ms,
             first_output_ms,
             output_units: Some(samples.len()),
+            prompt_tokens: None,
+            generated_tokens: None,
+            prompt_tokens_per_second: None,
+            generated_tokens_per_second: None,
             word_match: None,
             word_match_threshold: None,
             input_audio_ms: None,
             generated_audio_ms: Some(generated_audio_ms),
             real_time_factor: Some(real_time_factor(elapsed_ms, generated_audio_ms)),
             transcript: None,
+            response: None,
             memory_before_load_bytes: Some(memory_before_load),
             memory_after_load_bytes: Some(memory_after_load),
             memory_peak_bytes: None,
@@ -678,12 +778,17 @@ mod tests {
             elapsed_ms: 1,
             first_output_ms: Some(0),
             output_units: Some(1),
+            prompt_tokens: None,
+            generated_tokens: None,
+            prompt_tokens_per_second: None,
+            generated_tokens_per_second: None,
             word_match: None,
             word_match_threshold: None,
             input_audio_ms: None,
             generated_audio_ms: Some(1),
             real_time_factor: Some(1.0),
             transcript: None,
+            response: None,
             memory_before_load_bytes: None,
             memory_after_load_bytes: None,
             memory_peak_bytes: None,
@@ -815,6 +920,10 @@ mod tests {
             scenario.component == "llm"
                 && scenario.case == "history-follow-up"
                 && !scenario.history.is_empty()
+                && scenario
+                    .required_keywords_any
+                    .iter()
+                    .any(|keyword| keyword == "lisbon")
         }));
         assert_eq!(
             corpus
@@ -823,5 +932,33 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn llm_response_gate_requires_behavior_without_exact_output() {
+        let scenario = Scenario {
+            component: "llm".into(),
+            case: "history".into(),
+            text: "Where am I going?".into(),
+            expected_words: Vec::new(),
+            min_word_match: 0.8,
+            history: Vec::new(),
+            numbers: false,
+            required_keywords_any: vec!["lisbon".into()],
+            forbidden_keywords: vec!["123".into()],
+        };
+        assert!(llm_response_passes(&scenario, "You said Lisbon."));
+        assert!(!llm_response_passes(&scenario, "I do not know."));
+        assert!(!llm_response_passes(
+            &scenario,
+            "Lisbon <think>hidden</think>"
+        ));
+        assert!(!llm_response_passes(&scenario, "Lisbon 123"));
+    }
+
+    #[test]
+    fn token_rates_are_per_second_and_never_divide_by_zero() {
+        assert!((tokens_per_second(25, 500) - 50.0).abs() < f64::EPSILON);
+        assert_eq!(tokens_per_second(1, 0), 1_000.0);
     }
 }

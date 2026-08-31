@@ -239,6 +239,50 @@ int syllabix_llama_n_ctx_train(const struct syllabix_llama *llm) {
     return llama_model_n_ctx_train(llm->model);
 }
 
+int syllabix_llama_count_prompt_tokens(
+    struct syllabix_llama *llm,
+    const char *const *roles,
+    const char *const *contents,
+    int n_messages,
+    int thinking) {
+    if (llm == NULL || roles == NULL || contents == NULL || n_messages < 1) return -1;
+    struct llama_chat_message *chat = calloc((size_t)n_messages, sizeof(*chat));
+    if (chat == NULL) return -1;
+    for (int i = 0; i < n_messages; ++i) {
+        chat[i].role = roles[i];
+        chat[i].content = contents[i];
+    }
+    const char *tmpl = llama_model_chat_template(llm->model, NULL);
+    int32_t prompt_len = llama_chat_apply_template(tmpl, chat, (size_t)n_messages, true, NULL, 0);
+    if (prompt_len < 1) {
+        tmpl = "chatml";
+        prompt_len = llama_chat_apply_template(tmpl, chat, (size_t)n_messages, true, NULL, 0);
+    }
+    if (prompt_len < 1) { free(chat); return -1; }
+    char *prompt = malloc((size_t)prompt_len + 1);
+    if (prompt == NULL) { free(chat); return -1; }
+    if (llama_chat_apply_template(tmpl, chat, (size_t)n_messages, true, prompt, prompt_len + 1) != prompt_len) {
+        free(prompt); free(chat); return -1;
+    }
+    free(chat);
+    if (!thinking) {
+        static const char suffix[] = "<think>\n</think>\n";
+        const size_t suffix_len = sizeof(suffix) - 1;
+        char *grown = realloc(prompt, (size_t)prompt_len + suffix_len + 1);
+        if (grown == NULL) { free(prompt); return -1; }
+        prompt = grown;
+        memcpy(prompt + prompt_len, suffix, suffix_len + 1);
+        prompt_len += (int32_t)suffix_len;
+    }
+    const int n_ctx = (int)llama_n_ctx(llm->ctx);
+    llama_token *tokens = malloc((size_t)n_ctx * sizeof(*tokens));
+    if (tokens == NULL) { free(prompt); return -1; }
+    const int count = llama_tokenize(llama_model_get_vocab(llm->model), prompt, prompt_len, tokens, n_ctx, true, true);
+    free(tokens);
+    free(prompt);
+    return count;
+}
+
 void syllabix_llama_free(struct syllabix_llama *llm) {
     if (llm == NULL) {
         return;
