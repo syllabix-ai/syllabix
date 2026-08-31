@@ -51,6 +51,16 @@ const ASSETS: [&str; 8] = [
 // a higher EOS threshold lets the autoregressive loop run into repeated tails.
 const FLOW_STEPS: usize = 1;
 const EOS_THRESHOLD: f32 = -4.0;
+const FLOW_TEMPERATURE: f32 = 0.7;
+const DECODER_BATCH_FRAMES: usize = 12;
+// FlowLM's EOS score marks the beginning of the ending, not the exact PCM
+// boundary. Keep generating through the export's small post-EOS window so
+// Mimi's recurrent convolution can finish sentence-final phonemes. The
+// window includes the EOS frame itself: normal prompts get that frame plus
+// two continuations; very short prompts get four continuations.
+const NORMAL_EOS_WINDOW_FRAMES: usize = 3;
+const SHORT_EOS_WINDOW_FRAMES: usize = 5;
+const SHORT_PROMPT_WORDS: usize = 4;
 
 /// P1 loader for the pinned English ONNX graph set.
 pub struct PocketTts {
@@ -171,6 +181,27 @@ impl PocketTts {
                 .collect(),
         );
         let mut flow_state = voice_state(&self.flow_state, &self.voice)?;
+        // Feed the complete text into FlowLM before it starts producing audio.
+        // The generation loop below then has only a new audio frame and the
+        // state that this call returned, matching the exported model's order.
+        let empty_sequence = RawTensor::f32(vec![1, 0, 32], vec![]);
+        let mut main = RawRunner::new(&mut self.flow_main)?;
+        let mut inputs = vec![
+            ("sequence", &empty_sequence),
+            ("text_embeddings", &embeddings),
+        ];
+        inputs.extend(
+            self.flow_state
+                .iter()
+                .zip(&flow_state)
+                .map(|(s, v)| (s.input_name.as_str(), v)),
+        );
+        let state_names = self
+            .flow_state
+            .iter()
+            .map(|s| s.output_name.as_str())
+            .collect::<Vec<_>>();
+        flow_state = main.run(&inputs, &state_names)?;
         let mut mimi_state = self
             .mimi_state
             .iter()
@@ -194,15 +225,22 @@ impl PocketTts {
         // frame is 80 ms, and this conservative cap bounds CPU work while the
         // EOS head remains the normal stopping condition.
         let max_frames = (text.chars().count().saturating_mul(2)).clamp(8, 250);
-        let mut first = true;
+        let eos_window_frames = eos_window_frames(text);
+        let mut eos_frame = None;
+        let mut pending_latents = Vec::with_capacity(DECODER_BATCH_FRAMES * 32);
         for frame in 0..max_frames {
             if cancel.is_stale(token.generation) || cancel.is_shutdown() {
                 return Err(Error::Cancelled);
             }
+            // EOS is an acoustic look-ahead marker. Do not feed zero latents
+            // to Mimi: continue the same FlowLM/Mimi state for the bounded
+            // model-defined window, then stop before another latent is made.
+            if eos_window_exhausted_before_frame(frame, eos_frame, eos_window_frames) {
+                break;
+            }
             let empty_text = RawTensor::f32(vec![1, 0, 1024], vec![]);
-            let text_input = if first { &embeddings } else { &empty_text };
             let mut main = RawRunner::new(&mut self.flow_main)?;
-            let mut inputs = vec![("sequence", &previous), ("text_embeddings", text_input)];
+            let mut inputs = vec![("sequence", &previous), ("text_embeddings", &empty_text)];
             inputs.extend(
                 self.flow_state
                     .iter()
@@ -219,10 +257,15 @@ impl PocketTts {
                 .copied()
                 .unwrap_or(f32::NEG_INFINITY);
             flow_state = result.into_iter().skip(2).collect();
+            if frame > 0 && eos >= EOS_THRESHOLD && eos_frame.is_none() {
+                eos_frame = Some(frame);
+            }
+            let is_final_frame = frame + 1 == max_frames
+                || eos_window_completes_on_frame(frame, eos_frame, eos_window_frames);
             // Flow matching starts each audio frame from fresh Gaussian noise,
             // then integrates the learned velocity field. Reusing an all-zero
             // seed made distinct frames converge on the same fragment.
-            let mut latent = standard_normal_tensor(32)?;
+            let mut latent = standard_normal_tensor(32, FLOW_TEMPERATURE.sqrt())?;
             for step in 0..FLOW_STEPS {
                 let s = RawTensor::f32(vec![1, 1], vec![step as f32 / FLOW_STEPS as f32]);
                 let t = RawTensor::f32(vec![1, 1], vec![(step + 1) as f32 / FLOW_STEPS as f32]);
@@ -245,9 +288,21 @@ impl PocketTts {
                 latent = RawTensor::f32(vec![1, 32], values);
             }
             previous = RawTensor::f32(vec![1, 1, 32], latent.f32_data()?.to_vec());
+            pending_latents.extend_from_slice(previous.f32_data()?);
 
+            // Mimi needs a small amount of following audio to make a stable
+            // waveform. Decode its native 12-frame blocks, rather than a
+            // separate 80 ms call for every generated frame.
+            if pending_latents.len() / 32 < DECODER_BATCH_FRAMES && !is_final_frame {
+                continue;
+            }
+            let batch_frames = pending_latents.len() / 32;
+            let latent = RawTensor::f32(
+                vec![1, batch_frames as i64, 32],
+                std::mem::take(&mut pending_latents),
+            );
             let mut decoder = RawRunner::new(&mut self.decoder)?;
-            let mut decoder_inputs = vec![("latent", &previous)];
+            let mut decoder_inputs = vec![("latent", &latent)];
             decoder_inputs.extend(
                 self.mimi_state
                     .iter()
@@ -257,11 +312,9 @@ impl PocketTts {
             let mut decoder_names = vec!["audio_frame"];
             decoder_names.extend(self.mimi_state.iter().map(|s| s.output_name.as_str()));
             let decoded = decoder.run(&decoder_inputs, &decoder_names)?;
-            let audio = decoded[0].f32_data()?;
-            let mut pcm = f32_to_i16(&converter.push(audio));
+            let mut pcm = f32_to_i16(&converter.push(decoded[0].f32_data()?));
             mimi_state = decoded.into_iter().skip(1).collect();
-            let eos_reached = frame > 0 && eos >= EOS_THRESHOLD;
-            if eos_reached || frame + 1 == max_frames {
+            if is_final_frame {
                 pcm.extend(f32_to_i16(&converter.flush()));
             }
             if !pcm.is_empty() {
@@ -272,13 +325,12 @@ impl PocketTts {
                     generation: token.generation,
                     index,
                     samples: pcm,
-                    is_last: is_last_sentence && (eos_reached || frame + 1 == max_frames),
+                    is_last: is_last_sentence && is_final_frame,
                 })?;
             }
-            if eos_reached {
+            if is_final_frame {
                 break;
             }
-            first = false;
         }
         Ok(())
     }
@@ -389,6 +441,30 @@ impl PocketTts {
         let audio = decoder.run(&inputs, &["audio_frame"])?;
         Ok(audio[0].f32_data()?.to_vec())
     }
+}
+
+fn eos_window_frames(text: &str) -> usize {
+    if text.split_whitespace().count() <= SHORT_PROMPT_WORDS {
+        SHORT_EOS_WINDOW_FRAMES
+    } else {
+        NORMAL_EOS_WINDOW_FRAMES
+    }
+}
+
+fn eos_window_exhausted_before_frame(
+    frame: usize,
+    eos_frame: Option<usize>,
+    window_frames: usize,
+) -> bool {
+    eos_frame.is_some_and(|eos| frame >= eos + window_frames)
+}
+
+fn eos_window_completes_on_frame(
+    frame: usize,
+    eos_frame: Option<usize>,
+    window_frames: usize,
+) -> bool {
+    eos_frame.is_some_and(|eos| frame + 1 >= eos + window_frames)
 }
 
 impl Tts for PocketTts {
@@ -857,7 +933,12 @@ fn copy_voice_f32(
 /// Sample one standard-normal latent using the OS CSPRNG. Pocket TTS is a
 /// flow-matching model, so each generated audio frame needs a new noise seed;
 /// a fixed zero vector is not a valid inference input.
-fn standard_normal_tensor(width: usize) -> Result<RawTensor> {
+fn standard_normal_tensor(width: usize, scale: f32) -> Result<RawTensor> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(provider(
+            "Pocket TTS noise scale must be positive and finite",
+        ));
+    }
     let mut bytes = vec![0_u8; width.saturating_add(width % 2) * 4];
     getrandom::getrandom(&mut bytes)
         .map_err(|err| provider(&format!("could not sample Pocket TTS noise: {err}")))?;
@@ -873,9 +954,9 @@ fn standard_normal_tensor(width: usize) -> Result<RawTensor> {
     for pair in uniforms.chunks_exact(2) {
         let radius = (-2.0 * pair[0].ln()).sqrt();
         let angle = std::f64::consts::TAU * pair[1];
-        values.push((radius * angle.cos()) as f32);
+        values.push((radius * angle.cos()) as f32 * scale);
         if values.len() < width {
-            values.push((radius * angle.sin()) as f32);
+            values.push((radius * angle.sin()) as f32 * scale);
         }
     }
     debug_assert_eq!(values.len(), width);
@@ -905,9 +986,33 @@ mod tests {
 
     #[test]
     fn flow_noise_is_finite_and_has_the_requested_shape() {
-        let noise = standard_normal_tensor(31).expect("OS randomness");
+        let noise = standard_normal_tensor(31, FLOW_TEMPERATURE.sqrt()).expect("OS randomness");
         assert_eq!(noise.shape, vec![1, 31]);
         assert!(noise.f32.iter().all(|value| value.is_finite()));
         assert!(noise.f32.iter().any(|value| *value != 0.0));
+    }
+
+    #[test]
+    fn flow_noise_rejects_invalid_scale() {
+        assert!(standard_normal_tensor(1, 0.0).is_err());
+        assert!(standard_normal_tensor(1, f32::NAN).is_err());
+    }
+
+    #[test]
+    fn eos_window_keeps_the_export_required_post_eos_frames() {
+        assert_eq!(eos_window_frames("one two three four"), 5);
+        assert_eq!(eos_window_frames("one two three four five"), 3);
+
+        let eos = 7;
+        let normal = eos_window_frames("a normal length prompt has five words");
+        assert!(
+            !eos_window_exhausted_before_frame(9, Some(eos), normal),
+            "decode through the final continuation"
+        );
+        assert!(eos_window_completes_on_frame(9, Some(eos), normal));
+        assert!(
+            eos_window_exhausted_before_frame(10, Some(eos), normal),
+            "do not generate a repeated tail frame"
+        );
     }
 }
