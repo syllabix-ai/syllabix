@@ -14,6 +14,7 @@ fn main() {
         cli::Commands::Run { .. } => "warn",
         cli::Commands::Init { .. } => "info",
         cli::Commands::Bench { .. } => "info",
+        cli::Commands::BenchAsrWorker { .. } => "info",
     };
     init_tracing(default_filter);
 

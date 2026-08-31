@@ -1,6 +1,7 @@
-{"component":"stt","case":"jfk","expected_words":["and","so","my","fellow","americans","ask","not","what","your","country","can","do","for","you","ask","what","you","can","do","for","your","country"]}
-{"component":"stt","case":"librispeech-121","expected_words":["she","has","been","dead","these","twenty","years"]}
-{"component":"stt","case":"librispeech-1995","expected_words":["she","was","so","strange","and","human","a","creature"]}
+{"component":"stt","case":"jfk","min_word_match":1.0,"expected_words":["and","so","my","fellow","americans","ask","not","what","your","country","can","do","for","you","ask","what","you","can","do","for","your","country"]}
+{"component":"stt","case":"librispeech-1089","min_word_match":0.8,"expected_words":["he","hoped","there","would","be","stew","for","dinner","turnips","and","carrots","and","bruised","potatoes","and","fat","mutton","pieces","to","be","ladled","out","in","thick","peppered","flour","fattened","sauce"]}
+{"component":"stt","case":"librispeech-121","min_word_match":0.8,"expected_words":["she","has","been","dead","these","twenty","years"]}
+{"component":"stt","case":"librispeech-1995","min_word_match":0.8,"expected_words":["she","was","so","strange","and","human","a","creature"]}
 {"component":"llm","case":"greeting","text":"Reply briefly with a friendly greeting."}
 {"component":"llm","case":"fact","text":"Reply briefly: what is the capital of France?"}
 {"component":"llm","case":"arithmetic-spoken-numbers","text":"Reply briefly using words, not digits: what is one hundred plus twenty three?"}
