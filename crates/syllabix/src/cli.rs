@@ -58,6 +58,13 @@ pub enum Commands {
         #[arg(long, value_name = "FILE")]
         out: PathBuf,
     },
+    /// Private worker used to isolate one TTS model's host-memory measurement.
+    #[command(hide = true)]
+    BenchTtsWorker {
+        /// Temporary JSONL file written for the parent `bench` process.
+        #[arg(long, value_name = "FILE")]
+        out: PathBuf,
+    },
 }
 
 /// Dispatch a parsed CLI invocation.
@@ -69,12 +76,16 @@ pub fn execute(cli: Cli) -> Result<()> {
         Commands::Bench { out } => crate::bench::run(out),
         #[cfg(not(coverage))]
         Commands::BenchAsrWorker { out } => crate::bench::run_asr_worker(out),
+        #[cfg(not(coverage))]
+        Commands::BenchTtsWorker { out } => crate::bench::run_tts_worker(out),
         // Bench is contributor-only native work. Coverage must neither load
         // benchmark models nor execute its corpus/writer tests.
         #[cfg(coverage)]
         Commands::Bench { .. } => Err(Error::not_implemented("bench")),
         #[cfg(coverage)]
         Commands::BenchAsrWorker { .. } => Err(Error::not_implemented("bench")),
+        #[cfg(coverage)]
+        Commands::BenchTtsWorker { .. } => Err(Error::not_implemented("bench")),
     }
 }
 
@@ -137,6 +148,7 @@ mod tests {
             Commands::Init { .. } => panic!("expected run"),
             Commands::Bench { .. } => panic!("expected run"),
             Commands::BenchAsrWorker { .. } => panic!("expected run"),
+            Commands::BenchTtsWorker { .. } => panic!("expected run"),
         }
     }
 
@@ -162,6 +174,7 @@ mod tests {
             Commands::Run { .. } => panic!("expected init"),
             Commands::Bench { .. } => panic!("expected init"),
             Commands::BenchAsrWorker { .. } => panic!("expected init"),
+            Commands::BenchTtsWorker { .. } => panic!("expected init"),
         }
     }
 
@@ -175,6 +188,7 @@ mod tests {
             Commands::Run { .. } => panic!("expected init"),
             Commands::Bench { .. } => panic!("expected init"),
             Commands::BenchAsrWorker { .. } => panic!("expected init"),
+            Commands::BenchTtsWorker { .. } => panic!("expected init"),
         }
     }
 
@@ -195,6 +209,16 @@ mod tests {
         match cli.command {
             Commands::BenchAsrWorker { out } => assert_eq!(out, PathBuf::from("worker.jsonl")),
             _ => panic!("expected ASR worker"),
+        }
+    }
+
+    #[test]
+    fn parses_private_tts_benchmark_worker() {
+        let cli = Cli::try_parse_from(["syllabix", "bench-tts-worker", "--out", "worker.jsonl"])
+            .expect("parse worker");
+        match cli.command {
+            Commands::BenchTtsWorker { out } => assert_eq!(out, PathBuf::from("worker.jsonl")),
+            _ => panic!("expected TTS worker"),
         }
     }
 
@@ -228,6 +252,7 @@ mod tests {
             Commands::Init { .. } => panic!("expected run"),
             Commands::Bench { .. } => panic!("expected run"),
             Commands::BenchAsrWorker { .. } => panic!("expected run"),
+            Commands::BenchTtsWorker { .. } => panic!("expected run"),
         }
     }
 
