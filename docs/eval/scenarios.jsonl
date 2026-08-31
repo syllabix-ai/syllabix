@@ -7,6 +7,6 @@
 {"component":"llm","case":"arithmetic-spoken-numbers","text":"Reply briefly using words, not digits: what is one hundred plus twenty three?"}
 {"component":"llm","case":"history-follow-up","text":"What city did I say I am visiting?","history":[{"user":"I am visiting Lisbon next week.","assistant":"Lisbon sounds like a wonderful trip."}]}
 {"component":"llm","case":"long-answer","text":"In three short sentences, explain why regular backups matter."}
-{"component":"tts","case":"sentence-1","text":"The weather looks clear today."}
-{"component":"tts","case":"sentence-2","text":"Please summarize the article in two sentences."}
-{"component":"tts","case":"sentence-3","text":"The train leaves before noon."}
+{"component":"tts","case":"short","text":"The children played outside in the garden after lunch.","expected_words":["the","children","played","outside","in","the","garden","after","lunch"],"min_word_match":0.8}
+{"component":"tts","case":"long","text":"Please summarize the article in two sentences and then explain why the train leaves before noon so travelers can reach the station with time to spare.","expected_words":["please","summarize","the","article","in","two","sentences","and","then","explain","why","the","train","leaves","before","noon","so","travelers","can","reach","the","station","with","time","to","spare"],"min_word_match":0.8}
+{"component":"tts","case":"numbers","text":"That costs 100 dollars. Please charge $5 at 3:45 pm in USD through the API.","numbers":true}

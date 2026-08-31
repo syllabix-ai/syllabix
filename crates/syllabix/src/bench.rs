@@ -9,14 +9,16 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use syllabix_core::{
-    audio::{read_wav, record_fixture_to_frames, WavPcm},
-    build_llm, build_tts, process_rss_bytes, word_match_ratio, AgentConfig, Cancel, Error,
-    HistoryTurn, HttpFetcher, Llm, ModelCache, Result, StderrProgress, Stt, TokenChunk, Transcript,
-    Tts, TurnId, Utterance, WhisperStt,
+    audio::{read_wav, record_fixture_to_frames, FrameSplitter, WavPcm},
+    build_llm, build_tts, contains_words_in_order, process_rss_bytes, word_match_ratio,
+    AgentConfig, Cancel, Error, HistoryTurn, HttpFetcher, Llm, ModelCache, Result, StderrProgress,
+    Stt, SttModel, TokenChunk, Transcript, Tts, TurnId, Utterance, WhisperStt,
+    DEFAULT_SAMPLE_RATE_HZ, TTS_ASR_MIN_WORD_MATCH,
 };
 
-const SCHEMA_VERSION: u8 = 2;
+const SCHEMA_VERSION: u8 = 3;
 const SCENARIOS_JSONL: &str = include_str!("../../../docs/eval/scenarios.jsonl");
+const NUMBER_FIXTURES: [&str; 5] = ["100", "$5", "3:45 pm", "USD", "API"];
 
 #[derive(Debug, Deserialize)]
 struct Scenario {
@@ -30,6 +32,8 @@ struct Scenario {
     min_word_match: f64,
     #[serde(default)]
     history: Vec<HistoryCase>,
+    #[serde(default)]
+    numbers: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +72,8 @@ struct Record {
     #[serde(skip_serializing_if = "Option::is_none")]
     input_audio_ms: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    generated_audio_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     real_time_factor: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     transcript: Option<String>,
@@ -81,7 +87,7 @@ struct Record {
 }
 
 fn default_word_match_threshold() -> f64 {
-    0.8
+    TTS_ASR_MIN_WORD_MATCH
 }
 
 pub(crate) fn run(out: PathBuf) -> Result<()> {
@@ -106,9 +112,9 @@ pub(crate) fn run(out: PathBuf) -> Result<()> {
     let fingerprint = fingerprint();
     let mut records = Vec::new();
 
-    // ASR runs in a dedicated process. The remaining B1 component timings are
-    // still direct and will gain their own isolated memory evidence in B3/B4.
-    records.extend(run_asr_in_child()?);
+    // ASR and TTS each run in a dedicated process so host-RSS snapshots are
+    // one model lifetime. Local LLM timings stay direct until B4.
+    records.extend(run_named_worker("bench-asr-worker")?);
     {
         let mut llm = build_llm(&cache, &HttpFetcher, &mut progress, &cancel, &config, None)?;
         records.extend(benchmark_llm(
@@ -119,16 +125,7 @@ pub(crate) fn run(out: PathBuf) -> Result<()> {
             &scenarios,
         )?);
     }
-    {
-        let mut tts = build_tts(&cache, &HttpFetcher, &mut progress, &cancel, &config)?;
-        records.extend(benchmark_tts(
-            &mut tts,
-            &config,
-            &cancel,
-            &fingerprint,
-            &scenarios,
-        )?);
-    }
+    records.extend(run_named_worker("bench-tts-worker")?);
     write_jsonl(&out, &records)?;
     println!(
         "wrote {} component benchmark records to {}",
@@ -174,20 +171,49 @@ pub(crate) fn run_asr_worker(out: PathBuf) -> Result<()> {
     write_jsonl(&out, &records)
 }
 
-fn run_asr_in_child() -> Result<Vec<Record>> {
+/// Private `bench-tts-worker` entry point. TTS host-RSS is captured before
+/// Whisper `small` loads as the TTS→ASR scorer.
+pub(crate) fn run_tts_worker(out: PathBuf) -> Result<()> {
+    if out.exists() {
+        return Err(Error::Config {
+            field: "bench.worker.out".into(),
+            message: format!("refusing to overwrite {}", out.display()),
+        });
+    }
+    let config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
+    let scenarios = scenarios()?;
+    let cancel = Cancel::new();
+    let cache = ModelCache::v0();
+    let mut progress = StderrProgress::new();
+    let memory_before_load = required_rss("before TTS model load")?;
+    let mut tts = build_tts(&cache, &HttpFetcher, &mut progress, &cancel, &config)?;
+    let memory_after_load = required_rss("after TTS model load")?;
+    let records = benchmark_tts(
+        &mut tts,
+        &config,
+        &cancel,
+        &fingerprint(),
+        &scenarios,
+        memory_before_load,
+        memory_after_load,
+    )?;
+    write_jsonl(&out, &records)
+}
+
+fn run_named_worker(subcommand: &str) -> Result<Vec<Record>> {
     let temp = std::env::temp_dir().join(format!(
-        "syllabix-bench-asr-{}-{}.jsonl",
+        "syllabix-{subcommand}-{}-{}.jsonl",
         std::process::id(),
         unique_suffix()
     ));
     let output = Command::new(std::env::current_exe()?)
-        .args(["bench-asr-worker", "--out"])
+        .args([subcommand, "--out"])
         .arg(&temp)
         .output()?;
     if !output.status.success() {
         let _ = fs::remove_file(&temp);
         return Err(Error::Provider {
-            provider: "bench-asr-worker",
+            provider: "bench-worker",
             message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
@@ -257,6 +283,7 @@ fn benchmark_stt(
             word_match: Some(ratio),
             word_match_threshold: Some(scenario.min_word_match),
             input_audio_ms: Some(input_audio_ms),
+            generated_audio_ms: None,
             real_time_factor: Some(real_time_factor(elapsed_ms, input_audio_ms)),
             transcript: Some(transcript.text),
             memory_before_load_bytes: Some(memory_before_load),
@@ -321,6 +348,7 @@ fn benchmark_llm(
                 word_match: None,
                 word_match_threshold: None,
                 input_audio_ms: None,
+                generated_audio_ms: None,
                 real_time_factor: None,
                 transcript: None,
                 memory_before_load_bytes: None,
@@ -338,51 +366,155 @@ fn benchmark_tts(
     cancel: &Cancel,
     fingerprint: &Fingerprint,
     scenarios: &[Scenario],
+    memory_before_load: usize,
+    memory_after_load: usize,
 ) -> Result<Vec<Record>> {
-    scenarios
+    let tts_scenarios: Vec<&Scenario> = scenarios
         .iter()
         .filter(|scenario| scenario.component == "tts")
-        .enumerate()
-        .map(|(index, scenario)| {
-            let started = Instant::now();
-            let mut first_output_ms = None;
-            let mut samples = 0usize;
-            let token = TokenChunk {
-                turn: TurnId(index as u64),
-                // These are independent synthesis calls, not barge-in
-                // generations. The standalone cancel state remains live at
-                // generation zero for the full benchmark.
-                generation: cancel.generation(),
-                index: 0,
-                text: scenario.text.clone(),
-                is_last: true,
-            };
-            tts.synthesize_chunk_into(&token, cancel, &mut |audio| {
-                first_output_ms.get_or_insert_with(|| started.elapsed().as_millis());
-                samples += audio.samples.len();
-                Ok(())
-            })?;
-            Ok(Record {
-                schema_version: SCHEMA_VERSION,
-                fingerprint: fingerprint.clone(),
-                component: "tts".into(),
-                model: config.tts_model.as_str().into(),
-                case: scenario.case.clone(),
-                elapsed_ms: started.elapsed().as_millis(),
-                first_output_ms,
-                output_units: Some(samples),
-                word_match: None,
-                word_match_threshold: None,
-                input_audio_ms: None,
-                real_time_factor: None,
-                transcript: None,
-                memory_before_load_bytes: None,
-                memory_after_load_bytes: None,
-                memory_peak_bytes: None,
-                passed: samples > 0,
-            })
-        })
-        .collect()
+        .collect();
+    let mut records = Vec::new();
+    let mut pcm_by_case = Vec::new();
+    let mut memory_peak = memory_after_load;
+    for (index, scenario) in tts_scenarios.iter().enumerate() {
+        let started = Instant::now();
+        let mut first_output_ms = None;
+        let mut samples = Vec::new();
+        let token = TokenChunk {
+            turn: TurnId(index as u64),
+            // These are independent synthesis calls, not barge-in
+            // generations. The standalone cancel state remains live at
+            // generation zero for the full benchmark.
+            generation: cancel.generation(),
+            index: 0,
+            text: scenario.text.clone(),
+            is_last: true,
+        };
+        tts.synthesize_chunk_into(&token, cancel, &mut |audio| {
+            first_output_ms.get_or_insert_with(|| started.elapsed().as_millis());
+            samples.extend_from_slice(&audio.samples);
+            Ok(())
+        })?;
+        let elapsed_ms = started.elapsed().as_millis();
+        let generated_audio_ms = pcm_duration_ms(samples.len());
+        memory_peak = memory_peak.max(required_rss("during TTS benchmark")?);
+        records.push(Record {
+            schema_version: SCHEMA_VERSION,
+            fingerprint: fingerprint.clone(),
+            component: "tts".into(),
+            model: config.tts_model.as_str().into(),
+            case: scenario.case.clone(),
+            elapsed_ms,
+            first_output_ms,
+            output_units: Some(samples.len()),
+            word_match: None,
+            word_match_threshold: None,
+            input_audio_ms: None,
+            generated_audio_ms: Some(generated_audio_ms),
+            real_time_factor: Some(real_time_factor(elapsed_ms, generated_audio_ms)),
+            transcript: None,
+            memory_before_load_bytes: Some(memory_before_load),
+            memory_after_load_bytes: Some(memory_after_load),
+            memory_peak_bytes: None,
+            passed: !samples.is_empty(),
+        });
+        pcm_by_case.push(samples);
+    }
+    for record in &mut records {
+        record.memory_peak_bytes = Some(memory_peak);
+    }
+
+    // Freeze TTS RSS before loading the scorer. Whisper `small` is the
+    // canonical TTS→ASR ear; it is not part of the selected TTS axis.
+    let cache = ModelCache::v0();
+    let mut progress = StderrProgress::new();
+    let mut stt =
+        WhisperStt::from_cache(&cache, &HttpFetcher, &mut progress, cancel, SttModel::Small)?
+            .with_language(&config.language)?;
+    for ((record, scenario), samples) in records
+        .iter_mut()
+        .zip(tts_scenarios.iter())
+        .zip(pcm_by_case.iter())
+    {
+        if samples.is_empty() {
+            record.passed = false;
+            continue;
+        }
+        let transcript = stt.transcribe(&pcm_to_utterance(samples)?, cancel)?;
+        record.transcript = Some(transcript.text.clone());
+        if scenario.numbers {
+            record.passed = number_heavy_passed(&transcript.text);
+        } else {
+            let expected: Vec<&str> = scenario.expected_words.iter().map(String::as_str).collect();
+            let ratio = word_match_ratio(&transcript.text, &expected);
+            record.word_match = Some(ratio);
+            record.word_match_threshold = Some(scenario.min_word_match);
+            record.passed = ratio >= scenario.min_word_match;
+        }
+    }
+    Ok(records)
+}
+
+fn pcm_to_utterance(samples: &[i16]) -> Result<Utterance> {
+    let mut splitter = FrameSplitter::new();
+    let mut frames = splitter.push(samples)?;
+    frames.extend(splitter.flush()?);
+    if frames.is_empty() {
+        return Err(Error::Provider {
+            provider: "bench",
+            message: "TTS PCM produced no 16 kHz frames".into(),
+        });
+    }
+    Ok(Utterance {
+        turn: TurnId(0),
+        frames,
+    })
+}
+
+fn pcm_duration_ms(samples: usize) -> u128 {
+    (samples as u128 * 1_000) / u128::from(DEFAULT_SAMPLE_RATE_HZ).max(1)
+}
+
+/// Listener-shaped checks for the number-heavy fixture. Whisper may emit
+/// `$100` for a correctly spoken "one hundred"; digit-by-digit "zero" is a
+/// fail. Failed verdicts stay on the record.
+fn number_heavy_passed(transcript: &str) -> bool {
+    NUMBER_FIXTURES
+        .iter()
+        .all(|fixture| number_fixture_passed(fixture, transcript))
+}
+
+fn number_fixture_passed(fixture: &str, transcript: &str) -> bool {
+    let heard = transcript.to_ascii_lowercase();
+    match fixture {
+        "100" => (heard.contains("hundred") || heard.contains("100")) && !heard.contains("zero"),
+        "$5" => {
+            heard.contains("five")
+                || heard.contains("$5")
+                || heard.contains("5 dollar")
+                || heard.contains("5 dollars")
+        }
+        "3:45 pm" => {
+            let has_pm = heard.contains("pm")
+                || heard.contains("p.m")
+                || contains_words_in_order(transcript, &["p", "m"]);
+            has_pm
+                && (heard.contains("3:45")
+                    || heard.contains("3 45")
+                    || heard.contains("345")
+                    || heard.contains("45")
+                    || (heard.contains("three")
+                        && (heard.contains("forty") || heard.contains("four"))))
+        }
+        "USD" => {
+            heard.contains("usd")
+                || heard.contains("us dollars")
+                || heard.contains("u.s.d")
+                || contains_words_in_order(transcript, &["u", "s", "d"])
+        }
+        "API" => heard.contains("api") || contains_words_in_order(transcript, &["a", "p", "i"]),
+        _ => false,
+    }
 }
 
 fn scenarios() -> Result<Vec<Scenario>> {
@@ -401,6 +533,17 @@ fn scenarios() -> Result<Vec<Scenario>> {
         return Err(Error::Config {
             field: "bench.scenarios".into(),
             message: "component must be stt, llm, or tts".into(),
+        });
+    }
+    if scenarios.iter().any(|scenario| {
+        scenario.component == "tts"
+            && !scenario.numbers
+            && (scenario.expected_words.is_empty()
+                || !(TTS_ASR_MIN_WORD_MATCH..=1.0).contains(&scenario.min_word_match))
+    }) {
+        return Err(Error::Config {
+            field: "bench.scenarios".into(),
+            message: "TTS intelligibility cases need expected words and a 0.8–1.0 gate".into(),
         });
     }
     Ok(scenarios)
@@ -525,12 +668,8 @@ fn real_time_factor(elapsed_ms: u128, input_audio_ms: u128) -> f64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn writer_creates_jsonl_and_refuses_overwrite() {
-        let path =
-            std::env::temp_dir().join(format!("syllabix-bench-{}.jsonl", std::process::id()));
-        let _ = fs::remove_file(&path);
-        let record = Record {
+    fn sample_record() -> Record {
+        Record {
             schema_version: SCHEMA_VERSION,
             fingerprint: fingerprint(),
             component: "tts".into(),
@@ -542,14 +681,22 @@ mod tests {
             word_match: None,
             word_match_threshold: None,
             input_audio_ms: None,
-            real_time_factor: None,
+            generated_audio_ms: Some(1),
+            real_time_factor: Some(1.0),
             transcript: None,
             memory_before_load_bytes: None,
             memory_after_load_bytes: None,
             memory_peak_bytes: None,
             passed: true,
-        };
-        write_jsonl(&path, &[record]).expect("write");
+        }
+    }
+
+    #[test]
+    fn writer_creates_jsonl_and_refuses_overwrite() {
+        let path =
+            std::env::temp_dir().join(format!("syllabix-bench-{}.jsonl", std::process::id()));
+        let _ = fs::remove_file(&path);
+        write_jsonl(&path, &[sample_record()]).expect("write");
         assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 1);
         assert!(write_jsonl(&path, &[]).is_err());
         fs::remove_file(path).unwrap();
@@ -569,6 +716,12 @@ mod tests {
     }
 
     #[test]
+    fn tts_rtf_uses_generated_audio_duration() {
+        assert_eq!(pcm_duration_ms(16_000), 1_000);
+        assert!((real_time_factor(500, pcm_duration_ms(16_000)) - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn asr_corpus_has_short_and_long_hashed_fixtures() {
         let corpus = scenarios().expect("parse embedded JSONL");
         let durations: Vec<u128> = corpus
@@ -584,6 +737,58 @@ mod tests {
             .collect();
         assert!(durations.len() >= 2);
         assert!(durations.iter().max() > durations.iter().min());
+    }
+
+    #[test]
+    fn tts_corpus_has_short_long_and_number_heavy_text() {
+        let corpus = scenarios().expect("parse embedded JSONL");
+        let tts: Vec<&Scenario> = corpus
+            .iter()
+            .filter(|scenario| scenario.component == "tts")
+            .collect();
+        let short = tts
+            .iter()
+            .find(|scenario| scenario.case == "short")
+            .expect("short");
+        let long = tts
+            .iter()
+            .find(|scenario| scenario.case == "long")
+            .expect("long");
+        let numbers = tts
+            .iter()
+            .find(|scenario| scenario.case == "numbers")
+            .expect("numbers");
+        assert!(short.text.len() < long.text.len());
+        assert!(!short.expected_words.is_empty());
+        assert!(!long.expected_words.is_empty());
+        assert!(numbers.numbers);
+        for fixture in NUMBER_FIXTURES {
+            assert!(
+                numbers.text.contains(fixture),
+                "number-heavy text must include {fixture}"
+            );
+        }
+    }
+
+    #[test]
+    fn number_heavy_verdict_accepts_listener_forms() {
+        assert!(number_heavy_passed(
+            "That costs one hundred dollars. Please charge five dollars at 3:45 pm in USD through the API."
+        ));
+        assert!(number_heavy_passed(
+            "that costs $100. please charge $5 at 3:45 p.m. in u s d through the A.P.I."
+        ));
+    }
+
+    #[test]
+    fn number_heavy_verdict_rejects_digit_string_zero() {
+        assert!(!number_fixture_passed(
+            "100",
+            "that costs one zero zero dollars"
+        ));
+        assert!(!number_heavy_passed(
+            "that costs one zero zero dollars. please charge five at 3:45 pm in usd through the api."
+        ));
     }
 
     #[test]
@@ -611,5 +816,12 @@ mod tests {
                 && scenario.case == "history-follow-up"
                 && !scenario.history.is_empty()
         }));
+        assert_eq!(
+            corpus
+                .iter()
+                .filter(|scenario| scenario.component == "tts")
+                .count(),
+            3
+        );
     }
 }
