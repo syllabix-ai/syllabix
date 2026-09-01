@@ -19,7 +19,6 @@ if [[ ! -x "$validator" ]]; then
   echo "missing executable validator: $validator" >&2
   exit 1
 fi
-clean_before="$(git status --porcelain --untracked-files=all)"
 
 artifact_name() {
   case "$(uname -s)/$(uname -m)" in
@@ -100,13 +99,22 @@ raw_run="$tmp/run.jsonl"
 "$binary" bench --out "$raw_run"
 fingerprint="$($validator --fingerprint "$raw_run")"
 run_path="docs/eval/runs/$fingerprint.jsonl"
-if [[ -e "$run_path" ]]; then
-  echo "a run for this machine/build fingerprint already exists: $run_path" >&2
-  exit 1
-fi
 mkdir -p docs/eval/runs
-mv "$raw_run" "$run_path"
-echo "wrote $run_path"
+if [[ -e "$run_path" ]]; then
+  if git ls-files --error-unmatch "$run_path" >/dev/null 2>&1; then
+    echo "a published run for this machine/build fingerprint already exists: $run_path" >&2
+    exit 1
+  fi
+  existing_fingerprint="$($validator --fingerprint "$run_path")"
+  if [[ "$existing_fingerprint" != "$fingerprint" ]]; then
+    echo "existing contribution run has a mismatched fingerprint: $run_path" >&2
+    exit 1
+  fi
+  echo "reusing uncommitted contribution run at $run_path"
+else
+  mv "$raw_run" "$run_path"
+  echo "wrote $run_path"
+fi
 
 if ! command -v gh >/dev/null 2>&1 || ! gh auth status --hostname github.com >/dev/null 2>&1; then
   cat <<EOF
@@ -119,10 +127,6 @@ EOF
   exit 0
 fi
 
-if [[ -n "$clean_before" ]]; then
-  echo "benchmark JSONL is preserved at $run_path; commit it from a clean worktree." >&2
-  exit 0
-fi
 branch="perf/$fingerprint"
 git fetch origin main
 if ! git merge-base --is-ancestor HEAD origin/main; then
