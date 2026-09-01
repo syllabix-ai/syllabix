@@ -59,6 +59,13 @@ mod ffi {
         pub fn syllabix_llama_free(llm: *mut LlamaHandle);
         pub fn syllabix_llama_n_ctx(llm: *const LlamaHandle) -> c_int;
         pub fn syllabix_llama_n_ctx_train(llm: *const LlamaHandle) -> c_int;
+        pub fn syllabix_llama_count_prompt_tokens(
+            llm: *mut LlamaHandle,
+            roles: *const *const c_char,
+            contents: *const *const c_char,
+            n_messages: c_int,
+            thinking: c_int,
+        ) -> c_int;
         pub fn syllabix_llama_generate(
             llm: *mut LlamaHandle,
             roles: *const *const c_char,
@@ -286,6 +293,47 @@ impl LlamaContext {
     /// GGUF trained context length.
     pub fn n_ctx_train(&self) -> i32 {
         unsafe { ffi::syllabix_llama_n_ctx_train(self.raw) }
+    }
+
+    /// Count the exact chat-template prompt tokens used by generation.
+    pub fn prompt_token_count(
+        &mut self,
+        messages: &[ChatMessage],
+        append_thinking_off_suffix: bool,
+    ) -> Result<usize, LlamaError> {
+        let roles: Result<Vec<CString>, LlamaError> = messages
+            .iter()
+            .map(|m| {
+                CString::new(m.role.as_str()).map_err(|_| LlamaError::Failed("role NUL".into()))
+            })
+            .collect();
+        let contents: Result<Vec<CString>, LlamaError> = messages
+            .iter()
+            .map(|m| {
+                CString::new(m.content.as_str())
+                    .map_err(|_| LlamaError::Failed("content NUL".into()))
+            })
+            .collect();
+        let roles = roles?;
+        let contents = contents?;
+        let role_ptrs: Vec<*const c_char> = roles.iter().map(|s| s.as_ptr()).collect();
+        let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
+        let _ggml = ggml_lock();
+        let count = unsafe {
+            ffi::syllabix_llama_count_prompt_tokens(
+                self.raw,
+                role_ptrs.as_ptr(),
+                content_ptrs.as_ptr(),
+                messages.len() as c_int,
+                if append_thinking_off_suffix { 0 } else { 1 },
+            )
+        };
+        if count < 1 {
+            return Err(LlamaError::Failed(
+                "llama.cpp prompt tokenization failed".into(),
+            ));
+        }
+        Ok(count as usize)
     }
 
     /// Stream greedy pieces. `on_piece` is invoked in order; the last call has `is_last`.

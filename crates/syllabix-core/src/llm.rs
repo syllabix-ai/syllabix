@@ -186,6 +186,51 @@ impl LlamaLlm {
         self.engine.lock().expect("llama engine").context_window()
     }
 
+    /// Exact prompt-token count for the configured chat template. This is
+    /// contributor-benchmark evidence, not a runtime token budget.
+    pub fn benchmark_prompt_tokens(
+        &self,
+        history: &[HistoryTurn],
+        user: &Transcript,
+    ) -> Result<usize> {
+        let messages = self.messages(history, user);
+        self.engine
+            .lock()
+            .expect("llama engine")
+            .prompt_token_count(
+                &messages,
+                !self.thinking && is_thinking_tag_supported_model(&self.model_id),
+            )
+    }
+
+    fn messages(&self, history: &[HistoryTurn], user: &Transcript) -> Vec<ChatMessage> {
+        let kept = if history.len() > LLAMA_MAX_HISTORY_TURNS {
+            &history[history.len() - LLAMA_MAX_HISTORY_TURNS..]
+        } else {
+            history
+        };
+        let mut messages = Vec::with_capacity(2 + kept.len() * 2);
+        messages.push(ChatMessage {
+            role: "system".into(),
+            content: render_system_prompt(&self.system_prompt, &user.language),
+        });
+        for turn in kept {
+            messages.push(ChatMessage {
+                role: "user".into(),
+                content: turn.user.text.clone(),
+            });
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: turn.assistant.clone(),
+            });
+        }
+        messages.push(ChatMessage {
+            role: "user".into(),
+            content: user.text.clone(),
+        });
+        messages
+    }
+
     #[cfg(test)]
     fn with_engine(engine: Box<dyn Engine>) -> Self {
         Self {
@@ -238,30 +283,7 @@ impl Llm for LlamaLlm {
             });
         }
 
-        let kept = if history.len() > LLAMA_MAX_HISTORY_TURNS {
-            &history[history.len() - LLAMA_MAX_HISTORY_TURNS..]
-        } else {
-            history
-        };
-        let mut messages = Vec::with_capacity(2 + kept.len() * 2);
-        messages.push(ChatMessage {
-            role: "system".into(),
-            content: render_system_prompt(&self.system_prompt, &user.language),
-        });
-        for turn in kept {
-            messages.push(ChatMessage {
-                role: "user".into(),
-                content: turn.user.text.clone(),
-            });
-            messages.push(ChatMessage {
-                role: "assistant".into(),
-                content: turn.assistant.clone(),
-            });
-        }
-        messages.push(ChatMessage {
-            role: "user".into(),
-            content: user.text.clone(),
-        });
+        let messages = self.messages(history, user);
 
         let mut index = 0u32;
         let append_thinking_off_suffix =
@@ -293,6 +315,12 @@ impl Llm for LlamaLlm {
 }
 
 trait Engine: Send {
+    fn prompt_token_count(
+        &mut self,
+        messages: &[ChatMessage],
+        append_thinking_off_suffix: bool,
+    ) -> Result<usize>;
+
     fn generate(
         &mut self,
         messages: &[ChatMessage],
@@ -321,6 +349,19 @@ impl LlamaEngine {
 }
 
 impl Engine for LlamaEngine {
+    fn prompt_token_count(
+        &mut self,
+        messages: &[ChatMessage],
+        append_thinking_off_suffix: bool,
+    ) -> Result<usize> {
+        self.ctx
+            .prompt_token_count(messages, append_thinking_off_suffix)
+            .map_err(|err| Error::Provider {
+                provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
+                message: format!("{err:?}"),
+            })
+    }
+
     fn generate(
         &mut self,
         messages: &[ChatMessage],
@@ -450,6 +491,17 @@ mod tests {
     }
 
     impl Engine for ScriptedEngine {
+        fn prompt_token_count(
+            &mut self,
+            messages: &[ChatMessage],
+            _append_thinking_off_suffix: bool,
+        ) -> Result<usize> {
+            Ok(messages
+                .iter()
+                .map(|message| message.content.split_whitespace().count())
+                .sum())
+        }
+
         fn generate(
             &mut self,
             messages: &[ChatMessage],

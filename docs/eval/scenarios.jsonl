@@ -2,11 +2,11 @@
 {"component":"stt","case":"librispeech-1089","min_word_match":0.8,"expected_words":["he","hoped","there","would","be","stew","for","dinner","turnips","and","carrots","and","bruised","potatoes","and","fat","mutton","pieces","to","be","ladled","out","in","thick","peppered","flour","fattened","sauce"]}
 {"component":"stt","case":"librispeech-121","min_word_match":0.8,"expected_words":["she","has","been","dead","these","twenty","years"]}
 {"component":"stt","case":"librispeech-1995","min_word_match":0.8,"expected_words":["she","was","so","strange","and","human","a","creature"]}
-{"component":"llm","case":"greeting","text":"Reply briefly with a friendly greeting."}
-{"component":"llm","case":"fact","text":"Reply briefly: what is the capital of France?"}
-{"component":"llm","case":"arithmetic-spoken-numbers","text":"Reply briefly using words, not digits: what is one hundred plus twenty three?"}
-{"component":"llm","case":"history-follow-up","text":"What city did I say I am visiting?","history":[{"user":"I am visiting Lisbon next week.","assistant":"Lisbon sounds like a wonderful trip."}]}
-{"component":"llm","case":"long-answer","text":"In three short sentences, explain why regular backups matter."}
+{"component":"llm","case":"greeting","text":"Reply briefly with a friendly greeting.","required_keywords_any":["hello","hi","hey","welcome","great"]}
+{"component":"llm","case":"fact","text":"Reply briefly: what is the capital of France?","required_keywords_any":["paris"]}
+{"component":"llm","case":"arithmetic-spoken-numbers","text":"Reply briefly using words, not digits: what is one hundred plus twenty three?","required_keywords_any":["one hundred twenty three","one hundred and twenty three","one hundred twenty-three","one hundred and twenty-three"],"forbidden_keywords":["123"]}
+{"component":"llm","case":"history-follow-up","text":"What city did I say I am visiting?","history":[{"user":"I am visiting Lisbon next week.","assistant":"Lisbon sounds like a wonderful trip."}],"required_keywords_any":["lisbon"]}
+{"component":"llm","case":"long-answer","text":"In three short sentences, explain why regular backups matter.","required_keywords_any":["backup","backups"]}
 {"component":"tts","case":"short","text":"The children played outside in the garden after lunch.","expected_words":["the","children","played","outside","in","the","garden","after","lunch"],"min_word_match":0.8}
 {"component":"tts","case":"long","text":"Please summarize the article in two sentences and then explain why the train leaves before noon so travelers can reach the station with time to spare.","expected_words":["please","summarize","the","article","in","two","sentences","and","then","explain","why","the","train","leaves","before","noon","so","travelers","can","reach","the","station","with","time","to","spare"],"min_word_match":0.8}
 {"component":"tts","case":"numbers","text":"That costs 100 dollars. Please charge $5 at 3:45 pm in USD through the API.","numbers":true}
