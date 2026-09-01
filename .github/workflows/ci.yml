@@ -80,7 +80,17 @@ jobs:
       # cache is the compile-time win it is designed to be.
       - uses: Swatinem/rust-cache@v2
         if: contains(inputs.pool || '', 'ubuntu-latest')
+      # The self-hosted macOS runner retains target/ between jobs. llvm-cov
+      # merges every .profraw it finds, including profiles from an earlier PR
+      # revision, so discard only those transient coverage inputs.
+      - name: Clear stale coverage profiles
+        run: |
+          if [ -d target/llvm-cov-target ]; then
+            find target/llvm-cov-target -type f \( -name '*.profraw' -o -name '*.profdata' \) -delete
+          fi
       - name: Run unit tests with coverage
+        # Native inference is an opt-in integration suite. Keep it out of this
+        # unit-coverage gate: it is neither a model run nor unit-test coverage.
         run: cargo llvm-cov --workspace --fail-under-lines 85 --cobertura --output-path coverage.xml
       - name: Store coverage report
         # Best-effort evidence: the >=85% gate is enforced by the run step

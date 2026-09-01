@@ -81,7 +81,16 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.6.21
       - uses: Swatinem/rust-cache@v2
+      # Do not merge coverage profiles left by an earlier retry on a reused
+      # runner; build artifacts remain cached.
+      - name: Clear stale coverage profiles
+        run: |
+          if [ -d target/llvm-cov-target ]; then
+            find target/llvm-cov-target -type f \( -name '*.profraw' -o -name '*.profdata' \) -delete
+          fi
       - name: Run unit tests with coverage
+        # Native inference is an opt-in integration suite, not part of this
+        # unit-coverage gate or the OS matrix below.
         run: cargo llvm-cov --workspace --fail-under-lines 85 --cobertura --output-path coverage.xml
       - name: Store coverage report
         uses: actions/upload-artifact@v4

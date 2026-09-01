@@ -34,7 +34,7 @@ fi
 echo "== test =="
 # Launch-stack native inference (whisper small / llama 1B / kokoro / six-turn) once.
 # Optional yaml models are exclusive: SYLLABIX_NATIVE_MODELS=<ids> (not this script).
-cargo test --workspace
+cargo test --workspace --features syllabix-core/native-inference
 
 echo "== dist package =="
 chmod +x scripts/package-release.sh scripts/check-clean-artifact.sh
