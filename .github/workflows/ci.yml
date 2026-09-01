@@ -104,6 +104,26 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  performance-ledger:
+    name: performance ledger
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate immutable runs and render views
+        run: python3 scripts/validate-performance-ledger.py
+      - name: Test ledger validator
+        run: python3 scripts/test-performance-ledger.py
+      - name: Store generated ledger
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-ledger
+          path: |
+            docs/eval/results.csv
+            docs/eval/results.md
+          if-no-files-found: error
+
   clippy:
     name: clippy
     # Serialize behind coverage: both jobs compile the whole workspace, and

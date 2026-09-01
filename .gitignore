@@ -6,3 +6,6 @@
 .vscode/
 *.swp
 .syllabix-cache/
+# CI derives these views from immutable docs/eval/runs/*.jsonl records.
+docs/eval/results.csv
+docs/eval/results.md
