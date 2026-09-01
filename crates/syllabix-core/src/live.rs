@@ -8,7 +8,7 @@ use crate::cancel::Cancel;
 use crate::config::AgentConfig;
 use crate::error::Result;
 use crate::openai::resolve_api_key;
-use crate::pipeline::{LoopEvent, LoopReport};
+use crate::pipeline::{LoopEvent, LoopReport, RuntimeControls};
 use crate::turn_debug::TurnDebug;
 
 /// Load weights, open default devices, and run until shutdown or capture ends.
@@ -29,12 +29,22 @@ pub fn run_live(
     events: Option<Sender<LoopEvent>>,
     barge_in: bool,
 ) -> Result<LoopReport> {
+    run_live_with_controls(config, cancel, events, RuntimeControls::new(barge_in))
+}
+
+/// As [`run_live`], with controls that the inline terminal may change while running.
+pub fn run_live_with_controls(
+    config: &AgentConfig,
+    cancel: Cancel,
+    events: Option<Sender<LoopEvent>>,
+    controls: RuntimeControls,
+) -> Result<LoopReport> {
     let llm_api_key = match config.llm {
         crate::LlmProvider::Online => Some(resolve_api_key(|name| std::env::var(name).ok())?),
         crate::LlmProvider::Local => None,
     };
     let turn_debug = TurnDebug::from_config(config)?;
-    run_live_inner(config, cancel, events, turn_debug, barge_in, llm_api_key)
+    run_live_inner(config, cancel, events, turn_debug, controls, llm_api_key)
 }
 
 #[cfg(not(coverage))]
@@ -43,7 +53,7 @@ fn run_live_inner(
     cancel: Cancel,
     events: Option<Sender<LoopEvent>>,
     turn_debug: Option<TurnDebug>,
-    barge_in: bool,
+    controls: RuntimeControls,
     llm_api_key: Option<Zeroizing<String>>,
 ) -> Result<LoopReport> {
     use crate::audio::{NativeCapture, NativePlayback};
@@ -79,13 +89,16 @@ fn run_live_inner(
         capture.device_name, sink.device_name, config.name
     );
     eprintln!("echo: AEC3 on by default; automatic calibration starts with speaker playback");
+    if let Some(events) = &events {
+        let _ = events.send(LoopEvent::Ready);
+    }
     run_loop_captured(
         LoopConfig {
             defaults: BuiltinDefaults::v0(),
             mode: LoopMode::UntilInputEnds,
             events,
             turn_debug,
-            barge_in,
+            controls,
         },
         PipelineStages {
             vad,
@@ -105,7 +118,7 @@ fn run_live_inner(
     cancel: Cancel,
     events: Option<Sender<LoopEvent>>,
     turn_debug: Option<TurnDebug>,
-    barge_in: bool,
+    controls: RuntimeControls,
     llm_api_key: Option<Zeroizing<String>>,
 ) -> Result<LoopReport> {
     use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
@@ -132,7 +145,7 @@ fn run_live_inner(
         LoopConfig {
             events,
             turn_debug,
-            barge_in,
+            controls,
             ..LoopConfig::default()
         },
         PipelineStages {

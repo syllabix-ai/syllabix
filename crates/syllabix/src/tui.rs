@@ -1,4 +1,4 @@
-//! Transcript + latency TUI for `syllabix run`.
+//! Inline transcript and status renderer for `syllabix run`.
 
 use syllabix_core::{LoopEvent, ThinkFilter, TurnId};
 
@@ -17,6 +17,7 @@ impl TranscriptUi {
     /// Apply one pipeline event.
     pub fn apply(&mut self, event: LoopEvent) {
         match event {
+            LoopEvent::Ready | LoopEvent::Playback { .. } => {}
             LoopEvent::User { text, language, .. } => {
                 self.flush_agent();
                 // Non-English turns carry a visible language tag (fixed or
@@ -78,11 +79,6 @@ impl TranscriptUi {
         }
     }
 
-    /// Scroll so the last wrapped line stays in a pane of `width` × `height`.
-    pub fn transcript_scroll(&self, width: u16, height: u16) -> u16 {
-        scroll_offset(&self.transcript_text(), width, height)
-    }
-
     /// Latency footer.
     pub fn latency_line(&self) -> &str {
         if self.latency.is_empty() {
@@ -93,85 +89,197 @@ impl TranscriptUi {
     }
 }
 
-fn wrapped_line_count(text: &str, width: usize) -> usize {
-    if width == 0 {
-        return 0;
-    }
-    text.split('\n')
-        .map(|line| {
-            let chars = line.chars().count();
-            if chars == 0 {
-                1
-            } else {
-                chars.div_ceil(width)
-            }
-        })
-        .sum()
-}
-
-fn scroll_offset(text: &str, width: u16, height: u16) -> u16 {
-    let width = width as usize;
-    let height = height as usize;
-    if width == 0 || height == 0 {
-        return 0;
-    }
-    wrapped_line_count(text, width)
-        .saturating_sub(height)
-        .min(u16::MAX as usize) as u16
-}
-
 #[cfg(not(coverage))]
 mod live_terminal {
     use super::TranscriptUi;
-    use std::io::stdout;
+    use std::io::{stdout, Write};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
 
     use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-    use crossterm::execute;
-    use crossterm::terminal::{
-        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    use crossterm::{
+        cursor, execute,
+        terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
     };
-    use ratatui::backend::CrosstermBackend;
-    use ratatui::layout::{Constraint, Direction, Layout};
-    use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-    use ratatui::Terminal;
-    use syllabix_core::{run_live, AgentConfig, Cancel, Error, Result};
+    use syllabix_core::{
+        run_live_with_controls, AgentConfig, Cancel, Error, LoopEvent, Result, RuntimeControls,
+    };
 
     struct RawTerminalGuard;
 
     impl Drop for RawTerminalGuard {
         fn drop(&mut self) {
             let _ = disable_raw_mode();
-            let _ = execute!(stdout(), LeaveAlternateScreen);
         }
+    }
+
+    struct InlineRenderer {
+        ui: TranscriptUi,
+        printed_lines: usize,
+        ready: bool,
+        playing: bool,
+        footer_drawn: bool,
+    }
+
+    impl InlineRenderer {
+        fn new() -> Self {
+            Self {
+                ui: TranscriptUi::default(),
+                printed_lines: 0,
+                ready: false,
+                playing: false,
+                footer_drawn: false,
+            }
+        }
+
+        fn clear_footer(&mut self, out: &mut impl Write) -> std::io::Result<()> {
+            if self.footer_drawn {
+                execute!(
+                    out,
+                    cursor::MoveToColumn(0),
+                    Clear(ClearType::CurrentLine),
+                    cursor::MoveUp(1),
+                    cursor::MoveToColumn(0),
+                    Clear(ClearType::CurrentLine)
+                )?;
+                self.footer_drawn = false;
+            }
+            Ok(())
+        }
+
+        fn footer(&self, controls: &RuntimeControls) -> (String, String) {
+            let status = if controls.agent_muted() {
+                "(agent muted, listening...)".to_string()
+            } else if controls.speaker_muted() {
+                "(speaker muted, agent responding)".to_string()
+            } else if self.playing && controls.barge_in() {
+                "(audio playing, listening)".to_string()
+            } else if self.playing {
+                "(audio playing, enable barge-in to listen and interrupt)".to_string()
+            } else {
+                "(listening...)".to_string()
+            };
+            let speaker = if controls.speaker_muted() {
+                "unmute"
+            } else {
+                "mute"
+            };
+            let agent = if controls.agent_muted() {
+                "agent-on"
+            } else {
+                "agent-off"
+            };
+            let barge = if controls.barge_in() {
+                "barge-off"
+            } else {
+                "barge-on"
+            };
+            (status, format!("q:quit  m:{speaker}  a:{agent}  b:{barge}"))
+        }
+
+        fn draw_footer(
+            &mut self,
+            out: &mut impl Write,
+            controls: &RuntimeControls,
+        ) -> std::io::Result<()> {
+            if !self.ready {
+                return Ok(());
+            }
+            self.clear_footer(out)?;
+            let (status, help) = self.footer(controls);
+            write!(out, "{status}\r\n{help}")?;
+            out.flush()?;
+            self.footer_drawn = true;
+            Ok(())
+        }
+
+        fn apply(
+            &mut self,
+            event: LoopEvent,
+            out: &mut impl Write,
+            controls: &RuntimeControls,
+        ) -> std::io::Result<()> {
+            match event {
+                LoopEvent::Ready => self.ready = true,
+                LoopEvent::Playback { playing } => self.playing = playing,
+                LoopEvent::Timings { .. } => self.ui.apply(event),
+                event => {
+                    self.clear_footer(out)?;
+                    let is_inflight_assistant =
+                        matches!(&event, LoopEvent::Assistant { is_last: false, .. });
+                    self.ui.apply(event);
+                    if is_inflight_assistant {
+                        return self.draw_footer(out, controls);
+                    }
+                    let transcript = self.ui.transcript_text();
+                    let lines: Vec<_> = transcript.lines().collect();
+                    for line in &lines[self.printed_lines.min(lines.len())..] {
+                        write!(out, "{line}\r\n")?;
+                    }
+                    self.printed_lines = lines.len();
+                }
+            }
+            self.draw_footer(out, controls)
+        }
+
+        fn finish(&mut self, out: &mut impl Write, show_stats: bool) -> std::io::Result<()> {
+            self.clear_footer(out)?;
+            if show_stats && !self.ui.latency_line().contains('—') {
+                write!(out, "stats: {}\r\n", compact_stats(self.ui.latency_line()))?;
+            }
+            write!(out, "\r\n")?;
+            out.flush()
+        }
+    }
+
+    fn compact_stats(line: &str) -> String {
+        line.replace("STT", "stt")
+            .replace("TTFT", "llm")
+            .replace("TTFB", "tts")
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn final_stats_are_compact() {
+        assert_eq!(
+            compact_stats("STT 375ms  TTFT 255ms  TTFB 1.67s  total 7.64s"),
+            "stt 375ms  llm 255ms  tts 1.67s  total 7.64s"
+        );
     }
 
     pub fn run_conversation_tui(config: AgentConfig, cancel: Cancel, barge_in: bool) -> Result<()> {
         let (event_tx, event_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
+        let controls = RuntimeControls::new(barge_in);
         let loop_cancel = cancel.clone();
+        let loop_controls = controls.clone();
         thread::spawn(move || {
-            let result = run_live(&config, loop_cancel, Some(event_tx), barge_in);
+            let result =
+                run_live_with_controls(&config, loop_cancel, Some(event_tx), loop_controls);
             let _ = done_tx.send(result);
         });
 
-        enable_raw_mode().map_err(Error::from)?;
-        execute!(stdout(), EnterAlternateScreen).map_err(Error::from)?;
         let _guard = RawTerminalGuard;
-        let backend = CrosstermBackend::new(stdout());
-        let mut terminal = Terminal::new(backend).map_err(Error::from)?;
-        let mut ui = TranscriptUi::default();
+        let mut out = stdout();
+        let mut renderer = InlineRenderer::new();
+        let mut raw_mode = false;
 
+        let mut quit_requested = false;
         let outcome = loop {
             while let Ok(event) = event_rx.try_recv() {
-                ui.apply(event);
+                if matches!(&event, LoopEvent::Ready) && !raw_mode {
+                    enable_raw_mode().map_err(Error::from)?;
+                    raw_mode = true;
+                }
+                renderer
+                    .apply(event, &mut out, &controls)
+                    .map_err(Error::from)?;
             }
             if let Ok(done) = done_rx.try_recv() {
                 break done;
             }
-            if event::poll(Duration::from_millis(50)).map_err(Error::from)? {
+            if raw_mode && event::poll(Duration::from_millis(50)).map_err(Error::from)? {
                 if let Event::Key(key) = event::read().map_err(Error::from)? {
                     if key.kind == KeyEventKind::Press
                         && (key.code == KeyCode::Char('q')
@@ -179,32 +287,33 @@ mod live_terminal {
                             || (key.code == KeyCode::Char('c')
                                 && key.modifiers.contains(KeyModifiers::CONTROL)))
                     {
+                        quit_requested = key.code == KeyCode::Char('q');
                         cancel.shutdown();
+                    } else if key.kind == KeyEventKind::Press {
+                        match key.code {
+                            KeyCode::Char('b') => {
+                                controls.toggle_barge_in();
+                            }
+                            KeyCode::Char('m') => {
+                                controls.toggle_speaker_muted();
+                                renderer.playing = false;
+                            }
+                            KeyCode::Char('a') => {
+                                controls.toggle_agent_muted();
+                            }
+                            _ => continue,
+                        }
+                        renderer
+                            .draw_footer(&mut out, &controls)
+                            .map_err(Error::from)?;
                     }
                 }
             }
-            terminal
-                .draw(|frame| {
-                    let chunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Min(3), Constraint::Length(3)])
-                        .split(frame.size());
-                    let inner_width = chunks[0].width.saturating_sub(2);
-                    let inner_height = chunks[0].height.saturating_sub(2);
-                    let text = ui.transcript_text();
-                    let transcript = Paragraph::new(text.clone())
-                        .wrap(Wrap { trim: false })
-                        .scroll((ui.transcript_scroll(inner_width, inner_height), 0))
-                        .block(Block::default().borders(Borders::ALL).title("syllabix"));
-                    let latency = Paragraph::new(ui.latency_line().to_string())
-                        .block(Block::default().borders(Borders::ALL).title("latency"));
-                    frame.render_widget(transcript, chunks[0]);
-                    frame.render_widget(latency, chunks[1]);
-                })
-                .map_err(Error::from)?;
         };
 
-        drop(terminal);
+        renderer
+            .finish(&mut out, quit_requested)
+            .map_err(Error::from)?;
         match outcome {
             Ok(_) | Err(Error::Cancelled) => Ok(()),
             Err(err) => Err(err),
@@ -292,21 +401,6 @@ mod tests {
             is_last: true,
         });
         assert_eq!(ui.transcript_text(), "You: hey\nAgent:  I'm well.");
-    }
-
-    #[test]
-    fn transcript_scroll_keeps_the_last_line_visible() {
-        let mut ui = TranscriptUi::default();
-        for i in 0..20 {
-            ui.apply(LoopEvent::User {
-                turn: TurnId(i),
-                text: format!("line{i}"),
-                language: "en".into(),
-            });
-        }
-        let text = ui.transcript_text();
-        assert!(text.contains("line19"));
-        assert_eq!(ui.transcript_scroll(20, 4), 16);
     }
 
     #[test]
