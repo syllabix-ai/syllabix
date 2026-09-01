@@ -11,9 +11,9 @@ use syllabix_core::{
     audio::{read_wav, PcmFormat},
     run_loop, run_loop_captured, scripted_frames, AudioCapture, AudioSink, BuiltinDefaults, Cancel,
     CollectingSink, Error, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt, FakeTts,
-    FakeVad, LoopConfig, LoopMode, PipelineStages, PlaybackWatch, QueueCaps, Result, ScriptedStt,
-    SynthesizedAudio, TimelineAnchor, TokenChunk, Tts, TurnDebug, TurnId, Vad, VadEvent,
-    DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    FakeVad, LoopConfig, LoopMode, PipelineStages, PlaybackWatch, QueueCaps, Result,
+    RuntimeControls, ScriptedStt, SynthesizedAudio, TimelineAnchor, TokenChunk, Tts, TurnDebug,
+    TurnId, Vad, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
 fn run_with(
@@ -28,7 +28,7 @@ fn run_with(
             mode,
             events: None,
             turn_debug: None,
-            barge_in: false,
+            controls: RuntimeControls::new(false),
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -287,7 +287,7 @@ fn empty_and_whitespace_stt_skip_llm_and_keep_later_turns() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: None,
-            barge_in: false,
+            controls: RuntimeControls::new(false),
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -351,7 +351,7 @@ fn turn_debug_one_turn_writes_wavs_and_does_not_change_reply() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: Some(debug),
-            barge_in: false,
+            controls: RuntimeControls::new(false),
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -422,7 +422,7 @@ fn turn_debug_skipped_stt_still_writes() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: Some(debug),
-            barge_in: false,
+            controls: RuntimeControls::new(false),
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -455,7 +455,7 @@ fn turn_debug_empty_stt_is_skipped_without_tts() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: Some(debug),
-            barge_in: false,
+            controls: RuntimeControls::new(false),
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -505,7 +505,7 @@ fn turn_debug_cancel_writes_partial_turn() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: Some(debug),
-            barge_in: false,
+            controls: RuntimeControls::new(false),
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -600,7 +600,7 @@ fn barge_loop(barge_in: bool, llm: FakeLlm) -> syllabix_core::LoopReport {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: None,
-            barge_in,
+            controls: RuntimeControls::new(barge_in),
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -653,7 +653,7 @@ fn barge_in_turn_debug_writes_interrupted_turn() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: Some(debug),
-            barge_in: true,
+            controls: RuntimeControls::new(true),
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -692,7 +692,7 @@ fn diagnostics_sidecar_carries_the_full_turn_timeline() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: Some(debug.clone()),
-            barge_in: false,
+            controls: RuntimeControls::new(false),
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -764,7 +764,7 @@ fn interrupted_barge_in_turn_has_a_partial_timeline_without_drain() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: Some(debug),
-            barge_in: true,
+            controls: RuntimeControls::new(true),
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -823,7 +823,7 @@ fn vad_emits_speech_start_during_tts_only_with_barge_in() {
                 mode: LoopMode::UntilInputEnds,
                 events: None,
                 turn_debug: None,
-                barge_in,
+                controls: RuntimeControls::new(barge_in),
             },
             PipelineStages {
                 vad: OverlapVad {
@@ -927,7 +927,7 @@ fn barge_in_stops_a_blocked_previous_tts_play() {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: None,
-            barge_in: true,
+            controls: RuntimeControls::new(true),
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -1072,7 +1072,7 @@ fn first_tts_does_not_lose_speaker_copy_while_vad_is_paused() {
             mode: LoopMode::StopAfterTurns(1),
             events: None,
             turn_debug: None,
-            barge_in: false,
+            controls: RuntimeControls::new(false),
         },
         PipelineStages {
             vad: FakeVad::new(),

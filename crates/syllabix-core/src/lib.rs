@@ -59,7 +59,7 @@ pub use fake::{
     FakeTts, FakeVad, LlmCall, ScriptedStt,
 };
 pub use g2p::{english_to_ipa, english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
-pub use live::run_live;
+pub use live::{run_live, run_live_with_controls};
 pub use llm::{
     is_v0_llm_model, render_system_prompt, system_prompt_for, LlamaLlm, LLAMA_32_1B_ASSET,
     LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS, QWEN35_08B_ASSET, QWEN35_2B_ASSET,
@@ -76,7 +76,7 @@ pub use openai::{
 };
 pub use pipeline::{
     is_blank_stt, run_loop, run_loop_captured, LoopConfig, LoopEvent, LoopMode, LoopReport,
-    PipelineStages,
+    PipelineStages, RuntimeControls,
 };
 pub use pocket_tts::{
     PocketTts, POCKET_TTS_BOS_ASSET, POCKET_TTS_BUNDLE_ASSET, POCKET_TTS_FLOW_ASSET,

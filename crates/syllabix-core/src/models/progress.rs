@@ -42,7 +42,7 @@ impl Progress for StderrProgress {
         self.current = Some(asset.id.clone());
         let _ = write!(
             io::stderr(),
-            "\r{}",
+            "\r\x1b[2K{}",
             format_progress_line(&asset.id, 0, asset.size_bytes)
         );
         let _ = io::stderr().flush();
@@ -52,7 +52,7 @@ impl Progress for StderrProgress {
         if let Some(id) = &self.current {
             let _ = write!(
                 io::stderr(),
-                "\r{}",
+                "\r\x1b[2K{}",
                 format_progress_line(id, downloaded, total)
             );
             let _ = io::stderr().flush();
@@ -65,7 +65,7 @@ impl Progress for StderrProgress {
         } else {
             format_progress_line(&asset.id, asset.size_bytes, asset.size_bytes)
         };
-        let _ = writeln!(io::stderr(), "\r{line}");
+        let _ = writeln!(io::stderr(), "\r\x1b[2K{line}");
         self.current = None;
     }
 }

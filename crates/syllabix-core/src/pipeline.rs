@@ -40,6 +40,8 @@ pub enum LoopMode {
 /// Live transcript and latency events for the `run` TUI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoopEvent {
+    /// Native providers and devices are ready; the terminal can begin its live footer.
+    Ready,
     /// User STT text for a turn.
     User {
         /// Turn id.
@@ -65,6 +67,49 @@ pub enum LoopEvent {
         /// STT / TTFT / TTFB / total.
         timings: TurnTimings,
     },
+    /// Speaker playback has started or fully drained.
+    Playback { playing: bool },
+}
+
+/// Runtime controls shared by the inline terminal and the voice loop.
+#[derive(Debug, Clone)]
+pub struct RuntimeControls(Arc<RuntimeControlsInner>);
+
+#[derive(Debug)]
+struct RuntimeControlsInner {
+    barge_in: AtomicBool,
+    speaker_muted: AtomicBool,
+    agent_muted: AtomicBool,
+}
+
+impl RuntimeControls {
+    /// New controls with barge-in set from the command-line default.
+    pub fn new(barge_in: bool) -> Self {
+        Self(Arc::new(RuntimeControlsInner {
+            barge_in: AtomicBool::new(barge_in),
+            speaker_muted: AtomicBool::new(false),
+            agent_muted: AtomicBool::new(false),
+        }))
+    }
+
+    pub fn barge_in(&self) -> bool {
+        self.0.barge_in.load(Ordering::SeqCst)
+    }
+    pub fn speaker_muted(&self) -> bool {
+        self.0.speaker_muted.load(Ordering::SeqCst)
+    }
+    pub fn agent_muted(&self) -> bool {
+        self.0.agent_muted.load(Ordering::SeqCst)
+    }
+    pub fn toggle_barge_in(&self) -> bool {
+        !self.0.barge_in.fetch_xor(true, Ordering::SeqCst)
+    }
+    pub fn toggle_speaker_muted(&self) -> bool {
+        !self.0.speaker_muted.fetch_xor(true, Ordering::SeqCst)
+    }
+    pub fn toggle_agent_muted(&self) -> bool {
+        !self.0.agent_muted.fetch_xor(true, Ordering::SeqCst)
+    }
 }
 
 /// Configuration for one in-memory run.
@@ -78,8 +123,8 @@ pub struct LoopConfig {
     pub events: Option<Sender<LoopEvent>>,
     /// Opt-in per-turn WAV + sidecar writer. None means default `run` writes nothing.
     pub turn_debug: Option<TurnDebug>,
-    /// Keep VAD running during TTS and cancel playback on SpeechStart.
-    pub barge_in: bool,
+    /// Mutable terminal controls; the CLI's `--barge-in` sets their initial state.
+    pub controls: RuntimeControls,
 }
 
 impl LoopConfig {
@@ -90,7 +135,7 @@ impl LoopConfig {
             mode: LoopMode::StopAfterTurns(30),
             events: None,
             turn_debug: None,
-            barge_in: false,
+            controls: RuntimeControls::new(false),
         }
     }
 
@@ -101,7 +146,7 @@ impl LoopConfig {
             mode: LoopMode::StopAfterTurns(6),
             events: None,
             turn_debug: None,
-            barge_in: false,
+            controls: RuntimeControls::new(false),
         }
     }
 }
@@ -113,7 +158,7 @@ impl Default for LoopConfig {
             mode: LoopMode::UntilInputEnds,
             events: None,
             turn_debug: None,
-            barge_in: false,
+            controls: RuntimeControls::new(false),
         }
     }
 }
@@ -158,7 +203,7 @@ struct Shared {
     skipped: AtomicUsize,
     events: Option<Sender<LoopEvent>>,
     turn_debug: Option<TurnDebug>,
-    barge_in: bool,
+    controls: RuntimeControls,
     pause_vad: AtomicBool,
     flush_playback: AtomicBool,
     assistant_turn: Mutex<Option<TurnId>>,
@@ -172,7 +217,7 @@ impl Shared {
     fn new(
         events: Option<Sender<LoopEvent>>,
         turn_debug: Option<TurnDebug>,
-        barge_in: bool,
+        controls: RuntimeControls,
         tts_provider: &'static str,
         tts_model: Option<String>,
     ) -> Arc<Self> {
@@ -184,7 +229,7 @@ impl Shared {
             skipped: AtomicUsize::new(0),
             events,
             turn_debug,
-            barge_in,
+            controls,
             pause_vad: AtomicBool::new(false),
             flush_playback: AtomicBool::new(false),
             assistant_turn: Mutex::new(None),
@@ -212,7 +257,7 @@ impl Shared {
 
     fn mark_assistant(&self, turn: TurnId) {
         *self.assistant_turn.lock().expect("assistant turn") = Some(turn);
-        if !self.barge_in {
+        if !self.controls.barge_in() {
             self.pause_vad.store(true, Ordering::SeqCst);
         }
     }
@@ -225,13 +270,23 @@ impl Shared {
         }
     }
 
+    fn sync_barge_in(&self) {
+        let active = self
+            .assistant_turn
+            .lock()
+            .expect("assistant turn")
+            .is_some();
+        self.pause_vad
+            .store(active && !self.controls.barge_in(), Ordering::SeqCst);
+    }
+
     /// Cancel in-flight LLM/TTS when `--barge-in` hears SpeechStart.
     ///
     /// Always bump the generation and flush the speaker ring. Playback can still
     /// hold the previous turn after we released `assistant_turn` (last chunk
     /// queued, ring not empty) or while `play` is blocked feeding a long sentence.
     fn interrupt_assistant(&self, cancel: &Cancel) -> bool {
-        if !self.barge_in {
+        if !self.controls.barge_in() {
             return false;
         }
         let turn = {
@@ -541,7 +596,7 @@ where
     let shared = Shared::new(
         config.events.clone(),
         config.turn_debug.clone(),
-        config.barge_in,
+        config.controls.clone(),
         tts_provider,
         tts_model,
     );
@@ -770,6 +825,7 @@ fn vad_loop<V: Vad>(
         if cancel.is_shutdown() {
             return;
         }
+        shared.sync_barge_in();
         if shared.pause_vad.load(Ordering::SeqCst) {
             match rx.recv_timeout(POLL) {
                 Ok(frame) => {
@@ -864,7 +920,15 @@ fn stt_loop<S: Stt>(
                                 &language,
                                 done_at,
                             );
-                            ignore_cancel(tx.send_cancellable(transcript, cancel), shared, cancel);
+                            if shared.controls.agent_muted() {
+                                shared.note_skip(transcript.turn, cancel);
+                            } else {
+                                ignore_cancel(
+                                    tx.send_cancellable(transcript, cancel),
+                                    shared,
+                                    cancel,
+                                );
+                            }
                         }
                     }
                     Err(Error::Cancelled) => {
@@ -1017,13 +1081,16 @@ fn sink_loop<K: AudioSink>(
     cancel: &Cancel,
     shared: &Shared,
 ) {
+    let mut speaker_was_muted = false;
     loop {
         if cancel.is_shutdown() {
             return;
         }
-        if shared.take_flush() {
+        let speaker_muted = shared.controls.speaker_muted();
+        if (speaker_muted && !speaker_was_muted) || shared.take_flush() {
             sink.interrupt();
         }
+        speaker_was_muted = speaker_muted;
         match rx.recv_timeout(POLL) {
             Ok(audio) => {
                 if shared.take_flush() {
@@ -1035,8 +1102,17 @@ fn sink_loop<K: AudioSink>(
                 let is_last = audio.is_last;
                 let turn = audio.turn;
                 let generation = audio.generation;
+                if shared.controls.speaker_muted() {
+                    let completed = shared.note_audio(&audio, Instant::now(), cancel);
+                    if is_last {
+                        shared.release_assistant(turn);
+                        maybe_stop_after(mode, completed, cancel);
+                    }
+                    continue;
+                }
                 match sink.play(audio.clone(), cancel) {
                     Ok(()) => {
+                        shared.emit(LoopEvent::Playback { playing: true });
                         if shared.take_flush() {
                             sink.interrupt();
                         }
@@ -1060,6 +1136,7 @@ fn sink_loop<K: AudioSink>(
                                 }
                             }
                             shared.release_assistant(turn);
+                            shared.emit(LoopEvent::Playback { playing: false });
                             maybe_stop_after(mode, completed, cancel);
                         }
                     }
@@ -1096,6 +1173,20 @@ mod tests {
         scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad, ScriptedStt,
     };
     use crate::types::TurnId;
+
+    #[test]
+    fn runtime_controls_toggle_independently() {
+        let controls = RuntimeControls::new(false);
+        assert!(!controls.barge_in());
+        assert!(!controls.speaker_muted());
+        assert!(!controls.agent_muted());
+        assert!(controls.toggle_barge_in());
+        assert!(controls.toggle_speaker_muted());
+        assert!(controls.toggle_agent_muted());
+        assert!(controls.barge_in());
+        assert!(controls.speaker_muted());
+        assert!(controls.agent_muted());
+    }
 
     fn run_turns(n: usize) -> LoopReport {
         let frames = scripted_frames(n, 2, 1);
