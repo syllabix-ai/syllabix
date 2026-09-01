@@ -11,5 +11,5 @@ description = "Shared ggml plus whisper.cpp and llama.cpp frontends"
 path = "src/lib.rs"
 
 [build-dependencies]
-cmake = "=0.1.52"
+cmake = "=0.1.58"
 walkdir = "=2.5.0"

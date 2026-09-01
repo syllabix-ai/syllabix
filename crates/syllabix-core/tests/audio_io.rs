@@ -309,6 +309,9 @@ fn simulated_thirty_minute_loop_stays_in_bounds() {
     );
 }
 
+// Windows hosted runners can access-violate inside the audio driver while
+// opening a device. The macOS and Linux jobs retain this smoke test.
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn native_open_fails_with_actionable_error_when_no_device() {
     #[cfg(target_os = "linux")]

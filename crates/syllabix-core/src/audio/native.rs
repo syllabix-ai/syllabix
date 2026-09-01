@@ -1250,6 +1250,10 @@ mod tests {
         assert_eq!(playback.ring.occupancy(), 0);
     }
 
+    // Windows hosted runners can access-violate inside the audio driver while
+    // opening a device. Keep this real-device smoke test on Unix; Windows
+    // still runs inventory and all deterministic CPAL tests above.
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn missing_hardware_error_is_actionable() {
         // CI has no guaranteed mic. Opening may fail; the message must tell a human what to do.
