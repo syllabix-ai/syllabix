@@ -180,6 +180,50 @@ pub struct LlmDebugMeta {
     pub request_id: String,
 }
 
+/// A normalized API-native tool call. Provider wire shapes are deliberately
+/// kept out of the pipeline: OpenAI-compatible deltas map here once.
+#[cfg(not(coverage))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCall {
+    /// Provider-issued identifier used to correlate the result message.
+    pub id: String,
+    /// One of the model-visible tool names.
+    pub name: String,
+    /// JSON arguments after the provider's fragmented SSE deltas are joined.
+    pub arguments: serde_json::Value,
+}
+
+/// A bounded result returned to the model after a normalized [`ToolCall`].
+///
+/// Phase 1 has no live executors; its built-in result says so. Phase 2 will
+/// replace that source without changing the API loop or provider contract.
+#[cfg(not(coverage))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolResult {
+    /// The matching [`ToolCall::id`].
+    pub tool_call_id: String,
+    /// Bounded, untrusted content returned to the model.
+    pub content: String,
+    /// Whether the host accepted the call for execution.
+    pub ok: bool,
+}
+
+/// Structured per-turn evidence for a tool call or result. This carries only
+/// model-visible facts; executor policy and ambient secrets never enter it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolTurnEvent {
+    /// `call`, `result`, `rejected`, or `limit`.
+    pub kind: String,
+    /// Tool name when a call parsed successfully.
+    pub name: String,
+    /// Provider tool-call id, if present.
+    pub call_id: String,
+    /// Validated public arguments, serialized as JSON.
+    pub arguments: String,
+    /// Bounded result or rejection text.
+    pub content: String,
+}
+
 /// One finished user+assistant cycle collected by the in-memory loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletedTurn {

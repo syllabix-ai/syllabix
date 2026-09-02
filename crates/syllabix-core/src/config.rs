@@ -52,6 +52,9 @@ pub struct AgentConfig {
     /// `provider: online`, forbidden for `provider: local`; the API key never
     /// lives here.
     pub llm_base_url: Option<String>,
+    /// Explicit developer-only opt-in for the Phase-1 API tool loop. It is
+    /// never enabled by defaults or written by `init`.
+    pub llm_developer_harness: bool,
     /// TTS provider (`local`; `online` is reserved and fails fast today).
     pub tts: TtsProvider,
     /// TTS model id (`kokoro`, `qwen3-0.6`, `qwen3-1.7`, or `pocket-tts`).
@@ -92,6 +95,7 @@ impl AgentConfig {
             thinking: defaults.llm_thinking,
             system_prompt: crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             llm_base_url: None,
+            llm_developer_harness: false,
             tts: defaults.tts,
             tts_model: defaults.tts_model,
             tts_language: "en".to_string(),
@@ -299,7 +303,14 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     deny_unknown(
         llm,
         "pipeline.llm",
-        &["provider", "model", "thinking", "system_prompt", "base_url"],
+        &[
+            "provider",
+            "model",
+            "thinking",
+            "system_prompt",
+            "base_url",
+            "developer_harness",
+        ],
     )?;
     let llm_provider = parse_llm(required_string(llm, "pipeline.llm.provider", "provider")?)?;
     let llm_model = parse_llm_model(
@@ -315,6 +326,13 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     // vLLM, llama-server); the key may not live here either way —
     // `SYLLABIX_LLM_API_KEY` env only, never yaml, never `.env`.
     let llm_base_url = resolve_llm_base_url(llm, llm_provider)?;
+    let llm_developer_harness = optional_bool(llm, "pipeline.llm", "developer_harness", false)?;
+    if llm_developer_harness && llm_provider != LlmProvider::Online {
+        return Err(Error::Config {
+            field: "pipeline.llm.developer_harness".into(),
+            message: "is only valid when pipeline.llm.provider is online".into(),
+        });
+    }
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
     deny_unknown(tts, "pipeline.tts", &["provider", "model", "language"])?;
@@ -353,6 +371,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         thinking,
         system_prompt,
         llm_base_url,
+        llm_developer_harness,
         tts: tts_provider,
         tts_model,
         tts_language,
@@ -752,6 +771,35 @@ mod tests {
         assert!(yaml.contains("end_silence_ms: 350"));
         assert!(yaml.contains("preroll_ms: 200"));
         assert_eq!(AgentConfig::parse_yaml(&yaml).unwrap(), AgentConfig::v0());
+    }
+
+    #[test]
+    fn developer_harness_is_off_by_default_and_online_only() {
+        assert!(!AgentConfig::v0().llm_developer_harness);
+        let enabled = AgentConfig::parse_yaml(
+            r#"
+name: harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: whisper.cpp, model: small, language: en }
+  llm: { provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
+  tts: { provider: local, model: kokoro }
+"#,
+        )
+        .expect("online developer harness parses");
+        assert!(enabled.llm_developer_harness);
+        let err = AgentConfig::parse_yaml(
+            r#"
+name: harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: whisper.cpp, model: small, language: en }
+  llm: { provider: local, model: llama-3.2-1b, developer_harness: true }
+  tts: { provider: local, model: kokoro }
+"#,
+        )
+        .expect_err("local harness is rejected");
+        assert!(err.to_string().contains("developer_harness"));
     }
 
     #[test]

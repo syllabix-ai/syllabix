@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use crate::audio::{write_wav, PcmFormat, WavPcm};
 use crate::error::{Error, Result};
 use crate::speech_text::speak_text_for_tts;
-use crate::types::{LlmDebugMeta, TurnId, TurnTimings, Utterance, DEFAULT_SAMPLE_RATE_HZ};
+use crate::types::{
+    LlmDebugMeta, ToolTurnEvent, TurnId, TurnTimings, Utterance, DEFAULT_SAMPLE_RATE_HZ,
+};
 
 /// Default directory when `diagnostics:` is enabled without an explicit one.
 pub const DEFAULT_TURN_DEBUG_DIR: &str = "target/turn-debug";
@@ -128,6 +130,7 @@ struct TurnDump {
     stt_language: Option<String>,
     llm_text: String,
     llm_meta: Option<LlmDebugMeta>,
+    tool_events: Vec<ToolTurnEvent>,
     tts_provider: Option<String>,
     tts_model: Option<String>,
     timings: Option<TurnTimings>,
@@ -273,6 +276,20 @@ impl TurnDebug {
         let Some(meta) = meta else { return };
         let mut inner = self.lock();
         inner.turns.entry(turn.0).or_default().llm_meta = Some(meta);
+    }
+
+    /// Ordered API-tool evidence. These events exclude host-only executor
+    /// policy and ambient secrets by construction.
+    pub fn note_tool_events(&self, turn: TurnId, events: Vec<ToolTurnEvent>) {
+        if events.is_empty() {
+            return;
+        }
+        self.lock()
+            .turns
+            .entry(turn.0)
+            .or_default()
+            .tool_events
+            .extend(events);
     }
 
     /// PCM actually handed to the sink, plus the TTS provider facts for the
@@ -470,9 +487,33 @@ fn write_turn(
         write_pcm(&dir.join("utterance.wav"), &dump.utterance)?;
         write_pcm(&dir.join("tts.wav"), &dump.tts)?;
     }
-    let sidecar = render_sidecar(id, outcome, dump);
+    let sidecar = render_sidecar(id, outcome, dump).replacen(
+        "\n  \"tts_provider\":",
+        &format!(
+            "\n  \"tool_events\": {},\n  \"tts_provider\":",
+            render_tool_events(&dump.tool_events)
+        ),
+        1,
+    );
     fs::write(dir.join("turn.json"), sidecar).map_err(|err| turn_debug_io(&dir, err))?;
     Ok(())
+}
+
+fn render_tool_events(events: &[ToolTurnEvent]) -> String {
+    let entries: Vec<_> = events
+        .iter()
+        .map(|event| {
+            format!(
+                "{{\"kind\":{},\"name\":{},\"call_id\":{},\"arguments\":{},\"content\":{}}}",
+                json_string(&event.kind),
+                json_string(&event.name),
+                json_string(&event.call_id),
+                json_string(&event.arguments),
+                json_string(&event.content),
+            )
+        })
+        .collect();
+    format!("[{}]", entries.join(","))
 }
 
 fn write_pcm(path: &Path, samples: &[i16]) -> Result<()> {

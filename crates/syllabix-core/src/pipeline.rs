@@ -60,6 +60,13 @@ pub enum LoopEvent {
         /// Last token of the generation.
         is_last: bool,
     },
+    /// Developer-harness trace evidence. It is never forwarded to TTS.
+    Tool {
+        /// Turn that caused the call.
+        turn: TurnId,
+        /// Structured call/result/rejection event.
+        event: crate::types::ToolTurnEvent,
+    },
     /// Turn finished playback; clocks for the TUI footer.
     Timings {
         /// Turn id.
@@ -983,10 +990,18 @@ fn llm_loop<L: Llm>(
                     shared.note_token(&chunk, Instant::now());
                     tx.send_cancellable(chunk, cancel)
                 });
+                let tool_events = llm.take_tool_events();
+                for event in &tool_events {
+                    shared.emit(LoopEvent::Tool {
+                        turn: user.turn,
+                        event: event.clone(),
+                    });
+                }
                 // Sidecar provider facts (provider/model/endpoint/request-id)
                 // land before any immediate dump (skip) can write the turn.
                 if let Some(debug) = &shared.turn_debug {
                     debug.note_llm_meta(user.turn, llm.debug_meta());
+                    debug.note_tool_events(user.turn, tool_events);
                 }
                 match gen_result {
                     Ok(()) => {
