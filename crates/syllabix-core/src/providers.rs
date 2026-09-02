@@ -3,8 +3,8 @@
 use crate::cancel::Cancel;
 use crate::error::Result;
 use crate::types::{
-    AudioFrame, HistoryTurn, LlmDebugMeta, SynthesizedAudio, TokenChunk, Transcript, TurnId,
-    Utterance, VadEvent,
+    AudioFrame, HistoryTurn, LlmDebugMeta, SynthesizedAudio, TokenChunk, ToolTurnEvent, Transcript,
+    TurnId, Utterance, VadEvent,
 };
 
 /// Voice-activity detector. Consumes frames, emits speech-start and speech-stop.
@@ -37,6 +37,12 @@ pub trait Llm: Send {
     /// test providers; live engines report provider/model/endpoint/request-id.
     fn debug_meta(&self) -> Option<LlmDebugMeta> {
         None
+    }
+
+    /// Structured API-tool evidence accumulated during the last generation.
+    /// Local and existing fake providers have none.
+    fn take_tool_events(&mut self) -> Vec<ToolTurnEvent> {
+        Vec::new()
     }
 
     /// Stream tokens for `user`. `history` is completed prior turns in order.

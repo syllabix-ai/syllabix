@@ -20,7 +20,16 @@ use crate::config::AgentConfig;
 use crate::error::{Error, Result};
 use crate::llm::LLAMA_MAX_HISTORY_TURNS;
 use crate::providers::Llm;
-use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, Transcript};
+use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, ToolTurnEvent, Transcript};
+#[cfg(not(coverage))]
+use crate::types::{ToolCall, ToolResult};
+
+/// The exploration is deliberately bounded before any executor exists.
+#[cfg(not(coverage))]
+pub const MAX_TOOL_CALLS_PER_TURN: usize = 5;
+/// Tool result text is bounded before it can re-enter a model context.
+#[cfg(not(coverage))]
+pub const MAX_TOOL_RESULT_BYTES: usize = 8 * 1024;
 
 /// Environment variable carrying the BYO key. The only supported source.
 pub const API_KEY_ENV: &str = "SYLLABIX_LLM_API_KEY";
@@ -50,6 +59,8 @@ const POLL_TICK: Duration = Duration::from_millis(100);
 
 /// Spoken when a cloud turn fails. Short, plain, no Markdown.
 pub const CLOUD_FALLBACK_TEXT: &str = "Sorry, I could not reach the language model.";
+#[cfg(not(coverage))]
+pub const TOOL_LIMIT_TEXT: &str = "Sorry, I reached the tool-call limit for this turn.";
 
 /// Reject or accept a `pipeline.llm.base_url` value.
 ///
@@ -115,6 +126,9 @@ pub struct OpenAiSettings {
     /// System prompt template (`pipeline.llm.system_prompt`). `{language}` is
     /// replaced at generate time, same as the local engine.
     pub system_prompt: String,
+    /// Whether this explicit developer-only run advertises the two Phase-1
+    /// schemas. Default runs omit the API `tools` member entirely.
+    pub developer_harness: bool,
 }
 
 impl OpenAiSettings {
@@ -128,6 +142,7 @@ impl OpenAiSettings {
             endpoint: join_endpoint(&base),
             model: config.llm_model.clone(),
             system_prompt: config.system_prompt.clone(),
+            developer_harness: config.llm_developer_harness,
         }
     }
 }
@@ -165,6 +180,7 @@ pub struct OpenAiLlm {
     agent: Agent,
     timeouts: OpenAiTimeouts,
     last_request_id: Mutex<Option<String>>,
+    tool_events: Mutex<Vec<ToolTurnEvent>>,
 }
 
 impl OpenAiLlm {
@@ -185,6 +201,7 @@ impl OpenAiLlm {
             agent: build_agent(timeouts),
             timeouts,
             last_request_id: Mutex::new(None),
+            tool_events: Mutex::new(Vec::new()),
         }
     }
 
@@ -208,6 +225,14 @@ fn build_agent(timeouts: OpenAiTimeouts) -> Agent {
 enum StreamEvent {
     /// One non-empty assistant delta.
     Delta(String),
+    /// One fragment of an OpenAI-compatible streamed tool call.
+    #[cfg(not(coverage))]
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments: Option<String>,
+    },
     /// Response id header captured for the diagnostics sidecar.
     RequestId(String),
     /// Server sent `data: [DONE]`.
@@ -233,6 +258,10 @@ impl Llm for OpenAiLlm {
         })
     }
 
+    fn take_tool_events(&mut self) -> Vec<ToolTurnEvent> {
+        std::mem::take(&mut *self.tool_events.lock().expect("openai tool-events mutex"))
+    }
+
     fn generate(
         &mut self,
         history: &[HistoryTurn],
@@ -242,6 +271,10 @@ impl Llm for OpenAiLlm {
     ) -> Result<()> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
+        }
+        #[cfg(not(coverage))]
+        if self.settings.developer_harness {
+            return self.generate_with_tools(history, user, cancel, on_token);
         }
         let generation = cancel.generation();
         let body = request_body(
@@ -307,6 +340,13 @@ impl Llm for OpenAiLlm {
                         }
                     }
                 }
+                #[cfg(not(coverage))]
+                Ok(Ok(StreamEvent::ToolCallDelta { .. })) => {
+                    break Err(Error::Provider {
+                        provider: PROVIDER_NAME,
+                        message: "received a tool call without developer harness enabled".into(),
+                    });
+                }
                 Ok(Ok(StreamEvent::Finished)) => {
                     let mut chunk = pending.take().unwrap_or(TokenChunk {
                         turn: user.turn,
@@ -349,6 +389,273 @@ impl Llm for OpenAiLlm {
             }
         }
     }
+}
+
+#[cfg(not(coverage))]
+#[derive(Debug, Default)]
+struct RawToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+#[cfg(not(coverage))]
+impl OpenAiLlm {
+    /// Phase-1 API-native loop. It deliberately has no live executor: each
+    /// accepted call receives a bounded unavailable result so the protocol,
+    /// evidence, and continuation path are testable before Phase 2 opens any
+    /// network or subprocess authority.
+    fn generate_with_tools(
+        &mut self,
+        history: &[HistoryTurn],
+        user: &Transcript,
+        cancel: &Cancel,
+        on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
+    ) -> Result<()> {
+        let generation = cancel.generation();
+        let mut body = request_body(
+            &self.settings.model,
+            history,
+            user,
+            &self.settings.system_prompt,
+        );
+        body["tools"] = tool_definitions();
+        let mut call_count = 0usize;
+
+        loop {
+            if cancel.is_shutdown() || cancel.is_stale(generation) {
+                return Err(Error::Cancelled);
+            }
+            let (content, raw_calls) = match self.collect_tool_response(body.to_string(), cancel) {
+                Ok(response) => response,
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(err) => {
+                    tracing::warn!(provider = PROVIDER_NAME, error = %err, "cloud tool turn failed");
+                    return speak_fallback(user.turn, generation, cancel, on_token);
+                }
+            };
+            if raw_calls.is_empty() {
+                return on_token(TokenChunk {
+                    turn: user.turn,
+                    generation,
+                    index: 0,
+                    text: content,
+                    is_last: true,
+                });
+            }
+
+            let calls = raw_calls
+                .into_iter()
+                .map(normalize_tool_call)
+                .collect::<std::result::Result<Vec<_>, _>>();
+            let calls = match calls {
+                Ok(calls) => calls,
+                Err(message) => {
+                    self.note_tool_event("rejected", "", "", "", &message);
+                    return speak_fallback(user.turn, generation, cancel, on_token);
+                }
+            };
+            if call_count.saturating_add(calls.len()) > MAX_TOOL_CALLS_PER_TURN {
+                self.note_tool_event("limit", "", "", "", TOOL_LIMIT_TEXT);
+                return on_token(TokenChunk {
+                    turn: user.turn,
+                    generation,
+                    index: 0,
+                    text: TOOL_LIMIT_TEXT.into(),
+                    is_last: true,
+                });
+            }
+            call_count += calls.len();
+            append_tool_call_message(&mut body, &calls);
+            for call in calls {
+                self.note_tool_event(
+                    "call",
+                    &call.name,
+                    &call.id,
+                    &call.arguments.to_string(),
+                    "",
+                );
+                let result = phase_one_result(&call);
+                self.note_tool_event(
+                    "result",
+                    &call.name,
+                    &call.id,
+                    &call.arguments.to_string(),
+                    &result.content,
+                );
+                append_tool_result_message(&mut body, &result);
+            }
+        }
+    }
+
+    fn note_tool_event(
+        &self,
+        kind: &str,
+        name: &str,
+        call_id: &str,
+        arguments: &str,
+        content: &str,
+    ) {
+        self.tool_events
+            .lock()
+            .expect("openai tool-events mutex")
+            .push(ToolTurnEvent {
+                kind: kind.into(),
+                name: name.into(),
+                call_id: call_id.into(),
+                arguments: truncate_bytes(arguments, MAX_TOOL_RESULT_BYTES),
+                content: truncate_bytes(content, MAX_TOOL_RESULT_BYTES),
+            });
+    }
+
+    fn collect_tool_response(
+        &mut self,
+        body: String,
+        cancel: &Cancel,
+    ) -> Result<(String, Vec<RawToolCall>)> {
+        let abandon = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel::<Result<StreamEvent>>();
+        let worker = StreamWorker {
+            agent: self.agent.clone(),
+            endpoint: self.settings.endpoint.clone(),
+            api_key: self.api_key.as_str().to_string(),
+            body,
+            abandon: Arc::clone(&abandon),
+            tx,
+        };
+        std::thread::Builder::new()
+            .name("syllabix-openai".into())
+            .spawn(move || worker.run())
+            .map_err(|err| Error::Provider {
+                provider: PROVIDER_NAME,
+                message: format!("failed to start stream worker: {err}"),
+            })?;
+        let _abandon_on_drop = AbandonOnDrop(abandon);
+        let generation = cancel.generation();
+        let mut idle_since = Instant::now();
+        let mut content = String::new();
+        let mut calls: Vec<RawToolCall> = Vec::new();
+        loop {
+            if cancel.is_shutdown() || cancel.is_stale(generation) {
+                return Err(Error::Cancelled);
+            }
+            match rx.recv_timeout(POLL_TICK) {
+                Ok(Ok(StreamEvent::RequestId(id))) => {
+                    *self
+                        .last_request_id
+                        .lock()
+                        .expect("openai request-id mutex") = Some(id);
+                    idle_since = Instant::now();
+                }
+                Ok(Ok(StreamEvent::Delta(text))) => {
+                    content.push_str(&text);
+                    idle_since = Instant::now();
+                }
+                Ok(Ok(StreamEvent::ToolCallDelta {
+                    index,
+                    id,
+                    name,
+                    arguments,
+                })) => {
+                    let slot = calls.get_mut(index);
+                    if slot.is_none() {
+                        calls.resize_with(index + 1, RawToolCall::default);
+                    }
+                    let slot = calls.get_mut(index).expect("tool call slot");
+                    if id.is_some() {
+                        slot.id = id;
+                    }
+                    if name.is_some() {
+                        slot.name = name;
+                    }
+                    if let Some(arguments) = arguments {
+                        slot.arguments.push_str(&arguments);
+                    }
+                    idle_since = Instant::now();
+                }
+                Ok(Ok(StreamEvent::Finished)) => return Ok((content, calls)),
+                Ok(Err(err)) => return Err(err),
+                Err(RecvTimeoutError::Timeout) if idle_since.elapsed() >= self.timeouts.idle => {
+                    return Err(Error::Provider {
+                        provider: PROVIDER_NAME,
+                        message: format!("no data for {:?} (idle timeout)", self.timeouts.idle),
+                    })
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(Error::Provider {
+                        provider: PROVIDER_NAME,
+                        message: "stream worker exited without a verdict".into(),
+                    })
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(coverage))]
+fn tool_definitions() -> serde_json::Value {
+    serde_json::json!([
+        {"type":"function","function":{"name":"web_fetch","description":"Fetch one public HTTP(S) URL.","parameters":{"type":"object","additionalProperties":false,"required":["url"],"properties":{"url":{"type":"string"}}}}},
+        {"type":"function","function":{"name":"shell","description":"Inspect the developer workspace with direct argv.","parameters":{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string"}}}}}
+    ])
+}
+
+#[cfg(not(coverage))]
+fn normalize_tool_call(raw: RawToolCall) -> std::result::Result<ToolCall, String> {
+    let id = raw
+        .id
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "tool call is missing id".to_string())?;
+    let name = raw
+        .name
+        .filter(|value| matches!(value.as_str(), "web_fetch" | "shell"))
+        .ok_or_else(|| "tool call has an unknown name".to_string())?;
+    let arguments: serde_json::Value = serde_json::from_str(&raw.arguments)
+        .map_err(|_| "tool call arguments are not valid JSON".to_string())?;
+    if !arguments.is_object() {
+        return Err("tool call arguments must be a JSON object".into());
+    }
+    Ok(ToolCall {
+        id,
+        name,
+        arguments,
+    })
+}
+
+#[cfg(not(coverage))]
+fn phase_one_result(call: &ToolCall) -> ToolResult {
+    ToolResult {
+        tool_call_id: call.id.clone(),
+        ok: false,
+        content: "Tool execution is not available in API-loop phase 1.".into(),
+    }
+}
+
+#[cfg(not(coverage))]
+fn append_tool_call_message(body: &mut serde_json::Value, calls: &[ToolCall]) {
+    let wire_calls: Vec<_> = calls.iter().map(|call| serde_json::json!({"id":call.id,"type":"function","function":{"name":call.name,"arguments":call.arguments.to_string()}})).collect();
+    body["messages"]
+        .as_array_mut()
+        .expect("request messages")
+        .push(serde_json::json!({"role":"assistant","tool_calls":wire_calls}));
+}
+
+#[cfg(not(coverage))]
+fn append_tool_result_message(body: &mut serde_json::Value, result: &ToolResult) {
+    body["messages"].as_array_mut().expect("request messages").push(serde_json::json!({"role":"tool","tool_call_id":result.tool_call_id,"content":result.content}));
+}
+
+#[cfg(not(coverage))]
+fn truncate_bytes(value: &str, max: usize) -> String {
+    if value.len() <= max {
+        return value.to_string();
+    }
+    let mut end = max;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
 }
 
 struct StreamWorker {
@@ -451,6 +758,17 @@ impl StreamWorker {
                                     return;
                                 }
                             }
+                            #[cfg(not(coverage))]
+                            for delta in delta_tool_calls(&value) {
+                                if !send(Ok(StreamEvent::ToolCallDelta {
+                                    index: delta.index,
+                                    id: delta.id,
+                                    name: delta.name,
+                                    arguments: delta.arguments,
+                                })) {
+                                    return;
+                                }
+                            }
                         }
                         Err(err) => {
                             send(Err(Error::Provider {
@@ -507,6 +825,51 @@ fn delta_content(value: &serde_json::Value) -> Option<String> {
         Some(serde_json::Value::String(text)) if !text.is_empty() => Some(text.clone()),
         Some(_) => None,
     }
+}
+
+#[cfg(not(coverage))]
+struct ToolCallDelta {
+    index: usize,
+    id: Option<String>,
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+/// Extract the OpenAI-compatible `choices[0].delta.tool_calls` fragments.
+/// Fragment joining and JSON validation happen once in the normalized loop.
+#[cfg(not(coverage))]
+fn delta_tool_calls(value: &serde_json::Value) -> Vec<ToolCallDelta> {
+    let Some(entries) = value
+        .pointer("/choices/0/delta/tool_calls")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let index = entry
+                .get("index")?
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())?;
+            let function = entry.get("function");
+            Some(ToolCallDelta {
+                index,
+                id: entry
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                name: function
+                    .and_then(|f| f.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                arguments: function
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect()
 }
 
 /// Same message shape as the local engine: system prompt pins the reply
@@ -582,6 +945,7 @@ mod tests {
                 endpoint,
                 model: "gpt-test".into(),
                 system_prompt: crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
+                developer_harness: false,
             },
             Zeroizing::new(TEST_KEY.into()),
             OpenAiTimeouts {
@@ -1073,6 +1437,101 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[cfg(not(coverage))]
+    #[test]
+    fn default_request_has_no_tool_schemas_but_harness_defines_only_two() {
+        let default = request_body(
+            "gpt-test",
+            &[],
+            &user("hi"),
+            crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE,
+        );
+        assert!(default.get("tools").is_none());
+        let tools = tool_definitions();
+        let names: Vec<_> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["web_fetch", "shell"]);
+    }
+
+    #[cfg(not(coverage))]
+    #[test]
+    fn fragmented_tool_call_normalizes_once_and_rejects_bad_shapes() {
+        let deltas = [
+            serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"shell","arguments":"{\"argv\":[\"git\""}}]}}]}),
+            serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":",\"status\"]}"}}]}}]}),
+        ];
+        let fragments: Vec<_> = deltas.iter().flat_map(delta_tool_calls).collect();
+        let mut raw = RawToolCall::default();
+        for fragment in fragments {
+            raw.id = fragment.id.or(raw.id);
+            raw.name = fragment.name.or(raw.name);
+            raw.arguments
+                .push_str(&fragment.arguments.unwrap_or_default());
+        }
+        let call = normalize_tool_call(raw).expect("fragmented call parses");
+        assert_eq!(call.name, "shell");
+        assert_eq!(call.arguments["argv"][1], "status");
+        assert!(normalize_tool_call(RawToolCall {
+            id: Some("x".into()),
+            name: Some("unknown".into()),
+            arguments: "{}".into()
+        })
+        .is_err());
+        assert!(normalize_tool_call(RawToolCall {
+            id: Some("x".into()),
+            name: Some("shell".into()),
+            arguments: "not-json".into()
+        })
+        .is_err());
+    }
+
+    #[cfg(not(coverage))]
+    #[test]
+    fn tool_results_continue_as_standard_provider_messages_and_stay_bounded() {
+        let call = ToolCall {
+            id: "call-1".into(),
+            name: "web_fetch".into(),
+            arguments: serde_json::json!({"url":"https://example.test"}),
+        };
+        let mut body = request_body(
+            "gpt-test",
+            &[],
+            &user("hi"),
+            crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE,
+        );
+        append_tool_call_message(&mut body, std::slice::from_ref(&call));
+        let result = phase_one_result(&call);
+        append_tool_result_message(&mut body, &result);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.last().unwrap()["role"], "tool");
+        assert_eq!(messages.last().unwrap()["tool_call_id"], "call-1");
+        assert!(messages.last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("phase 1"));
+        let oversized = "é".repeat(MAX_TOOL_RESULT_BYTES);
+        assert!(
+            truncate_bytes(&oversized, MAX_TOOL_RESULT_BYTES).len() <= MAX_TOOL_RESULT_BYTES + 3
+        );
+    }
+
+    #[cfg(not(coverage))]
+    #[test]
+    fn tool_call_limit_is_fixed_and_phase_one_never_executes() {
+        assert_eq!(MAX_TOOL_CALLS_PER_TURN, 5);
+        let result = phase_one_result(&ToolCall {
+            id: "call-1".into(),
+            name: "shell".into(),
+            arguments: serde_json::json!({"argv":["pwd"]}),
+        });
+        assert!(!result.ok);
+        assert!(result.content.contains("not available"));
     }
 
     #[test]

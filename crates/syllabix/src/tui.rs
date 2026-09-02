@@ -45,6 +45,20 @@ impl TranscriptUi {
                     self.flush_agent();
                 }
             }
+            LoopEvent::Tool { event, .. } => {
+                let label = if event.name.is_empty() {
+                    "tool".to_string()
+                } else {
+                    format!("tool {}", event.name)
+                };
+                let detail = if event.content.is_empty() {
+                    event.arguments
+                } else {
+                    event.content
+                };
+                self.lines
+                    .push(format!("[{label}: {}] {detail}", event.kind));
+            }
             LoopEvent::Timings { timings, .. } => {
                 self.latency = timings.format_line();
             }
