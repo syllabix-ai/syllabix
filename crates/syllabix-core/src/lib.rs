@@ -105,8 +105,8 @@ pub use turn_debug::{
 };
 pub use types::{
     AudioFrame, CompletedTurn, GenerationId, HistoryTurn, LlmDebugMeta, SynthesizedAudio,
-    TokenChunk, Transcript, TurnId, TurnTimings, Utterance, VadEvent, DEFAULT_CHANNELS,
-    DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript, TurnId, TurnTimings, Utterance,
+    VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 pub use vad::{
     SileroVad, VadSettings, END_SILENCE, END_SILENCE_FRAMES, FRAME_DURATION, MIN_SPEECH,

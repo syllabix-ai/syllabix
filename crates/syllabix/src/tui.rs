@@ -396,6 +396,25 @@ mod tests {
     }
 
     #[test]
+    fn tool_events_render_as_developer_evidence() {
+        let mut ui = TranscriptUi::default();
+        ui.apply(LoopEvent::Tool {
+            turn: TurnId(0),
+            event: syllabix_core::ToolTurnEvent {
+                kind: "result".into(),
+                name: "web_fetch".into(),
+                call_id: "call-1".into(),
+                arguments: "https://example.test".into(),
+                content: "fixture result".into(),
+            },
+        });
+        assert_eq!(
+            ui.transcript_text(),
+            "[tool web_fetch: result] fixture result"
+        );
+    }
+
+    #[test]
     fn think_tokens_are_hidden_until_the_spoken_reply() {
         let mut ui = TranscriptUi::default();
         ui.apply(LoopEvent::User {

@@ -182,7 +182,6 @@ pub struct LlmDebugMeta {
 
 /// A normalized API-native tool call. Provider wire shapes are deliberately
 /// kept out of the pipeline: OpenAI-compatible deltas map here once.
-#[cfg(not(coverage))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCall {
     /// Provider-issued identifier used to correlate the result message.
@@ -197,7 +196,6 @@ pub struct ToolCall {
 ///
 /// Phase 1 has no live executors; its built-in result says so. Phase 2 will
 /// replace that source without changing the API loop or provider contract.
-#[cfg(not(coverage))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolResult {
     /// The matching [`ToolCall::id`].
