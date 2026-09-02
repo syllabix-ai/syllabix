@@ -20,15 +20,13 @@ use crate::config::AgentConfig;
 use crate::error::{Error, Result};
 use crate::llm::LLAMA_MAX_HISTORY_TURNS;
 use crate::providers::Llm;
-use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, ToolTurnEvent, Transcript};
-#[cfg(not(coverage))]
-use crate::types::{ToolCall, ToolResult};
+use crate::types::{
+    HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript,
+};
 
 /// The exploration is deliberately bounded before any executor exists.
-#[cfg(not(coverage))]
 pub const MAX_TOOL_CALLS_PER_TURN: usize = 5;
 /// Tool result text is bounded before it can re-enter a model context.
-#[cfg(not(coverage))]
 pub const MAX_TOOL_RESULT_BYTES: usize = 8 * 1024;
 
 /// Environment variable carrying the BYO key. The only supported source.
@@ -59,7 +57,6 @@ const POLL_TICK: Duration = Duration::from_millis(100);
 
 /// Spoken when a cloud turn fails. Short, plain, no Markdown.
 pub const CLOUD_FALLBACK_TEXT: &str = "Sorry, I could not reach the language model.";
-#[cfg(not(coverage))]
 pub const TOOL_LIMIT_TEXT: &str = "Sorry, I reached the tool-call limit for this turn.";
 
 /// Reject or accept a `pipeline.llm.base_url` value.
@@ -226,7 +223,6 @@ enum StreamEvent {
     /// One non-empty assistant delta.
     Delta(String),
     /// One fragment of an OpenAI-compatible streamed tool call.
-    #[cfg(not(coverage))]
     ToolCallDelta {
         index: usize,
         id: Option<String>,
@@ -272,7 +268,6 @@ impl Llm for OpenAiLlm {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
-        #[cfg(not(coverage))]
         if self.settings.developer_harness {
             return self.generate_with_tools(history, user, cancel, on_token);
         }
@@ -340,7 +335,6 @@ impl Llm for OpenAiLlm {
                         }
                     }
                 }
-                #[cfg(not(coverage))]
                 Ok(Ok(StreamEvent::ToolCallDelta { .. })) => {
                     break Err(Error::Provider {
                         provider: PROVIDER_NAME,
@@ -391,7 +385,6 @@ impl Llm for OpenAiLlm {
     }
 }
 
-#[cfg(not(coverage))]
 #[derive(Debug, Default)]
 struct RawToolCall {
     id: Option<String>,
@@ -399,7 +392,6 @@ struct RawToolCall {
     arguments: String,
 }
 
-#[cfg(not(coverage))]
 impl OpenAiLlm {
     /// Phase-1 API-native loop. It deliberately has no live executor: each
     /// accepted call receives a bounded unavailable result so the protocol,
@@ -593,7 +585,6 @@ impl OpenAiLlm {
     }
 }
 
-#[cfg(not(coverage))]
 fn tool_definitions() -> serde_json::Value {
     serde_json::json!([
         {"type":"function","function":{"name":"web_fetch","description":"Fetch one public HTTP(S) URL.","parameters":{"type":"object","additionalProperties":false,"required":["url"],"properties":{"url":{"type":"string"}}}}},
@@ -601,7 +592,6 @@ fn tool_definitions() -> serde_json::Value {
     ])
 }
 
-#[cfg(not(coverage))]
 fn normalize_tool_call(raw: RawToolCall) -> std::result::Result<ToolCall, String> {
     let id = raw
         .id
@@ -623,7 +613,6 @@ fn normalize_tool_call(raw: RawToolCall) -> std::result::Result<ToolCall, String
     })
 }
 
-#[cfg(not(coverage))]
 fn phase_one_result(call: &ToolCall) -> ToolResult {
     ToolResult {
         tool_call_id: call.id.clone(),
@@ -632,7 +621,6 @@ fn phase_one_result(call: &ToolCall) -> ToolResult {
     }
 }
 
-#[cfg(not(coverage))]
 fn append_tool_call_message(body: &mut serde_json::Value, calls: &[ToolCall]) {
     let wire_calls: Vec<_> = calls.iter().map(|call| serde_json::json!({"id":call.id,"type":"function","function":{"name":call.name,"arguments":call.arguments.to_string()}})).collect();
     body["messages"]
@@ -641,12 +629,10 @@ fn append_tool_call_message(body: &mut serde_json::Value, calls: &[ToolCall]) {
         .push(serde_json::json!({"role":"assistant","tool_calls":wire_calls}));
 }
 
-#[cfg(not(coverage))]
 fn append_tool_result_message(body: &mut serde_json::Value, result: &ToolResult) {
     body["messages"].as_array_mut().expect("request messages").push(serde_json::json!({"role":"tool","tool_call_id":result.tool_call_id,"content":result.content}));
 }
 
-#[cfg(not(coverage))]
 fn truncate_bytes(value: &str, max: usize) -> String {
     if value.len() <= max {
         return value.to_string();
@@ -758,7 +744,6 @@ impl StreamWorker {
                                     return;
                                 }
                             }
-                            #[cfg(not(coverage))]
                             for delta in delta_tool_calls(&value) {
                                 if !send(Ok(StreamEvent::ToolCallDelta {
                                     index: delta.index,
@@ -827,7 +812,6 @@ fn delta_content(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-#[cfg(not(coverage))]
 struct ToolCallDelta {
     index: usize,
     id: Option<String>,
@@ -837,7 +821,6 @@ struct ToolCallDelta {
 
 /// Extract the OpenAI-compatible `choices[0].delta.tool_calls` fragments.
 /// Fragment joining and JSON validation happen once in the normalized loop.
-#[cfg(not(coverage))]
 fn delta_tool_calls(value: &serde_json::Value) -> Vec<ToolCallDelta> {
     let Some(entries) = value
         .pointer("/choices/0/delta/tool_calls")
@@ -1009,6 +992,61 @@ mod tests {
         )
     }
 
+    /// Serve a tool-call response followed by its continuation request. This
+    /// uses the production blocking HTTP/SSE path without models or devices.
+    fn serve_two<F>(mut handler: F) -> (String, std::thread::JoinHandle<Vec<String>>)
+    where
+        F: FnMut(usize, &mut TcpStream, &str) + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("tool loop connection");
+                let request = read_captured_request(&mut stream);
+                handler(index, &mut stream, &request);
+                requests.push(request);
+            }
+            requests
+        });
+        (
+            format!("http://127.0.0.1:{port}/v1/chat/completions"),
+            handle,
+        )
+    }
+
+    fn read_captured_request(stream: &mut TcpStream) -> String {
+        let mut buf = [0u8; 4096];
+        let mut request: Vec<u8> = Vec::new();
+        let head_end = loop {
+            let n = stream.read(&mut buf).expect("read request head");
+            assert!(n > 0, "client closed before sending a request");
+            request.extend_from_slice(&buf[..n]);
+            if let Some(pos) = find(&request, b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&request[..head_end]).to_string();
+        let content_length: usize = head
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(|value| value.trim().parse::<usize>().unwrap_or(0))
+            })
+            .unwrap_or(0);
+        while request.len() < head_end + content_length {
+            let n = stream.read(&mut buf).expect("read request body");
+            assert!(n > 0, "client closed before sending the body");
+            request.extend_from_slice(&buf[..n]);
+        }
+        format!(
+            "{head}---BODY---{}",
+            String::from_utf8_lossy(&request[head_end..])
+        )
+    }
+
     fn write_response(
         stream: &mut TcpStream,
         status_line: &str,
@@ -1119,6 +1157,107 @@ mod tests {
         assert!(request.contains("smart assistant"), "{request}");
         // serde_json orders map keys alphabetically: messages, model, stream.
         assert!(request.contains("---BODY---{\"messages\":"), "{request}");
+    }
+
+    #[test]
+    fn harness_continues_a_fragmented_tool_call_without_speaking_the_trace() {
+        let first = [
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"web_fetch","arguments":"{\"url\":\"https://example"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":".test\"}"}}]}}]}"#,
+        ];
+        let final_reply = r#"{"choices":[{"delta":{"content":"Live lookup is unavailable."}}]}"#;
+        let (endpoint, server) = serve_two(move |index, stream, _request| {
+            let events: &[&str] = if index == 0 { &first } else { &[final_reply] };
+            write_response(
+                stream,
+                "HTTP/1.1 200 OK",
+                &[("Content-Type", "text/event-stream")],
+                &sse_body(events, true),
+            )
+            .unwrap();
+        });
+        let mut llm = test_llm(endpoint);
+        llm.settings.developer_harness = true;
+        let (tokens, result) = collect(&mut llm, &Cancel::new());
+        result.expect("tool continuation completes");
+        assert_eq!(tokens, ["Live lookup is unavailable."]);
+        let events = Llm::take_tool_events(&mut llm);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, "call");
+        assert_eq!(events[1].kind, "result");
+        let requests = server.join().expect("mock server");
+        assert!(requests[0].contains("\"tools\""), "{}", requests[0]);
+        assert!(requests[0].contains("web_fetch"), "{}", requests[0]);
+        assert!(requests[0].contains("shell"), "{}", requests[0]);
+        assert!(requests[1].contains("\"role\":\"tool\""), "{}", requests[1]);
+        assert!(requests[1].contains("call-1"), "{}", requests[1]);
+        assert!(requests[1].contains("not available"), "{}", requests[1]);
+    }
+
+    #[test]
+    fn harness_rejects_unknown_calls_and_speaks_only_the_fallback() {
+        let event = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"rm_everything","arguments":"{}"}}]}}]}"#;
+        let (endpoint, server) = serve_one(move |stream, _| {
+            write_response(
+                stream,
+                "HTTP/1.1 200 OK",
+                &[("Content-Type", "text/event-stream")],
+                &sse_body(&[event], true),
+            )
+            .unwrap();
+        });
+        let mut llm = test_llm(endpoint);
+        llm.settings.developer_harness = true;
+        let (tokens, result) = collect(&mut llm, &Cancel::new());
+        result.expect("rejection falls back");
+        assert_eq!(tokens, [CLOUD_FALLBACK_TEXT]);
+        assert_eq!(Llm::take_tool_events(&mut llm)[0].kind, "rejected");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn harness_stops_after_five_calls() {
+        let calls: Vec<_> = (0..6)
+            .map(|index| serde_json::json!({"index":index,"id":format!("call-{index}"),"function":{"name":"shell","arguments":"{\"argv\":[\"pwd\"]}"}}))
+            .collect();
+        let event = serde_json::json!({"choices":[{"delta":{"tool_calls":calls}}]}).to_string();
+        let (endpoint, server) = serve_one(move |stream, _| {
+            write_response(
+                stream,
+                "HTTP/1.1 200 OK",
+                &[("Content-Type", "text/event-stream")],
+                &sse_body(&[&event], true),
+            )
+            .unwrap();
+        });
+        let mut llm = test_llm(endpoint);
+        llm.settings.developer_harness = true;
+        let (tokens, result) = collect(&mut llm, &Cancel::new());
+        result.expect("limit is a completed answer");
+        assert_eq!(tokens, [TOOL_LIMIT_TEXT]);
+        assert_eq!(Llm::take_tool_events(&mut llm)[0].kind, "limit");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn harness_final_reply_without_a_call_is_spoken() {
+        let event = r#"{"choices":[{"delta":{"content":"No tool is needed."}}]}"#;
+        let (endpoint, server) = serve_one(move |stream, _| {
+            write_response(
+                stream,
+                "HTTP/1.1 200 OK",
+                &[("Content-Type", "text/event-stream")],
+                &sse_body(&[event], true),
+            )
+            .unwrap();
+        });
+        let mut llm = test_llm(endpoint);
+        llm.settings.developer_harness = true;
+        let (tokens, result) = collect(&mut llm, &Cancel::new());
+        result.expect("final reply completes");
+        assert_eq!(tokens, ["No tool is needed."]);
+        assert!(Llm::take_tool_events(&mut llm).is_empty());
+        server.join().unwrap();
     }
 
     #[test]
@@ -1439,7 +1578,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(coverage))]
     #[test]
     fn default_request_has_no_tool_schemas_but_harness_defines_only_two() {
         let default = request_body(
@@ -1459,7 +1597,6 @@ mod tests {
         assert_eq!(names, ["web_fetch", "shell"]);
     }
 
-    #[cfg(not(coverage))]
     #[test]
     fn fragmented_tool_call_normalizes_once_and_rejects_bad_shapes() {
         let deltas = [
@@ -1491,7 +1628,6 @@ mod tests {
         .is_err());
     }
 
-    #[cfg(not(coverage))]
     #[test]
     fn tool_results_continue_as_standard_provider_messages_and_stay_bounded() {
         let call = ToolCall {
@@ -1521,7 +1657,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(coverage))]
     #[test]
     fn tool_call_limit_is_fixed_and_phase_one_never_executes() {
         assert_eq!(MAX_TOOL_CALLS_PER_TURN, 5);

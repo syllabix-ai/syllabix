@@ -1440,12 +1440,20 @@ mod tests {
     /// Wraps [`FakeLlm`] and reports provider facts the way live engines do.
     struct MetaLlm {
         inner: FakeLlm,
+        tool_events: Vec<crate::types::ToolTurnEvent>,
     }
 
     impl MetaLlm {
         fn new() -> Self {
             Self {
                 inner: FakeLlm::new(),
+                tool_events: vec![crate::types::ToolTurnEvent {
+                    kind: "result".into(),
+                    name: "web_fetch".into(),
+                    call_id: "call-42".into(),
+                    arguments: r#"{"url":"https://example.test"}"#.into(),
+                    content: "fixture result".into(),
+                }],
             }
         }
     }
@@ -1462,6 +1470,10 @@ mod tests {
                 endpoint: "https://mock.example/v1/chat/completions".into(),
                 request_id: "req-42".into(),
             })
+        }
+
+        fn take_tool_events(&mut self) -> Vec<crate::types::ToolTurnEvent> {
+            std::mem::take(&mut self.tool_events)
         }
 
         fn generate(
@@ -1486,10 +1498,12 @@ mod tests {
                 .as_nanos()
         ));
         let debug = TurnDebug::open(&dir).expect("open");
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
         run_loop(
             LoopConfig {
                 turn_debug: Some(debug),
                 mode: LoopMode::StopAfterTurns(1),
+                events: Some(events_tx),
                 ..LoopConfig::default()
             },
             PipelineStages {
@@ -1512,6 +1526,16 @@ mod tests {
             "{json}"
         );
         assert!(json.contains("\"llm_request_id\": \"req-42\""), "{json}");
+        assert!(
+            json.contains("\"tool_events\": [{\"kind\":\"result\""),
+            "{json}"
+        );
+        assert!(json.contains("\"call_id\":\"call-42\""), "{json}");
+        assert!(events_rx.try_iter().any(|event| matches!(
+            event,
+            LoopEvent::Tool { event, .. }
+                if event.name == "web_fetch" && event.content == "fixture result"
+        )));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
