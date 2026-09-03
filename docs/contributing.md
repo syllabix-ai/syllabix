@@ -109,6 +109,8 @@ cargo test -p syllabix-core --test harness-quality -- --ignored --nocapture
 
 All three variables are required and nothing is defaulted; the key comes from the environment only, never from yaml. The run prints the per-fixture verdict report (calls, escapes, latency, reply) and asserts ≥90% valid calls with zero policy escapes. Give the key rate-limit headroom first — quota exhaustion mid-run fails fixtures as unreachable, which is a billing state, not a model verdict.
 
+If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`, `src/openai.rs`, `src/types.rs`, `src/providers.rs`, or `tests/harness-quality.rs`), paste that verdict report into the PR body inside an HTML comment starting with `<!-- syllabix-harness-quality -->`, including the five fixture lines (`[disk-space]`, `[repo-search]`, `[known-fetch]`, `[discovery-primary-source]`, `[hostile-prompt]`) and the `summary: valid=X/Y ratio=… escapes=…` line. A CI check enforces this; CI itself never calls the model.
+
 ## Packaging (maintainers)
 
 GitHub Release files are the four artifact names plus `SHA256SUMS`. `.github/workflows/release.yml` publishes them on `v*` tags. Pull requests do not package dist binaries. If Actions cannot run, build each target with `scripts/package-release.sh` and attach with `scripts/publish-release.sh v0.1.0`.
