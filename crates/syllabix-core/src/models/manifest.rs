@@ -255,6 +255,20 @@ impl Manifest {
                     "202c1fbf3a0f00b7586ca45b8328d696cc6cd980c3798979eaa4fefe8efd8320",
                     401_129_632,
                 ),
+                // LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF.
+                // Spike-only native suite id (`lfm2.5-2.6b`); not a yaml
+                // `pipeline.llm.model` choice until a later phase graduates
+                // it. SHA-256 is the HF LFS oid; size is the LFS/XET byte
+                // count. License is `lfm1.0` (founder exception to the
+                // open-weights filter for this spike).
+                asset(
+                    "lfm2.5-2.6b",
+                    ModelLayer::Llm,
+                    "LFM2.5-2.6B-QAD-Q4_0.gguf",
+                    "https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main/LFM2.5-2.6B-QAD-Q4_0.gguf",
+                    "a247afd6414918eac8e520a9e6137dc271235461ecbe1180462221d5b8d40b03",
+                    1_593_894_944,
+                ),
             ],
         }
     }
@@ -294,8 +308,8 @@ mod tests {
         assert_eq!(m.version, 1);
         // Silero + five whisper ids + three GGUFs + Kokoro weights + voice
         // + eight internal-only P1 Pocket TTS assets + two Qwen3-TTS
-        // backbones, each with its own mmproj.
-        assert_eq!(m.assets.len(), 23);
+        // backbones, each with its own mmproj + one Phase-4 LFM spike asset.
+        assert_eq!(m.assets.len(), 24);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -345,6 +359,12 @@ mod tests {
             m.asset("qwen3-tts").unwrap().sha256,
             "8d18c94acb2addd042f97da63c98be144eafa76d0d9495177eab65130cf85129"
         );
+        assert_eq!(m.asset("lfm2.5-2.6b").unwrap().layer, ModelLayer::Llm);
+        assert_eq!(
+            m.asset("lfm2.5-2.6b").unwrap().sha256,
+            "a247afd6414918eac8e520a9e6137dc271235461ecbe1180462221d5b8d40b03"
+        );
+        assert_eq!(m.asset("lfm2.5-2.6b").unwrap().size_bytes, 1_593_894_944);
         assert!(m.asset("missing").is_none());
         assert_eq!(SttModel::Small.as_str(), "small");
         for asset in &m.assets {

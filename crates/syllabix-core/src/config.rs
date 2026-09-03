@@ -40,7 +40,7 @@ pub struct AgentConfig {
     pub language: String,
     /// LLM provider.
     pub llm: LlmProvider,
-    /// LLM model id (`llama-3.2-1b`, `qwen3.5-0.8b`, or `qwen3.5-2b`).
+    /// LLM model id (`llama-3.2-1b`, `qwen3.5-0.8b`, `qwen3.5-2b`, or `lfm2.5-2.6b`).
     pub llm_model: String,
     /// Qwen thinking. Default false; yaml `thinking: true` enables it on
     /// `qwen3.5-2b` only and is rejected for every other model.
@@ -632,18 +632,19 @@ fn parse_llm(value: &str) -> Result<LlmProvider> {
     }
 }
 
-/// `pipeline.llm.model`: the three binary-supported GGUF ids for `local`; any
+/// `pipeline.llm.model`: the four binary-supported GGUF ids for `local`; any
 /// non-empty id for `online` (the endpoint decides what it serves).
 fn parse_llm_model(provider: LlmProvider, value: &str) -> Result<String> {
     match provider {
         LlmProvider::Local => match value {
             crate::llm::QWEN35_08B_ASSET
             | crate::llm::QWEN35_2B_ASSET
-            | crate::llm::LLAMA_32_1B_ASSET => Ok(value.to_string()),
+            | crate::llm::LLAMA_32_1B_ASSET
+            | crate::llm::LFM25_26B_ASSET => Ok(value.to_string()),
             other => Err(unsupported(
                 "pipeline.llm.model",
                 other,
-                "llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b",
+                "llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b, lfm2.5-2.6b",
             )),
         },
         LlmProvider::Online => {
@@ -906,6 +907,13 @@ pipeline:
             .replace("model: llama-3.2-1b", "model: qwen3.5-0.8b");
         let cfg = AgentConfig::parse_yaml(&small).unwrap();
         assert_eq!(cfg.llm_model, "qwen3.5-0.8b");
+        assert!(!cfg.thinking);
+
+        let lfm = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: llama-3.2-1b", "model: lfm2.5-2.6b");
+        let cfg = AgentConfig::parse_yaml(&lfm).unwrap();
+        assert_eq!(cfg.llm_model, "lfm2.5-2.6b");
         assert!(!cfg.thinking);
     }
 

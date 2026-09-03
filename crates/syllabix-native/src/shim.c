@@ -755,3 +755,177 @@ int syllabix_llama_count_prompt_tokens_with_tools(
     free(prompt);
     return count;
 }
+
+/* LiquidAI LFM2.5 native tool dialect.
+ *
+ * The GGUF Jinja template wraps tool calls in `<|tool_call_start|>…<|tool_call_end|>`
+ * (Pythonic `name(k="v")` by default) and tool results in `<|im_start|>tool`
+ * turns; tool schemas arrive as `List of tools: <json>` in the system prompt
+ * (see Liquid `key-concepts/tool-use`). The vendored heuristic has no LFM
+ * template entry, so this renderer is the tools-aware entry kept alongside
+ * the existing plain path — mirroring the issue-87 Qwen split. With
+ * `tools_json` NULL/empty (or a non-LFM template) callers must use the plain
+ * path so tool-free prompts stay byte-identical. */
+
+static int is_lfm_template(const char *tmpl) {
+    return tmpl != NULL && strstr(tmpl, "tool_call_start") != NULL;
+}
+
+/* Pure LFM prompt renderer (no model handle). `thinking` is accepted for
+ * signature parity with the Qwen entry but carries no suffix: LFM has no
+ * think-off closer convention. Returns the prompt length, or -1 on error.
+ * When `out == NULL`, only measures. */
+int syllabix_llama_render_lfm(
+    const char *const *roles,
+    const char *const *contents,
+    int n_messages,
+    const char *tools_json,
+    int thinking,
+    char *out,
+    int out_cap) {
+    (void)thinking;
+    static const char tools_head[] = "<|im_start|>system\nList of tools: ";
+    static const char im_end[] = "<|im_end|>\n";
+    if (roles == NULL || contents == NULL || n_messages < 1) {
+        return -1;
+    }
+    struct prompt_buf buf = { NULL, 0, 0 };
+    int start = 0;
+    if (tools_json != NULL && tools_json[0] != '\0') {
+        if (prompt_append_cstr(&buf, tools_head) != 0
+            || prompt_append_cstr(&buf, tools_json) != 0) {
+            free(buf.data);
+            return -1;
+        }
+        if (roles[0] != NULL && contents[0] != NULL && strcmp(roles[0], "system") == 0) {
+            if (prompt_append(&buf, "\n", 1) != 0
+                || prompt_append_cstr(&buf, contents[0]) != 0) {
+                free(buf.data);
+                return -1;
+            }
+            start = 1;
+        }
+        if (prompt_append_cstr(&buf, im_end) != 0) {
+            free(buf.data);
+            return -1;
+        }
+    }
+    for (int i = start; i < n_messages; i++) {
+        if (roles[i] == NULL || contents[i] == NULL) {
+            free(buf.data);
+            return -1;
+        }
+        if (prompt_append_cstr(&buf, "<|im_start|>") != 0
+            || prompt_append_cstr(&buf, roles[i]) != 0
+            || prompt_append(&buf, "\n", 1) != 0
+            || prompt_append_cstr(&buf, contents[i]) != 0
+            || prompt_append_cstr(&buf, im_end) != 0) {
+            free(buf.data);
+            return -1;
+        }
+    }
+    if (prompt_append_cstr(&buf, "<|im_start|>assistant\n") != 0) {
+        free(buf.data);
+        return -1;
+    }
+    int prompt_len = (int)buf.len;
+    if (out != NULL && out_cap > 0) {
+        size_t copy = buf.len < (size_t)(out_cap - 1) ? buf.len : (size_t)(out_cap - 1);
+        memcpy(out, buf.data, copy);
+        out[copy] = '\0';
+    }
+    free(buf.data);
+    return prompt_len;
+}
+
+/* Tools-aware LFM entry. With `tools_json` NULL/empty — or a non-LFM model
+ * template — this delegates to the plain path byte-for-byte. Otherwise the
+ * prompt renders through `syllabix_llama_render_lfm` over the same sampler
+ * loop. Kept separate from the Qwen entry (second-dialect exception). */
+int syllabix_llama_generate_with_lfm_tools(
+    struct syllabix_llama *llm,
+    const char *const *roles,
+    const char *const *contents,
+    int n_messages,
+    int thinking,
+    const char *tools_json,
+    int n_threads,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    int (*token_cb)(const char *piece, int is_last, void *user),
+    void *token_user) {
+    if (llm == NULL || llm->ctx == NULL || llm->model == NULL || roles == NULL || contents == NULL
+        || n_messages < 1 || token_cb == NULL) {
+        return -1;
+    }
+    if (aborted(abort_cb, abort_user)) {
+        return 1;
+    }
+    const int has_tools = tools_json != NULL && tools_json[0] != '\0';
+    const char *tmpl = llama_model_chat_template(llm->model, NULL);
+    if (!has_tools || !is_lfm_template(tmpl)) {
+        return syllabix_llama_generate(
+            llm, roles, contents, n_messages, thinking, n_threads, abort_cb, abort_user, token_cb,
+            token_user);
+    }
+
+    llama_set_n_threads(llm->ctx, n_threads, n_threads);
+    llama_set_abort_callback(llm->ctx, abort_cb, abort_user);
+    llama_memory_clear(llama_get_memory(llm->ctx), true);
+
+    int32_t prompt_len =
+        syllabix_llama_render_lfm(roles, contents, n_messages, tools_json, thinking, NULL, 0);
+    if (prompt_len < 1) {
+        return -1;
+    }
+    char *prompt = (char *)malloc((size_t)prompt_len + 1);
+    if (prompt == NULL) {
+        return -1;
+    }
+    if (syllabix_llama_render_lfm(
+            roles, contents, n_messages, tools_json, thinking, prompt, prompt_len + 1)
+        != prompt_len) {
+        free(prompt);
+        return -1;
+    }
+    prompt[prompt_len] = '\0';
+    int status = run_prompt(
+        llm, prompt, prompt_len, n_threads, abort_cb, abort_user, token_cb, token_user);
+    free(prompt);
+    return status;
+}
+
+/* Prompt-token count for an LFM tools-aware prompt. Falls back to the plain
+ * count when `tools_json` is empty or the model template is not LFM-like. */
+int syllabix_llama_count_prompt_tokens_with_lfm_tools(
+    struct syllabix_llama *llm,
+    const char *const *roles,
+    const char *const *contents,
+    int n_messages,
+    int thinking,
+    const char *tools_json) {
+    if (llm == NULL || roles == NULL || contents == NULL || n_messages < 1) return -1;
+    const int has_tools = tools_json != NULL && tools_json[0] != '\0';
+    const char *tmpl = llama_model_chat_template(llm->model, NULL);
+    if (!has_tools || !is_lfm_template(tmpl)) {
+        return syllabix_llama_count_prompt_tokens(llm, roles, contents, n_messages, thinking);
+    }
+    int32_t prompt_len =
+        syllabix_llama_render_lfm(roles, contents, n_messages, tools_json, thinking, NULL, 0);
+    if (prompt_len < 1) return -1;
+    char *prompt = malloc((size_t)prompt_len + 1);
+    if (prompt == NULL) return -1;
+    if (syllabix_llama_render_lfm(
+            roles, contents, n_messages, tools_json, thinking, prompt, prompt_len + 1)
+        != prompt_len) {
+        free(prompt);
+        return -1;
+    }
+    const int n_ctx = (int)llama_n_ctx(llm->ctx);
+    llama_token *tokens = malloc((size_t)n_ctx * sizeof(*tokens));
+    if (tokens == NULL) { free(prompt); return -1; }
+    const int count = llama_tokenize(llama_model_get_vocab(llm->model), prompt, prompt_len, tokens, n_ctx, true, true);
+    free(tokens);
+    free(prompt);
+    return count;
+}

@@ -27,6 +27,17 @@ pub const QWEN35_2B_ASSET: &str = "qwen3.5-2b";
 /// Manifest id for the yaml-only Llama 3.2 1B instruct GGUF.
 pub const LLAMA_32_1B_ASSET: &str = "llama-3.2-1b";
 
+/// Manifest id for the LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF.
+/// It is an opt-in local `pipeline.llm.model`; the default remains Llama 3.2.
+pub const LFM25_26B_ASSET: &str = "lfm2.5-2.6b";
+
+/// Upper bound on collected text for one LFM tool turn (issue-89 lesson).
+/// LFM always thinks, so a turn that never emits a complete
+/// `<|tool_call_start|>` block must fail closed into the spoken fallback
+/// instead of generating until cancel. The bound lives in the adapter, not
+/// in yaml (EOS-generate contract stands).
+pub const LFM_TOOL_TURN_MAX_CHARS: usize = 8_000;
+
 /// `{language}` in a yaml `system_prompt` is replaced with the STT language's
 /// English name (`French`, `German`, …) at generate time. Unknown or `auto`
 /// codes (which never reach the LLM in a real run) stay `English`.
@@ -79,7 +90,10 @@ pub const LLAMA_TOKEN_STALL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// True when `id` is a v0 llama.cpp GGUF.
 pub fn is_v0_llm_model(id: &str) -> bool {
-    id == QWEN35_08B_ASSET || id == QWEN35_2B_ASSET || id == LLAMA_32_1B_ASSET
+    id == QWEN35_08B_ASSET
+        || id == QWEN35_2B_ASSET
+        || id == LLAMA_32_1B_ASSET
+        || id == LFM25_26B_ASSET
 }
 
 /// In-process llama.cpp adapter. Loads a v0 Q4_K_M GGUF.
@@ -153,7 +167,7 @@ impl LlamaLlm {
             return Err(Error::Config {
                 field: "pipeline.llm.model".into(),
                 message: format!(
-                    "unsupported value {model_id:?} (allowed: llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b)"
+                    "unsupported value {model_id:?} (allowed: llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b, lfm2.5-2.6b)"
                 ),
             });
         }
@@ -382,6 +396,114 @@ impl LlamaLlm {
         }
         Ok(calls)
     }
+
+    /// One tools-aware turn against the local LFM template (Phase 4).
+    ///
+    /// Adapter half of the shared tool-call contract for the second dialect:
+    /// renders the `List of tools:` preamble through the shim's LFM-aware
+    /// entry, collects the turn text, then parses and normalizes LFM
+    /// `<|tool_call_start|>[name(k="v")]<|tool_call_end|>` blocks into
+    /// [`ToolCall`]s with `call` / `rejected` events for
+    /// [`Llm::take_tool_events`]. Executing the calls stays with the Phase-4
+    /// loop (host-owned executor); this never runs a tool. Not on the
+    /// default `run` path: [`Llm::generate`] stays tool-free and
+    /// byte-identical.
+    ///
+    /// Bound (issue-89 lesson): collection stops at
+    /// [`LFM_TOOL_TURN_MAX_CHARS`]; an over-budget turn records a
+    /// `rejected` event and returns no calls (spoken fallback) instead of
+    /// generating until cancel. A real shutdown still surfaces as
+    /// [`Error::Cancelled`].
+    pub fn generate_lfm_tool_turn(
+        &mut self,
+        history: &[HistoryTurn],
+        user: &Transcript,
+        cancel: &Cancel,
+        on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
+    ) -> Result<Vec<ToolCall>> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        let generation = cancel.generation();
+        {
+            let mut calls = self.calls.lock().expect("llm call log");
+            calls.push(LlmCall {
+                history_len: history.len(),
+                history_user_texts: history.iter().map(|t| t.user.text.clone()).collect(),
+                user_text: user.text.clone(),
+            });
+        }
+        let messages = self.tool_messages(history, user, &[]);
+        let tools = local_tool_definitions_json();
+        let mut text = String::new();
+        let mut over_budget = false;
+        let outcome = self
+            .engine
+            .lock()
+            .expect("llama engine")
+            .generate_with_lfm_tools(&messages, &tools, cancel, &mut |piece, _| {
+                if cancel.is_stale(generation) {
+                    return Err(Error::Cancelled);
+                }
+                text.push_str(piece);
+                if text.len() > LFM_TOOL_TURN_MAX_CHARS {
+                    over_budget = true;
+                    return Err(Error::Cancelled);
+                }
+                Ok(())
+            });
+        match outcome {
+            Err(Error::Cancelled) if over_budget && !cancel.is_shutdown() => {
+                self.note_tool_event(
+                    "rejected",
+                    "",
+                    "",
+                    "",
+                    "lfm tool turn exceeded the thinking bound",
+                );
+                return Ok(Vec::new());
+            }
+            Err(err) => return Err(err),
+            Ok(()) => {}
+        }
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        on_token(TokenChunk {
+            turn: user.turn,
+            generation,
+            index: 0,
+            text: text.clone(),
+            is_last: true,
+        })?;
+        let parsed = match parse_lfm_tool_calls(&text) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                self.note_tool_event("rejected", "", "", "", &message);
+                return Ok(Vec::new());
+            }
+        };
+        let mut calls = Vec::with_capacity(parsed.len());
+        for (index, parsed) in parsed.into_iter().enumerate() {
+            match normalize_local_tool_call(index, parsed) {
+                Ok(call) => {
+                    self.note_tool_event(
+                        "call",
+                        &call.name,
+                        &call.id,
+                        &call.arguments.to_string(),
+                        "",
+                    );
+                    calls.push(call);
+                }
+                Err(message) => {
+                    self.note_tool_event("rejected", "", "", "", &message);
+                    return Ok(Vec::new());
+                }
+            }
+        }
+        Ok(calls)
+    }
 }
 
 impl Llm for LlamaLlm {
@@ -483,6 +605,24 @@ trait Engine: Send {
         self.generate(messages, append_thinking_off_suffix, cancel, on_piece)
     }
 
+    /// LFM tools-aware generation (Phase 4). The default runs the plain
+    /// path so scripted/test engines stay tool-free; the native engine
+    /// renders the `List of tools:` preamble through the LFM shim entry.
+    /// Kept separate from [`Engine::generate_with_tools`] (second-dialect
+    /// exception).
+    fn generate_with_lfm_tools(
+        &mut self,
+        messages: &[ChatMessage],
+        tools_json: &str,
+        cancel: &Cancel,
+        on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
+    ) -> Result<()> {
+        let _ = tools_json;
+        // LFM has no think-off suffix convention; the plain path default
+        // (`false`) keeps tool-free framing unchanged.
+        self.generate(messages, false, cancel, on_piece)
+    }
+
     fn context_window(&self) -> Option<(i32, i32)> {
         None
     }
@@ -570,6 +710,42 @@ impl Engine for LlamaEngine {
                 &c_tools,
                 LlamaGenerate {
                     append_thinking_off_suffix,
+                    n_threads: thread_count(),
+                },
+                Some(abort_on_stall),
+                abort_user,
+                &mut |text, is_last| {
+                    abort.note_token();
+                    match on_piece(text, is_last) {
+                        Ok(()) => Ok(()),
+                        Err(Error::Cancelled) => Err(LlamaError::Cancelled),
+                        Err(err) => Err(LlamaError::Failed(err.to_string())),
+                    }
+                },
+            )
+        };
+        finish_native(outcome, &abort, cancel, on_piece)
+    }
+
+    fn generate_with_lfm_tools(
+        &mut self,
+        messages: &[ChatMessage],
+        tools_json: &str,
+        cancel: &Cancel,
+        on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
+    ) -> Result<()> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        let abort = GenerationAbort::new(cancel);
+        let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
+        let c_tools = tools_json.to_string();
+        let outcome = unsafe {
+            self.ctx.generate_with_lfm_tools(
+                messages,
+                &c_tools,
+                LlamaGenerate {
+                    append_thinking_off_suffix: false,
                     n_threads: thread_count(),
                 },
                 Some(abort_on_stall),
@@ -840,6 +1016,210 @@ pub fn normalize_local_tool_call(
         name: parsed.name,
         arguments: parsed.arguments,
     })
+}
+
+/// Parse LFM-native tool calls from generated text (Phase 4).
+///
+/// Each `<|tool_call_start|>[name(k="v", …)]<|tool_call_end|>` block yields
+/// one or more calls, in order; multiple blocks are concatenated in document
+/// order. Prose around the blocks (reasoning, `always-thinks` chatter) is
+/// ignored. Bracket lists may hold several comma-separated calls.
+/// Malformed blocks fail closed with a message; the caller records a
+/// `rejected` tool event and speaks the fallback instead of executing
+/// anything. Separate from [`parse_qwen_tool_calls`] (second-dialect
+/// exception); values are stored as strings like the Qwen path (lists are
+/// space-joined) so both dialects feed the same shared contract.
+pub fn parse_lfm_tool_calls(text: &str) -> std::result::Result<Vec<ParsedLocalToolCall>, String> {
+    const OPEN: &str = "<|tool_call_start|>";
+    const CLOSE: &str = "<|tool_call_end|>";
+    let mut calls = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find(OPEN) {
+        let after_open = &rest[open + OPEN.len()..];
+        let close = after_open
+            .find(CLOSE)
+            .ok_or_else(|| "lfm tool call is missing <|tool_call_end|>".to_string())?;
+        let block = &after_open[..close];
+        if block.contains(OPEN) {
+            return Err("lfm tool call contains a nested <|tool_call_start|>".to_string());
+        }
+        calls.extend(parse_lfm_tool_call_block(block)?);
+        rest = &after_open[close + CLOSE.len()..];
+    }
+    if calls.is_empty() {
+        return Err("no lfm <|tool_call_start|> block found".to_string());
+    }
+    Ok(calls)
+}
+
+fn parse_lfm_tool_call_block(block: &str) -> std::result::Result<Vec<ParsedLocalToolCall>, String> {
+    let trimmed = block.trim();
+    if trimmed.is_empty() {
+        return Err("lfm tool call block is empty".to_string());
+    }
+    let inner = if trimmed.starts_with('[') {
+        if !trimmed.ends_with(']') {
+            return Err("lfm tool call block has unbalanced brackets".to_string());
+        }
+        trimmed[1..trimmed.len() - 1].trim()
+    } else {
+        trimmed
+    };
+    if inner.is_empty() {
+        return Err("lfm tool call block is empty".to_string());
+    }
+    let mut calls = Vec::new();
+    for source in split_top_level(inner, ',') {
+        calls.push(parse_lfm_pythonic_call(&source)?);
+    }
+    Ok(calls)
+}
+
+fn parse_lfm_pythonic_call(source: &str) -> std::result::Result<ParsedLocalToolCall, String> {
+    let source = source.trim();
+    let paren = source
+        .find('(')
+        .ok_or_else(|| "lfm tool call is missing (args)".to_string())?;
+    let name = source[..paren].trim();
+    if name.is_empty() || !is_lfm_identifier(name) {
+        return Err("lfm tool call has an invalid function name".to_string());
+    }
+    if !source.ends_with(')') {
+        return Err("lfm tool call is missing the closing )".to_string());
+    }
+    let args = &source[paren + 1..source.len() - 1];
+    let mut map = serde_json::Map::new();
+    if !args.trim().is_empty() {
+        for part in split_top_level(args, ',') {
+            let (key, value) = parse_lfm_kwarg(&part)?;
+            if map.contains_key(&key) {
+                return Err(format!("lfm tool call repeats parameter {key:?}"));
+            }
+            map.insert(key, value);
+        }
+    }
+    Ok(ParsedLocalToolCall {
+        name: name.to_string(),
+        arguments: serde_json::Value::Object(map),
+    })
+}
+
+fn parse_lfm_kwarg(part: &str) -> std::result::Result<(String, serde_json::Value), String> {
+    let part = part.trim();
+    let eq = part
+        .find('=')
+        .ok_or_else(|| "lfm tool call parameter is missing =".to_string())?;
+    // Reject `==` (comparison, not a kwarg) rather than splitting inside it.
+    if part[eq + 1..].starts_with('=') {
+        return Err("lfm tool call parameter is missing =".to_string());
+    }
+    let key = part[..eq].trim();
+    if key.is_empty() || !is_lfm_identifier(key) {
+        return Err("lfm tool call has an invalid parameter name".to_string());
+    }
+    let raw = part[eq + 1..].trim();
+    if raw.is_empty() {
+        return Err(format!("lfm tool call parameter {key:?} is empty"));
+    }
+    Ok((key.to_string(), parse_lfm_value(raw)?))
+}
+
+fn parse_lfm_value(raw: &str) -> std::result::Result<serde_json::Value, String> {
+    let raw = raw.trim();
+    if raw.starts_with('[') {
+        if !raw.ends_with(']') {
+            return Err("lfm tool call list value has unbalanced brackets".to_string());
+        }
+        let inner = raw[1..raw.len() - 1].trim();
+        if inner.is_empty() {
+            return Ok(serde_json::Value::String(String::new()));
+        }
+        let mut items = Vec::new();
+        for item in split_top_level(inner, ',') {
+            items.push(parse_lfm_scalar(&item)?);
+        }
+        // Qwen-path parity: every parameter is a string, so a Pythonic
+        // list (e.g. `argv=["df", "-h", "."]`) joins into one string.
+        return Ok(serde_json::Value::String(items.join(" ")));
+    }
+    parse_lfm_scalar(raw).map(serde_json::Value::String)
+}
+
+fn parse_lfm_scalar(raw: &str) -> std::result::Result<String, String> {
+    let raw = raw.trim();
+    if raw.len() >= 2
+        && ((raw.starts_with('"') && raw.ends_with('"'))
+            || (raw.starts_with('\'') && raw.ends_with('\'')))
+    {
+        return Ok(unescape_lfm_string(&raw[1..raw.len() - 1]));
+    }
+    if raw.contains(['"', '\'', '[', ']', '(', ')']) {
+        return Err("lfm tool call value is malformed".to_string());
+    }
+    Ok(raw.to_string())
+}
+
+fn unescape_lfm_string(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some(other) => out.push(other),
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn is_lfm_identifier(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Split on `sep` at the top level only: separators inside quotes, `()`,
+/// or `[]` do not split.
+fn split_top_level(source: &str, sep: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth_paren = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut start = 0usize;
+    for (i, c) in source.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if let Some(q) = quote {
+            if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            _ => {
+                if c == sep && depth_paren == 0 && depth_bracket == 0 {
+                    parts.push(source[start..i].trim().to_string());
+                    start = i + c.len_utf8();
+                }
+            }
+        }
+    }
+    parts.push(source[start..].trim().to_string());
+    parts
 }
 
 #[cfg(test)]
@@ -1461,6 +1841,151 @@ mod tests {
         let events = Llm::take_tool_events(&mut llm);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "rejected");
+    }
+
+    #[test]
+    fn lfm_asset_is_manifest_pinned_and_selectable() {
+        assert_eq!(LFM25_26B_ASSET, "lfm2.5-2.6b");
+        assert!(is_v0_llm_model(LFM25_26B_ASSET));
+        assert_eq!(LFM_TOOL_TURN_MAX_CHARS, 8_000);
+    }
+
+    #[test]
+    fn lfm_pythonic_call_with_kwargs_parses_in_order() {
+        let text = "Checking now.\n<|tool_call_start|>[shell(argv=\"df -h .\")]<|tool_call_end|>";
+        let calls = parse_lfm_tool_calls(text).expect("parse");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell");
+        assert_eq!(
+            calls[0].arguments.get("argv").and_then(|v| v.as_str()),
+            Some("df -h .")
+        );
+        let normalized = normalize_local_tool_call(0, calls[0].clone()).expect("normalize");
+        assert_eq!(normalized.id, "local-call-0");
+        assert_eq!(normalized.name, "shell");
+        assert!(normalized.arguments.is_object());
+    }
+
+    #[test]
+    fn lfm_list_values_join_like_the_qwen_path() {
+        let text = "<|tool_call_start|>[shell(argv=[\"df\", \"-h\", \".\"])]<|tool_call_end|>";
+        let calls = parse_lfm_tool_calls(text).expect("parse");
+        assert_eq!(
+            calls[0].arguments.get("argv").and_then(|v| v.as_str()),
+            Some("df -h .")
+        );
+    }
+
+    #[test]
+    fn lfm_multiple_blocks_and_calls_keep_document_order() {
+        let text = "<|tool_call_start|>[web_fetch(url=\"https://example.com/a\")]<|tool_call_end|> \
+            <|tool_call_start|>[shell(argv=\"date\"), web_fetch(url='https://example.com/b')]<|tool_call_end|>";
+        let calls = parse_lfm_tool_calls(text).expect("parse");
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].name, "web_fetch");
+        assert_eq!(calls[1].name, "shell");
+        assert_eq!(calls[2].name, "web_fetch");
+        assert_eq!(
+            normalize_local_tool_call(2, calls[2].clone())
+                .expect("normalize")
+                .id,
+            "local-call-2"
+        );
+    }
+
+    #[test]
+    fn lfm_malformed_blocks_fail_closed() {
+        assert!(parse_lfm_tool_calls("just prose, no call").is_err());
+        assert!(parse_lfm_tool_calls("<|tool_call_start|>[shell(argv=\"date\")]").is_err());
+        assert!(parse_lfm_tool_calls(
+            "<|tool_call_start|>shell(argv=\"date\")<|tool_call_start|>[shell(argv=\"date\")]<|tool_call_end|>"
+        )
+        .is_err());
+        assert!(parse_lfm_tool_calls("<|tool_call_start|>[]<|tool_call_end|>").is_err());
+        assert!(
+            parse_lfm_tool_calls("<|tool_call_start|>[shell(argv=\"date\"]<|tool_call_end|>")
+                .is_err()
+        );
+        assert!(parse_lfm_tool_calls(
+            "<|tool_call_start|>[unknown_tool(x=\"1\")]<|tool_call_end|>"
+        )
+        .map(|calls| normalize_local_tool_call(0, calls[0].clone()))
+        .expect("parses")
+        .is_err());
+    }
+
+    #[test]
+    fn lfm_tool_turn_parses_scripted_calls_and_records_events() {
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec![
+                "Let me check.\n<|tool_call_start|>[shell(argv=\"date\")]<|tool_call_end|>".into(),
+            ],
+            delay: Duration::ZERO,
+            last_messages: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let mut chunks = Vec::new();
+        let calls = llm
+            .generate_lfm_tool_turn(
+                &[],
+                &user(0, "what time is it"),
+                &Cancel::new(),
+                &mut |chunk| {
+                    chunks.push(chunk);
+                    Ok(())
+                },
+            )
+            .expect("lfm tool turn");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "local-call-0");
+        assert_eq!(calls[0].name, "shell");
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].is_last);
+        let events = Llm::take_tool_events(&mut llm);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "call");
+        assert_eq!(events[0].call_id, "local-call-0");
+    }
+
+    #[test]
+    fn lfm_tool_turn_without_a_call_records_rejection() {
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["just prose, no call".into()],
+            delay: Duration::ZERO,
+            last_messages: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let mut chunks = Vec::new();
+        let calls = llm
+            .generate_lfm_tool_turn(&[], &user(0, "hi"), &Cancel::new(), &mut |chunk| {
+                chunks.push(chunk);
+                Ok(())
+            })
+            .expect("lfm tool turn");
+        assert!(calls.is_empty());
+        let events = Llm::take_tool_events(&mut llm);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "rejected");
+    }
+
+    #[test]
+    fn lfm_tool_turn_over_budget_fails_closed_instead_of_hanging() {
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["x".repeat(LFM_TOOL_TURN_MAX_CHARS + 1)],
+            delay: Duration::ZERO,
+            last_messages: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let mut chunks = Vec::new();
+        let calls = llm
+            .generate_lfm_tool_turn(&[], &user(0, "hi"), &Cancel::new(), &mut |chunk| {
+                chunks.push(chunk);
+                Ok(())
+            })
+            .expect("over-budget turn ends in fallback");
+        assert!(calls.is_empty());
+        assert!(chunks.is_empty());
+        let events = Llm::take_tool_events(&mut llm);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "rejected");
+        assert!(events[0].content.contains("thinking bound"));
     }
 
     #[test]
