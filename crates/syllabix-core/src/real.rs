@@ -43,6 +43,13 @@ impl Llm for LiveLlm {
         }
     }
 
+    fn take_tool_events(&mut self) -> Vec<crate::types::ToolTurnEvent> {
+        match self {
+            Self::Local(llm) => llm.take_tool_events(),
+            Self::Cloud(llm) => llm.take_tool_events(),
+        }
+    }
+
     fn generate(
         &mut self,
         history: &[HistoryTurn],

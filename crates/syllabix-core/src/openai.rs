@@ -18,6 +18,7 @@ use zeroize::Zeroizing;
 use crate::cancel::Cancel;
 use crate::config::AgentConfig;
 use crate::error::{Error, Result};
+use crate::executor;
 use crate::llm::LLAMA_MAX_HISTORY_TURNS;
 use crate::providers::Llm;
 use crate::types::{
@@ -123,8 +124,8 @@ pub struct OpenAiSettings {
     /// System prompt template (`pipeline.llm.system_prompt`). `{language}` is
     /// replaced at generate time, same as the local engine.
     pub system_prompt: String,
-    /// Whether this explicit developer-only run advertises the two Phase-1
-    /// schemas. Default runs omit the API `tools` member entirely.
+    /// Whether this explicit developer-only run advertises the two developer
+    /// harness schemas. Default runs omit the API `tools` member entirely.
     pub developer_harness: bool,
 }
 
@@ -393,10 +394,8 @@ struct RawToolCall {
 }
 
 impl OpenAiLlm {
-    /// Phase-1 API-native loop. It deliberately has no live executor: each
-    /// accepted call receives a bounded unavailable result so the protocol,
-    /// evidence, and continuation path are testable before Phase 2 opens any
-    /// network or subprocess authority.
+    /// API-native developer-harness loop. Calls are normalized once, then
+    /// dispatched through the host-owned bounded executor.
     fn generate_with_tools(
         &mut self,
         history: &[HistoryTurn],
@@ -467,7 +466,14 @@ impl OpenAiLlm {
                     &call.arguments.to_string(),
                     "",
                 );
-                let result = phase_one_result(&call);
+                let workspace = std::env::current_dir().map_err(|err| Error::Provider {
+                    provider: PROVIDER_NAME,
+                    message: format!("developer workspace is unavailable: {err}"),
+                })?;
+                let result = executor::execute(&call, &workspace, cancel);
+                if cancel.is_shutdown() || cancel.is_stale(generation) {
+                    return Err(Error::Cancelled);
+                }
                 self.note_tool_event(
                     "result",
                     &call.name,
@@ -587,8 +593,47 @@ impl OpenAiLlm {
 
 fn tool_definitions() -> serde_json::Value {
     serde_json::json!([
-        {"type":"function","function":{"name":"web_fetch","description":"Fetch one public HTTP(S) URL.","parameters":{"type":"object","additionalProperties":false,"required":["url"],"properties":{"url":{"type":"string"}}}}},
-        {"type":"function","function":{"name":"shell","description":"Inspect the developer workspace with direct argv.","parameters":{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string"}}}}}
+        {
+            "type": "function",
+            "function": {
+                "name": "web_fetch",
+                "description": "Fetch and read the content of one public HTTP or HTTPS URL.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["url"],
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The absolute public HTTP or HTTPS URL to fetch."
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "shell",
+                "description": "Execute a read-only command via direct argv in the workspace. Allowed commands: date (current time), df (disk space, e.g. ['df', '-h', '.']), pwd, ls (list directory), git (status, diff, log, show, branch), rg (search code/text), find (find files), cargo (metadata, tree).",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["argv"],
+                    "properties": {
+                        "argv": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Command and argument array, e.g. ['df', '-h', '.'] or ['git', 'status', '--short']."
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Optional relative path within the workspace."
+                        }
+                    }
+                }
+            }
+        }
     ])
 }
 
@@ -611,14 +656,6 @@ fn normalize_tool_call(raw: RawToolCall) -> std::result::Result<ToolCall, String
         name,
         arguments,
     })
-}
-
-fn phase_one_result(call: &ToolCall) -> ToolResult {
-    ToolResult {
-        tool_call_id: call.id.clone(),
-        ok: false,
-        content: "Tool execution is not available in API-loop phase 1.".into(),
-    }
 }
 
 fn append_tool_call_message(body: &mut serde_json::Value, calls: &[ToolCall]) {
@@ -992,6 +1029,39 @@ mod tests {
         )
     }
 
+    /// Bind a mock endpoint that must receive no connection within `wait`.
+    /// The handle resolves to `true` when a client connected (i.e. the
+    /// no-request expectation was violated). Unlike `serve_one`, this never
+    /// blocks past `wait`, so a pre-cancelled turn cannot hang the suite.
+    fn serve_expect_no_connection(wait: Duration) -> (String, std::thread::JoinHandle<bool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().unwrap().port();
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let handle = std::thread::spawn(move || {
+            let start = Instant::now();
+            loop {
+                match listener.accept() {
+                    Ok(_) => return true,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if start.elapsed() >= wait {
+                            return false;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    // Any other accept outcome counts as activity; the
+                    // test then fails on `connected` instead of hanging.
+                    Err(_) => return true,
+                }
+            }
+        });
+        (
+            format!("http://127.0.0.1:{port}/v1/chat/completions"),
+            handle,
+        )
+    }
+
     /// Serve a tool-call response followed by its continuation request. This
     /// uses the production blocking HTTP/SSE path without models or devices.
     fn serve_two<F>(mut handler: F) -> (String, std::thread::JoinHandle<Vec<String>>)
@@ -1162,8 +1232,8 @@ mod tests {
     #[test]
     fn harness_continues_a_fragmented_tool_call_without_speaking_the_trace() {
         let first = [
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"web_fetch","arguments":"{\"url\":\"https://example"}}]}}]}"#,
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":".test\"}"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"shell","arguments":"{\"argv\":[\"pw"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"d\"]}"}}]}}]}"#,
         ];
         let final_reply = r#"{"choices":[{"delta":{"content":"Live lookup is unavailable."}}]}"#;
         let (endpoint, server) = serve_two(move |index, stream, _request| {
@@ -1191,7 +1261,7 @@ mod tests {
         assert!(requests[0].contains("shell"), "{}", requests[0]);
         assert!(requests[1].contains("\"role\":\"tool\""), "{}", requests[1]);
         assert!(requests[1].contains("call-1"), "{}", requests[1]);
-        assert!(requests[1].contains("not available"), "{}", requests[1]);
+        assert!(requests[1].contains("exit"), "{}", requests[1]);
     }
 
     #[test]
@@ -1258,6 +1328,29 @@ mod tests {
         assert_eq!(tokens, ["No tool is needed."]);
         assert!(Llm::take_tool_events(&mut llm).is_empty());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn harness_cancelled_turn_quiesces_without_continuation() {
+        // Pre-cancelled: generate must return before dialing, so the mock
+        // asserts *no* connection arrives within a short bound instead of
+        // blocking on `accept()` like `serve_one` does.
+        let (endpoint, server) = serve_expect_no_connection(Duration::from_millis(300));
+        let mut llm = test_llm(endpoint);
+        llm.settings.developer_harness = true;
+        let cancel = Cancel::new();
+        cancel.shutdown();
+        let (tokens, result) = collect(&mut llm, &cancel);
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert!(tokens.is_empty());
+        assert!(
+            Llm::take_tool_events(&mut llm).is_empty(),
+            "no tool runs after shutdown"
+        );
+        assert!(
+            !server.join().expect("mock server"),
+            "pre-cancelled turn must not dial"
+        );
     }
 
     #[test]
@@ -1642,7 +1735,11 @@ mod tests {
             crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE,
         );
         append_tool_call_message(&mut body, std::slice::from_ref(&call));
-        let result = phase_one_result(&call);
+        let result = ToolResult {
+            tool_call_id: call.id.clone(),
+            ok: false,
+            content: "bounded test result".into(),
+        };
         append_tool_result_message(&mut body, &result);
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.last().unwrap()["role"], "tool");
@@ -1650,7 +1747,7 @@ mod tests {
         assert!(messages.last().unwrap()["content"]
             .as_str()
             .unwrap()
-            .contains("phase 1"));
+            .contains("bounded test result"));
         let oversized = "é".repeat(MAX_TOOL_RESULT_BYTES);
         assert!(
             truncate_bytes(&oversized, MAX_TOOL_RESULT_BYTES).len() <= MAX_TOOL_RESULT_BYTES + 3
@@ -1658,15 +1755,8 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_limit_is_fixed_and_phase_one_never_executes() {
+    fn tool_call_limit_is_fixed() {
         assert_eq!(MAX_TOOL_CALLS_PER_TURN, 5);
-        let result = phase_one_result(&ToolCall {
-            id: "call-1".into(),
-            name: "shell".into(),
-            arguments: serde_json::json!({"argv":["pwd"]}),
-        });
-        assert!(!result.ok);
-        assert!(result.content.contains("not available"));
     }
 
     #[test]

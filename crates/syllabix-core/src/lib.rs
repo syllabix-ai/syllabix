@@ -16,6 +16,7 @@ mod config;
 mod defaults;
 mod dist;
 mod error;
+mod executor;
 mod fake;
 mod g2p;
 mod language;
