@@ -15,6 +15,15 @@ on:
       - crates/syllabix-core/src/types.rs
       - crates/syllabix-core/src/providers.rs
       - crates/syllabix-core/tests/harness-quality.rs
+  workflow_dispatch:
+    inputs:
+      pool:
+        description: "Runner pool (default: self-hosted, free)"
+        type: choice
+        default: '["self-hosted", "macOS"]'
+        options:
+          - '["self-hosted", "macOS"]'
+          - '["ubuntu-latest"]'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -26,9 +35,10 @@ permissions:
 jobs:
   harness-quality-evidence:
     name: harness quality evidence
-    # Hosted Ubuntu only. macOS runners are unavailable for this check, and
-    # the job needs no devices, weights, or network beyond the GitHub API.
-    runs-on: ubuntu-latest
+    # Single runner, like coverage/clippy: self-hosted macOS (0 billed
+    # minutes); workflow_dispatch may override to hosted Ubuntu. The job
+    # needs no devices, weights, or network beyond the GitHub API.
+    runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
     timeout-minutes: 5
     if: github.event.pull_request.draft == false
     permissions:
