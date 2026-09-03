@@ -42,7 +42,8 @@ pub struct AgentConfig {
     pub llm: LlmProvider,
     /// LLM model id (`llama-3.2-1b`, `qwen3.5-0.8b`, or `qwen3.5-2b`).
     pub llm_model: String,
-    /// Qwen thinking. Default false; yaml `thinking: true` enables it.
+    /// Qwen thinking. Default false; yaml `thinking: true` enables it on
+    /// `qwen3.5-2b` only and is rejected for every other model.
     pub thinking: bool,
     /// LLM system prompt template (`pipeline.llm.system_prompt`). `{language}`
     /// is replaced at generate time with the STT language's English name.
@@ -318,6 +319,15 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         required_string(llm, "pipeline.llm.model", "model")?,
     )?;
     let thinking = optional_bool(llm, "pipeline.llm", "thinking", false)?;
+    // Thinking is a `qwen3.5-2b` capability only: the smaller Qwen and Llama
+    // never enable chain-of-thought, so yaml must not ask them to.
+    if thinking && !(llm_provider == LlmProvider::Local && llm_model == crate::llm::QWEN35_2B_ASSET)
+    {
+        return Err(Error::Config {
+            field: "pipeline.llm.thinking".into(),
+            message: "is only valid with pipeline.llm.model: qwen3.5-2b".into(),
+        });
+    }
     let system_prompt = match optional_string(llm, "pipeline.llm", "system_prompt")? {
         Some(value) => parse_system_prompt(&value)?,
         None => crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
@@ -897,6 +907,18 @@ pipeline:
         let cfg = AgentConfig::parse_yaml(&small).unwrap();
         assert_eq!(cfg.llm_model, "qwen3.5-0.8b");
         assert!(!cfg.thinking);
+    }
+
+    #[test]
+    fn thinking_true_is_rejected_except_on_the_2b_model() {
+        for model in ["llama-3.2-1b", "qwen3.5-0.8b"] {
+            let yaml = AgentConfig::v0()
+                .to_yaml()
+                .replace("model: llama-3.2-1b", &format!("model: {model}"))
+                .replace("thinking: false", "thinking: true");
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(err.to_string().contains("pipeline.llm.thinking"), "{err}");
+        }
     }
 
     #[test]

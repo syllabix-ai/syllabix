@@ -80,6 +80,7 @@ static const std::map<std::string, llm_chat_template> LLM_CHAT_TEMPLATES = {
     { "grok-2",            LLM_CHAT_TEMPLATE_GROK_2            },
     { "pangu-embedded",    LLM_CHAT_TEMPLATE_PANGU_EMBED       },
     { "solar-open",        LLM_CHAT_TEMPLATE_SOLAR_OPEN        },
+    { "qwen",              LLM_CHAT_TEMPLATE_QWEN              },
 };
 
 llm_chat_template llm_chat_template_from_str(const std::string & name) {
@@ -235,6 +236,12 @@ llm_chat_template llm_chat_detect_template(const std::string & tmpl) {
         return LLM_CHAT_TEMPLATE_PANGU_EMBED;
     } else if (tmpl_contains("<|begin|>") && tmpl_contains("<|end|>") && tmpl_contains("<|content|>")) {
         return LLM_CHAT_TEMPLATE_SOLAR_OPEN;
+    } else if (tmpl_contains("<tool_call>") && tmpl_contains("tool_response")) {
+        // Qwen3 / Qwen3.5 instruct template (Jinja `tokenizer.chat_template`
+        // in the GGUF): ChatML-like `<|im_start|>` framing with a `<tools>`
+        // preamble, `<tool_call><function=...>` responses and `tool`-role
+        // results grouped as `<|im_start|>user ... <tool_response>`.
+        return LLM_CHAT_TEMPLATE_QWEN;
     }
     return LLM_CHAT_TEMPLATE_UNKNOWN;
 }
@@ -936,6 +943,37 @@ int32_t llm_chat_apply_template(
         }
         if (add_ass) {
             ss << "<|begin|>assistant";
+        }
+    } else if (tmpl == LLM_CHAT_TEMPLATE_QWEN) {
+        // Qwen3 / Qwen3.5, tool-free path. System/user/assistant render
+        // exactly like ChatML, so tool-free prompts stay byte-identical.
+        // `tool`-role messages group into one user turn of
+        // `<tool_response>` blocks, matching the GGUF Jinja template.
+        // The `<tools>` preamble (tools JSON) is rendered by the caller
+        // (see `syllabix_llama_generate_with_tools` in the syllabix shim),
+        // which is the tools-aware entry point for this template.
+        bool in_tool_group = false;
+        for (auto message : chat) {
+            std::string role(message->role);
+            if (role == "tool") {
+                if (!in_tool_group) {
+                    ss << "<|im_start|>user\n";
+                    in_tool_group = true;
+                }
+                ss << "<tool_response>\n" << message->content << "\n</tool_response>\n";
+            } else {
+                if (in_tool_group) {
+                    ss << "<|im_end|>\n";
+                    in_tool_group = false;
+                }
+                ss << "<|im_start|>" << message->role << "\n" << message->content << "<|im_end|>\n";
+            }
+        }
+        if (in_tool_group) {
+            ss << "<|im_end|>\n";
+        }
+        if (add_ass) {
+            ss << "<|im_start|>assistant\n";
         }
     } else {
         // template not supported
