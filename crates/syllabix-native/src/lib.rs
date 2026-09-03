@@ -108,6 +108,36 @@ mod ffi {
             thinking: c_int,
             tools_json: *const c_char,
         ) -> c_int;
+        pub fn syllabix_llama_generate_with_lfm_tools(
+            llm: *mut LlamaHandle,
+            roles: *const *const c_char,
+            contents: *const *const c_char,
+            n_messages: c_int,
+            thinking: c_int,
+            tools_json: *const c_char,
+            n_threads: c_int,
+            abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+            abort_user: *mut c_void,
+            token_cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
+            token_user: *mut c_void,
+        ) -> c_int;
+        pub fn syllabix_llama_render_lfm(
+            roles: *const *const c_char,
+            contents: *const *const c_char,
+            n_messages: c_int,
+            tools_json: *const c_char,
+            thinking: c_int,
+            out: *mut c_char,
+            out_cap: c_int,
+        ) -> c_int;
+        pub fn syllabix_llama_count_prompt_tokens_with_lfm_tools(
+            llm: *mut LlamaHandle,
+            roles: *const *const c_char,
+            contents: *const *const c_char,
+            n_messages: c_int,
+            thinking: c_int,
+            tools_json: *const c_char,
+        ) -> c_int;
         pub fn syllabix_qwen_tts_load(
             model_path: *const c_char,
             mmproj_path: *const c_char,
@@ -601,6 +631,186 @@ impl LlamaContext {
         }
         Ok(count as usize)
     }
+
+    /// Render an LFM tools-aware prompt without loading weights (Phase 4).
+    ///
+    /// Pure unit-test seam for the `List of tools:` preamble and
+    /// `tool`-role turns. `tools_json` is the JSON array of tool
+    /// definitions; empty means the tool-free LFM framing. Separate from
+    /// the Qwen renderer (second-dialect exception).
+    pub fn render_lfm_prompt(
+        messages: &[ChatMessage],
+        tools_json: &str,
+    ) -> Result<String, LlamaError> {
+        Self::render_lfm_prompt_inner(messages, tools_json)
+    }
+
+    fn render_lfm_prompt_inner(
+        messages: &[ChatMessage],
+        tools_json: &str,
+    ) -> Result<String, LlamaError> {
+        let roles: Result<Vec<CString>, LlamaError> = messages
+            .iter()
+            .map(|m| {
+                CString::new(m.role.as_str()).map_err(|_| LlamaError::Failed("role NUL".into()))
+            })
+            .collect();
+        let contents: Result<Vec<CString>, LlamaError> = messages
+            .iter()
+            .map(|m| {
+                CString::new(m.content.as_str())
+                    .map_err(|_| LlamaError::Failed("content NUL".into()))
+            })
+            .collect();
+        let roles = roles?;
+        let contents = contents?;
+        let role_ptrs: Vec<*const c_char> = roles.iter().map(|s| s.as_ptr()).collect();
+        let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
+        let c_tools =
+            CString::new(tools_json).map_err(|_| LlamaError::Failed("tools_json NUL".into()))?;
+        let len = unsafe {
+            ffi::syllabix_llama_render_lfm(
+                role_ptrs.as_ptr(),
+                content_ptrs.as_ptr(),
+                messages.len() as c_int,
+                c_tools.as_ptr(),
+                1,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if len < 1 {
+            return Err(LlamaError::Failed("lfm prompt rendering failed".into()));
+        }
+        let mut out = vec![0u8; (len as usize) + 1];
+        let rc = unsafe {
+            ffi::syllabix_llama_render_lfm(
+                role_ptrs.as_ptr(),
+                content_ptrs.as_ptr(),
+                messages.len() as c_int,
+                c_tools.as_ptr(),
+                1,
+                out.as_mut_ptr().cast::<c_char>(),
+                out.len() as c_int,
+            )
+        };
+        if rc != len {
+            return Err(LlamaError::Failed("lfm prompt rendering failed".into()));
+        }
+        out.pop();
+        String::from_utf8(out).map_err(|_| LlamaError::Failed("lfm prompt is not UTF-8".into()))
+    }
+
+    /// Stream greedy pieces through the LFM tools-aware entry (Phase 4).
+    ///
+    /// With empty `tools_json` the shim delegates to the plain path, so
+    /// tool-free generation stays byte-identical.
+    ///
+    /// # Safety
+    /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
+    pub unsafe fn generate_with_lfm_tools(
+        &mut self,
+        messages: &[ChatMessage],
+        tools_json: &str,
+        opts: LlamaGenerate,
+        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        abort_user: *mut c_void,
+        on_piece: &mut dyn FnMut(&str, bool) -> Result<(), LlamaError>,
+    ) -> Result<(), LlamaError> {
+        if messages.is_empty() {
+            return Err(LlamaError::Failed("no chat messages".into()));
+        }
+        let roles: Result<Vec<CString>, LlamaError> = messages
+            .iter()
+            .map(|m| {
+                CString::new(m.role.as_str()).map_err(|_| LlamaError::Failed("role NUL".into()))
+            })
+            .collect();
+        let roles = roles?;
+        let contents: Result<Vec<CString>, LlamaError> = messages
+            .iter()
+            .map(|m| {
+                CString::new(m.content.as_str())
+                    .map_err(|_| LlamaError::Failed("content NUL".into()))
+            })
+            .collect();
+        let contents = contents?;
+        let role_ptrs: Vec<*const c_char> = roles.iter().map(|s| s.as_ptr()).collect();
+        let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
+        let c_tools =
+            CString::new(tools_json).map_err(|_| LlamaError::Failed("tools_json NUL".into()))?;
+
+        let mut sink = TokenSink { on_piece };
+        let _ggml = ggml_lock();
+        let rc = unsafe {
+            ffi::syllabix_llama_generate_with_lfm_tools(
+                self.raw,
+                role_ptrs.as_ptr(),
+                content_ptrs.as_ptr(),
+                messages.len() as c_int,
+                if opts.append_thinking_off_suffix {
+                    0
+                } else {
+                    1
+                },
+                c_tools.as_ptr(),
+                opts.n_threads,
+                abort,
+                abort_user,
+                Some(on_token_piece),
+                (&mut sink as *mut TokenSink).cast(),
+            )
+        };
+        match rc {
+            0 => Ok(()),
+            1 => Err(LlamaError::Cancelled),
+            _ => Err(LlamaError::Failed("llama.cpp generate failed".into())),
+        }
+    }
+
+    /// Prompt-token count for an LFM tools-aware prompt (Phase 4).
+    pub fn prompt_token_count_with_lfm_tools(
+        &mut self,
+        messages: &[ChatMessage],
+        tools_json: &str,
+    ) -> Result<usize, LlamaError> {
+        let roles: Result<Vec<CString>, LlamaError> = messages
+            .iter()
+            .map(|m| {
+                CString::new(m.role.as_str()).map_err(|_| LlamaError::Failed("role NUL".into()))
+            })
+            .collect();
+        let contents: Result<Vec<CString>, LlamaError> = messages
+            .iter()
+            .map(|m| {
+                CString::new(m.content.as_str())
+                    .map_err(|_| LlamaError::Failed("content NUL".into()))
+            })
+            .collect();
+        let roles = roles?;
+        let contents = contents?;
+        let role_ptrs: Vec<*const c_char> = roles.iter().map(|s| s.as_ptr()).collect();
+        let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
+        let c_tools =
+            CString::new(tools_json).map_err(|_| LlamaError::Failed("tools_json NUL".into()))?;
+        let _ggml = ggml_lock();
+        let count = unsafe {
+            ffi::syllabix_llama_count_prompt_tokens_with_lfm_tools(
+                self.raw,
+                role_ptrs.as_ptr(),
+                content_ptrs.as_ptr(),
+                messages.len() as c_int,
+                1,
+                c_tools.as_ptr(),
+            )
+        };
+        if count < 1 {
+            return Err(LlamaError::Failed(
+                "llama.cpp prompt tokenization failed".into(),
+            ));
+        }
+        Ok(count as usize)
+    }
 }
 
 impl Drop for LlamaContext {
@@ -1004,5 +1214,68 @@ mod tests {
     #[test]
     fn qwen_render_rejects_empty_messages() {
         assert!(LlamaContext::render_qwen_prompt(&[], "", true).is_err());
+    }
+
+    fn lfm_messages() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage {
+                role: "system".into(),
+                content: "You are helpful.".into(),
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: "What time is it?".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn lfm_tool_free_prompt_uses_im_framing_without_tools_list() {
+        let prompt = LlamaContext::render_lfm_prompt(&lfm_messages(), "").expect("render");
+        assert!(prompt.contains("<|im_start|>system\nYou are helpful.<|im_end|>\n"));
+        assert!(prompt.contains("<|im_start|>user\nWhat time is it?<|im_end|>\n"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+        assert!(!prompt.contains("List of tools:"));
+        assert!(!prompt.contains("tool_call_start"));
+    }
+
+    #[test]
+    fn lfm_tools_preamble_lists_tools_and_folds_the_system_message() {
+        let tools = r#"[{"name":"shell"}]"#;
+        let prompt = LlamaContext::render_lfm_prompt(&lfm_messages(), tools).expect("render");
+        assert!(prompt.contains("<|im_start|>system\nList of tools: "));
+        assert!(prompt.contains(tools));
+        assert!(prompt.contains("<|im_end|>\n"));
+        // The system text joins the preamble; it must not repeat as a block.
+        assert_eq!(prompt.matches("You are helpful.").count(), 1);
+        assert!(prompt.contains("<|im_start|>user\nWhat time is it?<|im_end|>\n"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn lfm_tool_results_render_as_native_tool_turns() {
+        let messages = vec![
+            ChatMessage {
+                role: "user".into(),
+                content: "How much space?".into(),
+            },
+            ChatMessage {
+                role: "tool".into(),
+                content: "first result".into(),
+            },
+            ChatMessage {
+                role: "tool".into(),
+                content: "second result".into(),
+            },
+        ];
+        let prompt = LlamaContext::render_lfm_prompt(&messages, "").expect("render");
+        assert!(prompt.contains("<|im_start|>tool\nfirst result<|im_end|>\n"));
+        assert!(prompt.contains("<|im_start|>tool\nsecond result<|im_end|>\n"));
+        assert!(!prompt.contains("<tool_response>"));
+    }
+
+    #[test]
+    fn lfm_render_rejects_empty_messages() {
+        assert!(LlamaContext::render_lfm_prompt(&[], "").is_err());
     }
 }

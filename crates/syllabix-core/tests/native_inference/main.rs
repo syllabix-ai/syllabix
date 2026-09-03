@@ -15,6 +15,8 @@
 #[cfg(not(coverage))]
 mod kokoro;
 #[cfg(not(coverage))]
+mod lfm;
+#[cfg(not(coverage))]
 mod llama;
 #[cfg(not(coverage))]
 mod pocket_tts;
@@ -30,7 +32,9 @@ use std::collections::BTreeSet;
 #[cfg(not(coverage))]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use syllabix_core::{SttModel, TtsModel, LLAMA_32_1B_ASSET, QWEN35_08B_ASSET, QWEN35_2B_ASSET};
+use syllabix_core::{
+    SttModel, TtsModel, LFM25_26B_ASSET, LLAMA_32_1B_ASSET, QWEN35_08B_ASSET, QWEN35_2B_ASSET,
+};
 
 #[cfg(not(coverage))]
 use syllabix_core::{
@@ -40,8 +44,8 @@ use syllabix_core::{
 /// Yaml ids the launch stack native tests cover.
 const LAUNCH_NATIVE_IDS: [&str; 3] = ["small", LLAMA_32_1B_ASSET, "kokoro"];
 
-/// Yaml ids that currently have a native suite.
-const SUITED_NATIVE_IDS: [&str; 7] = [
+/// Native-test ids that currently have a suite. Pocket remains feasibility-only.
+const SUITED_NATIVE_IDS: [&str; 8] = [
     "small",
     LLAMA_32_1B_ASSET,
     "kokoro",
@@ -49,6 +53,7 @@ const SUITED_NATIVE_IDS: [&str; 7] = [
     "qwen3-1.7",
     QWEN35_08B_ASSET,
     "pocket-tts",
+    LFM25_26B_ASSET,
 ];
 
 /// P3 runs every selectable local TTS model over this same fixed corpus.
@@ -87,9 +92,17 @@ fn all_yaml_model_ids() -> BTreeSet<&'static str> {
     ids.insert(LLAMA_32_1B_ASSET);
     ids.insert(QWEN35_08B_ASSET);
     ids.insert(QWEN35_2B_ASSET);
+    ids.insert(LFM25_26B_ASSET);
     for model in TtsModel::ALL {
         ids.insert(model.as_str());
     }
+    ids
+}
+
+/// IDs accepted only by the native-inference harness. They deliberately do
+/// not imply configuration support in `pipeline.*.model`.
+fn all_native_model_ids() -> BTreeSet<&'static str> {
+    let mut ids = all_yaml_model_ids();
     // P1 is deliberately not selectable from `pipeline.tts.model`; native
     // feasibility needs an exclusive test id before P2 exposes that surface.
     ids.insert("pocket-tts");
@@ -98,7 +111,7 @@ fn all_yaml_model_ids() -> BTreeSet<&'static str> {
 
 /// Parse `SYLLABIX_NATIVE_MODELS`. `None` / blank ⇒ launch stack.
 fn parse_native_models(raw: Option<&str>) -> Result<BTreeSet<String>, String> {
-    let known = all_yaml_model_ids();
+    let known = all_native_model_ids();
     let suited: BTreeSet<&str> = SUITED_NATIVE_IDS.into_iter().collect();
     let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(LAUNCH_NATIVE_IDS.into_iter().map(str::to_string).collect());
@@ -224,6 +237,7 @@ pub(crate) use skip_unless_launch_stack;
 pub(crate) struct Native {
     stt: Option<WhisperStt>,
     llm: Option<LlamaLlm>,
+    lfm: Option<LlamaLlm>,
     tts: Option<KokoroTts>,
 }
 
@@ -233,6 +247,7 @@ impl Native {
         Self {
             stt: None,
             llm: None,
+            lfm: None,
             tts: None,
         }
     }
@@ -255,6 +270,27 @@ impl Native {
     pub(crate) fn llm_mut(&mut self) -> &mut LlamaLlm {
         self.ensure_llm();
         self.llm.as_mut().expect("llama loaded")
+    }
+
+    /// Phase-4-only LFM handle. It deliberately bypasses the yaml model menu:
+    /// loading it here proves the spike can coexist with the launch audio
+    /// stack without making it selectable by `syllabix run`.
+    pub(crate) fn lfm_mut(&mut self) -> &mut LlamaLlm {
+        if self.lfm.is_none() {
+            let cache = ModelCache::v0();
+            let asset = cache
+                .manifest()
+                .asset(LFM25_26B_ASSET)
+                .expect("manifest must contain the LFM spike asset");
+            let mut progress = StderrProgress::new();
+            let cancel = Cancel::new();
+            let path = cache
+                .resolve(asset, &HttpFetcher, &mut progress, &cancel)
+                .expect("resolve LFM QAD Q4_0 GGUF");
+            self.lfm =
+                Some(LlamaLlm::from_model_path(path).expect("load LFM QAD Q4_0 without segfault"));
+        }
+        self.lfm.as_mut().expect("LFM loaded")
     }
 
     fn ensure_llm(&mut self) {
@@ -360,11 +396,17 @@ fn native_model_without_a_suite_fails() {
 }
 
 #[test]
-fn suited_native_ids_are_yaml_ids() {
-    let known = all_yaml_model_ids();
+fn suited_native_ids_are_recognized_by_the_native_harness() {
+    let known = all_native_model_ids();
     for id in SUITED_NATIVE_IDS {
-        assert!(known.contains(id), "{id} must be a yaml model id");
+        assert!(known.contains(id), "{id} must be a native test id");
     }
+}
+
+#[test]
+fn lfm_is_a_yaml_and_native_model_id() {
+    assert!(all_native_model_ids().contains(LFM25_26B_ASSET));
+    assert!(all_yaml_model_ids().contains(LFM25_26B_ASSET));
 }
 
 #[test]

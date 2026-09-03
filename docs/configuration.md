@@ -70,6 +70,7 @@ Omit any VAD tunable to keep the launch default. First `run` fetches only the se
 | `llama-3.2-1b` | Default; first-run cache |
 | `qwen3.5-0.8b` | Fetched when selected |
 | `qwen3.5-2b` | Fetched when selected |
+| `lfm2.5-2.6b` | LiquidAI LFM2.5 QAD Q4_0; fetched when selected |
 
 `thinking: true` enables chain-of-thought on `qwen3.5-2b` only (rejected for every other model). Thinking text is never spoken and is hidden in the TUI. Unknown local ids fail at load.
 
