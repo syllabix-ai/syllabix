@@ -1,0 +1,103 @@
+name: Harness quality evidence
+
+# Follow-up to #80: harness-touching PRs must carry a pasted live
+# `--test harness-quality` report. CI never calls the model and holds no
+# secrets; the author runs the keyed test with their own key and pastes the
+# verdict block into the PR body.
+on:
+  pull_request:
+    # `edited` is required here (ci.yml omits it): pasting the report edits
+    # the body without pushing, and only a re-run can turn the check green.
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+    paths:
+      - crates/syllabix-core/src/executor.rs
+      - crates/syllabix-core/src/openai.rs
+      - crates/syllabix-core/src/types.rs
+      - crates/syllabix-core/src/providers.rs
+      - crates/syllabix-core/tests/harness-quality.rs
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  harness-quality-evidence:
+    name: harness quality evidence
+    # Hosted Ubuntu only. macOS runners are unavailable for this check, and
+    # the job needs no devices, weights, or network beyond the GitHub API.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.pull_request.draft == false
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check PR body for pasted harness-quality report
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 - <<'EOF'
+          import os
+          import re
+          import sys
+
+          body = os.environ.get("PR_BODY") or ""
+          marker = "<!-- syllabix-harness-quality -->"
+          fixtures = [
+              "disk-space",
+              "repo-search",
+              "known-fetch",
+              "discovery-primary-source",
+              "hostile-prompt",
+          ]
+          summary = re.compile(
+              r"summary:\s*valid=\d+/\d+\s+ratio=\d+\.\d+\s+escapes=\d+"
+          )
+
+          missing = []
+          if marker not in body:
+              missing.append("marker `<!-- syllabix-harness-quality -->`")
+          for fixture in fixtures:
+              if f"[{fixture}]" not in body:
+                  missing.append(f"fixture line `[{fixture}]`")
+          if not summary.search(body):
+              missing.append("summary line `summary: valid=X/Y ratio=….… escapes=…`")
+
+          if missing:
+              print("harness-quality evidence missing: " + "; ".join(missing))
+              sys.exit(1)
+          print("harness-quality evidence present.")
+          EOF
+      - name: Instruct author to paste the harness-quality report
+        if: failure() && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- syllabix-harness-quality-help -->';
+            const body = `${marker}\n` +
+              `This PR touches the tool-harness boundary but its body has no pasted \`--test harness-quality\` report yet.\n\n` +
+              `Run the live admission test with your own key (CI never calls the model, no secrets are stored) and paste the verdict block — marker \`<!-- syllabix-harness-quality -->\`, the five fixture lines (\`[disk-space]\`, \`[repo-search]\`, \`[known-fetch]\`, \`[discovery-primary-source]\`, \`[hostile-prompt]\`), and the \`summary: valid=X/Y ratio=… escapes=…\` line — into the PR body:\n\n` +
+              "```bash\n" +
+              "SYLLABIX_LLM_API_KEY=… \\\n" +
+              "SYLLABIX_HARNESS_BASE_URL=https://api.openai.com/v1 \\\n" +
+              "SYLLABIX_HARNESS_MODEL=<model-id> \\\n" +
+              "cargo test -p syllabix-core --test harness-quality -- --ignored --nocapture\n" +
+              "```";
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const prior = comments.find((comment) => comment.user.type === 'Bot' && comment.body.startsWith(marker));
+            if (prior) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: prior.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
