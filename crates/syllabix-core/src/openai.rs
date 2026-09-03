@@ -615,7 +615,7 @@ fn tool_definitions() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "shell",
-                "description": "Execute a read-only command via direct argv in the workspace. Allowed commands: date (current time), df (disk space, e.g. ['df', '-h', '.']), pwd, ls (list directory), git (status, diff, log, show, branch), rg (search code/text), find (find files), cargo (metadata, tree).",
+                "description": "Execute a read-only command via direct argv in the workspace. Allowed commands: date (current time), df (disk space, e.g. ['df', '-h', '.']), pwd, ls (list directory), git (status, diff, log, show, branch), find (find files by name), cargo (metadata, tree). Content search is not available; use find to locate files by name.",
                 "parameters": {
                     "type": "object",
                     "additionalProperties": false,

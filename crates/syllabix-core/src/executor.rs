@@ -131,7 +131,6 @@ fn validate_program(argv: &[String]) -> Result<(), String> {
         Some("pwd") if argv.len() == 1 => Ok(()),
         Some("df") => validate_df(argv),
         Some("ls") => validate_ls(argv),
-        Some("rg") => validate_rg(argv),
         Some("find") => validate_find(argv),
         Some("git") => validate_git(argv),
         Some("cargo") if matches!(argv.get(1).map(String::as_str), Some("metadata" | "tree")) => {
@@ -158,22 +157,6 @@ fn validate_ls(argv: &[String]) -> Result<(), String> {
         })
     {
         return Err("ls only accepts display flags and workspace paths".into());
-    }
-    Ok(())
-}
-
-fn validate_rg(argv: &[String]) -> Result<(), String> {
-    let args = &argv[1..];
-    let rest = match args {
-        [first, rest @ ..] if first == "-n" => rest,
-        rest => rest,
-    };
-    if rest.is_empty()
-        || rest[0].starts_with('-')
-        || rest.len() > 3
-        || rest.iter().skip(1).any(|arg| !is_relative_path(arg))
-    {
-        return Err("rg only accepts an optional -n, a pattern, and workspace paths".into());
     }
     Ok(())
 }
@@ -399,7 +382,7 @@ fn command_path(program: &str) -> Result<&'static str, String> {
         "git" => Ok("/usr/bin/git"),
         "ls" => Ok("/bin/ls"),
         "pwd" => Ok("/bin/pwd"),
-        "rg" | "cargo" => Err("shell command is unavailable on this installation".into()),
+        "cargo" => Err("shell command is unavailable on this installation".into()),
         _ => Err("shell command is not permitted".into()),
     }
 }
@@ -487,8 +470,8 @@ mod tests {
             &["df", "-k", "."][..],
             &["ls", "-R"][..],
             &["ls", "/etc"][..],
-            &["rg", "-i", "foo"][..],
-            &["rg", "foo", "/tmp"][..],
+            &["rg", "foo"][..],
+            &["rg", "-n", "foo", "crates"][..],
             &["find", ".", "-exec", "id", ";"][..],
             &["find", "/tmp", "-name", "*.rs"][..],
             &["cargo", "build"][..],
@@ -510,8 +493,6 @@ mod tests {
             &["ls"][..],
             &["ls", "-la"][..],
             &["ls", "-l", "crates"][..],
-            &["rg", "ToolCall"][..],
-            &["rg", "-n", "ToolCall", "crates"][..],
             &["find", "."][..],
             &["find", "crates", "-name", "*.rs"][..],
             &["find", "crates", "-type", "f"][..],
@@ -575,7 +556,7 @@ mod tests {
         // Oversized arg element (> 1024 bytes)
         let huge_arg = "a".repeat(1025);
         assert!(validate_call(
-            &call("shell", serde_json::json!({"argv":["rg", huge_arg]})),
+            &call("shell", serde_json::json!({"argv":["find", huge_arg]})),
             &workspace
         )
         .is_err());

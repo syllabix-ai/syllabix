@@ -40,6 +40,7 @@ sentencepiece-rs = "=0.2.2"
 coreaudio-sys.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 sha2.workspace = true
 
 [[test]]
