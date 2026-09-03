@@ -254,7 +254,8 @@ pub struct BuiltinDefaults {
     pub llm: LlmProvider,
     /// Instruct GGUF id. Fetched into the first-run cache; not packed.
     pub llm_model: &'static str,
-    /// Qwen thinking. Off by default; yaml `thinking: true` enables it.
+    /// Qwen thinking. Off by default; yaml `thinking: true` enables it on
+    /// `qwen3.5-2b` only.
     pub llm_thinking: bool,
     /// TTS provider.
     pub tts: TtsProvider,

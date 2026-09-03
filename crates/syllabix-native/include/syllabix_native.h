@@ -74,6 +74,44 @@ int syllabix_llama_generate(
     int (*token_cb)(const char *piece, int is_last, void *user),
     void *token_user);
 
+/* Issue 87: tools-aware entry for Qwen3 / Qwen3.5. `tools_json` is the JSON
+ * array of tool definitions (the same contract the online adapter sends).
+ * NULL/empty — or a non-Qwen model template — delegates to the plain path
+ * byte-for-byte, so tool-free generation is unchanged. `tool`-role messages
+ * render as native `<tool_response>` turns; see `syllabix_llama_render_qwen`. */
+int syllabix_llama_generate_with_tools(
+    struct syllabix_llama *llm,
+    const char *const *roles,
+    const char *const *contents,
+    int n_messages,
+    int thinking,
+    const char *tools_json,
+    int n_threads,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    int (*token_cb)(const char *piece, int is_last, void *user),
+    void *token_user);
+
+/* Pure Qwen prompt renderer (no model handle): returns the prompt length, or
+ * -1 on error. With `out == NULL`, measures only. Unit-test seam for the
+ * tools preamble and `tool`-role grouping without loading weights. */
+int syllabix_llama_render_qwen(
+    const char *const *roles,
+    const char *const *contents,
+    int n_messages,
+    const char *tools_json,
+    int thinking,
+    char *out,
+    int out_cap);
+
+int syllabix_llama_count_prompt_tokens_with_tools(
+    struct syllabix_llama *llm,
+    const char *const *roles,
+    const char *const *contents,
+    int n_messages,
+    int thinking,
+    const char *tools_json);
+
 /* Qwen3-TTS (row 31; row 32 voice anchor). Backbone GGUF + mmproj through
  * the shared ggml. Sampling mirrors upstream tools/tts defaults; `seed`
  * pins the fixture. At load the engine synthesizes one short clip from a

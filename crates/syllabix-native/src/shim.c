@@ -296,6 +296,165 @@ void syllabix_llama_free(struct syllabix_llama *llm) {
     free(llm);
 }
 
+/* Issue 87: Qwen3 / Qwen3.5 native tool dialect.
+ *
+ * The GGUF Jinja template (`tokenizer.chat_template`) renders a `<tools>`
+ * preamble (tool schemas as JSON), `<tool_call><function=name>...` responses
+ * and `tool`-role results grouped as `<|im_start|>user <tool_response>` turns.
+ * The vendored heuristic (`llama-chat.cpp`, `LLM_CHAT_TEMPLATE_QWEN`) covers
+ * the tool-free path; the preamble below is the tools-aware entry point kept
+ * alongside the existing plain path. With `tools_json` NULL/empty (or a
+ * non-Qwen template) callers must use the plain `llama_chat_apply_template`
+ * path so tool-free prompts stay byte-identical. */
+
+static int is_qwen_template(const char *tmpl) {
+    return tmpl != NULL && strstr(tmpl, "<tool_call>") != NULL
+        && strstr(tmpl, "tool_response") != NULL;
+}
+
+struct prompt_buf {
+    char *data;
+    size_t len;
+    size_t cap;
+};
+
+static int prompt_append(struct prompt_buf *out, const char *text, size_t text_len) {
+    if (text_len == 0) {
+        return 0;
+    }
+    if (out->len + text_len + 1 > out->cap) {
+        size_t cap = out->cap != 0 ? out->cap : 1024;
+        while (cap < out->len + text_len + 1) {
+            cap *= 2;
+        }
+        char *grown = (char *)realloc(out->data, cap);
+        if (grown == NULL) {
+            return -1;
+        }
+        out->data = grown;
+        out->cap = cap;
+    }
+    memcpy(out->data + out->len, text, text_len);
+    out->len += text_len;
+    out->data[out->len] = '\0';
+    return 0;
+}
+
+static int prompt_append_cstr(struct prompt_buf *out, const char *text) {
+    return prompt_append(out, text, text != NULL ? strlen(text) : 0);
+}
+
+/* Pure Qwen prompt renderer (no model handle): `tools_json` is the JSON array
+ * of OpenAI-style tool definitions (one shared contract, see
+ * `tool_definitions` in the core crate), embedded verbatim in `<tools>`.
+ * Returns the prompt length, or -1 on error. When `out == NULL`, only measures.
+ * `thinking == 0` appends the empty `<think></think>` closer, same convention
+ * as the plain path. */
+int syllabix_llama_render_qwen(
+    const char *const *roles,
+    const char *const *contents,
+    int n_messages,
+    const char *tools_json,
+    int thinking,
+    char *out,
+    int out_cap) {
+    static const char tools_head[] =
+        "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n";
+    static const char tools_tail[] =
+        "\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n"
+        "<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n"
+        "</parameter>\n</function>\n</tool_call>";
+    static const char im_end[] = "<|im_end|>\n";
+    static const char think_off[] = "<think>\n</think>\n";
+    if (roles == NULL || contents == NULL || n_messages < 1) {
+        return -1;
+    }
+    struct prompt_buf buf = { NULL, 0, 0 };
+    int start = 0;
+    if (tools_json != NULL && tools_json[0] != '\0') {
+        if (prompt_append_cstr(&buf, tools_head) != 0
+            || prompt_append_cstr(&buf, tools_json) != 0
+            || prompt_append_cstr(&buf, tools_tail) != 0) {
+            free(buf.data);
+            return -1;
+        }
+        if (roles[0] != NULL && contents[0] != NULL && strcmp(roles[0], "system") == 0) {
+            if (prompt_append(&buf, "\n\n", 2) != 0
+                || prompt_append_cstr(&buf, contents[0]) != 0) {
+                free(buf.data);
+                return -1;
+            }
+            start = 1;
+        }
+        if (prompt_append_cstr(&buf, im_end) != 0) {
+            free(buf.data);
+            return -1;
+        }
+    }
+    int in_tool_group = 0;
+    for (int i = start; i < n_messages; i++) {
+        if (roles[i] == NULL || contents[i] == NULL) {
+            free(buf.data);
+            return -1;
+        }
+        if (strcmp(roles[i], "tool") == 0) {
+            if (!in_tool_group) {
+                if (prompt_append_cstr(&buf, "<|im_start|>user\n") != 0) {
+                    free(buf.data);
+                    return -1;
+                }
+                in_tool_group = 1;
+            }
+            if (prompt_append_cstr(&buf, "<tool_response>\n") != 0
+                || prompt_append_cstr(&buf, contents[i]) != 0
+                || prompt_append_cstr(&buf, "\n</tool_response>\n") != 0) {
+                free(buf.data);
+                return -1;
+            }
+        } else {
+            if (in_tool_group) {
+                if (prompt_append_cstr(&buf, im_end) != 0) {
+                    free(buf.data);
+                    return -1;
+                }
+                in_tool_group = 0;
+            }
+            if (prompt_append_cstr(&buf, "<|im_start|>") != 0
+                || prompt_append_cstr(&buf, roles[i]) != 0
+                || prompt_append(&buf, "\n", 1) != 0
+                || prompt_append_cstr(&buf, contents[i]) != 0
+                || prompt_append_cstr(&buf, im_end) != 0) {
+                free(buf.data);
+                return -1;
+            }
+        }
+    }
+    if (in_tool_group) {
+        if (prompt_append_cstr(&buf, im_end) != 0) {
+            free(buf.data);
+            return -1;
+        }
+    }
+    if (prompt_append_cstr(&buf, "<|im_start|>assistant\n") != 0) {
+        free(buf.data);
+        return -1;
+    }
+    if (!thinking) {
+        if (prompt_append_cstr(&buf, think_off) != 0) {
+            free(buf.data);
+            return -1;
+        }
+    }
+    int prompt_len = (int)buf.len;
+    if (out != NULL && out_cap > 0) {
+        size_t copy = buf.len < (size_t)(out_cap - 1) ? buf.len : (size_t)(out_cap - 1);
+        memcpy(out, buf.data, copy);
+        out[copy] = '\0';
+    }
+    free(buf.data);
+    return prompt_len;
+}
+
 static int emit_piece(
     const char *piece,
     int is_last,
@@ -307,90 +466,28 @@ static int emit_piece(
     return token_cb(piece, is_last, token_user);
 }
 
-int syllabix_llama_generate(
+/* Shared prefill + greedy decode loop over an already-built prompt.
+ * Takes `prompt` (caller-allocated, `prompt_len` bytes); frees it before
+ * returning. Plain and tools-aware entries share this so only prompt
+ * construction differs between the two paths. */
+static int run_prompt(
     struct syllabix_llama *llm,
-    const char *const *roles,
-    const char *const *contents,
-    int n_messages,
-    int thinking,
+    char *prompt,
+    int32_t prompt_len,
     int n_threads,
     bool (*abort_cb)(void *user),
     void *abort_user,
     int (*token_cb)(const char *piece, int is_last, void *user),
     void *token_user) {
-    if (llm == NULL || llm->ctx == NULL || llm->model == NULL || roles == NULL || contents == NULL
-        || n_messages < 1 || token_cb == NULL) {
-        return -1;
-    }
-    if (aborted(abort_cb, abort_user)) {
-        return 1;
-    }
-
     llama_set_n_threads(llm->ctx, n_threads, n_threads);
-    llama_set_abort_callback(llm->ctx, abort_cb, abort_user);
-    llama_memory_clear(llama_get_memory(llm->ctx), true);
-
-    struct llama_chat_message *chat =
-        (struct llama_chat_message *)calloc((size_t)n_messages, sizeof(struct llama_chat_message));
-    if (chat == NULL) {
-        return -1;
-    }
-    for (int i = 0; i < n_messages; i++) {
-        if (roles[i] == NULL || contents[i] == NULL) {
-            free(chat);
-            return -1;
-        }
-        chat[i].role = roles[i];
-        chat[i].content = contents[i];
-    }
-
-    const char *tmpl = llama_model_chat_template(llm->model, NULL);
-    int32_t prompt_len = llama_chat_apply_template(tmpl, chat, (size_t)n_messages, true, NULL, 0);
-    if (prompt_len < 1) {
-        tmpl = "chatml";
-        prompt_len = llama_chat_apply_template(tmpl, chat, (size_t)n_messages, true, NULL, 0);
-    }
-    if (prompt_len < 1) {
-        free(chat);
-        return -1;
-    }
-    char *prompt = (char *)malloc((size_t)prompt_len + 1);
-    if (prompt == NULL) {
-        free(chat);
-        return -1;
-    }
-    if (llama_chat_apply_template(tmpl, chat, (size_t)n_messages, true, prompt, prompt_len + 1)
-        != prompt_len) {
-        free(prompt);
-        free(chat);
-        return -1;
-    }
-    prompt[prompt_len] = '\0';
-    free(chat);
-
-    if (!thinking) {
-        static const char suffix[] = "<think>\n</think>\n";
-        const size_t suffix_len = sizeof(suffix) - 1;
-        char *grown = (char *)realloc(prompt, (size_t)prompt_len + suffix_len + 1);
-        if (grown == NULL) {
-            free(prompt);
-            return -1;
-        }
-        prompt = grown;
-        memcpy(prompt + prompt_len, suffix, suffix_len + 1);
-        prompt_len += (int32_t)suffix_len;
-    }
-
     const struct llama_vocab *vocab = llama_model_get_vocab(llm->model);
     const int n_ctx = (int)llama_n_ctx(llm->ctx);
     llama_token *tokens = (llama_token *)malloc((size_t)n_ctx * sizeof(llama_token));
     if (tokens == NULL) {
-        free(prompt);
         return -1;
     }
     int32_t n_tokens =
         llama_tokenize(vocab, prompt, prompt_len, tokens, n_ctx, true, true);
-    free(prompt);
     if (n_tokens < 1 || n_tokens >= n_ctx - 1) {
         free(tokens);
         return -1;
@@ -484,4 +581,177 @@ int syllabix_llama_generate(
         return 1;
     }
     return status;
+}
+
+int syllabix_llama_generate(
+    struct syllabix_llama *llm,
+    const char *const *roles,
+    const char *const *contents,
+    int n_messages,
+    int thinking,
+    int n_threads,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    int (*token_cb)(const char *piece, int is_last, void *user),
+    void *token_user) {
+    if (llm == NULL || llm->ctx == NULL || llm->model == NULL || roles == NULL || contents == NULL
+        || n_messages < 1 || token_cb == NULL) {
+        return -1;
+    }
+    if (aborted(abort_cb, abort_user)) {
+        return 1;
+    }
+
+    llama_set_n_threads(llm->ctx, n_threads, n_threads);
+    llama_set_abort_callback(llm->ctx, abort_cb, abort_user);
+    llama_memory_clear(llama_get_memory(llm->ctx), true);
+
+    struct llama_chat_message *chat =
+        (struct llama_chat_message *)calloc((size_t)n_messages, sizeof(struct llama_chat_message));
+    if (chat == NULL) {
+        return -1;
+    }
+    for (int i = 0; i < n_messages; i++) {
+        if (roles[i] == NULL || contents[i] == NULL) {
+            free(chat);
+            return -1;
+        }
+        chat[i].role = roles[i];
+        chat[i].content = contents[i];
+    }
+
+    const char *tmpl = llama_model_chat_template(llm->model, NULL);
+    int32_t prompt_len = llama_chat_apply_template(tmpl, chat, (size_t)n_messages, true, NULL, 0);
+    if (prompt_len < 1) {
+        tmpl = "chatml";
+        prompt_len = llama_chat_apply_template(tmpl, chat, (size_t)n_messages, true, NULL, 0);
+    }
+    if (prompt_len < 1) {
+        free(chat);
+        return -1;
+    }
+    char *prompt = (char *)malloc((size_t)prompt_len + 1);
+    if (prompt == NULL) {
+        free(chat);
+        return -1;
+    }
+    if (llama_chat_apply_template(tmpl, chat, (size_t)n_messages, true, prompt, prompt_len + 1)
+        != prompt_len) {
+        free(prompt);
+        free(chat);
+        return -1;
+    }
+    prompt[prompt_len] = '\0';
+    free(chat);
+
+    if (!thinking) {
+        static const char suffix[] = "<think>\n</think>\n";
+        const size_t suffix_len = sizeof(suffix) - 1;
+        char *grown = (char *)realloc(prompt, (size_t)prompt_len + suffix_len + 1);
+        if (grown == NULL) {
+            free(prompt);
+            return -1;
+        }
+        prompt = grown;
+        memcpy(prompt + prompt_len, suffix, suffix_len + 1);
+        prompt_len += (int32_t)suffix_len;
+    }
+
+    prompt[prompt_len] = '\0';
+    int status = run_prompt(
+        llm, prompt, prompt_len, n_threads, abort_cb, abort_user, token_cb, token_user);
+    free(prompt);
+    return status;
+}
+
+/* Tools-aware entry (issue 87). With `tools_json` NULL/empty — or a non-Qwen
+ * model template — this delegates to the plain path byte-for-byte. Otherwise
+ * the prompt renders through `syllabix_llama_render_qwen` (native `<tools>`
+ * preamble, `<tool_response>` grouping) over the same sampler loop. */
+int syllabix_llama_generate_with_tools(
+    struct syllabix_llama *llm,
+    const char *const *roles,
+    const char *const *contents,
+    int n_messages,
+    int thinking,
+    const char *tools_json,
+    int n_threads,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    int (*token_cb)(const char *piece, int is_last, void *user),
+    void *token_user) {
+    if (llm == NULL || llm->ctx == NULL || llm->model == NULL || roles == NULL || contents == NULL
+        || n_messages < 1 || token_cb == NULL) {
+        return -1;
+    }
+    if (aborted(abort_cb, abort_user)) {
+        return 1;
+    }
+    const int has_tools = tools_json != NULL && tools_json[0] != '\0';
+    const char *tmpl = llama_model_chat_template(llm->model, NULL);
+    if (!has_tools || !is_qwen_template(tmpl)) {
+        return syllabix_llama_generate(
+            llm, roles, contents, n_messages, thinking, n_threads, abort_cb, abort_user, token_cb,
+            token_user);
+    }
+
+    llama_set_n_threads(llm->ctx, n_threads, n_threads);
+    llama_set_abort_callback(llm->ctx, abort_cb, abort_user);
+    llama_memory_clear(llama_get_memory(llm->ctx), true);
+
+    int32_t prompt_len =
+        syllabix_llama_render_qwen(roles, contents, n_messages, tools_json, thinking, NULL, 0);
+    if (prompt_len < 1) {
+        return -1;
+    }
+    char *prompt = (char *)malloc((size_t)prompt_len + 1);
+    if (prompt == NULL) {
+        return -1;
+    }
+    if (syllabix_llama_render_qwen(
+            roles, contents, n_messages, tools_json, thinking, prompt, prompt_len + 1)
+        != prompt_len) {
+        free(prompt);
+        return -1;
+    }
+    prompt[prompt_len] = '\0';
+    int status = run_prompt(
+        llm, prompt, prompt_len, n_threads, abort_cb, abort_user, token_cb, token_user);
+    free(prompt);
+    return status;
+}
+
+/* Prompt-token count for a tools-aware prompt. Falls back to the plain count
+ * when `tools_json` is empty or the model template is not Qwen-like. */
+int syllabix_llama_count_prompt_tokens_with_tools(
+    struct syllabix_llama *llm,
+    const char *const *roles,
+    const char *const *contents,
+    int n_messages,
+    int thinking,
+    const char *tools_json) {
+    if (llm == NULL || roles == NULL || contents == NULL || n_messages < 1) return -1;
+    const int has_tools = tools_json != NULL && tools_json[0] != '\0';
+    const char *tmpl = llama_model_chat_template(llm->model, NULL);
+    if (!has_tools || !is_qwen_template(tmpl)) {
+        return syllabix_llama_count_prompt_tokens(llm, roles, contents, n_messages, thinking);
+    }
+    int32_t prompt_len =
+        syllabix_llama_render_qwen(roles, contents, n_messages, tools_json, thinking, NULL, 0);
+    if (prompt_len < 1) return -1;
+    char *prompt = malloc((size_t)prompt_len + 1);
+    if (prompt == NULL) return -1;
+    if (syllabix_llama_render_qwen(
+            roles, contents, n_messages, tools_json, thinking, prompt, prompt_len + 1)
+        != prompt_len) {
+        free(prompt);
+        return -1;
+    }
+    const int n_ctx = (int)llama_n_ctx(llm->ctx);
+    llama_token *tokens = malloc((size_t)n_ctx * sizeof(*tokens));
+    if (tokens == NULL) { free(prompt); return -1; }
+    const int count = llama_tokenize(llama_model_get_vocab(llm->model), prompt, prompt_len, tokens, n_ctx, true, true);
+    free(tokens);
+    free(prompt);
+    return count;
 }
