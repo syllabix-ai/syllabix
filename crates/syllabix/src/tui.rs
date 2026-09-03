@@ -10,6 +10,7 @@ pub struct TranscriptUi {
     current_agent: Option<(TurnId, String)>,
     think: ThinkFilter,
     latency: String,
+    tool_call_count: usize,
 }
 
 #[cfg_attr(coverage, allow(dead_code))]
@@ -46,18 +47,9 @@ impl TranscriptUi {
                 }
             }
             LoopEvent::Tool { event, .. } => {
-                let label = if event.name.is_empty() {
-                    "tool".to_string()
-                } else {
-                    format!("tool {}", event.name)
-                };
-                let detail = if event.content.is_empty() {
-                    event.arguments
-                } else {
-                    event.content
-                };
-                self.lines
-                    .push(format!("[{label}: {}] {detail}", event.kind));
+                if event.kind == "call" {
+                    self.tool_call_count += 1;
+                }
             }
             LoopEvent::Timings { timings, .. } => {
                 self.latency = timings.format_line();
@@ -67,6 +59,11 @@ impl TranscriptUi {
 
     fn flush_agent(&mut self) {
         if let Some((_, text)) = self.current_agent.take() {
+            if self.tool_call_count > 0 {
+                self.lines
+                    .push(format!("tools-called:{}", self.tool_call_count));
+                self.tool_call_count = 0;
+            }
             if !text.is_empty() {
                 self.lines.push(format!("Agent: {text}"));
             }
@@ -396,22 +393,39 @@ mod tests {
     }
 
     #[test]
-    fn tool_events_render_as_developer_evidence() {
+    fn tool_events_render_as_compact_summary() {
         let mut ui = TranscriptUi::default();
-        ui.apply(LoopEvent::Tool {
+        // User turn so flush_agent has something to flush.
+        ui.apply(LoopEvent::User {
             turn: TurnId(0),
-            event: syllabix_core::ToolTurnEvent {
-                kind: "result".into(),
-                name: "web_fetch".into(),
-                call_id: "call-1".into(),
-                arguments: "https://example.test".into(),
-                content: "fixture result".into(),
-            },
+            text: "hey".into(),
+            language: "en".into(),
         });
-        assert_eq!(
-            ui.transcript_text(),
-            "[tool web_fetch: result] fixture result"
-        );
+        // Two call events + their result events for the same turn.
+        for kind in ["call", "result", "call", "result"] {
+            ui.apply(LoopEvent::Tool {
+                turn: TurnId(0),
+                event: syllabix_core::ToolTurnEvent {
+                    kind: kind.into(),
+                    name: "shell".into(),
+                    call_id: "c1".into(),
+                    arguments: "{\"argv\":[\"df\"]}".into(),
+                    content: "exit: 0\nstdout:\n…".into(),
+                },
+            });
+        }
+        // Final assistant reply flushes the turn.
+        ui.apply(LoopEvent::Assistant {
+            turn: TurnId(0),
+            text: "Done.".into(),
+            is_last: true,
+        });
+        let text = ui.transcript_text();
+        assert!(text.contains("tools-called:2"), "got: {text}");
+        assert!(text.contains("Agent: Done."), "got: {text}");
+        // Raw tool detail must not appear.
+        assert!(!text.contains("exit:"), "got: {text}");
+        assert!(!text.contains("[tool"), "got: {text}");
     }
 
     #[test]
