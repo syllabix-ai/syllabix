@@ -85,8 +85,10 @@ pub const LLAMA_MAX_HISTORY_TURNS: usize = 8;
 pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// End a stalled local generation promptly, rather than leaving the TUI on an
-/// unfinished turn. Each emitted token resets this timer.
-pub const LLAMA_TOKEN_STALL_TIMEOUT: Duration = Duration::from_secs(2);
+/// unfinished turn. Each emitted token resets this timer, re-armed after the
+/// downstream consumer returns so slow TTS backpressure is never mistaken
+/// for a model stall.
+pub const LLAMA_TOKEN_STALL_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// True when `id` is a v0 llama.cpp GGUF.
 pub fn is_v0_llm_model(id: &str) -> bool {
@@ -680,7 +682,13 @@ impl Engine for LlamaEngine {
                 &mut |text, is_last| {
                     abort.note_token();
                     match on_piece(text, is_last) {
-                        Ok(()) => Ok(()),
+                        Ok(()) => {
+                            // Re-arm after the downstream consumer returns:
+                            // a slow token queue / TTS worker is backpressure,
+                            // not a model stall.
+                            abort.note_token();
+                            Ok(())
+                        }
                         Err(Error::Cancelled) => Err(LlamaError::Cancelled),
                         Err(err) => Err(LlamaError::Failed(err.to_string())),
                     }
@@ -717,7 +725,13 @@ impl Engine for LlamaEngine {
                 &mut |text, is_last| {
                     abort.note_token();
                     match on_piece(text, is_last) {
-                        Ok(()) => Ok(()),
+                        Ok(()) => {
+                            // Re-arm after the downstream consumer returns:
+                            // a slow token queue / TTS worker is backpressure,
+                            // not a model stall.
+                            abort.note_token();
+                            Ok(())
+                        }
                         Err(Error::Cancelled) => Err(LlamaError::Cancelled),
                         Err(err) => Err(LlamaError::Failed(err.to_string())),
                     }
@@ -753,7 +767,13 @@ impl Engine for LlamaEngine {
                 &mut |text, is_last| {
                     abort.note_token();
                     match on_piece(text, is_last) {
-                        Ok(()) => Ok(()),
+                        Ok(()) => {
+                            // Re-arm after the downstream consumer returns:
+                            // a slow token queue / TTS worker is backpressure,
+                            // not a model stall.
+                            abort.note_token();
+                            Ok(())
+                        }
                         Err(Error::Cancelled) => Err(LlamaError::Cancelled),
                         Err(err) => Err(LlamaError::Failed(err.to_string())),
                     }
