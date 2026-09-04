@@ -466,7 +466,42 @@ static int emit_piece(
     return token_cb(piece, is_last, token_user);
 }
 
-/* Shared prefill + greedy decode loop over an already-built prompt.
+/* LiquidAI publishes these settings for LFM2.5 GGUF inference. The model
+ * needs sampling enabled; greedy decoding can select EOS in the middle of a
+ * response. Keep this model-specific so the launch models remain byte-for-
+ * byte on their established greedy path. */
+#define SYLLABIX_LFM_TOP_K 50
+#define SYLLABIX_LFM_TEMPERATURE 0.1f
+#define SYLLABIX_LFM_REPEAT_PENALTY 1.1f
+#define SYLLABIX_LFM_REPEAT_LAST_N 64
+
+static int is_lfm_template(const char *tmpl) {
+    return tmpl != NULL && strstr(tmpl, "tool_call_start") != NULL;
+}
+
+static struct llama_sampler *make_chat_sampler(const struct syllabix_llama *llm,
+                                               const struct llama_vocab *vocab) {
+    struct llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    if (smpl == NULL) {
+        return NULL;
+    }
+    const char *tmpl = llama_model_chat_template(llm->model, NULL);
+    if (is_lfm_template(tmpl)) {
+        llama_sampler_chain_add(
+            smpl,
+            llama_sampler_init_penalties(
+                llama_vocab_n_tokens(vocab), SYLLABIX_LFM_REPEAT_LAST_N,
+                SYLLABIX_LFM_REPEAT_PENALTY, 0.0f, 0.0f));
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_k(SYLLABIX_LFM_TOP_K));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(SYLLABIX_LFM_TEMPERATURE));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    } else {
+        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+    }
+    return smpl;
+}
+
+/* Shared prefill + decode loop over an already-built prompt.
  * Takes `prompt` (caller-allocated, `prompt_len` bytes); frees it before
  * returning. Plain and tools-aware entries share this so only prompt
  * construction differs between the two paths. */
@@ -511,11 +546,10 @@ static int run_prompt(
     }
     free(tokens);
 
-    struct llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    struct llama_sampler *smpl = make_chat_sampler(llm, vocab);
     if (smpl == NULL) {
         return -1;
     }
-    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
     char pending[257];
     int pending_len = 0;
@@ -766,10 +800,6 @@ int syllabix_llama_count_prompt_tokens_with_tools(
  * the existing plain path — mirroring the issue-87 Qwen split. With
  * `tools_json` NULL/empty (or a non-LFM template) callers must use the plain
  * path so tool-free prompts stay byte-identical. */
-
-static int is_lfm_template(const char *tmpl) {
-    return tmpl != NULL && strstr(tmpl, "tool_call_start") != NULL;
-}
 
 /* Pure LFM prompt renderer (no model handle). `thinking` is accepted for
  * signature parity with the Qwen entry but carries no suffix: LFM has no
