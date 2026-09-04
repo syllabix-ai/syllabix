@@ -1,6 +1,6 @@
 //! In-memory conversation loop: VAD → STT → LLM → TTS → sink with bounded queues.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -19,10 +19,6 @@ use crate::types::{
 };
 
 const POLL: Duration = Duration::from_millis(5);
-/// While default mode suppresses VAD, retain a small bounded clean-audio
-/// window so a user who starts talking as playback ends is not clipped.
-const SUPPRESSED_FRAME_WINDOW_MULTIPLIER: usize = 4;
-
 /// Empty or whitespace Whisper text must not start LLM/TTS.
 pub fn is_blank_stt(text: &str) -> bool {
     text.trim().is_empty()
@@ -539,7 +535,15 @@ where
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
-        Ok(self.iter.next())
+        let frame = self.iter.next();
+        // Scripted fixtures should resemble a microphone callback rather
+        // than inject a future turn in the same scheduler instant. Real v0
+        // frames are 32 ms; this keeps tests quick while leaving enough time
+        // for the fake stages to finish a turn before the next begins.
+        if frame.is_some() {
+            thread::sleep(Duration::from_millis(25));
+        }
+        Ok(frame)
     }
 }
 
@@ -625,12 +629,8 @@ where
         let shared = Arc::clone(&shared);
         let live = Arc::clone(&shared.live_tasks);
         let utt_tx = utt_tx.clone();
-        let deferred_frame_cap = caps
-            .frames
-            .saturating_mul(SUPPRESSED_FRAME_WINDOW_MULTIPLIER)
-            .max(1);
         joins.push(spawn("syllabix-vad", live, move || {
-            vad_loop(vad, frame_rx, utt_tx, deferred_frame_cap, &cancel, &shared)
+            vad_loop(vad, frame_rx, utt_tx, &cancel, &shared)
         }));
     }
     drop(utt_tx);
@@ -784,17 +784,10 @@ fn vad_loop<V: Vad>(
     mut vad: V,
     rx: crate::queue::BoundedReceiver<AudioFrame>,
     tx: BoundedSender<Utterance>,
-    deferred_frame_cap: usize,
     cancel: &Cancel,
     shared: &Shared,
 ) {
     let mut active: Option<TurnId> = None;
-    // Default mode does not treat speech during playback as barge-in, but
-    // capture must keep flowing through AEC. Retain only a bounded recent
-    // clean-audio window for VAD after speaker drain; the queue itself stays
-    // available to the native capture worker instead of retaining an
-    // unsynchronised tail.
-    let mut deferred_frames = VecDeque::with_capacity(deferred_frame_cap);
     let emit = |events: Vec<VadEvent>,
                 tx: &BoundedSender<Utterance>,
                 cancel: &Cancel,
@@ -836,10 +829,10 @@ fn vad_loop<V: Vad>(
         if shared.pause_vad.load(Ordering::SeqCst) {
             match rx.recv_timeout(POLL) {
                 Ok(frame) => {
-                    if deferred_frames.len() == deferred_frame_cap {
-                        deferred_frames.pop_front();
-                    }
-                    deferred_frames.push_back(frame);
+                    // AEC still receives live capture through `NativeCapture`,
+                    // but default mode must not turn assistant playback (or a
+                    // user talking over it) into a delayed next utterance.
+                    drop(frame);
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
@@ -851,10 +844,7 @@ fn vad_loop<V: Vad>(
             }
             continue;
         }
-        let frame = deferred_frames
-            .pop_front()
-            .map(Ok)
-            .unwrap_or_else(|| rx.recv_timeout(POLL));
+        let frame = rx.recv_timeout(POLL);
         match frame {
             Ok(frame) => {
                 let tap = shared.turn_debug.as_ref().map(|_| frame.clone());

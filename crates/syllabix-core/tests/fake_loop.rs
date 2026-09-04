@@ -12,8 +12,8 @@ use syllabix_core::{
     run_loop, run_loop_captured, scripted_frames, AudioCapture, AudioSink, BuiltinDefaults, Cancel,
     CollectingSink, Error, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt, FakeTts,
     FakeVad, LoopConfig, LoopMode, PipelineStages, PlaybackWatch, QueueCaps, Result,
-    RuntimeControls, ScriptedStt, SynthesizedAudio, TimelineAnchor, TokenChunk, Tts, TurnDebug,
-    TurnId, Vad, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    RuntimeControls, ScriptedStt, SynthesizedAudio, TimelineAnchor, TokenChunk, Transcript, Tts,
+    TurnDebug, TurnId, Vad, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
 fn run_with(
@@ -616,11 +616,10 @@ fn barge_loop(barge_in: bool, llm: FakeLlm) -> syllabix_core::LoopReport {
 }
 
 #[test]
-fn without_barge_in_speech_start_does_not_cancel_tts() {
+fn without_barge_in_speech_during_tts_is_discarded() {
     let report = barge_loop(false, FakeLlm::with_delay(Duration::from_millis(8)));
-    assert_eq!(report.turns.len(), 2);
+    assert_eq!(report.turns.len(), 1);
     assert_eq!(report.turns[0].assistant_text, "echo:turn-000");
-    assert_eq!(report.turns[1].assistant_text, "echo:turn-001");
 }
 
 #[test]
@@ -855,7 +854,7 @@ fn vad_emits_speech_start_during_tts_only_with_barge_in() {
         !overlap_off,
         "default run must not emit SpeechStart while TTS is playing"
     );
-    assert_eq!(report_off.turns.len(), 2);
+    assert_eq!(report_off.turns.len(), 1);
 
     let (overlap_on, report_on) = run(true);
     assert!(
@@ -863,6 +862,170 @@ fn vad_emits_speech_start_during_tts_only_with_barge_in() {
         "--barge-in must allow SpeechStart while TTS is playing"
     );
     assert!(report_on.turns.iter().any(|t| t.id.0 == 1));
+}
+
+/// Default mode still captures audio so AEC can run, but its VAD input must be
+/// a discard window from SpeechEnd until the speaker has drained. The one-slot
+/// frame queue makes the capture/sink handshake deterministic: by the time
+/// the sink releases playback, the synthetic assistant-speech frame has been
+/// consumed by the paused VAD worker.
+#[test]
+fn default_mode_never_transcribes_assistant_audio_after_playback_drains() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct GatedCapture {
+        phase: u8,
+        seq: u64,
+        playback_started: Arc<AtomicBool>,
+        echo_enqueued: Arc<AtomicBool>,
+    }
+
+    impl GatedCapture {
+        fn frame(&mut self, energy: i16) -> syllabix_core::AudioFrame {
+            let frame = syllabix_core::AudioFrame::new(
+                self.seq,
+                DEFAULT_SAMPLE_RATE_HZ,
+                DEFAULT_CHANNELS,
+                vec![energy; FRAME_SAMPLES],
+            )
+            .expect("fixture frame");
+            self.seq += 1;
+            frame
+        }
+
+        fn wait_for(flag: &AtomicBool, label: &str) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !flag.load(Ordering::SeqCst) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {label}"
+                );
+                thread::yield_now();
+            }
+        }
+    }
+
+    impl AudioCapture for GatedCapture {
+        fn name(&self) -> &'static str {
+            "gated-capture"
+        }
+
+        fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<syllabix_core::AudioFrame>> {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            let frame = match self.phase {
+                0 => self.frame(1_000), // Initial user speech.
+                1 => self.frame(0),
+                2 => {
+                    Self::wait_for(&self.playback_started, "assistant playback");
+                    self.frame(2_000) // Synthetic speaker echo while VAD is paused.
+                }
+                3 => self.frame(0),
+                4 => {
+                    // Returning here proves the one-slot queue admitted the
+                    // echo speech and its trailing silence to the paused VAD.
+                    self.echo_enqueued.store(true, Ordering::SeqCst);
+                    return Ok(None);
+                }
+                _ => return Ok(None),
+            };
+            self.phase += 1;
+            Ok(Some(frame))
+        }
+    }
+
+    struct GatedSink {
+        playback_started: Arc<AtomicBool>,
+        echo_enqueued: Arc<AtomicBool>,
+    }
+
+    impl AudioSink for GatedSink {
+        fn play(&mut self, _audio: SynthesizedAudio, _cancel: &Cancel) -> Result<()> {
+            self.playback_started.store(true, Ordering::SeqCst);
+            GatedCapture::wait_for(&self.echo_enqueued, "suppressed echo frames");
+            Ok(())
+        }
+    }
+
+    struct LabelStt;
+
+    impl syllabix_core::Stt for LabelStt {
+        fn name(&self) -> &'static str {
+            "label-stt"
+        }
+
+        fn transcribe(
+            &mut self,
+            utterance: &syllabix_core::Utterance,
+            _cancel: &Cancel,
+        ) -> Result<Transcript> {
+            let energy = utterance
+                .frames
+                .iter()
+                .flat_map(|frame| frame.samples.iter())
+                .copied()
+                .max()
+                .unwrap_or_default();
+            let text = match energy {
+                2_000 => "assistant playback",
+                _ => "initial user",
+            };
+            Ok(Transcript {
+                turn: utterance.turn,
+                text: text.into(),
+                language: "en".into(),
+            })
+        }
+    }
+
+    let playback_started = Arc::new(AtomicBool::new(false));
+    let echo_enqueued = Arc::new(AtomicBool::new(false));
+    let mut defaults = BuiltinDefaults::v0();
+    defaults.queues.frames = 1;
+    let report = run_loop_captured(
+        LoopConfig {
+            defaults,
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: None,
+            controls: RuntimeControls::new(false),
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: LabelStt,
+            llm: FakeLlm::new(),
+            tts: FakeTts,
+            sink: GatedSink {
+                playback_started: Arc::clone(&playback_started),
+                echo_enqueued: Arc::clone(&echo_enqueued),
+            },
+        },
+        GatedCapture {
+            phase: 0,
+            seq: 0,
+            playback_started: Arc::clone(&playback_started),
+            echo_enqueued: Arc::clone(&echo_enqueued),
+        },
+        Cancel::new(),
+    )
+    .expect("default-mode loop");
+
+    assert_eq!(
+        report.turns.len(),
+        1,
+        "only the initial user turn may complete"
+    );
+    assert_eq!(report.turns[0].user_text, "initial user");
+    assert!(
+        report
+            .turns
+            .iter()
+            .all(|turn| turn.user_text != "assistant playback"),
+        "speaker echo must never be replayed into STT: {:?}",
+        report.turns
+    );
 }
 
 struct HoldUntilStaleSink {
