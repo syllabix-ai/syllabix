@@ -1,6 +1,6 @@
 //! Host-owned, bounded executors for the developer harness.
 //!
-//! This module is deliberately below the model-facing [`ToolCall`] contract.
+//! This module validates model-facing [`ToolCall`] values before execution.
 //! Calls are validated here before an executor is selected; callers never get
 //! a shell string or a policy escape hatch.
 

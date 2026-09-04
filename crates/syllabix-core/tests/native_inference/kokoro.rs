@@ -1,4 +1,4 @@
-//! Merge gate for PR 12: Kokoro first-sentence audio, loop swap, TTS→ASR round-trip.
+//! Kokoro first-sentence audio, provider swapping, and TTS-to-ASR round trips.
 //!
 //! Intelligibility is a text → TTS → Whisper → text round-trip at ≥80%
 //! in-order word match (same matcher as the LibriSpeech STT fixtures). Markdown
@@ -48,7 +48,7 @@ fn first_sentence_audio_arrives_before_full_completion() {
     skip_unless_model!("kokoro");
     let mut n = native();
     let mut tts = n.tts().clone();
-    // Row 32: `name()` carries the posture word; the engine identity stays
+    // `name()` describes where inference runs; the engine identity stays
     // in `model_id()`.
     assert_eq!(tts.name(), "local");
     assert_eq!(tts.model_id(), Some("kokoro"));
@@ -172,7 +172,7 @@ fn populated_cache_reuses_kokoro_offline() {
     }
 }
 
-/// P3 reproducible Kokoro baseline. First PCM is observed at the streaming
+/// Reproducible Kokoro latency baseline. First PCM is observed at the streaming
 /// callback, so it remains comparable with Pocket and Qwen captures.
 #[test]
 fn kokoro_latency_capture() {

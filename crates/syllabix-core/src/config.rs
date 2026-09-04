@@ -17,7 +17,7 @@ use crate::vad::{VadSettings, END_SILENCE, MIN_SPEECH, SPEECH_THRESHOLD, WHISPER
 /// File name written by `init` and optionally read by `run`.
 pub const CONFIG_FILE_NAME: &str = "syllabix.yaml";
 
-/// Validated v0 agent config. One provider per layer; language is a single STT code.
+/// Validated agent configuration with one provider selected for each pipeline stage.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentConfig {
     /// Agent name (`demo-agent` by default).
@@ -47,16 +47,16 @@ pub struct AgentConfig {
     pub thinking: bool,
     /// LLM system prompt template (`pipeline.llm.system_prompt`). `{language}`
     /// is replaced at generate time with the STT language's English name.
-    /// Omitted yaml uses the launch default.
+    /// Omitted YAML uses the built-in prompt template.
     pub system_prompt: String,
     /// OpenAI-compatible endpoint (`pipeline.llm.base_url`). Required for
     /// `provider: online`, forbidden for `provider: local`; the API key never
     /// lives here.
     pub llm_base_url: Option<String>,
-    /// Explicit developer-only opt-in for the Phase-1 API tool loop. It is
+    /// Explicit developer-only opt-in for the API tool loop. It is
     /// never enabled by defaults or written by `init`.
     pub llm_developer_harness: bool,
-    /// TTS provider (`local`; `online` is reserved and fails fast today).
+    /// TTS provider (`local`; `online` is reserved and rejected).
     pub tts: TtsProvider,
     /// TTS model id (`kokoro`, `qwen3-0.6`, `qwen3-1.7`, or `pocket-tts`).
     pub tts_model: TtsModel,
@@ -332,7 +332,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         Some(value) => parse_system_prompt(&value)?,
         None => crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
     };
-    // Row 30: the endpoint is explicit for `online` (OpenAI, Groq, Ollama,
+    // The endpoint is explicit for `online` providers such as OpenAI, Groq, Ollama,
     // vLLM, llama-server); the key may not live here either way —
     // `SYLLABIX_LLM_API_KEY` env only, never yaml, never `.env`.
     let llm_base_url = resolve_llm_base_url(llm, llm_provider)?;
@@ -346,22 +346,21 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
     deny_unknown(tts, "pipeline.tts", &["provider", "model", "language"])?;
-    // Row 32: TTS adopts the row-30 posture words — `local` runs weights
-    // in-process, `online` is reserved vocabulary and fails fast until a
-    // cloud TTS row exists.
+    // `local` runs weights in-process. `online` is reserved and rejected until
+    // an online TTS implementation exists.
     let tts_provider = parse_tts(required_string(tts, "pipeline.tts.provider", "provider")?)?;
     let tts_model = parse_tts_model(
         tts_provider,
         required_string(tts, "pipeline.tts.model", "model")?,
     )?;
-    // Row 31: Qwen3-TTS speaks this language; Kokoro ignores it. `auto` is an
+    // Qwen3-TTS speaks this language; Kokoro ignores it. `auto` is an
     // STT concept and stays rejected here.
     let tts_language = match optional_string(tts, "pipeline.tts", "language")? {
         Some(value) => parse_tts_language(&value)?,
         None => "en".to_string(),
     };
 
-    // Row 34: diagnostics replace the `--turn-debug` flag. `audio: true`
+    // Diagnostics are configured here instead of with a CLI flag. `audio: true`
     // implies `timestamps: true` — WAVs always ship with their sidecar.
     let (diagnostics_timestamps, diagnostics_audio, diagnostics_directory) =
         parse_diagnostics(root)?;
@@ -707,8 +706,8 @@ fn parse_tts(value: &str) -> Result<TtsProvider> {
     }
 }
 
-/// `pipeline.tts.model`: the local weight menu. `pocket-tts` is the launch
-/// default; opt-in model ids fetch their assets on first use only.
+/// `pipeline.tts.model`: the local weight menu. `pocket-tts` is the default;
+/// other model identifiers fetch their assets on first use only.
 fn parse_tts_model(provider: TtsProvider, value: &str) -> Result<TtsModel> {
     match provider {
         TtsProvider::Local => TtsModel::parse(value).ok_or_else(|| {
@@ -1281,7 +1280,7 @@ pipeline:
             );
             assert!(err.to_string().contains(bad), "{bad}: {err}");
         }
-        // The retired row-31 engine names are providers no more; the error
+        // Retired engine names are not provider values; the error
         // points at the new key.
         for legacy in ["kokoro", "qwen"] {
             let yaml = AgentConfig::v0().to_yaml().replace(

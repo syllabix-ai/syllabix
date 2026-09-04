@@ -131,7 +131,7 @@ pub struct LoopConfig {
 }
 
 impl LoopConfig {
-    /// 30-turn in-memory fake merge-gate fixture.
+    /// Configure a 30-turn run using in-memory providers.
     pub fn thirty_turns() -> Self {
         Self {
             defaults: BuiltinDefaults::v0(),
@@ -142,7 +142,7 @@ impl LoopConfig {
         }
     }
 
-    /// Native end-to-end merge-gate fixture (six real provider turns).
+    /// Configure a six-turn run using native providers.
     pub fn six_turns() -> Self {
         Self {
             defaults: BuiltinDefaults::v0(),

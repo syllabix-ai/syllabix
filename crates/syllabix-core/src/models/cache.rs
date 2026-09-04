@@ -63,7 +63,7 @@ impl ModelCache {
         Self { root, manifest }
     }
 
-    /// Cache under [`cache_root`] with the v0 manifest.
+    /// Open the default model cache using the compiled-in manifest.
     pub fn v0() -> Self {
         Self::new(cache_root(), Manifest::v0())
     }

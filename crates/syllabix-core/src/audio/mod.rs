@@ -31,7 +31,7 @@ pub use wav::{read_wav, write_wav, WavPcm};
 
 use crate::error::Result;
 
-/// Convert a WAV (any supported rate/channels) into v0 frames and back out to
+/// Convert a WAV at any supported rate and channel count into pipeline frames and back to
 /// a typical laptop device layout (48 kHz stereo). Used by per-OS smoke tests.
 pub fn record_and_play_fixture(wav: &WavPcm) -> Result<(Vec<crate::types::AudioFrame>, Vec<f32>)> {
     let frames = record_fixture_to_frames(wav)?;

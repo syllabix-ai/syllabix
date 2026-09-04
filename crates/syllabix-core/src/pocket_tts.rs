@@ -1,10 +1,9 @@
-//! P1 native feasibility contract for Kyutai Pocket TTS.
+//! Native Kyutai Pocket TTS model loading and deterministic text conditioning.
 //!
-//! This module is intentionally not a [`crate::providers::Tts`] implementation:
-//! P2 owns configuration, playback streaming, cancellation, and barge-in. P1
-//! proves that the pinned multi-graph ONNX package loads in-process through the
-//! already-shipped ONNX Runtime, and that its text-conditioning graph produces
-//! deterministic native output. The fixed `alba` state is only inspected here;
+//! This module is not a [`crate::providers::Tts`] implementation and does not
+//! provide playback streaming, cancellation, or barge-in. It loads the pinned
+//! multi-graph ONNX package in-process and produces deterministic text-conditioning
+//! output. The fixed `alba` state is only inspected here;
 //! no user audio is accepted and no voice state is registered.
 
 use std::{
@@ -62,7 +61,7 @@ const NORMAL_EOS_WINDOW_FRAMES: usize = 3;
 const SHORT_EOS_WINDOW_FRAMES: usize = 5;
 const SHORT_PROMPT_WORDS: usize = 4;
 
-/// P1 loader for the pinned English ONNX graph set.
+/// Pocket TTS engine backed by the pinned English ONNX graph set.
 pub struct PocketTts {
     text_conditioner: Session,
     flow_main: Session,
@@ -80,8 +79,8 @@ pub struct PocketTts {
 }
 
 impl PocketTts {
-    /// Resolve exactly the P1 assets, then load every inference graph with the
-    /// existing ONNX Runtime. Nothing here changes the zero-config stack.
+    /// Resolve the Pocket TTS assets and load every inference graph with the
+    /// existing ONNX Runtime.
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -336,8 +335,8 @@ impl PocketTts {
     }
 
     /// Deterministic native fixture for all three target families. The token
-    /// ids come from the upstream export's own fixture, avoiding a tokenizer
-    /// implementation until P2 while still exercising the real graph.
+    /// ids come from the upstream export's own fixture, allowing the real graph
+    /// to be exercised independently of tokenizer behavior.
     pub fn text_fixture(&mut self) -> Result<Vec<f32>> {
         let tokens = vec![10_i64, 20, 30, 40, 50];
         let outputs = self
@@ -381,9 +380,8 @@ impl PocketTts {
         Ok(outputs[0].f32.clone())
     }
 
-    /// A deterministic, text-conditioned native fixture. It intentionally
-    /// generates one latent frame: P1 needs a portable feasibility gate, while
-    /// P2 owns user-facing streaming and duration policy.
+    /// Generate one deterministic, text-conditioned latent frame for portable
+    /// native inference checks without invoking streaming or duration policy.
     pub fn synthesize_fixture(&mut self) -> Result<Vec<f32>> {
         let embeddings = RawTensor::f32(vec![1, 5, 1024], self.text_fixture()?);
         let empty_sequence = RawTensor::f32(vec![1, 0, 32], vec![]);

@@ -23,7 +23,7 @@ pub fn record_fixture_to_frames(wav: &WavPcm) -> Result<Vec<AudioFrame>> {
     Ok(frames)
 }
 
-/// Playback path: v0 frames → device-format interleaved f32.
+/// Convert pipeline frames to interleaved `f32` samples in the device format.
 pub fn play_fixture_to_device_pcm(frames: &[AudioFrame], device: PcmFormat) -> Result<Vec<f32>> {
     let mut conv = PcmConverter::new(PcmFormat::v0(), device)?;
     let mut out = Vec::new();
@@ -51,7 +51,7 @@ impl FixtureCapture {
         })
     }
 
-    /// Already-converted v0 frames (tests that concatenate speech + silence).
+    /// Already-converted pipeline frames, used to concatenate speech and silence.
     pub fn from_frames(frames: Vec<AudioFrame>) -> Self {
         Self { frames, index: 0 }
     }

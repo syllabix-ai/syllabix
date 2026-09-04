@@ -1,4 +1,4 @@
-//! Merge gate for PR 11: llama.cpp GGUF load, greedy stream, history, cancel.
+//! llama.cpp GGUF loading, greedy streaming, history, and cancellation.
 
 use std::thread;
 use std::time::{Duration, Instant};

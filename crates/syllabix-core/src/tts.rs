@@ -1,4 +1,4 @@
-//! In-process text-to-speech: Kokoro ONNX and Qwen3-TTS (yaml-selectable).
+//! In-process text-to-speech using Pocket TTS, Kokoro ONNX, or Qwen3-TTS.
 //!
 //! Both providers share one sentence-chunking core: tokens buffer until a
 //! sentence boundary, the think filter runs first, and each completed
@@ -27,13 +27,13 @@ pub const KOKORO_ASSET: &str = "kokoro";
 /// Manifest id for the default `af_heart` style table.
 pub const KOKORO_VOICE_ASSET: &str = "kokoro-voice";
 
-/// Kokoro waveform rate before conversion to the v0 16 kHz contract.
+/// Kokoro waveform rate before conversion to the 16 kHz pipeline rate.
 pub const KOKORO_NATIVE_RATE_HZ: u32 = 24_000;
 
 /// Manifest id for the Qwen3-TTS backbone GGUF.
 pub const QWEN_TTS_ASSET: &str = "qwen3-tts";
 
-/// Manifest id for the row-32 0.6B Qwen3-TTS backbone GGUF. Pairs with
+/// Manifest id for the 0.6B Qwen3-TTS backbone GGUF. Pairs with
 /// [`QWEN_TTS_06B_MMPROJ_ASSET`].
 pub const QWEN_TTS_06B_ASSET: &str = "qwen3-tts-06b";
 
@@ -215,7 +215,7 @@ impl Tts for KokoroTts {
     }
 }
 
-/// Row 31 adapter, row-32 model menu: Qwen3-TTS through the shared
+/// Qwen3-TTS adapter using the shared
 /// llama.cpp/ggml path. The native engine pins a self-generated voice anchor
 /// at load, so one speaker holds across every sentence of every run.
 pub struct QwenTts {
@@ -316,7 +316,7 @@ impl QwenTts {
 
 impl Tts for QwenTts {
     fn name(&self) -> &'static str {
-        // Row 32: the sidecar carries the posture word, matching the LLM.
+        // The sidecar uses the same local/online provider vocabulary as the LLM.
         "local"
     }
 
@@ -650,7 +650,7 @@ unsafe extern "C" fn abort_on_shutdown(user_data: *mut std::ffi::c_void) -> bool
     unsafe { (*(user_data as *const Cancel)).is_shutdown() }
 }
 
-/// Convert an engine's native-rate mono PCM to the v0 16 kHz contract.
+/// Convert an engine's native-rate mono PCM to the 16 kHz pipeline format.
 fn resample_i16_to_v0(samples: &[i16], rate_hz: i32) -> Vec<i16> {
     let f32_pcm: Vec<f32> = samples.iter().map(|s| f32::from(*s) / 32_767.0).collect();
     let mut conv = PcmConverter::new(
@@ -893,7 +893,7 @@ mod tests {
     #[test]
     fn name_matches_v0_and_clone_drops_buffer() {
         let mut tts = KokoroTts::with_engine(Box::new(ScriptedEngine::new()));
-        // Row 32: `name()` carries the posture word; the engine identity
+        // `name()` reports where inference runs; the engine identity
         // stays in `model_id()`.
         assert_eq!(tts.name(), "local");
         assert_eq!(tts.model_id(), Some("kokoro"));
@@ -911,7 +911,7 @@ mod tests {
         let engine = ScriptedEngine::new();
         let log = Arc::clone(&engine.calls);
         let mut tts = QwenTts::with_engine(Box::new(engine), TtsModel::Qwen06);
-        // Row 32: the sidecar carries the posture word, matching the LLM.
+        // The sidecar uses the same local/online provider vocabulary as the LLM.
         assert_eq!(tts.name(), "local");
         assert_eq!(tts.model_id(), Some("qwen3-tts-0.6b-base"));
         assert!(!tts.voice_anchor_engaged(), "scripted engine has no anchor");

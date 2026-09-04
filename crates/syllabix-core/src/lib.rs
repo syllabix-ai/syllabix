@@ -1,12 +1,11 @@
 //! Shared types and the in-memory conversation loop for Syllabix.
 //!
-//! Pull request 13 runs Silero → whisper.cpp → llama.cpp → Kokoro → fixture
-//! playback. Fake providers remain in the 30-turn in-memory tests. Native
-//! inference tests share one binary (`native_inference`): default `cargo test`
-//! loads the launch stack only, `SYLLABIX_NATIVE_MODELS` selects exclusive yaml
-//! model ids, and `cargo llvm-cov` skips weight loads (`cfg(coverage)`). Sequence 22 ships a `dist`
-//! profile executable; model weights stay in the first-run cache. Sequence 23
-//! publishes those files as a GitHub Release.
+//! The runtime connects Silero, whisper.cpp, llama.cpp, and text-to-speech
+//! providers through bounded queues. Native inference tests share one binary
+//! so large model weights load only once per test process. `SYLLABIX_NATIVE_MODELS`
+//! selects specific model suites, while `cfg(coverage)` replaces native inference
+//! with lightweight implementations. Model weights live in the first-run cache
+//! rather than the executable.
 
 pub mod audio;
 pub mod models;
@@ -25,7 +24,7 @@ mod llm;
 mod memory;
 mod openai;
 mod pipeline;
-// P1 runs only from the native-inference gate. llvm-cov deliberately skips
+// Pocket TTS native inference runs only in the model suite. llvm-cov skips
 // native weights and graph execution, so it compiles the public API stub.
 #[cfg(not(coverage))]
 mod pocket_tts;
@@ -114,7 +113,7 @@ pub use vad::{
     MIN_SPEECH_FRAMES, PREROLL_SAMPLES, SPEECH_THRESHOLD, WHISPER_PREROLL,
 };
 
-/// Force-link both native frontends into `syllabix` (PR 10).
+/// Force-link the whisper.cpp and llama.cpp frontends into the executable.
 pub fn ensure_shared_ggml_frontends() -> bool {
     syllabix_native::frontends_linked()
 }

@@ -1,4 +1,4 @@
-//! Compiled-in v0 model list. The binary is the manifest; there is no extra file.
+//! Compiled-in model asset metadata used for verified cache downloads.
 
 /// Pipeline layer an asset belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,21 +42,20 @@ pub struct ModelAsset {
     pub size_bytes: u64,
 }
 
-/// Versioned set of assets. Bump `version` when the file set or hashes change.
-/// (Row 32 deliberately kept `v1` across a purely additive asset: existing
-/// file names and hashes were untouched, and a bump would force every user to
-/// re-fetch all weights into a fresh cache directory.)
+/// Versioned set of assets. Bump `version` when existing file names or hashes change.
+/// Purely additive assets keep the current version because existing downloads
+/// remain valid and every new file has a distinct name and checksum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     /// Cache subdirectory (`models/v{version}`).
     pub version: u32,
-    /// Every weight the v0 binary may need.
+    /// Every model asset the executable can load.
     pub assets: Vec<ModelAsset>,
 }
 
 impl Manifest {
-    /// Launch stack: Silero, whisper.cpp `small`, LFM2.5-2.6B (default),
-    /// and Pocket TTS. Llama 3.2 1B / Qwen3.5 and Kokoro / Qwen3-TTS are yaml-selectable.
+    /// Assets for the default Silero, whisper.cpp `small`, LFM2.5-2.6B, and
+    /// Pocket TTS stack, plus models selectable through YAML.
     pub fn v0() -> Self {
         Self {
             version: 1,
@@ -231,7 +230,7 @@ impl Manifest {
                     "6fd65188839bcd6ecc91b277ad471e22a0edfada4699a0fe82f1165c18cfcce2",
                     446_422_912,
                 ),
-                // Row 32: the smaller Qwen3-TTS backbone plus its own
+                // The smaller Qwen3-TTS backbone uses its own
                 // speech-tokenizer projector. The upstream tokenizer
                 // *encoder* is byte-identical across both sizes, but the
                 // mmproj also carries the projector into the LM embedding
@@ -253,10 +252,9 @@ impl Manifest {
                     "202c1fbf3a0f00b7586ca45b8328d696cc6cd980c3798979eaa4fefe8efd8320",
                     401_129_632,
                 ),
-                // LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF (default LLM).
-                // SHA-256 is the HF LFS oid; size is the LFS/XET byte
-                // count. License is `lfm1.0` (founder exception to the
-                // open-weights filter for this default).
+                // LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF. SHA-256 is the HF LFS
+                // object id, size is the LFS/XET byte count, and the model uses
+                // the `lfm1.0` license.
                 asset(
                     "lfm2.5-2.6b",
                     ModelLayer::Llm,
@@ -303,8 +301,8 @@ mod tests {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
         // Silero + five whisper ids + three GGUFs + Kokoro weights + voice
-        // + eight internal-only P1 Pocket TTS assets + two Qwen3-TTS
-        // backbones, each with its own mmproj + one Phase-4 LFM spike asset.
+        // + eight internal-only Pocket TTS assets + two Qwen3-TTS
+        // backbones, each with its own projector, plus one LFM asset.
         assert_eq!(m.assets.len(), 24);
         for model in SttModel::ALL {
             let asset = m
@@ -387,7 +385,7 @@ mod tests {
             total += asset.size_bytes;
         }
         // Whisper + Llama + Kokoro alone exceed 1.5 GiB; packing them into
-        // the executable is not the v0 installable-artifact policy.
+        // the executable would make the distribution artifact excessively large.
         assert!(total > 1_500_000_000);
         assert!(m.asset("silero").unwrap().size_bytes < 8_000_000);
     }

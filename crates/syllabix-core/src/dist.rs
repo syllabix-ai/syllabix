@@ -1,13 +1,11 @@
 //! Names of installable `dist` profile artifacts and GitHub Release URLs.
 //!
-//! Weights are first-run cached, not packed into these files. Sequence 23
-//! publishes the files as a GitHub Release (`release.yml` on `v*` tags, or
-//! `scripts/publish-release.sh` when Actions is unavailable).
+//! Model weights are downloaded into the cache and are not packed into these files.
 
 /// Cargo profile that produces the standalone executable.
 pub const DIST_PROFILE: &str = "dist";
 
-/// Launch target triples. Index matches [`ARTIFACT_FILE_NAMES`].
+/// Supported distribution target triples. Indices match [`ARTIFACT_FILE_NAMES`].
 pub const DIST_TARGETS: &[&str] = &[
     "x86_64-unknown-linux-gnu",
     "aarch64-apple-darwin",
@@ -34,7 +32,7 @@ pub const RELEASE_LATEST_DOWNLOAD_PREFIX: &str =
 /// Dist artifacts must stay below this; first-run cache holds the models.
 pub const MAX_DIST_BINARY_BYTES: u64 = 400_000_000;
 
-/// File name for a rustc target triple, if it is on the launch matrix.
+/// Return the artifact name for a supported Rust target triple.
 pub fn artifact_name_for_target(rustc_target: &str) -> Option<&'static str> {
     DIST_TARGETS
         .iter()
@@ -66,7 +64,7 @@ pub fn artifact_name_for_uname(sysname: &str, machine: &str) -> Option<&'static 
     }
 }
 
-/// Latest-release download URL for a launch artifact file name.
+/// Build the latest-release download URL for an artifact file name.
 pub fn latest_release_download_url(file_name: &str) -> String {
     format!("{RELEASE_LATEST_DOWNLOAD_PREFIX}{file_name}")
 }
@@ -78,7 +76,7 @@ pub fn format_sha256sums_line(sha256_hex: &str, file_name: &str) -> String {
 
 /// Parse GNU `sha256sum` output. Ignores blank lines and `#` comments.
 ///
-/// Each record is `(lowercase hex, file name)`. Names must be launch artifacts.
+/// Each record is `(lowercase hex, file name)`. Names must be supported artifacts.
 pub fn parse_sha256sums(text: &str) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     for (i, raw) in text.lines().enumerate() {

@@ -1,4 +1,4 @@
-//! Provider traits. v0 has one live implementation per layer; fakes stand in until those land.
+//! Interfaces for pipeline stages and audio devices, with in-memory implementations for tests.
 
 use crate::cancel::Cancel;
 use crate::error::Result;
@@ -94,7 +94,7 @@ pub trait Tts: Send {
     }
 }
 
-/// Playback sink. Native speakers replace the collecting sink in a later PR.
+/// Playback destination implemented by native speakers or an in-memory collector.
 pub trait AudioSink: Send {
     /// Play or collect one chunk. Must check `cancel`.
     fn play(&mut self, audio: SynthesizedAudio, cancel: &Cancel) -> Result<()>;
@@ -114,7 +114,7 @@ pub trait AudioSink: Send {
     fn interrupt(&mut self) {}
 }
 
-/// Microphone (or fixture) source. Yields v0 PCM frames.
+/// Microphone or fixture source yielding pipeline PCM frames.
 pub trait AudioCapture: Send {
     /// Config / backend name (`cpal`, `fixture`).
     fn name(&self) -> &'static str;

@@ -399,7 +399,7 @@ impl LlamaContext {
     /// Render a Qwen tools-aware prompt without loading weights.
     ///
     /// Pure unit-test seam for the `<tools>` preamble and `tool`-role
-    /// grouping (issue 87). `tools_json` is the JSON array of tool
+    /// grouping. `tools_json` is the JSON array of tool
     /// definitions; empty means the tool-free Qwen framing.
     pub fn render_qwen_prompt(
         messages: &[ChatMessage],
@@ -520,7 +520,7 @@ impl LlamaContext {
         }
     }
 
-    /// Stream greedy pieces through the tools-aware entry (issue 87).
+    /// Stream greedy pieces through the tools-aware entry.
     ///
     /// With empty `tools_json` the shim delegates to the plain path, so
     /// tool-free generation stays byte-identical.
@@ -587,7 +587,7 @@ impl LlamaContext {
         }
     }
 
-    /// Prompt-token count for a tools-aware prompt (issue 87).
+    /// Return the prompt-token count for a tools-aware prompt.
     pub fn prompt_token_count_with_tools(
         &mut self,
         messages: &[ChatMessage],
@@ -632,7 +632,7 @@ impl LlamaContext {
         Ok(count as usize)
     }
 
-    /// Render an LFM tools-aware prompt without loading weights (Phase 4).
+    /// Render an LFM tools-aware prompt without loading weights.
     ///
     /// Pure unit-test seam for the `List of tools:` preamble and
     /// `tool`-role turns. `tools_json` is the JSON array of tool
@@ -701,7 +701,7 @@ impl LlamaContext {
         String::from_utf8(out).map_err(|_| LlamaError::Failed("lfm prompt is not UTF-8".into()))
     }
 
-    /// Stream greedy pieces through the LFM tools-aware entry (Phase 4).
+    /// Stream greedy pieces through the LFM tools-aware entry.
     ///
     /// With empty `tools_json` the shim delegates to the plain path, so
     /// tool-free generation stays byte-identical.
@@ -768,7 +768,7 @@ impl LlamaContext {
         }
     }
 
-    /// Prompt-token count for an LFM tools-aware prompt (Phase 4).
+    /// Return the prompt-token count for an LFM tools-aware prompt.
     pub fn prompt_token_count_with_lfm_tools(
         &mut self,
         messages: &[ChatMessage],

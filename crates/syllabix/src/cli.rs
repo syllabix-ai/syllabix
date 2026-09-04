@@ -26,9 +26,9 @@ pub struct Cli {
     pub command: Commands,
 }
 
-/// Top-level commands. Launch CLI surface is `run` and optional `init` only.
+/// Commands exposed by the executable.
 ///
-/// Diagnostics (turn timeline + WAVs) are yaml-only since row 34:
+/// Diagnostics are configured in `syllabix.yaml` rather than with CLI flags:
 /// `diagnostics: {timestamps, audio, directory}` in `syllabix.yaml`.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn turn_debug_flag_is_gone() {
-        // Row 34: diagnostics are yaml-only; the flag must be rejected.
+        // Diagnostics are YAML-only, so the removed CLI flag must remain invalid.
         for args in [
             vec!["syllabix", "run", "--turn-debug"],
             vec!["syllabix", "run", "--turn-debug", "/tmp/turns"],

@@ -1,4 +1,4 @@
-//! Bounded queues with occupancy stats. Capacities are fixed for the v0 loop.
+//! Bounded queues with occupancy statistics. Senders block instead of growing without limit.
 
 use std::sync::mpsc::{self, RecvError, RecvTimeoutError, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};

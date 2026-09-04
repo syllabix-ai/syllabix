@@ -1,4 +1,4 @@
-//! PR 13 merge gate: six real-provider turns, queue bounds, shutdown, RSS ceiling.
+//! Six real-provider turns exercising queue bounds, shutdown, and the RSS ceiling.
 
 use std::fs;
 use std::io::Cursor;

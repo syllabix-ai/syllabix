@@ -1,4 +1,4 @@
-//! Merge gate for PR 6: interrupted/corrupt downloads and offline cache reuse.
+//! Model-cache recovery from interrupted or corrupt downloads and offline reuse.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -198,9 +198,9 @@ fn v0_manifest_is_complete() {
     assert!(m.asset("lfm2.5-2.6b").is_some());
     assert!(m.asset("kokoro").is_some());
     assert!(m.asset("kokoro-voice").is_some());
-    // Row 31: fetched only when the qwen TTS model is selected.
+    // Qwen assets are fetched only when a Qwen TTS model is selected.
     assert!(m.asset("qwen3-tts").is_some());
-    // Row 32: the 0.6B backbone pairs with its own projector (the mmproj
+    // The 0.6B backbone pairs with its own projector (the mmproj
     // embeds the projection into each LM's embedding space).
     assert!(m.asset("qwen3-tts-mmproj").is_some());
     assert!(m.asset("qwen3-tts-06b").is_some());

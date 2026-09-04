@@ -1,4 +1,4 @@
-//! Versioned Silero silence / speech / noise fixtures (PR 7 leftover, PR 13 gate).
+//! Silero classification over versioned silence, speech, and noise fixtures.
 
 use std::fs;
 use std::io::Cursor;

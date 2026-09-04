@@ -3,10 +3,10 @@
 use crate::error::{Error, Result};
 use std::time::Duration;
 
-/// v0 capture/playback rate. Whisper, Silero, and Kokoro adapters share it.
+/// Capture and playback rate shared by Whisper, Silero, and Kokoro adapters.
 pub const DEFAULT_SAMPLE_RATE_HZ: u32 = 16_000;
 
-/// v0 is mono. Native I/O converts device layouts to this.
+/// Pipeline channel count. Native I/O converts device layouts to mono.
 pub const DEFAULT_CHANNELS: u16 = 1;
 
 /// ~32 ms at 16 kHz. Matches a typical Silero window without coupling to ONNX yet.
@@ -27,7 +27,7 @@ pub struct AudioFrame {
     pub seq: u64,
     /// Sample rate in Hz.
     pub sample_rate_hz: u32,
-    /// Channel count. v0 frames are mono.
+    /// Channel count. Pipeline frames are mono.
     pub channels: u16,
     /// Interleaved PCM16 samples.
     pub samples: Vec<i16>,
@@ -36,7 +36,7 @@ pub struct AudioFrame {
 }
 
 impl AudioFrame {
-    /// Build a frame after checking the v0 PCM contract.
+    /// Build a frame after validating its sample rate, channel count, and length.
     pub fn new(seq: u64, sample_rate_hz: u32, channels: u16, samples: Vec<i16>) -> Result<Self> {
         let frame = Self {
             seq,
@@ -167,7 +167,7 @@ pub struct HistoryTurn {
 /// Provider facts for diagnostics sidecars.
 ///
 /// `endpoint` and `request_id` are empty for the local llama.cpp provider;
-/// they identify the cloud endpoint and response for row 30 (`openai`).
+/// they identify the online endpoint and response associated with a turn.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LlmDebugMeta {
     /// Config name of the provider (`llama.cpp`, `openai`).
@@ -194,8 +194,8 @@ pub struct ToolCall {
 
 /// A bounded result returned to the model after a normalized [`ToolCall`].
 ///
-/// Phase 1 has no live executors; its built-in result says so. Phase 2 will
-/// replace that source without changing the API loop or provider contract.
+/// The built-in implementation reports unavailable execution. A host executor
+/// can replace that source without changing the surrounding API loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolResult {
     /// The matching [`ToolCall::id`].

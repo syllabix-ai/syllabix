@@ -115,7 +115,7 @@ impl PlaybackDrain {
     }
 }
 
-/// Backend id for logs. The shipped loop uses this name once `run` is wired.
+/// Backend identifier used in logs.
 pub fn backend_name() -> &'static str {
     "cpal"
 }
@@ -126,7 +126,7 @@ pub struct SelectedCpalDevice {
     pub name: String,
     /// Why this device was chosen.
     pub reason: &'static str,
-    /// Pipeline-facing format after conversion still uses [`PcmFormat::v0`].
+    /// Pipeline-facing format after device conversion.
     pub device_format: PcmFormat,
     sample_format: SampleFormat,
     device: cpal::Device,
@@ -458,7 +458,7 @@ fn recv_open(rx: mpsc::Receiver<Result<OpenedStreamMetadata>>) -> Result<OpenedS
     })?
 }
 
-/// Live microphone → v0 [`AudioFrame`]s.
+/// Convert live microphone samples into pipeline [`AudioFrame`]s.
 pub struct NativeCapture {
     _worker: StreamWorker,
     ring: Arc<SampleRing>,

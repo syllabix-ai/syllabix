@@ -1,15 +1,13 @@
-//! Phase 3 harness-quality: fixed voice-transcript fixtures + verdict scoring.
+//! Tool-harness quality checks using fixed voice-transcript fixtures and verdict scoring.
 //!
-//! Maps to `V0_LAUNCH.md` phase 3 ("model admission"): exercise the
-//! full online tool loop on voice-like prompts and decide whether the model
-//! qualifies for the developer harness.
+//! Exercises the full online tool loop on voice-like prompts and measures whether
+//! a model produces valid calls without escaping the executor policy.
 //!
 //! Two tiers:
-//! - Offline unit tests in this file (merge bar, no key, no network): fixture
+//! - Offline unit tests in this file require no key or network and validate fixture
 //!   shape, verdict scoring, reply checks.
 //! - `harness_quality_live_admission` (`#[ignore]`, manual only): drives the
-//!   real Phase 1 loop (`OpenAiLlm` with `developer_harness`) plus the real
-//!   Phase 2 executors against the endpoint the user chose. Needs
+//!   real `OpenAiLlm` tool loop and host executors against the endpoint the user chose. Needs
 //!   `SYLLABIX_LLM_API_KEY`, `SYLLABIX_HARNESS_BASE_URL`, and
 //!   `SYLLABIX_HARNESS_MODEL`; fails fast when any is missing. Loads no
 //!   weights and reads no `SYLLABIX_NATIVE_MODELS`.
@@ -28,14 +26,14 @@ use syllabix_core::{
     VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
 
-/// Base URL env for the manual run. Required; nothing is defaulted (row 30
-/// deliberately leaves `base_url` mandatory for `online`).
+/// Base URL environment variable for the manual run. It is required because
+/// online endpoints are never inferred.
 const BASE_URL_ENV: &str = "SYLLABIX_HARNESS_BASE_URL";
-/// Free-form model id env (e.g. the `gpt-4o-mini` row 30 verified against).
-/// Pinned per run in the PR report; cloud output drifts, a GGUF does not.
+/// Free-form model identifier environment variable, such as `gpt-4o-mini`.
+/// Recording the identifier makes results interpretable when hosted output changes.
 const MODEL_ENV: &str = "SYLLABIX_HARNESS_MODEL";
 
-/// Pass bar from the spec: ≥90% valid tool calls on the fixed fixture set.
+/// Minimum valid-call ratio across the fixed fixture set.
 const MIN_VALID_CALL_RATIO: f64 = 0.9;
 /// Replies must never leak a URL or tool trace. Length and prose style are
 /// not gated: verbosity is a model/prompt concern, not a harness boundary.
@@ -242,7 +240,7 @@ fn policy_escapes(events: &[ToolTurnEvent]) -> usize {
         .count()
 }
 
-/// Truncated one-line rendering of a tool event for the PR report: shows
+/// Truncated one-line rendering of a tool event for diagnostic output; shows
 /// which URLs were fetched and which calls were rejected or limited.
 fn render_event(event: &ToolTurnEvent) -> String {
     fn cut(text: &str) -> String {
@@ -327,8 +325,8 @@ fn drive_turn(llm: &mut OpenAiLlm, text: &str) -> (String, Vec<ToolTurnEvent>) {
     (reply, events)
 }
 
-/// Manual-only admission run. Not in CI: needs a key, spends billing, and the
-/// provider drifts. Prints the per-fixture report the PR body must carry.
+/// Manual-only hosted-model evaluation. Not in CI: it needs a key, incurs cost, and the
+/// provider output changes over time. Prints one result line per fixture.
 #[test]
 #[ignore]
 fn harness_quality_live_admission() {
