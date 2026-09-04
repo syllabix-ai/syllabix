@@ -195,7 +195,8 @@ pub fn build_llm(
                 &config.llm_model,
                 config.thinking,
             )?
-            .with_system_prompt(config.system_prompt.clone()),
+            .with_system_prompt(config.system_prompt.clone())
+            .with_developer_harness(config.llm_developer_harness),
         )),
         crate::LlmProvider::Online => {
             let key = llm_api_key.ok_or_else(|| Error::Config {

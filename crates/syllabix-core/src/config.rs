@@ -337,10 +337,14 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     // `SYLLABIX_LLM_API_KEY` env only, never yaml, never `.env`.
     let llm_base_url = resolve_llm_base_url(llm, llm_provider)?;
     let llm_developer_harness = optional_bool(llm, "pipeline.llm", "developer_harness", false)?;
-    if llm_developer_harness && llm_provider != LlmProvider::Online {
+    let local_lfm_harness =
+        llm_provider == LlmProvider::Local && llm_model == crate::llm::LFM25_26B_ASSET;
+    if llm_developer_harness && llm_provider != LlmProvider::Online && !local_lfm_harness {
         return Err(Error::Config {
             field: "pipeline.llm.developer_harness".into(),
-            message: "is only valid when pipeline.llm.provider is online".into(),
+            message:
+                "is only valid when pipeline.llm.provider is online, or for local model lfm2.5-2.6b"
+                    .into(),
         });
     }
 
@@ -784,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn developer_harness_is_off_by_default_and_online_only() {
+    fn developer_harness_is_off_by_default_and_gated() {
         assert!(!AgentConfig::v0().llm_developer_harness);
         let enabled = AgentConfig::parse_yaml(
             r#"
@@ -798,6 +802,18 @@ pipeline:
         )
         .expect("online developer harness parses");
         assert!(enabled.llm_developer_harness);
+        let local = AgentConfig::parse_yaml(
+            r#"
+name: harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: whisper.cpp, model: small, language: en }
+  llm: { provider: local, model: lfm2.5-2.6b, developer_harness: true }
+  tts: { provider: local, model: kokoro }
+"#,
+        )
+        .expect("admitted local LFM harness parses");
+        assert!(local.llm_developer_harness);
         let err = AgentConfig::parse_yaml(
             r#"
 name: harness
@@ -808,7 +824,7 @@ pipeline:
   tts: { provider: local, model: kokoro }
 "#,
         )
-        .expect_err("local harness is rejected");
+        .expect_err("non-admitted local harness is rejected");
         assert!(err.to_string().contains("developer_harness"));
     }
 
