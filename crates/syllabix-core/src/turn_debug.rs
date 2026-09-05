@@ -1,4 +1,4 @@
-//! Opt-in per-turn diagnostics for `syllabix.yaml` `diagnostics:` (row 34):
+//! Opt-in per-turn diagnostics configured under `diagnostics` in `syllabix.yaml`:
 //! monotonic turn-timeline sidecars, plus the turn WAVs when `audio: true`.
 
 use std::collections::BTreeMap;
@@ -740,8 +740,8 @@ mod tests {
         debug.interrupt(TurnId(0)).unwrap();
         let json = fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
         assert!(json.contains("cancelled"));
-        // Row 31: TTS provider facts ride the same sidecar as the LLM's.
-        // Row 32: the provider field carries the posture word.
+        // TTS and LLM provider metadata share one sidecar. The provider field
+        // describes whether inference ran locally or online.
         assert!(json.contains("\"tts_provider\": \"local\""), "{json}");
         assert!(
             json.contains("\"tts_model\": \"qwen3-tts-1.7b-base\""),

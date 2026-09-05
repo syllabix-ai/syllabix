@@ -10,7 +10,7 @@ use crate::types::{AudioFrame, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_S
 /// 32 frame slots + 16 audio slots + leftover PCM, with headroom.
 pub const AUDIO_LIVE_BYTES_CEILING: usize = 256 * 1024;
 
-/// Frame splitter leftover is always fewer than one v0 frame.
+/// Buffered samples that do not yet make a complete pipeline frame.
 pub const FRAME_SPLITTER_MAX: usize = FRAME_SAMPLES - 1;
 
 /// Interleaved PCM layout at a device or pipeline edge.
@@ -23,7 +23,7 @@ pub struct PcmFormat {
 }
 
 impl PcmFormat {
-    /// v0 pipeline PCM (16 kHz mono).
+    /// Pipeline PCM format: 16 kHz mono.
     pub const fn v0() -> Self {
         Self {
             sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
@@ -252,7 +252,7 @@ impl FrameSplitter {
         self.buf.len()
     }
 
-    /// Push PCM16 mono at the v0 rate; emit complete frames.
+    /// Push 16 kHz mono PCM16 samples and emit complete frames.
     pub fn push(&mut self, samples: &[i16]) -> Result<Vec<AudioFrame>> {
         self.buf.extend_from_slice(samples);
         let mut frames = Vec::new();

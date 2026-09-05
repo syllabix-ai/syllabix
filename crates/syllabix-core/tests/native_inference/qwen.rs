@@ -1,13 +1,12 @@
 //! Optional Qwen3-TTS native gates. Run when `SYLLABIX_NATIVE_MODELS` lists
 //! `qwen3-0.6` and/or `qwen3-1.7`. Whisper `small` may load as the ASR scorer.
 //!
-//! Row 31 merge gate, row-32 menu, row-33 incremental Qwen PCM,
-//! TTS→ASR round-trip through whisper.cpp, the numbers gate (`100` →
-//! "hundred"), native cancel, and the row-32 self-voice anchor (same seed ⇒
+//! Covers incremental Qwen PCM, TTS-to-ASR round trips through whisper.cpp,
+//! number pronunciation (`100` → "hundred"), native cancellation, and the
+//! deterministic self-voice anchor (same seed ⇒
 //! identical PCM; the anchor engages on both backbones). Intelligibility is
-//! the same ≥80% in-order word match the Kokoro gate uses; the numbers
-//! assertion is the machine proxy for the human listening gate in
-//! `V0_LAUNCH.md`.
+//! the same ≥80% in-order word match used for Kokoro. The number assertion
+//! verifies that numeric text is spoken as a number rather than digit by digit.
 
 use std::time::{Duration, Instant};
 
@@ -152,7 +151,7 @@ fn qwen_streams_pcm_before_full_generation_completes() {
     }
 }
 
-/// The intelligibility gate: Qwen3-TTS out, whisper.cpp `small` back in.
+/// Measure intelligibility by transcribing Qwen3-TTS output with whisper.cpp `small`.
 #[test]
 fn qwen_speech_round_trips_through_whisper_at_eighty_percent() {
     skip_unless_any_model!("qwen3-0.6", "qwen3-1.7");
@@ -181,7 +180,7 @@ fn qwen_speech_round_trips_through_whisper_at_eighty_percent() {
     }
 }
 
-/// The numbers gate, automated: `100` must be spoken as words, not a digit
+/// Verify that `100` is spoken as a number rather than a digit
 /// string. Kokoro's G2P gap reads "one zero zero"; the LM reads "one hundred".
 #[test]
 fn qwen_speaks_numbers_like_a_listener_expects() {
@@ -200,7 +199,7 @@ fn qwen_speaks_numbers_like_a_listener_expects() {
         // whisper.cpp writes a correctly spoken "one hundred dollars" back in
         // symbolic form ("$100"), so the machine proxy asserts the LM reading:
         // the number survives as 100/hundred AND no digit-by-digit "zero"
-        // sequence leaks. The human listening gate still owns final quality.
+        // token-order leaks. Listening tests assess perceived quality.
         let reads_like_a_number = normalized.contains("hundred")
             || normalized.contains("100")
             || normalized.contains('$');
@@ -217,10 +216,10 @@ fn qwen_speaks_numbers_like_a_listener_expects() {
     }
 }
 
-/// Row 32 voice contract: the anchor is generated from a fixed seed, so two
+/// The voice anchor is generated from a fixed seed, so two
 /// independently loaded engines with the same sampler seed produce
 /// byte-identical audio for the same sentence. This is the machine proof
-/// that the voice is pinned (the human listening gate still judges speaker
+/// that the voice is pinned. Listening evaluation separately judges speaker
 /// consistency across sentences).
 #[test]
 fn qwen_voice_is_deterministic_under_a_pinned_seed() {
@@ -269,7 +268,7 @@ fn qwen_voice_is_deterministic_under_a_pinned_seed() {
     }
 }
 
-/// Barge-in contract: shutdown must surface from inside native generation,
+/// Shutdown must surface from inside native generation so barge-in can
 /// not after the full render. The 5 s cap matches the LLM cancel bar.
 #[test]
 fn qwen_native_cancel_surfaces_within_five_seconds() {
@@ -300,7 +299,7 @@ fn qwen_native_cancel_surfaces_within_five_seconds() {
     }
 }
 
-/// P3 reproducible evidence for each Qwen backbone. The first callback marks
+/// Reproducible latency capture for each Qwen backbone. The first callback marks
 /// TTFB; whole-sentence completion would incorrectly report decode time.
 #[test]
 fn qwen_latency_capture() {

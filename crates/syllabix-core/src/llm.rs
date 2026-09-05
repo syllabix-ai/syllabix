@@ -35,7 +35,7 @@ pub const LFM25_26B_ASSET: &str = "lfm2.5-2.6b";
 /// LFM always thinks, so a turn that never emits a complete
 /// `<|tool_call_start|>` block must fail closed into the spoken fallback
 /// instead of generating until cancel. The bound lives in the adapter, not
-/// in yaml (EOS-generate contract stands).
+/// in YAML; generation still stops on EOS, cancellation, or context exhaustion.
 pub const LFM_TOOL_TURN_MAX_CHARS: usize = 8_000;
 
 /// `{language}` in a yaml `system_prompt` is replaced with the STT language's
@@ -72,7 +72,7 @@ pub fn render_system_prompt(template: &str, language: &str) -> String {
     }
 }
 
-/// System prompt for the turn's STT language using the launch default template.
+/// Render the built-in system prompt for the turn's STT language.
 pub fn system_prompt_for(language: &str) -> String {
     render_system_prompt(VOICE_SYSTEM_PROMPT_TEMPLATE, language)
 }
@@ -90,7 +90,7 @@ pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// for a model stall.
 pub const LLAMA_TOKEN_STALL_TIMEOUT: Duration = Duration::from_secs(4);
 
-/// True when `id` is a v0 llama.cpp GGUF.
+/// Return whether `id` names a supported local llama.cpp model.
 pub fn is_v0_llm_model(id: &str) -> bool {
     id == QWEN35_08B_ASSET
         || id == QWEN35_2B_ASSET
@@ -98,7 +98,7 @@ pub fn is_v0_llm_model(id: &str) -> bool {
         || id == LFM25_26B_ASSET
 }
 
-/// In-process llama.cpp adapter. Loads a v0 Q4_K_M GGUF.
+/// In-process llama.cpp adapter for supported GGUF models.
 pub struct LlamaLlm {
     engine: Arc<Mutex<Box<dyn Engine>>>,
     calls: Arc<Mutex<Vec<LlmCall>>>,
@@ -156,7 +156,7 @@ impl LlamaLlm {
         )
     }
 
-    /// Resolve one v0 GGUF id and load it. Does not fetch the other size.
+    /// Resolve and load one GGUF id without fetching unselected models.
     pub fn from_cached_model(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -196,7 +196,7 @@ impl LlamaLlm {
         self.thinking
     }
 
-    /// Yaml `pipeline.llm.system_prompt` (or the launch default template).
+    /// YAML `pipeline.llm.system_prompt`, or the built-in template.
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = prompt.into();
         self
@@ -311,13 +311,13 @@ impl LlamaLlm {
         messages
     }
 
-    /// One tools-aware turn against the local Qwen template (issue 87).
+    /// Run one tools-aware turn using the local Qwen template.
     ///
-    /// Adapter half of the shared tool-call contract: renders the `<tools>`
+    /// Render tool definitions and parse generated tool calls using the Qwen dialect.
     /// preamble through the shim's tools-aware entry, collects the turn text,
     /// then parses and normalizes Qwen `<tool_call>` blocks into [`ToolCall`]s
     /// with `call` / `rejected` events for [`Llm::take_tool_events`].
-    /// Executing the calls stays with the Phase-4 loop (host-owned executor);
+    /// A host-owned executor runs parsed calls;
     /// this never runs a tool. Not on the default `run` path: [`Llm::generate`]
     /// stays tool-free and byte-identical.
     pub fn generate_tool_turn(
@@ -399,14 +399,14 @@ impl LlamaLlm {
         Ok(calls)
     }
 
-    /// One tools-aware turn against the local LFM template (Phase 4).
+    /// Run one tools-aware turn using the local LFM template.
     ///
-    /// Adapter half of the shared tool-call contract for the second dialect:
+    /// Render and parse the LFM tool-call dialect:
     /// renders the `List of tools:` preamble through the shim's LFM-aware
     /// entry, collects the turn text, then parses and normalizes LFM
     /// `<|tool_call_start|>[name(k="v")]<|tool_call_end|>` blocks into
     /// [`ToolCall`]s with `call` / `rejected` events for
-    /// [`Llm::take_tool_events`]. Executing the calls stays with the Phase-4
+    /// [`Llm::take_tool_events`]. Executing the calls stays with the host-owned
     /// loop (host-owned executor); this never runs a tool. Not on the
     /// default `run` path: [`Llm::generate`] stays tool-free and
     /// byte-identical.
@@ -592,7 +592,7 @@ trait Engine: Send {
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()>;
 
-    /// Tools-aware generation (issue 87). The default runs the plain path so
+    /// Tools-aware generation. The default runs the plain path so
     /// scripted/test engines stay tool-free; the native engine renders the
     /// Qwen `<tools>` preamble through the shim alongside the plain path.
     fn generate_with_tools(
@@ -607,7 +607,7 @@ trait Engine: Send {
         self.generate(messages, append_thinking_off_suffix, cancel, on_piece)
     }
 
-    /// LFM tools-aware generation (Phase 4). The default runs the plain
+    /// LFM tools-aware generation. The default runs the plain
     /// path so scripted/test engines stay tool-free; the native engine
     /// renders the `List of tools:` preamble through the LFM shim entry.
     /// Kept separate from [`Engine::generate_with_tools`] (second-dialect
@@ -874,10 +874,10 @@ fn is_thinking_tag_supported_model(model_id: &str) -> bool {
     matches!(model_id, QWEN35_2B_ASSET)
 }
 
-/// Tool schemas for the local Qwen tools-aware prompt (issue 87). The same
+/// Tool schemas for the local Qwen tools-aware prompt. The same
 /// two host-owned primitives the online adapter sends (`web_fetch`, `shell`);
 /// serialized as the `<tools>` JSON array the Qwen template consumes. One
-/// shared contract, translated at each adapter's edge.
+/// shared representation, translated at each adapter boundary.
 pub fn local_tool_definitions_json() -> String {
     serde_json::json!([
         {
@@ -934,7 +934,7 @@ pub struct ParsedLocalToolCall {
     pub arguments: serde_json::Value,
 }
 
-/// Parse Qwen-native tool calls from generated text (issue 87).
+/// Parse Qwen-native tool calls from generated text.
 ///
 /// Each `<tool_call><function=name><parameter=k>v</parameter>…</function></tool_call>`
 /// block yields one call, in order. Prose around the blocks (optional
@@ -1016,7 +1016,7 @@ fn parse_qwen_tool_call_block(block: &str) -> std::result::Result<ParsedLocalToo
     })
 }
 
-/// Normalize one parsed local call into the shared [`ToolCall`] contract.
+/// Normalize one parsed local call into [`ToolCall`].
 /// Local generations carry no provider ids, so the id is synthesized
 /// (`local-call-{index}`); the matching [`ToolResult::tool_call_id`] uses the
 /// same value, and the pipeline correlates them exactly like online ids.
@@ -1038,7 +1038,7 @@ pub fn normalize_local_tool_call(
     })
 }
 
-/// Parse LFM-native tool calls from generated text (Phase 4).
+/// Parse LFM-native tool calls from generated text.
 ///
 /// Each `<|tool_call_start|>[name(k="v", …)]<|tool_call_end|>` block yields
 /// one or more calls, in order; multiple blocks are concatenated in document
@@ -1048,7 +1048,7 @@ pub fn normalize_local_tool_call(
 /// `rejected` tool event and speaks the fallback instead of executing
 /// anything. Separate from [`parse_qwen_tool_calls`] (second-dialect
 /// exception); values are stored as strings like the Qwen path (lists are
-/// space-joined) so both dialects feed the same shared contract.
+/// space-joined) so both dialects feed the same representation.
 pub fn parse_lfm_tool_calls(text: &str) -> std::result::Result<Vec<ParsedLocalToolCall>, String> {
     const OPEN: &str = "<|tool_call_start|>";
     const CLOSE: &str = "<|tool_call_end|>";

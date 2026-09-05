@@ -226,7 +226,7 @@ impl EchoController {
     /// Process arbitrary-length 16 kHz mono capture samples.
     ///
     /// Output is emitted only in complete 10 ms blocks; callers retain their
-    /// existing frame splitter for the 512-sample ASR capture contract.
+    /// existing frame splitter so ASR continues receiving 512-sample frames.
     ///
     /// Render is pushed into AEC3 as soon as a 10 ms speaker block exists.
     /// Capture is not paired with invented silence when the mic is briefly

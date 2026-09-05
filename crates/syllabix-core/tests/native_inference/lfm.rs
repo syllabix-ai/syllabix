@@ -1,14 +1,11 @@
-//! LFM native gates. `lfm2.5-2.6b` (QAD Q4_0 GGUF) is the default LLM; it
-//! also runs as part of the launch stack with no env override:
+//! Native inference tests for the default `lfm2.5-2.6b` QAD Q4_0 GGUF:
 //!
 //! ```bash
 //! SYLLABIX_NATIVE_MODELS=lfm2.5-2.6b cargo test -p syllabix-core --features native-inference --test native_inference lfm
 //! ```
 //!
-//! Not the per-PR merge bar (weekly / reference-Mac only). The default id is
-//! `lfm2.5-2.6b`; this suite additionally covers
-//! its native tools dialect. The co-residency
-//! gate also loads launch Whisper `small` and Kokoro in the same process;
+//! The suite covers the model's native tools dialect. The co-residency
+//! suite also loads Whisper `small` and Kokoro in the same process;
 //! expect their caches plus the roughly 1.6 GB LFM GGUF on a cold machine.
 
 use std::thread;
@@ -24,9 +21,9 @@ use crate::{native, skip_unless_model};
 fn qad_q4_0_gguf_loads_co_resident_without_segfault() {
     skip_unless_model!(LFM25_26B_ASSET);
     let mut native = native();
-    // The spike is only useful if it can live in the one-binary voice stack.
+    // The model must coexist with the speech models in one process.
     // Keep all three live before generating, rather than treating an isolated
-    // LFM load as co-residency evidence.
+    // LFM load as a co-residency check.
     native.stt();
     native.tts();
     let llm = native.lfm_mut();
@@ -67,9 +64,9 @@ fn lfm_tool_turn_parses_a_native_call_into_the_shared_contract() {
         .expect("lfm tool turn");
     assert_eq!(chunks.len(), 1);
     assert!(chunks[0].is_last);
-    // Admission verdict lives in the PR report (fixed fixtures, ≥90% valid
-    // calls); the gate here is structural: calls normalize into the shared
-    // contract with synthesized ids, or the turn fails closed with a
+    // Admission uses fixed fixtures and requires at least 90% valid calls.
+    // This assertion is structural: calls normalize into the shared representation
+    // with synthesized ids, or the turn fails closed with a
     // `rejected` event and no calls.
     let events = Llm::take_tool_events(llm);
     if calls.is_empty() {

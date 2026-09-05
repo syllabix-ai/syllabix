@@ -1,9 +1,8 @@
-//! Built-in on-device stack. One provider per layer; the only cloud path is
-//! the row-30 BYO-key LLM adapter (`pipeline.llm.provider: openai`).
+//! Built-in providers, models, and queue sizes used when no configuration file exists.
 
 use crate::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES};
 
-/// Fixed v0 queue bounds. Stages block on send instead of growing.
+/// Fixed queue bounds. Stages block on send instead of growing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueCaps {
     /// Mic frames waiting for VAD.
@@ -19,7 +18,7 @@ pub struct QueueCaps {
 }
 
 impl QueueCaps {
-    /// Launch defaults: small enough to catch unbounded buffering in tests.
+    /// Defaults sized to expose unbounded buffering while keeping each stage fed.
     pub const fn v0() -> Self {
         Self {
             frames: 32,
@@ -37,7 +36,7 @@ impl Default for QueueCaps {
     }
 }
 
-/// The only v0 VAD.
+/// Voice-activity detector implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VadProvider {
     /// Silero ONNX. Fake loop uses the same name.
@@ -53,7 +52,7 @@ impl VadProvider {
     }
 }
 
-/// The only v0 STT.
+/// Speech-to-text implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SttProvider {
     /// whisper.cpp.
@@ -69,12 +68,12 @@ impl SttProvider {
     }
 }
 
-/// whisper.cpp model menu. One provider, several GGML sizes; `small` stays
-/// the launch default. `-q5_0` ids are the published quantizations of their
+/// whisper.cpp model menu. One provider exposes several GGML sizes; `small` is
+/// the default. `-q5_0` ids are the published quantizations of their
 /// fp16 siblings (`tiny` / `base` are deliberately not offered).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SttModel {
-    /// `small` multilingual weights (v0 launch default).
+    /// `small` multilingual weights used by default.
     Small,
     /// `medium` multilingual weights.
     Medium,
@@ -149,7 +148,7 @@ impl LlmProvider {
 
 /// TTS execution models. `Local` runs weights in-process — Kokoro ONNX or
 /// Qwen3-TTS through the shared llama.cpp/ggml path; `Online` is reserved for
-/// a future cloud TTS row and fails fast at config load today. The words name
+/// no online implementation exists and fails fast at config load. The variants describe
 /// the posture — where the user's words go — matching [`LlmProvider`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsProvider {
@@ -169,15 +168,15 @@ impl TtsProvider {
     }
 }
 
-/// TTS model menu under `provider: local`. Pocket TTS is the launch default;
-/// Kokoro and the Qwen3-TTS backbones are yaml opt-ins.
+/// TTS model menu under `provider: local`. Pocket TTS is the default;
+/// Kokoro and the Qwen3-TTS backbones are YAML opt-ins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsModel {
     /// Kokoro ONNX (`af_heart`, English).
     Kokoro,
     /// Qwen3-TTS-12Hz-0.6B-Base GGUF (~344 MB fetch).
     Qwen06,
-    /// Qwen3-TTS-12Hz-1.7B-Base GGUF (row 31 weight).
+    /// Qwen3-TTS-12Hz-1.7B-Base GGUF.
     Qwen17,
     /// Pocket TTS English ONNX graph set.
     PocketTts,
@@ -239,7 +238,7 @@ impl TtsModel {
     }
 }
 
-/// Zero-config stack written by a later `init`, and used when yaml is missing.
+/// Stack used when YAML is missing and written by `init`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltinDefaults {
     /// Agent name for a generated yaml.
@@ -261,7 +260,7 @@ pub struct BuiltinDefaults {
     pub tts: TtsProvider,
     /// TTS model (`pocket-tts` default; other local models are opt-in).
     pub tts_model: TtsModel,
-    /// STT language code (`en`). YAML may set this; v0 allows only `en`.
+    /// STT language code used when YAML does not override it.
     pub language: &'static str,
     /// Capture/playback sample rate.
     pub sample_rate_hz: u32,
@@ -274,7 +273,7 @@ pub struct BuiltinDefaults {
 }
 
 impl BuiltinDefaults {
-    /// Launch built-ins from `V0_LAUNCH.md`.
+    /// Built-in values used when configuration is absent.
     pub const fn v0() -> Self {
         Self {
             name: "demo-agent",
@@ -344,7 +343,7 @@ mod tests {
             assert_eq!(TtsModel::parse(id), Some(model));
             assert!(TtsModel::parse(&format!("{id}-nope")).is_none());
         }
-        // The retired row-31 provider values are not model ids either.
+        // Provider names are not valid model identifiers.
         for bad in ["qwen", "pansori", "neutts"] {
             assert!(TtsModel::parse(bad).is_none(), "{bad}");
         }

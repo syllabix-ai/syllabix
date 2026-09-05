@@ -4,10 +4,10 @@
 //! process. `cargo llvm-cov` sets `--cfg coverage` and skips weight loads;
 //! a fake loop still runs so this binary is not a coverage hole.
 //!
-//! Default `cargo test` is the launch stack only (Silero, Whisper `small`,
-//! LFM2.5-2.6B, Pocket TTS). Set `SYLLABIX_NATIVE_MODELS` to a comma-separated
-//! list of yaml `pipeline.*.model` ids to run **only** those native suites
-//! (exclusive). Unknown ids fail fast. Ids with no native suite yet fail
+//! Default `cargo test` loads Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS.
+//! Set `SYLLABIX_NATIVE_MODELS` to a comma-separated list of YAML
+//! `pipeline.*.model` identifiers to run only those native suites. Unknown
+//! identifiers fail fast, and identifiers without a native suite fail
 //! with `no native suite for <id>`. Whisper `small` may still load as a
 //! TTS→ASR scorer when a TTS id is selected.
 
@@ -40,7 +40,7 @@ use syllabix_core::{
     Cancel, HttpFetcher, KokoroTts, LlamaLlm, ModelCache, StderrProgress, WhisperStt,
 };
 
-/// Yaml ids the launch stack native tests cover.
+/// YAML identifiers covered by the default native test set.
 const LAUNCH_NATIVE_IDS: [&str; 3] = ["small", LFM25_26B_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
@@ -55,9 +55,8 @@ const SUITED_NATIVE_IDS: [&str; 8] = [
     LFM25_26B_ASSET,
 ];
 
-/// P3 runs every selectable local TTS model over this same fixed corpus.
-/// Keep it spoken and ordinary: the live listening gate owns format-heavy
-/// prompts and real conversations, while this captures reproducible native
+/// Every selectable local TTS model uses this fixed latency corpus.
+/// Keep it spoken and ordinary so this captures reproducible native
 /// synthesis latency and throughput.
 #[cfg(not(coverage))]
 pub(crate) const TTS_LATENCY_SENTENCES: [&str; 20] = [
@@ -102,7 +101,7 @@ fn all_native_model_ids() -> BTreeSet<&'static str> {
     all_yaml_model_ids()
 }
 
-/// Parse `SYLLABIX_NATIVE_MODELS`. `None` / blank ⇒ launch stack.
+/// Parse `SYLLABIX_NATIVE_MODELS`. Missing or blank input selects the default stack.
 fn parse_native_models(raw: Option<&str>) -> Result<BTreeSet<String>, String> {
     let known = all_native_model_ids();
     let suited: BTreeSet<&str> = SUITED_NATIVE_IDS.into_iter().collect();
@@ -265,9 +264,8 @@ impl Native {
         self.llm.as_mut().expect("lfm loaded")
     }
 
-    /// LFM handle for the tools-dialect suite. The default `llm` slot above
-    /// already loads the same default id through `from_cache`; this keeps the
-    /// dedicated handle for the tools-aware gates.
+    /// Dedicated LFM handle for tools-dialect tests. The regular `llm` slot
+    /// loads the same model for ordinary generation.
     pub(crate) fn lfm_mut(&mut self) -> &mut LlamaLlm {
         if self.lfm.is_none() {
             let cache = ModelCache::v0();

@@ -1,4 +1,4 @@
-//! Merge gate for PR 8: whisper.cpp `small` on versioned recorded fixtures.
+//! whisper.cpp `small` transcription over versioned recorded fixtures.
 //!
 //! JFK is the whisper.cpp sample. The three LibriSpeech `test-clean` clips are
 //! converted 16 kHz mono PCM from https://openslr.trmal.net/resources/12/test-clean.tar.gz

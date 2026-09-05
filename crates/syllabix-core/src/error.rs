@@ -1,6 +1,6 @@
 //! Recoverable Syllabix failures with stable, user-facing messages.
 
-/// Process-level result used by the CLI and later runtime crates.
+/// Process-level result shared by the CLI and runtime.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Recoverable Syllabix failures with stable, user-facing messages.
@@ -17,7 +17,7 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
-    /// Audio frame does not match the v0 PCM contract.
+    /// Audio frame has the wrong sample rate, channel count, or frame length.
     #[error("invalid audio: {message}")]
     InvalidAudio {
         /// Human-readable reason.

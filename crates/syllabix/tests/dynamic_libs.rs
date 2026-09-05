@@ -1,5 +1,5 @@
-// Linux-only: the launch merge gate requires no undeclared dynamic runtime
-// dependencies on the shipped executable. Native links (ONNX, one ggml,
+// Linux-only: verifies that the executable declares all dynamic runtime
+// dependencies. Native links (ONNX, one ggml,
 // whisper.cpp, llama.cpp) must be static or listed here. ONNX Runtime
 // requires the declared C++ standard library.
 

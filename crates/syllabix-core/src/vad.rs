@@ -1,4 +1,4 @@
-//! Silero ONNX voice-activity detection for the v0 16 kHz mono audio contract.
+//! Silero ONNX voice-activity detection for 16 kHz mono pipeline audio.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -24,7 +24,7 @@ pub const MIN_SPEECH: Duration = Duration::from_millis(100);
 /// Silence needed to close an utterance (eleven 32 ms frames = 352 ms).
 pub const END_SILENCE: Duration = Duration::from_millis(350);
 
-/// v0 hop: 512 samples at 16 kHz.
+/// Frame duration: 512 samples at 16 kHz.
 pub const FRAME_DURATION: Duration = Duration::from_millis(32);
 
 /// Frames of speech that meet [`MIN_SPEECH`].
@@ -36,7 +36,7 @@ pub const END_SILENCE_FRAMES: usize = 11;
 /// Post-AEC audio prepended onto the Whisper utterance before the first ≥0.5 frame.
 pub const WHISPER_PREROLL: Duration = Duration::from_millis(200);
 
-/// Samples in the v0 [`WHISPER_PREROLL`] at the capture rate.
+/// Samples in [`WHISPER_PREROLL`] at the capture rate.
 pub const PREROLL_SAMPLES: usize =
     (DEFAULT_SAMPLE_RATE_HZ as usize) * (WHISPER_PREROLL.as_millis() as usize) / 1000;
 
@@ -54,7 +54,7 @@ pub struct VadSettings {
 }
 
 impl VadSettings {
-    /// Launch defaults from `V0_LAUNCH.md`.
+    /// Built-in detector settings.
     pub fn v0() -> Self {
         Self {
             speech_threshold: SPEECH_THRESHOLD,
@@ -64,7 +64,7 @@ impl VadSettings {
         }
     }
 
-    /// Samples of preroll at the v0 capture rate.
+    /// Samples of preroll at the capture rate.
     pub fn preroll_samples(&self) -> usize {
         (DEFAULT_SAMPLE_RATE_HZ as usize) * (self.preroll.as_millis() as usize) / 1000
     }
@@ -72,7 +72,7 @@ impl VadSettings {
 
 /// In-process Silero VAD backed by ONNX Runtime.
 ///
-/// The detector accepts only the fixed v0 capture contract: 512 samples of
+/// The detector accepts fixed-size frames: 512 samples of
 /// 16 kHz mono PCM. It pair-averages each frame to Silero's 8 kHz / 256-sample
 /// window (the ONNX 512 / `sr=16000` branch scores ~0.003). It retains
 /// Silero's recurrent state between frames.
@@ -150,7 +150,7 @@ impl SileroVad {
         self.scorer.score(frame)
     }
 
-    /// Test helper: Silero probability for one v0 frame.
+    /// Return the Silero probability for one validated pipeline frame.
     pub fn debug_probability(&mut self, frame: &AudioFrame) -> Result<f32> {
         self.probability(frame)
     }

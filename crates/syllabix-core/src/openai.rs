@@ -1,4 +1,4 @@
-//! Row-30 BYO-key cloud LLM: OpenAI-compatible `chat/completions` SSE adapter.
+//! OpenAI-compatible streaming `chat/completions` adapter using a user-supplied key.
 //!
 //! VAD, AEC, STT, and TTS stay on-device; only transcript text reaches the
 //! endpoint the user chose. The API key comes from the `SYLLABIX_LLM_API_KEY`
@@ -182,7 +182,7 @@ pub struct OpenAiLlm {
 }
 
 impl OpenAiLlm {
-    /// Launch-default timeouts and agent.
+    /// Create an adapter with the built-in connect and idle timeouts.
     pub fn new(settings: OpenAiSettings, api_key: Zeroizing<String>) -> Self {
         Self::with_timeouts(settings, api_key, OpenAiTimeouts::default())
     }
@@ -306,7 +306,7 @@ impl Llm for OpenAiLlm {
 
         let mut index = 0u32;
         // One-deep lookahead: the final delta carries `is_last`, mirroring the
-        // local engines' contract that the last token ends the generation.
+        // local engines also mark the final token as the end of the generation.
         let mut pending: Option<TokenChunk> = None;
         let mut idle_since = Instant::now();
         let outcome = loop {

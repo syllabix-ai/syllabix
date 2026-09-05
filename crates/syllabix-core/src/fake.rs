@@ -1,4 +1,4 @@
-//! In-memory providers. Same names as the blessed v0 stack; no alternate backends.
+//! In-memory providers for deterministic pipeline tests.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -24,7 +24,7 @@ pub struct LlmCall {
     pub user_text: String,
 }
 
-/// Energy-based VAD used until Silero is wired.
+/// Energy-based VAD for deterministic in-memory tests.
 pub struct FakeVad {
     next_turn: u64,
     current: Option<(TurnId, Vec<AudioFrame>)>,
@@ -138,7 +138,7 @@ impl ScriptedStt {
         }
     }
 
-    /// Language stamped onto every transcript (defaults to the v0 code).
+    /// Language stamped onto every transcript.
     pub fn with_language(mut self, language: impl Into<String>) -> Self {
         self.language = language.into();
         self

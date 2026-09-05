@@ -1,4 +1,4 @@
-//! PR 3 merge gate: fixture record/play on every OS, and a simulated 30-minute soak.
+//! Cross-platform fixture recording and playback, plus a simulated 30-minute soak.
 //!
 //! The soak feeds 30 minutes of *audio time* through conversion + bounded queues.
 //! It is not a 30-minute wall-clock wait.
@@ -403,7 +403,7 @@ fn hardware_record_and_play_if_devices_exist() {
     frame.validate().expect("v0 mic frame");
 }
 
-/// PR 17 hardware gate: a quiet laptop must not turn its own speaker into a user turn.
+/// Verify that a quiet laptop does not classify its own speaker output as a user turn.
 ///
 /// Run in a quiet room with the normal laptop microphone and speakers selected.
 /// Do not wear headphones and do not speak during the measurement.

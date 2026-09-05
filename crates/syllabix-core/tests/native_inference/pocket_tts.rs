@@ -1,4 +1,4 @@
-//! Native inference coverage for the default Pocket TTS engine.
+//! Native loading, synthesis, cancellation, and latency tests for the default Pocket TTS engine.
 
 use std::{
     env, fs,
@@ -278,7 +278,7 @@ fn pocket_word_match_transcription_child() {
     fs::write(output, transcript.text).expect("write Whisper transcript");
 }
 
-/// P3 reproducible evidence capture. The callback measures actual first PCM,
+/// Reproducible latency capture. The callback measures actual first PCM,
 /// not completion of the whole recurrent decode.
 #[test]
 fn pocket_latency_capture() {

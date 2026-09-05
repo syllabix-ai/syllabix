@@ -14,7 +14,7 @@ pub const POCKET_TTS_MIMI_DECODER_ASSET: &str = "pocket-tts-mimi-decoder";
 pub const POCKET_TTS_VOICE_ASSET: &str = "pocket-tts-voice-alba";
 
 /// Lightweight stand-in used only by llvm-cov. It retains the public TTS
-/// contract so the real provider can be selected by config without loading
+/// API so configuration code can select the native provider without loading
 /// its ONNX graphs or model cache in the coverage build.
 pub struct PocketTts;
 

@@ -1,7 +1,7 @@
-//! Load the blessed v0 native providers from the model cache.
+//! Load configured native and online providers from the model cache and environment.
 //!
 //! The LLM slot is a [`LiveLlm`]: the in-process llama.cpp GGUF engine by
-//! default, or the row-30 BYO-key cloud adapter when yaml selects
+//! default, or the user-keyed online adapter when YAML selects
 //! `pipeline.llm.provider: openai`. VAD, AEC, STT, and TTS stay local either
 //! way; only transcript text reaches the cloud endpoint.
 
@@ -24,7 +24,7 @@ use crate::PocketTts;
 pub enum LiveLlm {
     /// In-process GGUF engine (default).
     Local(LlamaLlm),
-    /// BYO-key OpenAI-compatible endpoint (row 30).
+    /// User-keyed OpenAI-compatible endpoint.
     Cloud(OpenAiLlm),
 }
 
@@ -66,11 +66,11 @@ impl Llm for LiveLlm {
 
 /// The configured TTS implementation for one live run.
 pub enum LiveTts {
-    /// Kokoro ONNX (yaml-selectable).
+    /// Kokoro ONNX, selected explicitly through YAML.
     Kokoro(KokoroTts),
-    /// Qwen3-TTS through the shared ggml (row 31).
+    /// Qwen3-TTS through the shared ggml runtime.
     Qwen(QwenTts),
-    /// Pocket TTS through the existing ONNX Runtime (launch default).
+    /// Pocket TTS through ONNX Runtime, used by default.
     Pocket(Box<PocketTts>),
 }
 
@@ -117,7 +117,7 @@ impl crate::providers::Tts for LiveTts {
     }
 }
 
-/// Silero + whisper.cpp + llama.cpp/Kokoro, resolved through the v0 manifest.
+/// Load Silero, whisper.cpp, and the configured language and speech models.
 ///
 /// `llm_api_key` carries the already-resolved `SYLLABIX_LLM_API_KEY` value
 /// (`run_live` fails fast before this point when the config needs one and it
@@ -141,7 +141,7 @@ pub fn load_real_providers(
 }
 
 /// Build just the TTS slot from config. Only the selected provider's weights
-/// are fetched; the launch default never touches the Qwen GGUFs.
+/// are fetched; selecting other models does not fetch Qwen GGUFs.
 pub fn build_tts(
     cache: &ModelCache,
     fetcher: &dyn Fetcher,
@@ -167,7 +167,7 @@ pub fn build_tts(
             )?)),
         },
         // Config parsing rejects `online`; this arm keeps the builder total
-        // for hand-built configs and states the posture contract.
+        // for hand-built configurations and reports where inference runs.
         crate::TtsProvider::Online => Err(Error::Config {
             field: "pipeline.tts.provider".into(),
             message: "online TTS is not supported yet; use provider \"local\"".into(),
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn local_default_still_reports_llama_cpp() {
-        // The slot type must keep reporting the launch provider by default;
+        // The slot type reports the configured provider without loading weights;
         // loading the engine itself stays with native inference tests.
         let mut config = crate::AgentConfig::v0();
         config.llm = crate::LlmProvider::Local;

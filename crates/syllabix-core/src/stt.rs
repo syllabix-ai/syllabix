@@ -14,7 +14,7 @@ use crate::providers::Stt;
 use crate::types::{Transcript, Utterance};
 use crate::Cancel;
 
-/// Launch STT language (`en`). YAML may select any whisper-supported ISO code.
+/// Default STT language. YAML may select any whisper-supported ISO code.
 pub const STT_LANGUAGE: &str = "en";
 
 /// In-process whisper.cpp adapter. Loads one menu GGML (default [`SttModel::Small`]).
@@ -207,7 +207,7 @@ fn thread_count() -> i32 {
         .unwrap_or(1)
 }
 
-/// Lowercase alphabetic words in `text`, in order. Used by the fixture merge gate.
+/// Return lowercase alphabetic words in their original order for transcript comparison.
 pub fn transcript_words(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_ascii_alphabetic())
         .filter(|w| !w.is_empty())
@@ -241,7 +241,7 @@ pub fn contains_words_in_order(text: &str, expected: &[&str]) -> bool {
     word_match_ratio(text, expected) >= 1.0 - f64::EPSILON
 }
 
-/// LibriSpeech fixture gate: at least 80% of official transcript words, in order.
+/// Require at least 80% of the official transcript words in order.
 pub const LIBRISPEECH_MIN_WORD_MATCH: f64 = 0.8;
 
 #[cfg(test)]
