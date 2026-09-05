@@ -89,7 +89,7 @@ fn run_live_inner(
         .as_ref()
         .is_some_and(|debug| debug.collects_audio());
     let (sink, echo_reference) = NativePlayback::open_with_echo_and_watch(watch)?;
-    let mut capture = NativeCapture::open_with_echo(echo_reference)?;
+    let mut capture = NativeCapture::open_with_echo_and_events(echo_reference, events.clone())?;
     if wants_wavs {
         capture.enable_pcm_tap();
     }
@@ -97,7 +97,6 @@ fn run_live_inner(
         "mic: {}  speaker: {}  agent: {}",
         capture.device_name, sink.device_name, config.name
     );
-    eprintln!("echo: AEC3 on by default; automatic calibration starts with speaker playback");
     if let Some(events) = &events {
         let _ = events.send(LoopEvent::Ready);
     }
