@@ -32,8 +32,23 @@ mod ffi {
         _private: [u8; 0],
     }
 
+    #[repr(C)]
+    pub struct MoonshineHandle {
+        _private: [u8; 0],
+    }
+
     extern "C" {
         pub fn syllabix_native_hush_logs();
+        pub fn syllabix_moonshine_available() -> c_int;
+        pub fn syllabix_moonshine_load(model_dir: *const c_char) -> *mut MoonshineHandle;
+        pub fn syllabix_moonshine_free(ms: *mut MoonshineHandle);
+        pub fn syllabix_moonshine_transcribe(
+            ms: *mut MoonshineHandle,
+            pcm: *const f32,
+            n_samples: c_int,
+            out: *mut c_char,
+            out_cap: c_int,
+        ) -> c_int;
         pub fn syllabix_native_link_anchor() -> c_int;
         pub fn syllabix_llama_system_info() -> *const c_char;
         pub fn syllabix_llama_backend_init();
@@ -318,6 +333,66 @@ pub struct LlamaGenerate {
     pub append_thinking_off_suffix: bool,
     /// llama.cpp thread count.
     pub n_threads: i32,
+}
+
+/// Optional Moonshine C API handle (dlopen of libmoonshine).
+pub struct MoonshineContext {
+    raw: *mut ffi::MoonshineHandle,
+}
+
+// Safety: libmoonshine documents thread-safe API calls; we still serialize
+// per-handle use from Rust.
+unsafe impl Send for MoonshineContext {}
+
+impl MoonshineContext {
+    /// True when `libmoonshine` resolves via `SYLLABIX_LIBMOONSHINE` or the
+    /// default loader path.
+    pub fn available() -> bool {
+        unsafe { ffi::syllabix_moonshine_available() != 0 }
+    }
+
+    /// Load a streaming-medium model directory (`frontend.ort`, `encoder.ort`,
+    /// …, `tokenizer.bin`).
+    pub fn load(model_dir: &Path) -> Result<Self, DecodeError> {
+        let path = CString::new(model_dir.to_string_lossy().as_bytes())
+            .map_err(|_| DecodeError::Failed("moonshine model path contains NUL".into()))?;
+        let raw = unsafe { ffi::syllabix_moonshine_load(path.as_ptr()) };
+        if raw.is_null() {
+            return Err(DecodeError::Failed(
+                "failed to load moonshine (is libmoonshine on SYLLABIX_LIBMOONSHINE / LD_LIBRARY_PATH?)".into(),
+            ));
+        }
+        Ok(Self { raw })
+    }
+
+    /// Offline batch transcription (joined lines).
+    pub fn transcribe(&mut self, pcm: &[f32]) -> Result<String, DecodeError> {
+        let mut out = vec![0u8; 64 * 1024];
+        let rc = unsafe {
+            ffi::syllabix_moonshine_transcribe(
+                self.raw,
+                pcm.as_ptr(),
+                pcm.len() as c_int,
+                out.as_mut_ptr() as *mut c_char,
+                out.len() as c_int,
+            )
+        };
+        if rc != 0 {
+            return Err(DecodeError::Failed("moonshine transcription failed".into()));
+        }
+        let nul = out.iter().position(|&b| b == 0).unwrap_or(out.len());
+        String::from_utf8(out[..nul].to_vec())
+            .map_err(|_| DecodeError::Failed("moonshine returned non-UTF-8 text".into()))
+    }
+}
+
+impl Drop for MoonshineContext {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { ffi::syllabix_moonshine_free(self.raw) };
+            self.raw = std::ptr::null_mut();
+        }
+    }
 }
 
 /// In-process llama.cpp context loaded from a GGUF.

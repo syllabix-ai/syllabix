@@ -84,7 +84,7 @@ set(LLAMA_VERSION_MAJOR 0)
 set(MTMD_VIDEO OFF CACHE BOOL "mtmd video support" FORCE)
 add_subdirectory("${LLAMA_DIR}/tools/mtmd" "${CMAKE_BINARY_DIR}/mtmd")
 
-add_library(syllabix_native STATIC src/shim.c src/shim_tts.c)
+add_library(syllabix_native STATIC src/shim.c src/shim_tts.c src/shim_moonshine.c)
 target_include_directories(syllabix_native PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${WHISPER_DIR}/include"

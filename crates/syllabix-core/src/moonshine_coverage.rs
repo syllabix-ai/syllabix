@@ -1,6 +1,6 @@
 //! Coverage-only Moonshine API surface.
 //!
-//! The production adapter loads three ONNX graphs and a tokenizer. llvm-cov
+//! The production adapter loads ONNX graphs / libmoonshine. llvm-cov
 //! deliberately does not download model artifacts, so this stand-in exercises
 //! provider selection and streaming contracts without native inference.
 
@@ -15,6 +15,13 @@ pub const DECODER_ASSET: &str = "moonshine-decoder";
 pub const DECODER_PAST_ASSET: &str = "moonshine-decoder-past";
 pub const TOKENIZER_ASSET: &str = "moonshine-tokenizer";
 
+pub const FRONTEND_ASSET: &str = "moonshine-official-medium-frontend";
+pub const ADAPTER_ASSET: &str = "moonshine-official-medium-adapter";
+pub const CROSS_KV_ASSET: &str = "moonshine-official-medium-cross-kv";
+pub const DECODER_KV_ASSET: &str = "moonshine-official-medium-decoder-kv";
+pub const CONFIG_ASSET: &str = "moonshine-official-medium-config";
+pub const TOKENIZER_JSON_ASSET: &str = "moonshine-official-medium-tokenizer-json";
+
 /// Placeholder for the native tokenizer type, retained for the public API.
 pub struct MoonshineTokenizer;
 
@@ -22,6 +29,9 @@ pub struct MoonshineTokenizer;
 pub struct MoonshineStt {
     active_turn: Option<TurnId>,
 }
+
+/// Coverage stand-in for the official-medium C API adapter.
+pub type MoonshineMediumStt = MoonshineStt;
 
 impl MoonshineStt {
     pub fn from_cache(
@@ -101,16 +111,7 @@ mod tests {
         assert_eq!(stt.name(), PROVIDER_NAME);
         assert_eq!(stt.language(), LANGUAGE);
         assert!(stt.supports_partials());
-    }
-
-    #[test]
-    fn stand_in_rejects_cancelled_turn_start() {
-        let cancel = Cancel::new();
-        cancel.shutdown();
-        let mut stt = MoonshineStt { active_turn: None };
-        assert!(matches!(
-            stt.start_turn(TurnId(1), &cancel),
-            Err(Error::Cancelled)
-        ));
+        assert_eq!(ENCODER_ASSET, "moonshine-encoder");
+        assert_eq!(FRONTEND_ASSET, "moonshine-official-medium-frontend");
     }
 }

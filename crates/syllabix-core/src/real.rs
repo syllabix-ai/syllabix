@@ -12,7 +12,11 @@ use crate::config::AgentConfig;
 use crate::error::{Error, Result};
 use crate::llm::LlamaLlm;
 use crate::models::{Fetcher, ModelCache, Progress};
+#[cfg(coverage)]
+use crate::moonshine::MoonshineMediumStt;
 use crate::moonshine::MoonshineStt;
+#[cfg(not(coverage))]
+use crate::moonshine_medium::MoonshineMediumStt;
 use crate::openai::{OpenAiLlm, OpenAiSettings, API_KEY_ENV, PROVIDER_NAME};
 use crate::providers::Llm;
 use crate::stt::WhisperStt;
@@ -124,6 +128,8 @@ pub enum LiveStt {
     Whisper(WhisperStt),
     /// Moonshine streaming-small ONNX (English only, partials always on).
     Moonshine(Box<MoonshineStt>),
+    /// Official Moonshine streaming-medium via C API (English only).
+    MoonshineMedium(Box<MoonshineMediumStt>),
 }
 
 impl crate::providers::Stt for LiveStt {
@@ -131,6 +137,7 @@ impl crate::providers::Stt for LiveStt {
         match self {
             Self::Whisper(stt) => stt.name(),
             Self::Moonshine(stt) => stt.name(),
+            Self::MoonshineMedium(stt) => stt.name(),
         }
     }
 
@@ -138,17 +145,19 @@ impl crate::providers::Stt for LiveStt {
         match self {
             Self::Whisper(stt) => stt.transcribe(utterance, cancel),
             Self::Moonshine(stt) => stt.transcribe(utterance, cancel),
+            Self::MoonshineMedium(stt) => stt.transcribe(utterance, cancel),
         }
     }
 
     fn supports_partials(&self) -> bool {
-        matches!(self, Self::Moonshine(_))
+        matches!(self, Self::Moonshine(_) | Self::MoonshineMedium(_))
     }
 
     fn start_turn(&mut self, turn: crate::TurnId, cancel: &Cancel) -> Result<()> {
         match self {
             Self::Whisper(stt) => stt.start_turn(turn, cancel),
             Self::Moonshine(stt) => stt.start_turn(turn, cancel),
+            Self::MoonshineMedium(stt) => stt.start_turn(turn, cancel),
         }
     }
 
@@ -156,6 +165,7 @@ impl crate::providers::Stt for LiveStt {
         match self {
             Self::Whisper(stt) => stt.push_frame(frame, cancel),
             Self::Moonshine(stt) => stt.push_frame(frame, cancel),
+            Self::MoonshineMedium(stt) => stt.push_frame(frame, cancel),
         }
     }
 
@@ -163,6 +173,7 @@ impl crate::providers::Stt for LiveStt {
         match self {
             Self::Whisper(stt) => stt.cancel_turn(turn),
             Self::Moonshine(stt) => stt.cancel_turn(turn),
+            Self::MoonshineMedium(stt) => stt.cancel_turn(turn),
         }
     }
 }
@@ -173,6 +184,7 @@ impl LiveStt {
         match self {
             Self::Whisper(stt) => Ok(Self::Whisper(stt.with_language(language)?)),
             Self::Moonshine(stt) => Ok(Self::Moonshine(stt)),
+            Self::MoonshineMedium(stt) => Ok(Self::MoonshineMedium(stt)),
         }
     }
 }
@@ -200,6 +212,9 @@ pub fn build_stt(
         )?)),
         crate::SttModel::MoonshineStreamingSmall => Ok(LiveStt::Moonshine(Box::new(
             MoonshineStt::from_cache(cache, fetcher, progress, cancel)?,
+        ))),
+        crate::SttModel::MoonshineStreamingMedium => Ok(LiveStt::MoonshineMedium(Box::new(
+            MoonshineMediumStt::from_cache(cache, fetcher, progress, cancel)?,
         ))),
     }
 }

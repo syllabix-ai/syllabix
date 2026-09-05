@@ -319,7 +319,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     // Moonshine is English-only: any other language (including `auto`) would
     // mistranslate the `{language}` prompt pin, so reject it here where the
     // field is named.
-    if stt_model == SttModel::MoonshineStreamingSmall && language != crate::moonshine::LANGUAGE {
+    if stt_model.is_moonshine() && language != crate::moonshine::LANGUAGE {
         return Err(Error::Config {
             field: "pipeline.stt.language".into(),
             message: format!("unsupported value {language:?} (allowed: \"en\" with this model)"),
@@ -701,7 +701,7 @@ fn parse_stt_model(value: &str) -> Result<SttModel> {
         unsupported(
             "pipeline.stt.model",
             value,
-            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small",
+            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small, moonshine-streaming-medium",
         )
     })
 }

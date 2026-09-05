@@ -71,7 +71,7 @@ impl SttProvider {
 /// whisper.cpp model menu. One provider exposes several GGML sizes;
 /// `whisper-small` is the default. `-q5_0` ids are the published quantizations of their
 /// fp16 siblings (`tiny` / `base` are deliberately not offered).
-/// `MoonshineStreamingSmall` is the Moonshine ONNX engine id.
+/// `MoonshineStreamingSmall` / `MoonshineStreamingMedium` are Moonshine engine ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SttModel {
     /// `whisper-small` multilingual weights used by default.
@@ -86,17 +86,20 @@ pub enum SttModel {
     LargeV3TurboQ5_0,
     /// Moonshine streaming-small INT8 ONNX (English only).
     MoonshineStreamingSmall,
+    /// Official Moonshine streaming-medium via C API (English only).
+    MoonshineStreamingMedium,
 }
 
 impl SttModel {
     /// Every yaml-selectable id, manifest order.
-    pub const ALL: [SttModel; 6] = [
+    pub const ALL: [SttModel; 7] = [
         SttModel::Small,
         SttModel::Medium,
         SttModel::LargeV3Turbo,
         SttModel::MediumQ5_0,
         SttModel::LargeV3TurboQ5_0,
         SttModel::MoonshineStreamingSmall,
+        SttModel::MoonshineStreamingMedium,
     ];
 
     /// Config / log name.
@@ -108,6 +111,7 @@ impl SttModel {
             Self::MediumQ5_0 => "whisper-medium-q5_0",
             Self::LargeV3TurboQ5_0 => "whisper-large-v3-turbo-q5_0",
             Self::MoonshineStreamingSmall => "moonshine-streaming-small",
+            Self::MoonshineStreamingMedium => "moonshine-streaming-medium",
         }
     }
 
@@ -120,7 +124,16 @@ impl SttModel {
             Self::MediumQ5_0 => "whisper-medium-q5_0",
             Self::LargeV3TurboQ5_0 => "whisper-large-v3-turbo-q5_0",
             Self::MoonshineStreamingSmall => crate::moonshine::ENCODER_ASSET,
+            Self::MoonshineStreamingMedium => "moonshine-official-medium-frontend",
         }
+    }
+
+    /// True for either Moonshine streaming size (English-only).
+    pub fn is_moonshine(self) -> bool {
+        matches!(
+            self,
+            Self::MoonshineStreamingSmall | Self::MoonshineStreamingMedium
+        )
     }
 
     /// Parse a yaml `pipeline.stt.model` id.
@@ -369,6 +382,7 @@ mod tests {
             "whisper-medium-q5_0",
             "whisper-large-v3-turbo-q5_0",
             "moonshine-streaming-small",
+            "moonshine-streaming-medium",
         ];
         for (model, id) in SttModel::ALL.into_iter().zip(ids) {
             assert_eq!(model.as_str(), id);

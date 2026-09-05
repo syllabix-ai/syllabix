@@ -144,6 +144,67 @@ impl Manifest {
                     "7b913404bdd039af4756783218af4440bc07fb7d6d8258d677e34f95b3ec416f",
                     3_761_754,
                 ),
+
+                // Official Moonshine streaming-medium (moonshine-ai HF onnx/medium
+                // @ da30bae714913eb0057e733bccb4700104afb1b0). C API layout: frontend/encoder/adapter/cross_kv/
+                // decoder_kv + streaming_config + tokenizer.json (converted to
+                // tokenizer.bin at load). Fetched only when yaml selects medium.
+                asset(
+                    "moonshine-official-medium-frontend",
+                    ModelLayer::Stt,
+                    "moonshine-official-medium/frontend.ort",
+                    "https://huggingface.co/moonshine-ai/moonshine-streaming/resolve/da30bae714913eb0057e733bccb4700104afb1b0/onnx/medium/frontend.ort",
+                    "0f1f6c6b2f58c3b49519fe3371e04cc6295f4255a475cb81227b4572b056ffc9",
+                    47_464_656,
+                ),
+                asset(
+                    "moonshine-official-medium-encoder",
+                    ModelLayer::Stt,
+                    "moonshine-official-medium/encoder.ort",
+                    "https://huggingface.co/moonshine-ai/moonshine-streaming/resolve/da30bae714913eb0057e733bccb4700104afb1b0/onnx/medium/encoder.ort",
+                    "57fe5069e9259696785f5a14cd42e67e4ccd77fd4b6a6d908f4edd2bf504b397",
+                    94_239_936,
+                ),
+                asset(
+                    "moonshine-official-medium-adapter",
+                    ModelLayer::Stt,
+                    "moonshine-official-medium/adapter.ort",
+                    "https://huggingface.co/moonshine-ai/moonshine-streaming/resolve/da30bae714913eb0057e733bccb4700104afb1b0/onnx/medium/adapter.ort",
+                    "f44298b0007b58bff14dea0219c02e2dc22e7b75ccdc637abc52b2ccbaa7298f",
+                    14_557_168,
+                ),
+                asset(
+                    "moonshine-official-medium-cross-kv",
+                    ModelLayer::Stt,
+                    "moonshine-official-medium/cross_kv.ort",
+                    "https://huggingface.co/moonshine-ai/moonshine-streaming/resolve/da30bae714913eb0057e733bccb4700104afb1b0/onnx/medium/cross_kv.ort",
+                    "dee243e6ddeeead876ed6f7d41f95ebeb749e133384c39142ae1dcd8d3e1b9e2",
+                    11_561_280,
+                ),
+                asset(
+                    "moonshine-official-medium-decoder-kv",
+                    ModelLayer::Stt,
+                    "moonshine-official-medium/decoder_kv.ort",
+                    "https://huggingface.co/moonshine-ai/moonshine-streaming/resolve/da30bae714913eb0057e733bccb4700104afb1b0/onnx/medium/decoder_kv.ort",
+                    "ff5fc47e6c6e5119c789233781c923183e0d3936d1124518d6fd02e615f986f3",
+                    272_121_176,
+                ),
+                asset(
+                    "moonshine-official-medium-config",
+                    ModelLayer::Stt,
+                    "moonshine-official-medium/streaming_config.json",
+                    "https://huggingface.co/moonshine-ai/moonshine-streaming/resolve/da30bae714913eb0057e733bccb4700104afb1b0/onnx/medium/streaming_config.json",
+                    "28e83b7a28e91472692a035e0dae3116422ae43aeb2bef5ed822c44ce89b88af",
+                    513,
+                ),
+                asset(
+                    "moonshine-official-medium-tokenizer-json",
+                    ModelLayer::Stt,
+                    "moonshine-official-medium/tokenizer.json",
+                    "https://huggingface.co/moonshine-ai/moonshine-streaming/resolve/da30bae714913eb0057e733bccb4700104afb1b0/onnx/medium/tokenizer.json",
+                    "b68b995a58b3373db6c4f46864a9db50cd1333d086150ffa2c1096581ede9c10",
+                    1_985_533,
+                ),
                 asset(
                     "qwen3.5-0.8b",
                     ModelLayer::Llm,
@@ -336,10 +397,10 @@ mod tests {
     fn v0_lists_every_launch_layer() {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
-        // Silero + five whisper ids + four moonshine assets + three GGUFs +
+        // Silero + five whisper ids + four small moonshine + seven official medium + three GGUFs +
         // Kokoro weights + voice + eight internal-only Pocket TTS assets +
         // two Qwen3-TTS backbones, each with its own projector, plus one LFM asset.
-        assert_eq!(m.assets.len(), 28);
+        assert_eq!(m.assets.len(), 35);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -349,6 +410,13 @@ mod tests {
                 assert_eq!(
                     asset.file_name,
                     "moonshine-streaming-small-encoder-int8.onnx"
+                );
+                continue;
+            }
+            if model == SttModel::MoonshineStreamingMedium {
+                assert_eq!(
+                    asset.file_name,
+                    "moonshine-official-medium/frontend.ort"
                 );
                 continue;
             }
@@ -375,6 +443,19 @@ mod tests {
         assert_eq!(
             m.asset("moonshine-tokenizer").unwrap().size_bytes,
             3_761_754
+        );
+
+        assert_eq!(
+            m.asset("moonshine-official-medium-frontend")
+                .unwrap()
+                .size_bytes,
+            47_464_656
+        );
+        assert_eq!(
+            m.asset("moonshine-official-medium-decoder-kv")
+                .unwrap()
+                .size_bytes,
+            272_121_176
         );
         assert_eq!(
             m.asset(BuiltinDefaults::v0().llm_model).unwrap().layer,

@@ -7,6 +7,8 @@ fn main() {
     println!("cargo:rerun-if-changed=CMakeLists.txt");
     println!("cargo:rerun-if-changed=src/shim.c");
     println!("cargo:rerun-if-changed=src/shim_tts.c");
+    println!("cargo:rerun-if-changed=src/shim_moonshine.c");
+    println!("cargo:rerun-if-changed=include/moonshine-c-api.h");
     println!("cargo:rerun-if-changed=include/syllabix_native.h");
     println!("cargo:rerun-if-changed=../../vendor/llama.cpp");
     println!("cargo:rerun-if-changed=../../vendor/whisper.cpp");

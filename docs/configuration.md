@@ -61,6 +61,7 @@ Omit any VAD tunable to keep the launch default. First `run` fetches only the se
 | `whisper-medium-q5_0` | Published quantization |
 | `whisper-large-v3-turbo-q5_0` | Published quantization |
 | `moonshine-streaming-small` | English-only streaming ASR with automatic partials |
+| `moonshine-streaming-medium` | Official moonshine-ai medium via C API (English-only) |
 
 `language` is a whisper-supported ISO code (`en`, `fr`, `de`, `ja`, …) or `auto`. With `auto`, the detected language shows in the TUI and diagnostics sidecar, and the agent replies in that language.
 

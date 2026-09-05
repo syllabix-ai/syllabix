@@ -198,6 +198,19 @@ int syllabix_qwen_tts_synthesize_streaming(
     void *pcm_user);
 void syllabix_qwen_tts_pcm_free(int16_t *pcm);
 
+/* Optional Moonshine C API (dlopen). Returns 1 when libmoonshine resolves. */
+struct syllabix_moonshine;
+int syllabix_moonshine_available(void);
+struct syllabix_moonshine *syllabix_moonshine_load(const char *model_dir);
+void syllabix_moonshine_free(struct syllabix_moonshine *ms);
+/* 0 = ok, -1 = error. Joins transcript lines into `out` (UTF-8). */
+int syllabix_moonshine_transcribe(
+    struct syllabix_moonshine *ms,
+    const float *pcm,
+    int n_samples,
+    char *out,
+    int out_cap);
+
 #ifdef __cplusplus
 }
 #endif

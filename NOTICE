@@ -80,6 +80,17 @@ https://huggingface.co/Mazino0/moonshine-streaming-small-onnx
 It is fetched only when `pipeline.stt.provider: local` and
 `pipeline.stt.model: moonshine-streaming-small` are selected.
 
+
+### Moonshine Streaming Medium (official HF + C API, optional yaml STT)
+
+MIT License. Official weights from moonshine-ai at revision
+`da30bae714913eb0057e733bccb4700104afb1b0`, path `onnx/medium/`:
+https://huggingface.co/moonshine-ai/moonshine-streaming
+Loaded through the Moonshine C API (`libmoonshine`), not the Mazino INT8
+encoder/decoder/decoder_with_past layout used by streaming-small / PR #101.
+Fetched only when `pipeline.stt.provider: local` and
+`pipeline.stt.model: moonshine-streaming-medium` are selected.
+
 ### LFM2.5-2.6B QAD Q4_0 (`LFM2.5-2.6B-QAD-Q4_0.gguf`, default)
 
 LiquidAI LFM 1.0 license. Copyright LiquidAI.

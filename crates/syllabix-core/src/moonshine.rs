@@ -492,7 +492,7 @@ impl MoonshineStt {
 }
 
 /// English-only gate shared by the adapter and `AgentConfig` validation.
-fn validate_language(language: &str) -> Result<()> {
+pub(crate) fn validate_language(language: &str) -> Result<()> {
     if language != LANGUAGE {
         return Err(Error::Config {
             field: "pipeline.stt.language".into(),

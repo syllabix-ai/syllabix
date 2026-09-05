@@ -30,6 +30,10 @@ mod moonshine;
 #[cfg(coverage)]
 #[path = "moonshine_coverage.rs"]
 mod moonshine;
+#[cfg(not(coverage))]
+mod moonshine_medium;
+#[cfg(not(coverage))]
+mod moonshine_tokenizer_bin;
 mod openai;
 mod pipeline;
 // Pocket TTS native inference runs only in the model suite. llvm-cov skips
@@ -81,10 +85,29 @@ pub use models::{
     cache_root, format_progress_line, BlockedFetcher, Fetcher, HttpFetcher, Manifest, ModelAsset,
     ModelCache, ModelLayer, NoProgress, Progress, StderrProgress,
 };
+#[cfg(coverage)]
+pub use moonshine::{
+    MoonshineMediumStt, ADAPTER_ASSET as MOONSHINE_OFFICIAL_MEDIUM_ADAPTER_ASSET,
+    CONFIG_ASSET as MOONSHINE_OFFICIAL_MEDIUM_CONFIG_ASSET,
+    CROSS_KV_ASSET as MOONSHINE_OFFICIAL_MEDIUM_CROSS_KV_ASSET,
+    DECODER_KV_ASSET as MOONSHINE_OFFICIAL_MEDIUM_DECODER_KV_ASSET,
+    FRONTEND_ASSET as MOONSHINE_OFFICIAL_MEDIUM_FRONTEND_ASSET,
+    TOKENIZER_JSON_ASSET as MOONSHINE_OFFICIAL_MEDIUM_TOKENIZER_JSON_ASSET,
+};
 pub use moonshine::{
     MoonshineStt, MoonshineTokenizer, DECODER_ASSET as MOONSHINE_DECODER_ASSET,
     DECODER_PAST_ASSET as MOONSHINE_DECODER_PAST_ASSET, ENCODER_ASSET as MOONSHINE_ENCODER_ASSET,
     TOKENIZER_ASSET as MOONSHINE_TOKENIZER_ASSET,
+};
+#[cfg(not(coverage))]
+pub use moonshine_medium::{
+    MoonshineMediumStt, ADAPTER_ASSET as MOONSHINE_OFFICIAL_MEDIUM_ADAPTER_ASSET,
+    CONFIG_ASSET as MOONSHINE_OFFICIAL_MEDIUM_CONFIG_ASSET,
+    CROSS_KV_ASSET as MOONSHINE_OFFICIAL_MEDIUM_CROSS_KV_ASSET,
+    DECODER_KV_ASSET as MOONSHINE_OFFICIAL_MEDIUM_DECODER_KV_ASSET,
+    ENCODER_ASSET as MOONSHINE_OFFICIAL_MEDIUM_ENCODER_ASSET,
+    FRONTEND_ASSET as MOONSHINE_OFFICIAL_MEDIUM_FRONTEND_ASSET,
+    TOKENIZER_JSON_ASSET as MOONSHINE_OFFICIAL_MEDIUM_TOKENIZER_JSON_ASSET,
 };
 pub use openai::{
     join_endpoint, resolve_api_key, validate_base_url, OpenAiLlm, OpenAiSettings, API_KEY_ENV,

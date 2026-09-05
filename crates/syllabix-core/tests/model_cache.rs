@@ -185,7 +185,7 @@ fn resolving_one_llm_id_does_not_fetch_the_other() {
 #[test]
 fn v0_manifest_is_complete() {
     let m = Manifest::v0();
-    assert_eq!(m.assets.len(), 28);
+    assert_eq!(m.assets.len(), 35);
     assert!(m.asset("silero").is_some());
     assert!(m.asset("whisper-small").is_some());
     assert!(m.asset("whisper-medium").is_some());
@@ -197,6 +197,11 @@ fn v0_manifest_is_complete() {
     assert!(m.asset("moonshine-decoder").is_some());
     assert!(m.asset("moonshine-decoder-past").is_some());
     assert!(m.asset("moonshine-tokenizer").is_some());
+    assert!(m.asset("moonshine-official-medium-frontend").is_some());
+    assert!(m.asset("moonshine-official-medium-decoder-kv").is_some());
+    assert!(m
+        .asset("moonshine-official-medium-tokenizer-json")
+        .is_some());
     assert!(m.asset("qwen3.5-0.8b").is_some());
     assert!(m.asset("qwen3.5-2b").is_some());
     assert!(m.asset("llama-3.2-1b").is_some());
