@@ -338,8 +338,8 @@ mod tests {
     fn name_and_model_match_v0_defaults() {
         let stt =
             WhisperStt::with_decoder(Box::new(ScriptedDecoder::new(&["hello"])), SttModel::Small);
-        assert_eq!(stt.name(), "whisper.cpp");
-        assert_eq!(stt.model().as_str(), "small");
+        assert_eq!(stt.name(), "local");
+        assert_eq!(stt.model().as_str(), "whisper-small");
         assert_eq!(SttModel::Small.asset_id(), "whisper-small");
         assert_eq!(stt.language(), STT_LANGUAGE);
         assert!(!stt.auto_detects());
@@ -414,7 +414,7 @@ mod tests {
         assert!(matches!(
             err,
             Error::Provider {
-                provider: "whisper.cpp",
+                provider: "local",
                 ..
             }
         ));
@@ -635,7 +635,7 @@ mod tests {
         assert!(matches!(
             err,
             Error::Provider {
-                provider: "whisper.cpp",
+                provider: "local",
                 ..
             }
         ));

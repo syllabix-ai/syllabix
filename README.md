@@ -53,7 +53,7 @@ There is no `serve` command. Default `run` needs no yaml and no API key. After t
 
 ## Optional config
 
-[`syllabix init`](docs/configuration.md) writes `syllabix.yaml` if you want a different Whisper size, language, local LLM id, spoken `system_prompt`, Kokoro or Qwen TTS, or a BYO-key online LLM (transcript text only; audio stays on the machine). A minimal example is [`examples/demo-agent.yaml`](examples/demo-agent.yaml).
+[`syllabix init`](docs/configuration.md) writes `syllabix.yaml` if you want a different Whisper size or language, English-only Moonshine streaming STT (live partial transcript text), local LLM id, spoken `system_prompt`, Kokoro or Qwen TTS, or a BYO-key online LLM (transcript text only; audio stays on the machine). A minimal example is [`examples/demo-agent.yaml`](examples/demo-agent.yaml).
 
 Per-turn timelines and WAVs are yaml-only (`diagnostics:`). See [docs/diagnostics.md](docs/diagnostics.md).
 

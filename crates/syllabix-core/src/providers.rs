@@ -26,6 +26,27 @@ pub trait Stt: Send {
 
     /// Transcribe one utterance. Must check `cancel` and return [`crate::Error::Cancelled`].
     fn transcribe(&mut self, utterance: &Utterance, cancel: &Cancel) -> Result<Transcript>;
+
+    /// Whether this engine can produce live text while VAD owns an active
+    /// turn. The default keeps the established utterance-final Whisper path.
+    fn supports_partials(&self) -> bool {
+        false
+    }
+
+    /// VAD opened `turn`. This is notification only: VAD remains the single
+    /// owner of start/end timing and the shared `end_silence_ms` setting.
+    fn start_turn(&mut self, _turn: TurnId, _cancel: &Cancel) -> Result<()> {
+        Ok(())
+    }
+
+    /// One post-AEC frame from an active VAD turn. Returning text updates the
+    /// provisional transcript; returning `None` means no visible change.
+    fn push_frame(&mut self, _frame: &AudioFrame, _cancel: &Cancel) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// Forget provisional state for a turn abandoned by cancellation.
+    fn cancel_turn(&mut self, _turn: TurnId) {}
 }
 
 /// Streaming language model.

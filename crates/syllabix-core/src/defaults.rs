@@ -7,7 +7,7 @@ use crate::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES};
 pub struct QueueCaps {
     /// Mic frames waiting for VAD.
     pub frames: usize,
-    /// Completed utterances waiting for STT.
+    /// Completed utterances waiting for final-only STT.
     pub utterances: usize,
     /// Transcripts waiting for the LLM.
     pub transcripts: usize,
@@ -55,54 +55,59 @@ impl VadProvider {
 /// Speech-to-text implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SttProvider {
-    /// whisper.cpp.
-    WhisperCpp,
+    /// In-process STT. The selected model chooses Whisper or Moonshine.
+    Local,
 }
 
 impl SttProvider {
     /// Config / log name.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::WhisperCpp => "whisper.cpp",
+            Self::Local => "local",
         }
     }
 }
 
-/// whisper.cpp model menu. One provider exposes several GGML sizes; `small` is
-/// the default. `-q5_0` ids are the published quantizations of their
+/// whisper.cpp model menu. One provider exposes several GGML sizes;
+/// `whisper-small` is the default. `-q5_0` ids are the published quantizations of their
 /// fp16 siblings (`tiny` / `base` are deliberately not offered).
+/// `MoonshineStreamingSmall` is the Moonshine ONNX engine id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SttModel {
-    /// `small` multilingual weights used by default.
+    /// `whisper-small` multilingual weights used by default.
     Small,
-    /// `medium` multilingual weights.
+    /// `whisper-medium` multilingual weights.
     Medium,
-    /// `large-v3-turbo` weights.
+    /// `whisper-large-v3-turbo` weights.
     LargeV3Turbo,
     /// Published `medium` q5_0 quantization.
     MediumQ5_0,
     /// Published `large-v3-turbo` q5_0 quantization.
     LargeV3TurboQ5_0,
+    /// Moonshine streaming-small INT8 ONNX (English only).
+    MoonshineStreamingSmall,
 }
 
 impl SttModel {
     /// Every yaml-selectable id, manifest order.
-    pub const ALL: [SttModel; 5] = [
+    pub const ALL: [SttModel; 6] = [
         SttModel::Small,
         SttModel::Medium,
         SttModel::LargeV3Turbo,
         SttModel::MediumQ5_0,
         SttModel::LargeV3TurboQ5_0,
+        SttModel::MoonshineStreamingSmall,
     ];
 
     /// Config / log name.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Small => "small",
-            Self::Medium => "medium",
-            Self::LargeV3Turbo => "large-v3-turbo",
-            Self::MediumQ5_0 => "medium-q5_0",
-            Self::LargeV3TurboQ5_0 => "large-v3-turbo-q5_0",
+            Self::Small => "whisper-small",
+            Self::Medium => "whisper-medium",
+            Self::LargeV3Turbo => "whisper-large-v3-turbo",
+            Self::MediumQ5_0 => "whisper-medium-q5_0",
+            Self::LargeV3TurboQ5_0 => "whisper-large-v3-turbo-q5_0",
+            Self::MoonshineStreamingSmall => "moonshine-streaming-small",
         }
     }
 
@@ -114,6 +119,7 @@ impl SttModel {
             Self::LargeV3Turbo => "whisper-large-v3-turbo",
             Self::MediumQ5_0 => "whisper-medium-q5_0",
             Self::LargeV3TurboQ5_0 => "whisper-large-v3-turbo-q5_0",
+            Self::MoonshineStreamingSmall => crate::moonshine::ENCODER_ASSET,
         }
     }
 
@@ -278,7 +284,7 @@ impl BuiltinDefaults {
         Self {
             name: "demo-agent",
             vad: VadProvider::Silero,
-            stt: SttProvider::WhisperCpp,
+            stt: SttProvider::Local,
             stt_model: SttModel::Small,
             llm: LlmProvider::Local,
             llm_model: "lfm2.5-2.6b",
@@ -309,8 +315,8 @@ mod tests {
         let d = BuiltinDefaults::v0();
         assert_eq!(d.name, "demo-agent");
         assert_eq!(d.vad.as_str(), "silero");
-        assert_eq!(d.stt.as_str(), "whisper.cpp");
-        assert_eq!(d.stt_model.as_str(), "small");
+        assert_eq!(d.stt.as_str(), "local");
+        assert_eq!(d.stt_model.as_str(), "whisper-small");
         assert_eq!(d.llm.as_str(), "local");
         assert_eq!(d.llm_model, "lfm2.5-2.6b");
         assert!(!d.llm_thinking);
@@ -325,7 +331,7 @@ mod tests {
     #[test]
     fn one_provider_per_layer() {
         assert_eq!(VadProvider::Silero.as_str(), "silero");
-        assert_eq!(SttProvider::WhisperCpp.as_str(), "whisper.cpp");
+        assert_eq!(SttProvider::Local.as_str(), "local");
         assert_eq!(LlmProvider::Local.as_str(), "local");
         assert_eq!(LlmProvider::Online.as_str(), "online");
         assert_eq!(TtsProvider::Local.as_str(), "local");
@@ -357,11 +363,12 @@ mod tests {
     #[test]
     fn stt_menu_ids_round_trip() {
         let ids = [
-            "small",
-            "medium",
-            "large-v3-turbo",
-            "medium-q5_0",
-            "large-v3-turbo-q5_0",
+            "whisper-small",
+            "whisper-medium",
+            "whisper-large-v3-turbo",
+            "whisper-medium-q5_0",
+            "whisper-large-v3-turbo-q5_0",
+            "moonshine-streaming-small",
         ];
         for (model, id) in SttModel::ALL.into_iter().zip(ids) {
             assert_eq!(model.as_str(), id);
@@ -373,7 +380,7 @@ mod tests {
         assert_eq!(
             BuiltinDefaults::v0().stt_model,
             SttModel::Small,
-            "`small` stays the launch default"
+            "`whisper-small` stays the launch default"
         );
     }
 }

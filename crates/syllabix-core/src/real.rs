@@ -12,11 +12,12 @@ use crate::config::AgentConfig;
 use crate::error::{Error, Result};
 use crate::llm::LlamaLlm;
 use crate::models::{Fetcher, ModelCache, Progress};
+use crate::moonshine::MoonshineStt;
 use crate::openai::{OpenAiLlm, OpenAiSettings, API_KEY_ENV, PROVIDER_NAME};
 use crate::providers::Llm;
 use crate::stt::WhisperStt;
 use crate::tts::{KokoroTts, QwenTts};
-use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, Transcript};
+use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, Transcript, Utterance};
 use crate::vad::SileroVad;
 use crate::PocketTts;
 
@@ -117,7 +118,93 @@ impl crate::providers::Tts for LiveTts {
     }
 }
 
-/// Load Silero, whisper.cpp, and the configured language and speech models.
+/// The configured STT implementation for one live run.
+pub enum LiveStt {
+    /// whisper.cpp GGML engine (default).
+    Whisper(WhisperStt),
+    /// Moonshine streaming-small ONNX (English only, partials always on).
+    Moonshine(Box<MoonshineStt>),
+}
+
+impl crate::providers::Stt for LiveStt {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Whisper(stt) => stt.name(),
+            Self::Moonshine(stt) => stt.name(),
+        }
+    }
+
+    fn transcribe(&mut self, utterance: &Utterance, cancel: &Cancel) -> Result<Transcript> {
+        match self {
+            Self::Whisper(stt) => stt.transcribe(utterance, cancel),
+            Self::Moonshine(stt) => stt.transcribe(utterance, cancel),
+        }
+    }
+
+    fn supports_partials(&self) -> bool {
+        matches!(self, Self::Moonshine(_))
+    }
+
+    fn start_turn(&mut self, turn: crate::TurnId, cancel: &Cancel) -> Result<()> {
+        match self {
+            Self::Whisper(stt) => stt.start_turn(turn, cancel),
+            Self::Moonshine(stt) => stt.start_turn(turn, cancel),
+        }
+    }
+
+    fn push_frame(&mut self, frame: &crate::AudioFrame, cancel: &Cancel) -> Result<Option<String>> {
+        match self {
+            Self::Whisper(stt) => stt.push_frame(frame, cancel),
+            Self::Moonshine(stt) => stt.push_frame(frame, cancel),
+        }
+    }
+
+    fn cancel_turn(&mut self, turn: crate::TurnId) {
+        match self {
+            Self::Whisper(stt) => stt.cancel_turn(turn),
+            Self::Moonshine(stt) => stt.cancel_turn(turn),
+        }
+    }
+}
+
+impl LiveStt {
+    /// Apply the yaml STT language to the selected engine.
+    pub fn with_language(self, language: &str) -> Result<Self> {
+        match self {
+            Self::Whisper(stt) => Ok(Self::Whisper(stt.with_language(language)?)),
+            Self::Moonshine(stt) => Ok(Self::Moonshine(stt)),
+        }
+    }
+}
+
+/// Build just the STT slot from config. Only the selected engine's weights
+/// are fetched; selecting Moonshine never fetches Whisper GGMLs and vice versa.
+pub fn build_stt(
+    cache: &ModelCache,
+    fetcher: &dyn Fetcher,
+    progress: &mut dyn Progress,
+    cancel: &Cancel,
+    config: &AgentConfig,
+) -> Result<LiveStt> {
+    match config.stt_model {
+        crate::SttModel::Small
+        | crate::SttModel::Medium
+        | crate::SttModel::LargeV3Turbo
+        | crate::SttModel::MediumQ5_0
+        | crate::SttModel::LargeV3TurboQ5_0 => Ok(LiveStt::Whisper(WhisperStt::from_cache(
+            cache,
+            fetcher,
+            progress,
+            cancel,
+            config.stt_model,
+        )?)),
+        crate::SttModel::MoonshineStreamingSmall => Ok(LiveStt::Moonshine(Box::new(
+            MoonshineStt::from_cache(cache, fetcher, progress, cancel)?,
+        ))),
+    }
+}
+/// Load Silero, the configured STT engine, and the configured language and
+/// speech models.
 ///
 /// `llm_api_key` carries the already-resolved `SYLLABIX_LLM_API_KEY` value
 /// (`run_live` fails fast before this point when the config needs one and it
@@ -129,12 +216,12 @@ pub fn load_real_providers(
     cancel: &Cancel,
     config: &AgentConfig,
     llm_api_key: Option<&Zeroizing<String>>,
-) -> Result<(SileroVad, WhisperStt, LiveLlm, LiveTts)> {
+) -> Result<(SileroVad, LiveStt, LiveLlm, LiveTts)> {
     let vad = SileroVad::from_cache(cache, fetcher, progress, cancel)?
         .with_settings(config.vad_settings());
-    // Only the selected STT id is fetched; the rest of the menu stays on disk.
-    let stt = WhisperStt::from_cache(cache, fetcher, progress, cancel, config.stt_model)?
-        .with_language(&config.language)?;
+    // Only the selected STT engine is fetched; the rest of the menu stays on disk.
+    let stt =
+        build_stt(cache, fetcher, progress, cancel, config)?.with_language(&config.language)?;
     let llm = build_llm(cache, fetcher, progress, cancel, config, llm_api_key)?;
     let tts = build_tts(cache, fetcher, progress, cancel, config)?;
     Ok((vad, stt, llm, tts))

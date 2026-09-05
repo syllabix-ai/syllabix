@@ -30,6 +30,8 @@ pub enum TimelineAnchor {
     SpeechEnd,
     /// The STT worker dequeued the utterance (queue wait separator).
     SttQueued,
+    /// First visible provisional STT text while VAD still owns the turn.
+    SttPartial,
     /// Transcript text and language are ready.
     SttDone,
     /// The LLM worker started generating.
@@ -54,6 +56,7 @@ impl TimelineAnchor {
             Self::SpeechStart => "speech_start",
             Self::SpeechEnd => "speech_end",
             Self::SttQueued => "stt_queued",
+            Self::SttPartial => "stt_partial",
             Self::SttDone => "stt_done",
             Self::LlmStart => "llm_start",
             Self::LlmFirstToken => "llm_first_token",
@@ -66,10 +69,11 @@ impl TimelineAnchor {
     }
 
     /// Sidecar render order: pipeline order, not enum-discriminant order.
-    pub const ALL: [TimelineAnchor; 11] = [
+    pub const ALL: [TimelineAnchor; 12] = [
         Self::SpeechStart,
         Self::SpeechEnd,
         Self::SttQueued,
+        Self::SttPartial,
         Self::SttDone,
         Self::LlmStart,
         Self::LlmFirstToken,
