@@ -80,6 +80,17 @@ https://huggingface.co/Mazino0/moonshine-streaming-small-onnx
 It is fetched only when `pipeline.stt.provider: local` and
 `pipeline.stt.model: moonshine-streaming-small` are selected.
 
+### Moonshine Streaming Medium ONNX INT8 (optional yaml STT)
+
+MIT License. The source model is Useful Sensors' English-only
+`moonshine-streaming-medium`: https://huggingface.co/UsefulSensors/moonshine-streaming-medium
+(also published as `moonshine-ai/moonshine-streaming-medium`).
+The pinned ONNX INT8 export is from Mazino0 at revision
+`8da8adfd536fe69a255dcd20831ec2361bd63280`:
+https://huggingface.co/Mazino0/moonshine-streaming-medium-onnx
+It is fetched only when `pipeline.stt.provider: local` and
+`pipeline.stt.model: moonshine-streaming-medium` are selected.
+
 ### LFM2.5-2.6B QAD Q4_0 (`LFM2.5-2.6B-QAD-Q4_0.gguf`, default)
 
 LiquidAI LFM 1.0 license. Copyright LiquidAI.

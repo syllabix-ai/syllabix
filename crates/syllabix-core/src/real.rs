@@ -122,7 +122,7 @@ impl crate::providers::Tts for LiveTts {
 pub enum LiveStt {
     /// whisper.cpp GGML engine (default).
     Whisper(WhisperStt),
-    /// Moonshine streaming-small ONNX (English only, partials always on).
+    /// Moonshine streaming ONNX (small or medium; English only, partials always on).
     Moonshine(Box<MoonshineStt>),
 }
 
@@ -198,9 +198,15 @@ pub fn build_stt(
             cancel,
             config.stt_model,
         )?)),
-        crate::SttModel::MoonshineStreamingSmall => Ok(LiveStt::Moonshine(Box::new(
-            MoonshineStt::from_cache(cache, fetcher, progress, cancel)?,
-        ))),
+        crate::SttModel::MoonshineStreamingSmall | crate::SttModel::MoonshineStreamingMedium => {
+            Ok(LiveStt::Moonshine(Box::new(MoonshineStt::from_cache(
+                cache,
+                fetcher,
+                progress,
+                cancel,
+                config.stt_model,
+            )?)))
+        }
     }
 }
 /// Load Silero, the configured STT engine, and the configured language and

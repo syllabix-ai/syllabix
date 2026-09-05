@@ -144,6 +144,41 @@ impl Manifest {
                     "7b913404bdd039af4756783218af4440bc07fb7d6d8258d677e34f95b3ec416f",
                     3_761_754,
                 ),
+                // Moonshine streaming-medium INT8 ONNX (Mazino0 export of
+                // moonshine-ai/moonshine-streaming-medium, MIT). Same four-file
+                // shape as small; fetched only when yaml selects medium.
+                asset(
+                    "moonshine-medium-encoder",
+                    ModelLayer::Stt,
+                    "moonshine-streaming-medium-encoder-int8.onnx",
+                    "https://huggingface.co/Mazino0/moonshine-streaming-medium-onnx/resolve/8da8adfd536fe69a255dcd20831ec2361bd63280/encoder_model_int8.onnx",
+                    "4f6c491eb4018a06f2e9ecf5b6bab5c6fa4e679c9ed5dde02a0a27969649be90",
+                    142_060_073,
+                ),
+                asset(
+                    "moonshine-medium-decoder",
+                    ModelLayer::Stt,
+                    "moonshine-streaming-medium-decoder-int8.onnx",
+                    "https://huggingface.co/Mazino0/moonshine-streaming-medium-onnx/resolve/8da8adfd536fe69a255dcd20831ec2361bd63280/decoder_model_int8.onnx",
+                    "38dfe5829fcb814e33634c00baedceaa877acaac7b731203e88eb956d4419875",
+                    236_021_354,
+                ),
+                asset(
+                    "moonshine-medium-decoder-past",
+                    ModelLayer::Stt,
+                    "moonshine-streaming-medium-decoder-with-past-int8.onnx",
+                    "https://huggingface.co/Mazino0/moonshine-streaming-medium-onnx/resolve/8da8adfd536fe69a255dcd20831ec2361bd63280/decoder_with_past_model_int8.onnx",
+                    "36d7ea3cf4feb6e37fe784ba3ac7cee0bb5f4d757ab05433e2550b8eae035a7e",
+                    211_467_644,
+                ),
+                asset(
+                    "moonshine-medium-tokenizer",
+                    ModelLayer::Stt,
+                    "moonshine-streaming-medium-tokenizer.json",
+                    "https://huggingface.co/Mazino0/moonshine-streaming-medium-onnx/resolve/8da8adfd536fe69a255dcd20831ec2361bd63280/tokenizer.json",
+                    "7b913404bdd039af4756783218af4440bc07fb7d6d8258d677e34f95b3ec416f",
+                    3_761_754,
+                ),
                 asset(
                     "qwen3.5-0.8b",
                     ModelLayer::Llm,
@@ -336,10 +371,11 @@ mod tests {
     fn v0_lists_every_launch_layer() {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
-        // Silero + five whisper ids + four moonshine assets + three GGUFs +
-        // Kokoro weights + voice + eight internal-only Pocket TTS assets +
-        // two Qwen3-TTS backbones, each with its own projector, plus one LFM asset.
-        assert_eq!(m.assets.len(), 28);
+        // Silero + five whisper ids + eight moonshine assets (small+medium) +
+        // three GGUFs + Kokoro weights + voice + eight internal-only Pocket TTS
+        // assets + two Qwen3-TTS backbones, each with its own projector, plus
+        // one LFM asset.
+        assert_eq!(m.assets.len(), 32);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -349,6 +385,13 @@ mod tests {
                 assert_eq!(
                     asset.file_name,
                     "moonshine-streaming-small-encoder-int8.onnx"
+                );
+                continue;
+            }
+            if model == SttModel::MoonshineStreamingMedium {
+                assert_eq!(
+                    asset.file_name,
+                    "moonshine-streaming-medium-encoder-int8.onnx"
                 );
                 continue;
             }
@@ -374,6 +417,26 @@ mod tests {
         );
         assert_eq!(
             m.asset("moonshine-tokenizer").unwrap().size_bytes,
+            3_761_754
+        );
+        assert_eq!(
+            m.asset("moonshine-medium-encoder").unwrap().layer,
+            ModelLayer::Stt
+        );
+        assert_eq!(
+            m.asset("moonshine-medium-encoder").unwrap().size_bytes,
+            142_060_073
+        );
+        assert_eq!(
+            m.asset("moonshine-medium-decoder").unwrap().size_bytes,
+            236_021_354
+        );
+        assert_eq!(
+            m.asset("moonshine-medium-decoder-past").unwrap().size_bytes,
+            211_467_644
+        );
+        assert_eq!(
+            m.asset("moonshine-medium-tokenizer").unwrap().size_bytes,
             3_761_754
         );
         assert_eq!(

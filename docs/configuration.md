@@ -61,24 +61,26 @@ Omit any VAD tunable to keep the launch default. First `run` fetches only the se
 | `whisper-medium-q5_0` | Published quantization |
 | `whisper-large-v3-turbo-q5_0` | Published quantization |
 | `moonshine-streaming-small` | English-only streaming ASR with automatic partials |
+| `moonshine-streaming-medium` | Larger English-only streaming ASR with automatic partials |
 
 `language` is a whisper-supported ISO code (`en`, `fr`, `de`, `ja`, …) or `auto`. With `auto`, the detected language shows in the TUI and diagnostics sidecar, and the agent replies in that language.
 
-### Moonshine streaming-small
+### Moonshine streaming (small / medium)
 
 ```yaml
 pipeline:
   stt:
     provider: local
-    model: moonshine-streaming-small
+    model: moonshine-streaming-small   # or moonshine-streaming-medium
     language: en
 ```
 
-Moonshine is English-only: `en` is required; `auto` and other language codes
-fail at config load. It displays partial transcript text automatically while
-VAD owns an active turn. There is no partials setting and no second endpointing
-timer: Silero's `end_silence_ms` remains the one turn-end control, after which
-Moonshine finalizes the same utterance.
+Both Moonshine sizes are English-only: `en` is required; `auto` and other
+language codes fail at config load. They display partial transcript text
+automatically while VAD owns an active turn. There is no partials setting and
+no second endpointing timer: Silero's `end_silence_ms` remains the one turn-end
+control, after which Moonshine finalizes the same utterance. Medium uses a
+larger INT8 ONNX export (~590 MB vs ~360 MB for small) with the same runtime.
 
 ## LLM
 
