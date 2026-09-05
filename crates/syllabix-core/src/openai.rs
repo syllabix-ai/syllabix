@@ -614,6 +614,28 @@ fn tool_definitions() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "web_search",
+                "description": "Search the public web without an API key. Use plain keywords only; site:, filetype:, quotes, and other search operators are not supported.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["query"],
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query (1-256 chars)."
+                        },
+                        "count": {
+                            "type": "number",
+                            "description": "How many results to return (1-8, default 5)."
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "shell",
                 "description": "Execute a read-only command via direct argv in the workspace. Allowed commands: date (current time), df (disk space, e.g. ['df', '-h', '.']), pwd, ls (list directory), git (status, diff, log, show, branch), find (find files by name), cargo (metadata, tree). Content search is not available; use find to locate files by name.",
                 "parameters": {
@@ -644,7 +666,7 @@ fn normalize_tool_call(raw: RawToolCall) -> std::result::Result<ToolCall, String
         .ok_or_else(|| "tool call is missing id".to_string())?;
     let name = raw
         .name
-        .filter(|value| matches!(value.as_str(), "web_fetch" | "shell"))
+        .filter(|value| matches!(value.as_str(), "web_fetch" | "web_search" | "shell"))
         .ok_or_else(|| "tool call has an unknown name".to_string())?;
     let arguments: serde_json::Value = serde_json::from_str(&raw.arguments)
         .map_err(|_| "tool call arguments are not valid JSON".to_string())?;
@@ -1687,7 +1709,7 @@ mod tests {
             .iter()
             .map(|tool| tool["function"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["web_fetch", "shell"]);
+        assert_eq!(names, ["web_fetch", "web_search", "shell"]);
     }
 
     #[test]

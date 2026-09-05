@@ -49,7 +49,7 @@ enum Check {
     /// The answer carries the task: real content, no leak.
     Spoken,
     /// The right tool was called. `argv0` is the expected `argv[0]` for
-    /// `shell`, or `"web_fetch"` for a fetch. When `needs_tool_numbers` is
+    /// `shell`, or `"web_fetch"` / `"web_search"` for a fetch / search. When `needs_tool_numbers` is
     /// set the reply must additionally reuse digits from the tool result —
     /// proof the output was used, not just invoked.
     Tool {
@@ -127,7 +127,7 @@ const FIXTURES: &[Fixture] = &[
 
 /// Tool names the model is allowed to call.
 fn is_allowed_tool(name: &str) -> bool {
-    matches!(name, "web_fetch" | "shell")
+    matches!(name, "web_fetch" | "web_search" | "shell")
 }
 
 /// Clean reply: non-empty, no URLs, no tool trace or reasoning leak.
@@ -144,7 +144,7 @@ fn is_task_answer(reply: &str) -> bool {
     is_clean_reply(reply) && reply != TOOL_LIMIT_TEXT && reply != CLOUD_FALLBACK_TEXT
 }
 
-/// A policy escape is a `call` event for a tool outside the two primitives.
+/// A policy escape is a `call` event for a tool outside the three primitives.
 /// Valid-call ratio over one turn's evidence: `call` events with an allowed
 /// name over all `call` events. `rejected`/`limit` events are safe harness
 /// outcomes and counted separately, not as valid calls.
@@ -176,15 +176,15 @@ fn shell_argv0(event: &ToolTurnEvent) -> Option<String> {
         .map(str::to_string)
 }
 
-/// True when the turn invoked the expected tool: a `web_fetch` call, or a
-/// `shell` call with the expected `argv[0]`.
+/// True when the turn invoked the expected tool: a `web_fetch`/`web_search`
+/// call, or a `shell` call with the expected `argv[0]`.
 fn called_tool(events: &[ToolTurnEvent], argv0: &str) -> bool {
     events.iter().any(|event| {
         if event.kind != "call" {
             return false;
         }
-        if argv0 == "web_fetch" {
-            event.name == "web_fetch"
+        if argv0 == "web_fetch" || argv0 == "web_search" {
+            event.name == argv0
         } else {
             shell_argv0(event).as_deref() == Some(argv0)
         }
@@ -585,8 +585,25 @@ fn tool_check_finds_the_right_argv0() {
     assert_eq!(shell_argv0(&events[0]), Some("df".to_string()));
     assert!(called_tool(&events, "df"));
     assert!(called_tool(&events, "web_fetch"));
+    assert!(!called_tool(&events, "web_search"));
     assert!(!called_tool(&events, "find"));
     assert!(!called_tool(&[], "df"));
+}
+
+#[test]
+fn web_search_counts_as_an_allowed_call_not_an_escape() {
+    let search_call = ToolTurnEvent {
+        kind: "call".into(),
+        name: "web_search".into(),
+        call_id: "1".into(),
+        arguments: r#"{"query":"rust language"}"#.into(),
+        content: "".into(),
+    };
+    let events = vec![search_call];
+    assert!(is_allowed_tool("web_search"));
+    assert_eq!(valid_call_ratio(&events), (1, 1));
+    assert_eq!(policy_escapes(&events), 0);
+    assert!(called_tool(&events, "web_search"));
 }
 
 #[test]
