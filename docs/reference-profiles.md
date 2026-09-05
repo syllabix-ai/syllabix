@@ -244,7 +244,7 @@ instrumentation gap this row exists to expose.
 ### Capture protocol
 
 Per configuration to measure (default stack first: whisper `small` +
-`llama-3.2-1b` + Kokoro; then `qwen3-0.6`, `qwen3-1.7`, `qwen3.5-0.8b`,
+`llama-3.2-1b` + Pocket TTS; then `kokoro`, `qwen3-0.6`, `qwen3-1.7`, `qwen3.5-0.8b`,
 `qwen3.5-2b`, and the `online` LLM if relevant):
 
 1. Write a scratch `syllabix.yaml` with diagnostics on.
@@ -264,4 +264,4 @@ latency optimization row)*
 
 | Configuration | n | audible_latency p50/p95 | llm_ttft p50/p95 | stt_total p50/p95 | llm_end_to_first_pcm p50/p95 |
 |---|---:|---:|---:|---:|---:|
-| default (kokoro + llama-3.2-1b) | | | | | |
+| default (pocket-tts + llama-3.2-1b) | | | | | |

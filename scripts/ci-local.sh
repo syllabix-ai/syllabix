@@ -32,7 +32,7 @@ else
 fi
 
 echo "== test =="
-# Launch-stack native inference (whisper small / llama 1B / kokoro / six-turn) once.
+# Launch-stack native inference (whisper small / llama 1B / Pocket TTS / six-turn) once.
 # Optional yaml models are exclusive: SYLLABIX_NATIVE_MODELS=<ids> (not this script).
 cargo test --workspace --features syllabix-core/native-inference
 

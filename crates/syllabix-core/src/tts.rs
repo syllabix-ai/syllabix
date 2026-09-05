@@ -1,4 +1,4 @@
-//! In-process text-to-speech: Kokoro ONNX (default) and Qwen3-TTS (row 31).
+//! In-process text-to-speech: Kokoro ONNX and Qwen3-TTS (yaml-selectable).
 //!
 //! Both providers share one sentence-chunking core: tokens buffer until a
 //! sentence boundary, the think filter runs first, and each completed
