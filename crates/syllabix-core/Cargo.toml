@@ -27,6 +27,7 @@ ort-sys.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 serde_json.workspace = true
+tokenizers.workspace = true
 htmd.workspace = true
 tracing.workspace = true
 syllabix-native.workspace = true

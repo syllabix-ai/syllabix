@@ -35,6 +35,7 @@ reached render as `null` (a barge-in-interrupted turn, for example, has no
 | `speech_start` | First Silero-positive frame opens the turn (epoch, renders as 0) |
 | `speech_end` | VAD hangover satisfied; utterance closed |
 | `stt_queued` | STT worker dequeued the utterance |
+| `stt_partial` | First visible partial transcript from a streaming STT provider (otherwise `null`) |
 | `stt_done` | Transcript text and language ready |
 | `llm_start` | LLM worker began generating |
 | `llm_first_token` | First token streamed |

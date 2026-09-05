@@ -5,8 +5,8 @@ pipeline:
   vad:
     provider: silero
   stt:
-    provider: whisper.cpp
-    model: small
+    provider: local
+    model: whisper-small
     language: en
   llm:
     provider: local

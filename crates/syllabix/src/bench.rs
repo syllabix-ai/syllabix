@@ -10,10 +10,10 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames, FrameSplitter, WavPcm},
-    build_tts, contains_words_in_order, process_rss_bytes, word_match_ratio, AgentConfig, Cancel,
-    Error, HistoryTurn, HttpFetcher, LlamaLlm, Llm, ModelCache, Result, StderrProgress, Stt,
-    SttModel, TokenChunk, Transcript, Tts, TurnId, Utterance, WhisperStt, DEFAULT_SAMPLE_RATE_HZ,
-    TTS_ASR_MIN_WORD_MATCH,
+    build_stt, build_tts, contains_words_in_order, process_rss_bytes, word_match_ratio,
+    AgentConfig, Cancel, Error, HistoryTurn, HttpFetcher, LlamaLlm, Llm, ModelCache, Result,
+    StderrProgress, Stt, SttModel, TokenChunk, Transcript, Tts, TurnId, Utterance, WhisperStt,
+    DEFAULT_SAMPLE_RATE_HZ, TTS_ASR_MIN_WORD_MATCH,
 };
 
 const SCHEMA_VERSION: u8 = 3;
@@ -150,14 +150,8 @@ pub(crate) fn run_asr_worker(out: PathBuf) -> Result<()> {
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
     let memory_before_load = required_rss("before ASR model load")?;
-    let mut stt = WhisperStt::from_cache(
-        &cache,
-        &HttpFetcher,
-        &mut progress,
-        &cancel,
-        config.stt_model,
-    )?
-    .with_language(&config.language)?;
+    let mut stt = build_stt(&cache, &HttpFetcher, &mut progress, &cancel, &config)?
+        .with_language(&config.language)?;
     let memory_after_load = required_rss("after ASR model load")?;
     let records = benchmark_stt(
         &mut stt,

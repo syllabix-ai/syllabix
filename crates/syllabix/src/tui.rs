@@ -7,6 +7,7 @@ use syllabix_core::{LoopEvent, ThinkFilter, TurnId};
 #[cfg_attr(coverage, allow(dead_code))]
 pub struct TranscriptUi {
     lines: Vec<String>,
+    partial_user: Option<(TurnId, String)>,
     current_agent: Option<(TurnId, String)>,
     think: ThinkFilter,
     latency: String,
@@ -19,8 +20,18 @@ impl TranscriptUi {
     pub fn apply(&mut self, event: LoopEvent) {
         match event {
             LoopEvent::Ready | LoopEvent::Playback { .. } => {}
-            LoopEvent::User { text, language, .. } => {
+            LoopEvent::Partial { turn, text } => {
+                self.partial_user = Some((turn, text));
+            }
+            LoopEvent::User {
+                turn,
+                text,
+                language,
+            } => {
                 self.flush_agent();
+                if matches!(&self.partial_user, Some((id, _)) if *id == turn) {
+                    self.partial_user = None;
+                }
                 // Non-English turns carry a visible language tag (fixed or
                 // auto-detected); plain English stays untagged.
                 if language.is_empty() || language == "en" {
@@ -74,6 +85,11 @@ impl TranscriptUi {
     /// Visible transcript, including an in-flight assistant line.
     pub fn transcript_text(&self) -> String {
         let mut lines = self.lines.clone();
+        if let Some((_, text)) = &self.partial_user {
+            if !text.is_empty() {
+                lines.push(format!("You: {text}…"));
+            }
+        }
         if let Some((_, text)) = &self.current_agent {
             if !text.is_empty() {
                 lines.push(format!("Agent: {text}"));
@@ -131,6 +147,7 @@ mod live_terminal {
         ready: bool,
         playing: bool,
         footer_drawn: bool,
+        partial_visible: bool,
     }
 
     impl InlineRenderer {
@@ -141,7 +158,23 @@ mod live_terminal {
                 ready: false,
                 playing: false,
                 footer_drawn: false,
+                partial_visible: false,
             }
+        }
+
+        /// Remove the one provisional user line so the next partial can take
+        /// its place, or the final transcript can replace it exactly once.
+        fn clear_partial(&mut self, out: &mut impl Write) -> std::io::Result<()> {
+            if self.partial_visible {
+                execute!(
+                    out,
+                    cursor::MoveUp(1),
+                    cursor::MoveToColumn(0),
+                    Clear(ClearType::CurrentLine)
+                )?;
+                self.partial_visible = false;
+            }
+            Ok(())
         }
 
         fn clear_footer(&mut self, out: &mut impl Write) -> std::io::Result<()> {
@@ -215,8 +248,18 @@ mod live_terminal {
                 LoopEvent::Ready => self.ready = true,
                 LoopEvent::Playback { playing } => self.playing = playing,
                 LoopEvent::Timings { .. } => self.ui.apply(event),
+                LoopEvent::Partial { .. } => {
+                    self.clear_footer(out)?;
+                    self.clear_partial(out)?;
+                    self.ui.apply(event);
+                    if let Some(line) = self.ui.transcript_text().lines().last() {
+                        write!(out, "{line}\r\n")?;
+                        self.partial_visible = true;
+                    }
+                }
                 event => {
                     self.clear_footer(out)?;
+                    self.clear_partial(out)?;
                     let is_inflight_assistant =
                         matches!(&event, LoopEvent::Assistant { is_last: false, .. });
                     self.ui.apply(event);
@@ -373,6 +416,27 @@ mod tests {
             ui.latency_line(),
             "STT 10ms  TTFT 20ms  TTFB 30ms  total 40ms"
         );
+    }
+
+    #[test]
+    fn partial_user_text_is_replaced_by_the_final_transcript() {
+        let mut ui = TranscriptUi::default();
+        ui.apply(LoopEvent::Partial {
+            turn: TurnId(4),
+            text: "hello wor".into(),
+        });
+        assert_eq!(ui.transcript_text(), "You: hello wor…");
+        ui.apply(LoopEvent::Partial {
+            turn: TurnId(4),
+            text: "hello world".into(),
+        });
+        assert_eq!(ui.transcript_text(), "You: hello world…");
+        ui.apply(LoopEvent::User {
+            turn: TurnId(4),
+            text: "hello world".into(),
+            language: "en".into(),
+        });
+        assert_eq!(ui.transcript_text(), "You: hello world");
     }
 
     #[test]

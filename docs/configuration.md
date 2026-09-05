@@ -32,8 +32,8 @@ pipeline:
     end_silence_ms: 350     # optional
     preroll_ms: 200         # optional Whisper preroll
   stt:
-    provider: whisper.cpp
-    model: small
+    provider: local
+    model: whisper-small
     language: en
   llm:
     provider: local
@@ -51,17 +51,34 @@ Omit any VAD tunable to keep the launch default. First `run` fetches only the se
 
 ## STT
 
-`pipeline.stt.provider` is `whisper.cpp`.
+`pipeline.stt.provider` is `local`. Its `model` selects the in-process STT engine.
 
 | `model` | Notes |
 | --- | --- |
-| `small` | Default |
-| `medium` | |
-| `large-v3-turbo` | |
-| `medium-q5_0` | Published quantization |
-| `large-v3-turbo-q5_0` | Published quantization |
+| `whisper-small` | Default |
+| `whisper-medium` | |
+| `whisper-large-v3-turbo` | |
+| `whisper-medium-q5_0` | Published quantization |
+| `whisper-large-v3-turbo-q5_0` | Published quantization |
+| `moonshine-streaming-small` | English-only streaming ASR with automatic partials |
 
 `language` is a whisper-supported ISO code (`en`, `fr`, `de`, `ja`, …) or `auto`. With `auto`, the detected language shows in the TUI and diagnostics sidecar, and the agent replies in that language.
+
+### Moonshine streaming-small
+
+```yaml
+pipeline:
+  stt:
+    provider: local
+    model: moonshine-streaming-small
+    language: en
+```
+
+Moonshine is English-only: `en` is required; `auto` and other language codes
+fail at config load. It displays partial transcript text automatically while
+VAD owns an active turn. There is no partials setting and no second endpointing
+timer: Silero's `end_silence_ms` remains the one turn-end control, after which
+Moonshine finalizes the same utterance.
 
 ## LLM
 

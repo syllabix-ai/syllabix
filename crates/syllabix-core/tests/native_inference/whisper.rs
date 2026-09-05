@@ -135,7 +135,7 @@ fn fixture_hashes_are_stable() {
 
 #[test]
 fn recorded_fixtures_match_documented_transcripts() {
-    skip_unless_model!("small");
+    skip_unless_model!("whisper-small");
     let mut n = native();
     for fixture in RECORDED_FIXTURES {
         let utterance = fixture_utterance(fixture);
@@ -169,7 +169,7 @@ fn recorded_fixtures_match_documented_transcripts() {
 
 #[test]
 fn whisper_replaces_fake_stt_in_the_loop() {
-    skip_unless_model!("small");
+    skip_unless_model!("whisper-small");
     let mut n = native();
     let utterance = fixture_utterance(&JFK);
     let frames = utterance.frames.clone();
@@ -204,7 +204,7 @@ fn whisper_replaces_fake_stt_in_the_loop() {
 
 #[test]
 fn cancel_aborts_native_decode_and_context_stays_usable() {
-    skip_unless_model!("small");
+    skip_unless_model!("whisper-small");
     let mut n = native();
     let utterance = fixture_utterance(&JFK);
     let cancel = Cancel::new();
@@ -231,7 +231,7 @@ fn cancel_aborts_native_decode_and_context_stays_usable() {
 
 #[test]
 fn auto_language_detects_english_and_pins_the_code() {
-    skip_unless_model!("small");
+    skip_unless_model!("whisper-small");
     let cache = ModelCache::v0();
     let asset = cache.manifest().asset(SttModel::Small.asset_id()).unwrap();
     let path = cache

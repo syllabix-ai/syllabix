@@ -108,6 +108,42 @@ impl Manifest {
                     "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
                     574_041_195,
                 ),
+                // Moonshine streaming-small INT8 ONNX (Mazino0 export of
+                // moonshine-ai/moonshine-streaming-small, MIT). Three graphs
+                // plus the BPE tokenizer; fetched only when yaml selects the
+                // moonshine STT model.
+                asset(
+                    "moonshine-encoder",
+                    ModelLayer::Stt,
+                    "moonshine-streaming-small-encoder-int8.onnx",
+                    "https://huggingface.co/Mazino0/moonshine-streaming-small-onnx/resolve/d47300364351d5dd673073c16f0159b5ee46f512/encoder_model_int8.onnx",
+                    "9bb6562667da35c8b6994bd76139528610738a33c1c3fa234024c75a6affa509",
+                    75_143_940,
+                ),
+                asset(
+                    "moonshine-decoder",
+                    ModelLayer::Stt,
+                    "moonshine-streaming-small-decoder-int8.onnx",
+                    "https://huggingface.co/Mazino0/moonshine-streaming-small-onnx/resolve/d47300364351d5dd673073c16f0159b5ee46f512/decoder_model_int8.onnx",
+                    "8c1a86e1b3059950d8285a47f3dae1fb6166f0337046e115965498e7957be158",
+                    149_164_324,
+                ),
+                asset(
+                    "moonshine-decoder-past",
+                    ModelLayer::Stt,
+                    "moonshine-streaming-small-decoder-with-past-int8.onnx",
+                    "https://huggingface.co/Mazino0/moonshine-streaming-small-onnx/resolve/d47300364351d5dd673073c16f0159b5ee46f512/decoder_with_past_model_int8.onnx",
+                    "e9bfbc4f2b34ea82ff5b562cc20d3eafcf87a8a25ea9bcaabd8513078dbc0565",
+                    133_455_145,
+                ),
+                asset(
+                    "moonshine-tokenizer",
+                    ModelLayer::Stt,
+                    "moonshine-streaming-small-tokenizer.json",
+                    "https://huggingface.co/Mazino0/moonshine-streaming-small-onnx/resolve/d47300364351d5dd673073c16f0159b5ee46f512/tokenizer.json",
+                    "7b913404bdd039af4756783218af4440bc07fb7d6d8258d677e34f95b3ec416f",
+                    3_761_754,
+                ),
                 asset(
                     "qwen3.5-0.8b",
                     ModelLayer::Llm,
@@ -300,15 +336,22 @@ mod tests {
     fn v0_lists_every_launch_layer() {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
-        // Silero + five whisper ids + three GGUFs + Kokoro weights + voice
-        // + eight internal-only Pocket TTS assets + two Qwen3-TTS
-        // backbones, each with its own projector, plus one LFM asset.
-        assert_eq!(m.assets.len(), 24);
+        // Silero + five whisper ids + four moonshine assets + three GGUFs +
+        // Kokoro weights + voice + eight internal-only Pocket TTS assets +
+        // two Qwen3-TTS backbones, each with its own projector, plus one LFM asset.
+        assert_eq!(m.assets.len(), 28);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
                 .unwrap_or_else(|| panic!("manifest must contain {}", model.asset_id()));
             assert_eq!(asset.layer, ModelLayer::Stt, "{}", asset.id);
+            if model == SttModel::MoonshineStreamingSmall {
+                assert_eq!(
+                    asset.file_name,
+                    "moonshine-streaming-small-encoder-int8.onnx"
+                );
+                continue;
+            }
             assert!(asset.file_name.starts_with("ggml-"), "{}", asset.id);
         }
         assert_eq!(
@@ -318,6 +361,20 @@ mod tests {
         assert_eq!(
             m.asset("whisper-large-v3-turbo-q5_0").unwrap().size_bytes,
             574_041_195
+        );
+        assert_eq!(m.asset("moonshine-encoder").unwrap().layer, ModelLayer::Stt);
+        assert_eq!(m.asset("moonshine-encoder").unwrap().size_bytes, 75_143_940);
+        assert_eq!(
+            m.asset("moonshine-decoder").unwrap().size_bytes,
+            149_164_324
+        );
+        assert_eq!(
+            m.asset("moonshine-decoder-past").unwrap().size_bytes,
+            133_455_145
+        );
+        assert_eq!(
+            m.asset("moonshine-tokenizer").unwrap().size_bytes,
+            3_761_754
         );
         assert_eq!(
             m.asset(BuiltinDefaults::v0().llm_model).unwrap().layer,
@@ -360,7 +417,7 @@ mod tests {
         );
         assert_eq!(m.asset("lfm2.5-2.6b").unwrap().size_bytes, 1_593_894_944);
         assert!(m.asset("missing").is_none());
-        assert_eq!(SttModel::Small.as_str(), "small");
+        assert_eq!(SttModel::Small.as_str(), "whisper-small");
         for asset in &m.assets {
             assert_eq!(asset.sha256.len(), 64);
             assert!(asset.size_bytes > 0);

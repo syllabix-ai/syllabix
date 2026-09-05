@@ -299,6 +299,15 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     let stt_provider = parse_stt(required_string(stt, "pipeline.stt.provider", "provider")?)?;
     let stt_model = parse_stt_model(required_string(stt, "pipeline.stt.model", "model")?)?;
     let language = parse_language(required_string(stt, "pipeline.stt.language", "language")?)?;
+    // Moonshine is English-only: any other language (including `auto`) would
+    // mistranslate the `{language}` prompt pin, so reject it here where the
+    // field is named.
+    if stt_model == SttModel::MoonshineStreamingSmall && language != crate::moonshine::LANGUAGE {
+        return Err(Error::Config {
+            field: "pipeline.stt.language".into(),
+            message: format!("unsupported value {language:?} (allowed: \"en\" with this model)"),
+        });
+    }
 
     let llm = mapping(required(pipeline, "pipeline.llm", "llm")?, "pipeline.llm")?;
     deny_unknown(
@@ -600,8 +609,8 @@ fn parse_vad(value: &str) -> Result<VadProvider> {
 
 fn parse_stt(value: &str) -> Result<SttProvider> {
     match value {
-        "whisper.cpp" => Ok(SttProvider::WhisperCpp),
-        other => Err(unsupported("pipeline.stt.provider", other, "whisper.cpp")),
+        "local" => Ok(SttProvider::Local),
+        other => Err(unsupported("pipeline.stt.provider", other, "local")),
     }
 }
 
@@ -610,7 +619,7 @@ fn parse_stt_model(value: &str) -> Result<SttModel> {
         unsupported(
             "pipeline.stt.model",
             value,
-            "small, medium, large-v3-turbo, medium-q5_0, large-v3-turbo-q5_0",
+            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small",
         )
     })
 }
@@ -795,7 +804,7 @@ mod tests {
 name: harness
 pipeline:
   vad: { provider: silero }
-  stt: { provider: whisper.cpp, model: small, language: en }
+  stt: { provider: local, model: whisper-small, language: en }
   llm: { provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
   tts: { provider: local, model: kokoro }
 "#,
@@ -807,7 +816,7 @@ pipeline:
 name: harness
 pipeline:
   vad: { provider: silero }
-  stt: { provider: whisper.cpp, model: small, language: en }
+  stt: { provider: local, model: whisper-small, language: en }
   llm: { provider: local, model: lfm2.5-2.6b, developer_harness: true }
   tts: { provider: local, model: kokoro }
 "#,
@@ -819,7 +828,7 @@ pipeline:
 name: harness
 pipeline:
   vad: { provider: silero }
-  stt: { provider: whisper.cpp, model: small, language: en }
+  stt: { provider: local, model: whisper-small, language: en }
   llm: { provider: local, model: llama-3.2-1b, developer_harness: true }
   tts: { provider: local, model: kokoro }
 "#,
@@ -895,8 +904,8 @@ pipeline:
   vad:
     provider: silero
   stt:
-    provider: whisper.cpp
-    model: small
+    provider: local
+    model: whisper-small
     language: en
   llm:
     provider: local
@@ -993,8 +1002,8 @@ pipeline:
   vad:
     provider: silero
   stt:
-    provider: whisper.cpp
-    model: small
+    provider: local
+    model: whisper-small
     language: en
   llm:
     provider: local
@@ -1069,8 +1078,8 @@ pipeline:
   vad:
     provider: silero
   stt:
-    provider: whisper.cpp
-    model: small
+    provider: local
+    model: whisper-small
     language: en
   llm:
     provider: online
@@ -1116,7 +1125,10 @@ pipeline:
     fn online_requires_a_base_url() {
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("provider: local", "provider: online")
+            .replace(
+                "  llm:\n    provider: local",
+                "  llm:\n    provider: online",
+            )
             .replace("model: lfm2.5-2.6b", "model: gpt-4o-mini");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.base_url"), "{err}");
@@ -1192,8 +1204,8 @@ pipeline:
   vad:
     provider: silero
   stt:
-    provider: whisper.cpp
-    model: small
+    provider: local
+    model: whisper-small
   llm:
     provider: local
     model: qwen3.5-2b
@@ -1218,16 +1230,17 @@ pipeline:
     #[test]
     fn stt_model_menu_parses_and_rejects_unknown_ids() {
         for model in SttModel::ALL {
-            let yaml = AgentConfig::v0()
-                .to_yaml()
-                .replace("model: small", &format!("model: {}", model.as_str()));
+            let yaml = AgentConfig::v0().to_yaml().replace(
+                "model: whisper-small",
+                &format!("model: {}", model.as_str()),
+            );
             let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
             assert_eq!(cfg.stt_model, model);
         }
         for bad in ["tiny", "base", "large", "huge", "small.en"] {
             let yaml = AgentConfig::v0()
                 .to_yaml()
-                .replace("model: small", &format!("model: {bad}"));
+                .replace("model: whisper-small", &format!("model: {bad}"));
             let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
             assert!(
                 err.to_string().contains("pipeline.stt.model"),
@@ -1239,9 +1252,28 @@ pipeline:
     }
 
     #[test]
+    fn moonshine_model_requires_english_under_local_stt() {
+        // Moonshine is English-only even though its provider is uniformly local.
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: whisper-small", "model: moonshine-streaming-small")
+            .replace("language: en", "language: fr");
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.stt.language"), "{err}");
+        // The local Moonshine shape parses.
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: whisper-small", "model: moonshine-streaming-small");
+        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(cfg.stt, SttProvider::Local);
+        assert_eq!(cfg.stt_model, SttModel::MoonshineStreamingSmall);
+        assert_eq!(cfg.language, "en");
+    }
+
+    #[test]
     fn stt_language_menu_and_auto_parse() {
         // Scoped to the STT block: `pipeline.tts.language` exists too.
-        let stt_line = "  stt:\n    provider: whisper.cpp\n    model: small\n    language: en";
+        let stt_line = "  stt:\n    provider: local\n    model: whisper-small\n    language: en";
         for code in ["en", "fr", "de", "es", "ja", "zh", "yue", "haw"] {
             let swapped = stt_line.replace("language: en", &format!("language: {code}"));
             let yaml = AgentConfig::v0().to_yaml().replace(stt_line, &swapped);
@@ -1521,19 +1553,20 @@ pipeline:
             (
                 AgentConfig::v0()
                     .to_yaml()
-                    .replace("provider: whisper.cpp", "provider: deepgram"),
+                    .replace("provider: local", "provider: deepgram"),
                 "pipeline.stt.provider:",
             ),
             (
                 AgentConfig::v0()
                     .to_yaml()
-                    .replace("model: small", "model: large"),
+                    .replace("model: whisper-small", "model: large"),
                 "pipeline.stt.model:",
             ),
             (
-                AgentConfig::v0()
-                    .to_yaml()
-                    .replace("provider: local", "provider: ollama"),
+                AgentConfig::v0().to_yaml().replace(
+                    "  llm:\n    provider: local",
+                    "  llm:\n    provider: ollama",
+                ),
                 "pipeline.llm.provider:",
             ),
             (

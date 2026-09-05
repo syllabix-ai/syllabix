@@ -70,6 +70,16 @@ Source: https://github.com/snakers4/silero-vad
 MIT License. Whisper models and code are Copyright (c) OpenAI.
 GGML conversion: https://huggingface.co/ggerganov/whisper.cpp
 
+### Moonshine Streaming Small ONNX INT8 (optional yaml STT)
+
+MIT License. The source model is Useful Sensors' English-only
+`moonshine-streaming-small`: https://huggingface.co/UsefulSensors/moonshine-streaming-small
+The pinned ONNX INT8 export is from Mazino0 at revision
+`d47300364351d5dd673073c16f0159b5ee46f512`:
+https://huggingface.co/Mazino0/moonshine-streaming-small-onnx
+It is fetched only when `pipeline.stt.provider: local` and
+`pipeline.stt.model: moonshine-streaming-small` are selected.
+
 ### LFM2.5-2.6B QAD Q4_0 (`LFM2.5-2.6B-QAD-Q4_0.gguf`, default)
 
 LiquidAI LFM 1.0 license. Copyright LiquidAI.

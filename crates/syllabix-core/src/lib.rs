@@ -22,6 +22,14 @@ mod language;
 mod live;
 mod llm;
 mod memory;
+// Moonshine's production adapter dynamically loads three ONNX graphs and a
+// tokenizer. Coverage intentionally avoids external model inference, so use a
+// small contract-preserving stand-in there (as Pocket TTS does below).
+#[cfg(not(coverage))]
+mod moonshine;
+#[cfg(coverage)]
+#[path = "moonshine_coverage.rs"]
+mod moonshine;
 mod openai;
 mod pipeline;
 // Pocket TTS native inference runs only in the model suite. llvm-cov skips
@@ -71,6 +79,11 @@ pub use models::{
     cache_root, format_progress_line, BlockedFetcher, Fetcher, HttpFetcher, Manifest, ModelAsset,
     ModelCache, ModelLayer, NoProgress, Progress, StderrProgress,
 };
+pub use moonshine::{
+    MoonshineStt, MoonshineTokenizer, DECODER_ASSET as MOONSHINE_DECODER_ASSET,
+    DECODER_PAST_ASSET as MOONSHINE_DECODER_PAST_ASSET, ENCODER_ASSET as MOONSHINE_ENCODER_ASSET,
+    TOKENIZER_ASSET as MOONSHINE_TOKENIZER_ASSET,
+};
 pub use openai::{
     join_endpoint, resolve_api_key, validate_base_url, OpenAiLlm, OpenAiSettings, API_KEY_ENV,
     CLOUD_FALLBACK_TEXT, DEFAULT_LLM_BASE_URL, MAX_TOOL_CALLS_PER_TURN, TOOL_LIMIT_TEXT,
@@ -86,7 +99,7 @@ pub use pocket_tts::{
 };
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
-pub use real::{build_llm, build_tts, load_real_providers, LiveLlm, LiveTts};
+pub use real::{build_llm, build_stt, build_tts, load_real_providers, LiveLlm, LiveStt, LiveTts};
 pub use speech_text::{
     speak_text_for_tts, strip_markdown_for_speech, strip_think_for_speech, take_sentences,
     ThinkFilter,

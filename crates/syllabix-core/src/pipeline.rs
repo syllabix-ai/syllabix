@@ -47,6 +47,14 @@ pub enum LoopEvent {
         /// Effective STT language code (configured or auto-detected).
         language: String,
     },
+    /// Provisional STT text for the currently active VAD turn. It is enabled
+    /// by the selected streaming STT provider; no separate user setting exists.
+    Partial {
+        /// Turn id.
+        turn: TurnId,
+        /// Full replace-in-place provisional text.
+        text: String,
+    },
     /// Assistant token text (delta).
     Assistant {
         /// Turn id.
@@ -72,6 +80,16 @@ pub enum LoopEvent {
     },
     /// Speaker playback has started or fully drained.
     Playback { playing: bool },
+}
+
+/// Ordered work sent from VAD to STT. Keeping this in one queue means frames
+/// and the final utterance cannot overtake each other, while VAD remains the
+/// only endpoint authority.
+#[derive(Clone)]
+enum SttWork {
+    Start(TurnId),
+    Frame { turn: TurnId, frame: AudioFrame },
+    Finalize(Utterance),
 }
 
 /// Runtime controls shared by the inline terminal and the voice loop.
@@ -599,6 +617,8 @@ where
     let tts_model = tts.model_id().map(str::to_string);
     let caps: QueueCaps = config.defaults.queues;
     let (frame_tx, frame_rx, frame_stats) = bounded("frames", caps.frames);
+    // The command stream is bounded like the pre-existing utterance stage:
+    // backpressure pauses VAD rather than dropping active-turn audio.
     let (utt_tx, utt_rx, utt_stats) = bounded("utterances", caps.utterances);
     let (tr_tx, tr_rx, tr_stats) = bounded("transcripts", caps.transcripts);
     let (tok_tx, tok_rx, tok_stats) = bounded("tokens", caps.tokens);
@@ -783,13 +803,13 @@ fn capture_loop<C: AudioCapture>(
 fn vad_loop<V: Vad>(
     mut vad: V,
     rx: crate::queue::BoundedReceiver<AudioFrame>,
-    tx: BoundedSender<Utterance>,
+    tx: BoundedSender<SttWork>,
     cancel: &Cancel,
     shared: &Shared,
 ) {
     let mut active: Option<TurnId> = None;
     let emit = |events: Vec<VadEvent>,
-                tx: &BoundedSender<Utterance>,
+                tx: &BoundedSender<SttWork>,
                 cancel: &Cancel,
                 active: &mut Option<TurnId>,
                 frame: Option<&AudioFrame>|
@@ -802,10 +822,23 @@ fn vad_loop<V: Vad>(
                     debug.start_turn(*turn);
                     debug.note_anchor(*turn, TimelineAnchor::SpeechStart, Instant::now());
                 }
+                tx.send_cancellable(SttWork::Start(*turn), cancel)?;
             }
         }
         if let (Some(debug), Some(frame), Some(turn)) = (&shared.turn_debug, frame, *active) {
             debug.note_frame(turn, &frame.samples, frame.capture_pcm.as_deref());
+        }
+        // Stream only frames belonging to an active VAD turn. The canonical
+        // final Utterance below still contains preroll/hangover frames.
+        if let (Some(turn), Some(frame)) = (*active, frame) {
+            let _ = turn; // turn order is carried by the single STT queue.
+            tx.send_cancellable(
+                SttWork::Frame {
+                    turn,
+                    frame: frame.clone(),
+                },
+                cancel,
+            )?;
         }
         for event in events {
             if let VadEvent::SpeechEnd { utterance } = event {
@@ -815,7 +848,7 @@ fn vad_loop<V: Vad>(
                 }
                 shared.mark_assistant(utterance.turn);
                 *active = None;
-                tx.send_cancellable(utterance, cancel)?;
+                tx.send_cancellable(SttWork::Finalize(utterance), cancel)?;
             }
         }
         Ok(())
@@ -878,70 +911,107 @@ fn vad_loop<V: Vad>(
 
 fn stt_loop<S: Stt>(
     mut stt: S,
-    rx: crate::queue::BoundedReceiver<Utterance>,
+    rx: crate::queue::BoundedReceiver<SttWork>,
     tx: BoundedSender<Transcript>,
     cancel: &Cancel,
     shared: &Shared,
 ) {
     loop {
         match rx.recv_cancellable(cancel) {
-            Ok(Some(utterance)) => {
-                if shared.is_interrupted(utterance.turn) {
+            Ok(Some(work)) => match work {
+                SttWork::Start(turn) => {
+                    if let Err(err) = stt.start_turn(turn, cancel) {
+                        if !matches!(err, Error::Cancelled) {
+                            shared.fail(err, cancel);
+                        }
+                        return;
+                    }
                     continue;
                 }
-                let queued_at = Instant::now();
-                shared.mark_utterance(utterance.turn, queued_at);
-                if let Some(debug) = &shared.turn_debug {
-                    debug.note_anchor(utterance.turn, TimelineAnchor::SttQueued, queued_at);
-                }
-                match stt.transcribe(&utterance, cancel) {
-                    Ok(transcript) => {
-                        let done_at = Instant::now();
-                        if let Some(debug) = &shared.turn_debug {
-                            debug.note_anchor(transcript.turn, TimelineAnchor::SttDone, done_at);
-                        }
-                        if is_blank_stt(&transcript.text) {
-                            if let Some(debug) = &shared.turn_debug {
-                                debug.note_stt(
-                                    transcript.turn,
-                                    &transcript.text,
-                                    &transcript.language,
-                                );
-                            }
-                            shared.note_skip(transcript.turn, cancel);
-                        } else {
-                            let language = transcript.language.clone();
-                            shared.note_user(
-                                transcript.turn,
-                                transcript.text.clone(),
-                                &language,
-                                done_at,
-                            );
-                            if shared.controls.agent_muted() {
-                                shared.note_skip(transcript.turn, cancel);
-                            } else {
-                                ignore_cancel(
-                                    tx.send_cancellable(transcript, cancel),
-                                    shared,
-                                    cancel,
-                                );
-                            }
-                        }
+                SttWork::Frame { turn, frame } => {
+                    if !stt.supports_partials() {
+                        continue;
                     }
-                    Err(Error::Cancelled) => {
-                        if cancel.is_shutdown() {
+                    match stt.push_frame(&frame, cancel) {
+                        Ok(Some(text)) if !is_blank_stt(&text) => {
+                            let at = Instant::now();
+                            if let Some(debug) = &shared.turn_debug {
+                                debug.note_anchor(turn, TimelineAnchor::SttPartial, at);
+                            }
+                            shared.emit(LoopEvent::Partial { turn, text });
+                        }
+                        Ok(_) => {}
+                        Err(Error::Cancelled) => return,
+                        Err(err) => {
+                            shared.fail(err, cancel);
                             return;
                         }
                     }
-                    Err(err) if err.is_turn_recoverable() => {
-                        shared.note_skip(utterance.turn, cancel);
+                    continue;
+                }
+                SttWork::Finalize(utterance) => {
+                    if shared.is_interrupted(utterance.turn) {
+                        stt.cancel_turn(utterance.turn);
+                        continue;
                     }
-                    Err(err) => {
-                        shared.fail(err, cancel);
-                        return;
+                    let queued_at = Instant::now();
+                    shared.mark_utterance(utterance.turn, queued_at);
+                    if let Some(debug) = &shared.turn_debug {
+                        debug.note_anchor(utterance.turn, TimelineAnchor::SttQueued, queued_at);
+                    }
+                    match stt.transcribe(&utterance, cancel) {
+                        Ok(transcript) => {
+                            let done_at = Instant::now();
+                            if let Some(debug) = &shared.turn_debug {
+                                debug.note_anchor(
+                                    transcript.turn,
+                                    TimelineAnchor::SttDone,
+                                    done_at,
+                                );
+                            }
+                            if is_blank_stt(&transcript.text) {
+                                if let Some(debug) = &shared.turn_debug {
+                                    debug.note_stt(
+                                        transcript.turn,
+                                        &transcript.text,
+                                        &transcript.language,
+                                    );
+                                }
+                                shared.note_skip(transcript.turn, cancel);
+                            } else {
+                                let language = transcript.language.clone();
+                                shared.note_user(
+                                    transcript.turn,
+                                    transcript.text.clone(),
+                                    &language,
+                                    done_at,
+                                );
+                                if shared.controls.agent_muted() {
+                                    shared.note_skip(transcript.turn, cancel);
+                                } else {
+                                    ignore_cancel(
+                                        tx.send_cancellable(transcript, cancel),
+                                        shared,
+                                        cancel,
+                                    );
+                                }
+                            }
+                        }
+                        Err(Error::Cancelled) => {
+                            if cancel.is_shutdown() {
+                                return;
+                            }
+                        }
+                        Err(err) if err.is_turn_recoverable() => {
+                            shared.note_skip(utterance.turn, cancel);
+                        }
+                        Err(err) => {
+                            shared.fail(err, cancel);
+                            return;
+                        }
                     }
                 }
-            }
+            },
             Ok(None) => return,
             Err(Error::Cancelled) => return,
             Err(err) => {
@@ -1179,6 +1249,40 @@ mod tests {
     };
     use crate::types::TurnId;
 
+    struct PartialStt {
+        turn: Option<TurnId>,
+        frames: usize,
+    }
+
+    impl Stt for PartialStt {
+        fn name(&self) -> &'static str {
+            "partial-fixture"
+        }
+
+        fn transcribe(&mut self, utterance: &Utterance, _cancel: &Cancel) -> Result<Transcript> {
+            Ok(Transcript {
+                turn: utterance.turn,
+                text: "final transcript".into(),
+                language: "en".into(),
+            })
+        }
+
+        fn supports_partials(&self) -> bool {
+            true
+        }
+
+        fn start_turn(&mut self, turn: TurnId, _cancel: &Cancel) -> Result<()> {
+            self.turn = Some(turn);
+            self.frames = 0;
+            Ok(())
+        }
+
+        fn push_frame(&mut self, _frame: &AudioFrame, _cancel: &Cancel) -> Result<Option<String>> {
+            self.frames += 1;
+            Ok((self.frames == 1).then(|| "partial transcript".into()))
+        }
+    }
+
     #[test]
     fn runtime_controls_toggle_independently() {
         let controls = RuntimeControls::new(false);
@@ -1227,6 +1331,59 @@ mod tests {
         assert_eq!(report.tasks_still_running, 0);
         assert_eq!(report.skipped_turns, 0);
         assert!(report.queues.within_capacity());
+    }
+
+    #[test]
+    fn streaming_stt_emits_partial_before_vad_finalizes_the_turn() {
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let dir = std::env::temp_dir().join(format!(
+            "syllabix-partial-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let debug = TurnDebug::open(&dir).unwrap();
+        let report = run_loop(
+            LoopConfig {
+                events: Some(events_tx),
+                turn_debug: Some(debug.clone()),
+                mode: LoopMode::StopAfterTurns(1),
+                ..LoopConfig::default()
+            },
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: PartialStt {
+                    turn: None,
+                    frames: 0,
+                },
+                llm: FakeLlm::new(),
+                tts: FakeTts,
+                sink: CollectingSink::default(),
+            },
+            scripted_frames(1, 2, 1),
+            Cancel::new(),
+        )
+        .unwrap();
+        assert_eq!(report.turns.len(), 1);
+        let events: Vec<_> = events_rx.try_iter().collect();
+        let partial = events
+            .iter()
+            .position(|event| matches!(event, LoopEvent::Partial { text, .. } if text == "partial transcript"))
+            .expect("partial event");
+        let final_user = events
+            .iter()
+            .position(
+                |event| matches!(event, LoopEvent::User { text, .. } if text == "final transcript"),
+            )
+            .expect("final user event");
+        assert!(partial < final_user);
+        assert!(debug
+            .anchored(TurnId(0))
+            .iter()
+            .any(|(anchor, _)| *anchor == TimelineAnchor::SttPartial));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1568,7 +1725,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing anchor {anchor:?}"))
         };
         // Every stage boundary was captured.
-        assert_eq!(anchored.len(), TimelineAnchor::ALL.len());
+        // Final-only STT leaves the streaming-only partial anchor absent.
+        assert_eq!(anchored.len(), TimelineAnchor::ALL.len() - 1);
+        assert!(anchored
+            .iter()
+            .all(|(anchor, _)| *anchor != TimelineAnchor::SttPartial));
         assert_eq!(offset(TimelineAnchor::SpeechStart), Duration::ZERO);
         // Stage order; LLM/TTS may legitimately overlap, so only true
         // happens-before edges are asserted.

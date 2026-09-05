@@ -41,11 +41,11 @@ use syllabix_core::{
 };
 
 /// YAML identifiers covered by the default native test set.
-const LAUNCH_NATIVE_IDS: [&str; 3] = ["small", LFM25_26B_ASSET, "pocket-tts"];
+const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM25_26B_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
 const SUITED_NATIVE_IDS: [&str; 8] = [
-    "small",
+    "whisper-small",
     LLAMA_32_1B_ASSET,
     "kokoro",
     "qwen3-0.6",
@@ -361,7 +361,11 @@ fn unset_native_models_selects_the_launch_stack() {
     let ids = parse_native_models(None).expect("parse");
     assert_eq!(
         ids,
-        BTreeSet::from(["small".into(), "lfm2.5-2.6b".into(), "pocket-tts".into()])
+        BTreeSet::from([
+            "whisper-small".into(),
+            "lfm2.5-2.6b".into(),
+            "pocket-tts".into()
+        ])
     );
 }
 
@@ -382,7 +386,7 @@ fn unknown_native_model_id_fails() {
 fn native_model_without_a_suite_fails() {
     let err = parse_native_models(Some("qwen3.5-2b")).expect_err("no suite");
     assert!(err.contains("no native suite for \"qwen3.5-2b\""), "{err}");
-    let err = parse_native_models(Some("medium")).expect_err("no suite");
+    let err = parse_native_models(Some("whisper-medium")).expect_err("no suite");
     assert!(err.contains("no native suite for \"medium\""), "{err}");
 }
 
@@ -404,7 +408,7 @@ fn lfm_is_a_yaml_and_native_model_id() {
 fn latency_without_tts_fails() {
     let launch = parse_native_models(None).expect("launch");
     latency_requires_tts(&launch, true).expect("Pocket TTS is a TTS model");
-    let stt = parse_native_models(Some("small")).expect("stt");
+    let stt = parse_native_models(Some("whisper-small")).expect("stt");
     let err = latency_requires_tts(&stt, true).expect_err("no TTS");
     assert!(err.contains("SYLLABIX_NATIVE_LATENCY"), "{err}");
     let qwen = parse_native_models(Some("qwen3-0.6")).expect("qwen");
