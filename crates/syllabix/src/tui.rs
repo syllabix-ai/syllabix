@@ -331,20 +331,12 @@ mod live_terminal {
             } else {
                 "mute"
             };
-            let agent = if controls.agent_muted() {
-                "agent-on"
-            } else {
-                "agent-off"
-            };
             let barge = if controls.barge_in() {
-                "barge-off"
+                "disable interruption"
             } else {
-                "barge-on"
+                "enable interruption"
             };
-            (
-                status,
-                format!("q:quit  m:{speaker}  a:{agent}  b:{barge}  u:mic"),
-            )
+            (status, format!("q:quit  m:{speaker}  b:{barge}"))
         }
 
         fn draw_footer_at_cursor(
@@ -457,6 +449,26 @@ mod live_terminal {
             .replace("TTFB", "tts")
     }
 
+    /// Apply a supported footer control. Returns whether the key is a control.
+    fn apply_footer_control(
+        key: KeyCode,
+        controls: &RuntimeControls,
+        renderer: &mut InlineRenderer,
+    ) -> bool {
+        match key {
+            KeyCode::Char('b') => {
+                controls.toggle_barge_in();
+                true
+            }
+            KeyCode::Char('m') => {
+                controls.toggle_speaker_muted();
+                renderer.playing = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn write_terminal_text(out: &mut impl Write, text: &str) -> std::io::Result<()> {
         for piece in text.split_inclusive('\n') {
             if let Some(line) = piece.strip_suffix('\n') {
@@ -483,6 +495,46 @@ mod live_terminal {
         let mut out = Vec::new();
         write_terminal_text(&mut out, "one\ntwo\n\nthree").expect("write model text");
         assert_eq!(String::from_utf8(out).unwrap(), "one\r\ntwo\r\n\r\nthree");
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn footer_controls_toggle_speaker_and_interruption_only() {
+        let mut renderer = InlineRenderer::new();
+        renderer.playing = true;
+        let controls = RuntimeControls::new(false);
+
+        let (_, help) = renderer.footer(&controls);
+        assert_eq!(help, "q:quit  m:mute  b:enable interruption");
+
+        assert!(apply_footer_control(
+            KeyCode::Char('m'),
+            &controls,
+            &mut renderer
+        ));
+        assert!(controls.speaker_muted());
+        assert!(!renderer.playing);
+
+        assert!(apply_footer_control(
+            KeyCode::Char('b'),
+            &controls,
+            &mut renderer
+        ));
+        assert!(controls.barge_in());
+        let (_, help) = renderer.footer(&controls);
+        assert_eq!(help, "q:quit  m:unmute  b:disable interruption");
+
+        assert!(!apply_footer_control(
+            KeyCode::Char('a'),
+            &controls,
+            &mut renderer
+        ));
+        assert!(!apply_footer_control(
+            KeyCode::Char('u'),
+            &controls,
+            &mut renderer
+        ));
+        assert!(!controls.agent_muted());
     }
 
     pub fn run_conversation_tui(config: AgentConfig, cancel: Cancel, barge_in: bool) -> Result<()> {
@@ -539,24 +591,7 @@ mod live_terminal {
                         cancel.shutdown();
                     } else if key.kind == KeyEventKind::Press {
                         controls.touch_idle();
-                        match key.code {
-                            KeyCode::Char('b') => {
-                                controls.toggle_barge_in();
-                            }
-                            KeyCode::Char('m') => {
-                                controls.toggle_speaker_muted();
-                                renderer.playing = false;
-                            }
-                            KeyCode::Char('a') => {
-                                controls.toggle_agent_muted();
-                            }
-                            KeyCode::Char('u') => {
-                                controls.unmute_mic();
-                            }
-                            _ => {
-                                // Any other key still resets the idle clock.
-                            }
-                        }
+                        apply_footer_control(key.code, &controls, &mut renderer);
                         renderer
                             .refresh_footer(&mut out, &controls)
                             .map_err(Error::from)?;
