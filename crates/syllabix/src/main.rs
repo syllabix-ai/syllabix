@@ -1,6 +1,7 @@
 #[cfg(not(coverage))]
 mod bench;
 mod cli;
+mod editor;
 mod tui;
 
 use clap::Parser;

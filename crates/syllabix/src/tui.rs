@@ -225,7 +225,7 @@ mod live_terminal {
             };
             (
                 status,
-                format!("q:quit  m:{speaker}  a:{agent}  b:{barge}  u:mic"),
+                format!("q:quit  m:{speaker}  a:{agent}  b:{barge}  u:mic  c:config"),
             )
         }
 
@@ -325,73 +325,94 @@ mod live_terminal {
             let _ = done_tx.send(result);
         });
 
-        let _guard = RawTerminalGuard;
-        let mut out = stdout();
-        let mut renderer = InlineRenderer::new();
-        let mut raw_mode = false;
+        let mut configure_requested = false;
+        let outcome = {
+            let _guard = RawTerminalGuard;
+            let mut out = stdout();
+            let mut renderer = InlineRenderer::new();
+            let mut raw_mode = false;
+            let mut quit_requested = false;
 
-        let mut quit_requested = false;
-        let outcome = loop {
-            while let Ok(event) = event_rx.try_recv() {
-                if matches!(&event, LoopEvent::Ready) && !raw_mode {
-                    enable_raw_mode().map_err(Error::from)?;
-                    raw_mode = true;
+            let outcome = loop {
+                while let Ok(event) = event_rx.try_recv() {
+                    if matches!(&event, LoopEvent::Ready) && !raw_mode {
+                        enable_raw_mode().map_err(Error::from)?;
+                        raw_mode = true;
+                    }
+                    renderer
+                        .apply(event, &mut out, &controls)
+                        .map_err(Error::from)?;
                 }
-                renderer
-                    .apply(event, &mut out, &controls)
-                    .map_err(Error::from)?;
-            }
-            if let Ok(done) = done_rx.try_recv() {
-                break done;
-            }
-            if raw_mode && controls.mic_muted() != renderer.last_mic_muted {
-                renderer.last_mic_muted = controls.mic_muted();
-                renderer
-                    .draw_footer(&mut out, &controls)
-                    .map_err(Error::from)?;
-            }
-            if raw_mode && event::poll(Duration::from_millis(50)).map_err(Error::from)? {
-                if let Event::Key(key) = event::read().map_err(Error::from)? {
-                    if key.kind == KeyEventKind::Press
-                        && (key.code == KeyCode::Char('q')
-                            || key.code == KeyCode::Esc
-                            || (key.code == KeyCode::Char('c')
-                                && key.modifiers.contains(KeyModifiers::CONTROL)))
-                    {
-                        quit_requested = key.code == KeyCode::Char('q');
-                        controls.touch_idle();
-                        cancel.shutdown();
-                    } else if key.kind == KeyEventKind::Press {
-                        controls.touch_idle();
-                        match key.code {
-                            KeyCode::Char('b') => {
-                                controls.toggle_barge_in();
+                if let Ok(done) = done_rx.try_recv() {
+                    break done;
+                }
+                if raw_mode && controls.mic_muted() != renderer.last_mic_muted {
+                    renderer.last_mic_muted = controls.mic_muted();
+                    renderer
+                        .draw_footer(&mut out, &controls)
+                        .map_err(Error::from)?;
+                }
+                if raw_mode && event::poll(Duration::from_millis(50)).map_err(Error::from)? {
+                    if let Event::Key(key) = event::read().map_err(Error::from)? {
+                        if key.kind == KeyEventKind::Press
+                            && (key.code == KeyCode::Char('q')
+                                || key.code == KeyCode::Esc
+                                || (key.code == KeyCode::Char('c')
+                                    && key.modifiers.contains(KeyModifiers::CONTROL)))
+                        {
+                            quit_requested = key.code == KeyCode::Char('q');
+                            controls.touch_idle();
+                            cancel.shutdown();
+                        } else if key.kind == KeyEventKind::Press {
+                            controls.touch_idle();
+                            match key.code {
+                                KeyCode::Char('b') => {
+                                    controls.toggle_barge_in();
+                                }
+                                KeyCode::Char('m') => {
+                                    controls.toggle_speaker_muted();
+                                    renderer.playing = false;
+                                }
+                                KeyCode::Char('a') => {
+                                    controls.toggle_agent_muted();
+                                }
+                                KeyCode::Char('u') => {
+                                    controls.unmute_mic();
+                                }
+                                KeyCode::Char('c') | KeyCode::Char('C') => {
+                                    // Plain `c` opens yaml configure; Ctrl+C quits above.
+                                    configure_requested = true;
+                                    cancel.shutdown();
+                                }
+                                _ => {
+                                    // Any other key still resets the idle clock.
+                                }
                             }
-                            KeyCode::Char('m') => {
-                                controls.toggle_speaker_muted();
-                                renderer.playing = false;
-                            }
-                            KeyCode::Char('a') => {
-                                controls.toggle_agent_muted();
-                            }
-                            KeyCode::Char('u') => {
-                                controls.unmute_mic();
-                            }
-                            _ => {
-                                // Any other key still resets the idle clock.
-                            }
+                            renderer
+                                .draw_footer(&mut out, &controls)
+                                .map_err(Error::from)?;
                         }
-                        renderer
-                            .draw_footer(&mut out, &controls)
-                            .map_err(Error::from)?;
                     }
                 }
-            }
+            };
+
+            renderer
+                .finish(&mut out, quit_requested && !configure_requested)
+                .map_err(Error::from)?;
+            outcome
         };
 
-        renderer
-            .finish(&mut out, quit_requested)
-            .map_err(Error::from)?;
+        if configure_requested {
+            let cwd = std::env::current_dir()?;
+            let path = AgentConfig::ensure_config_file(&cwd)?;
+            println!(
+                "Opening {} — save, quit the editor, then rerun `syllabix run`.",
+                path.display()
+            );
+            crate::editor::open_path_in_editor(&path)?;
+            println!("Rerun `syllabix run` to apply changes.");
+        }
+
         match outcome {
             Ok(_) | Err(Error::Cancelled) => Ok(()),
             Err(err) => Err(err),

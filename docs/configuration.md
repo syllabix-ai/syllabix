@@ -4,6 +4,38 @@
 
 Unknown keys fail at load.
 
+## How yaml relates to the binary
+
+The Release artifact is one native executable. It does not contain your project
+yaml. On every `run`, the binary looks in the **current working directory** for
+`syllabix.yaml`:
+
+```text
+syllabix (binary)
+  └─ run
+       ├─ cwd/syllabix.yaml present? → parse → AgentConfig
+       └─ missing?                  → AgentConfig::v0() (hardcoded)
+            └─ load models / open mic / talk
+```
+
+Weights still live in the model cache (fetched by selected ids). Yaml only
+chooses stack options for that process. Edit the file, then **rerun**
+`syllabix run` — a running session does not reload config.
+
+## TUI configure (`c`)
+
+While `syllabix run` is in the transcript view, press **`c`** (not Ctrl+C):
+
+1. The conversation stops and raw mode leaves the terminal.
+2. If `cwd/syllabix.yaml` is missing, Syllabix writes a **commented** template
+   (same file as `syllabix init`) listing model menus and optional blocks.
+3. The file opens in `$VISUAL`, then `$EDITOR`, then a platform default
+   (`nano` on macOS/Linux, `notepad` on Windows).
+4. Save, quit the editor, then rerun `syllabix run` to load the new stack.
+
+`init` and `c` share the same commented template; neither overwrites an existing
+yaml.
+
 ## Default stack (zero-config)
 
 | Layer | Default |

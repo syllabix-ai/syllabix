@@ -22,6 +22,52 @@ pub const DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS: u32 = 180_000;
 /// Default idle duration before `run` exits (`auto-timeout.exit_ms`).
 pub const DEFAULT_AUTO_TIMEOUT_EXIT_MS: u32 = 600_000;
 
+/// Commented launch defaults written by `init` and TUI configure.
+const INIT_YAML_TEMPLATE: &str = r#"# syllabix.yaml — edit, save, then rerun `syllabix run`.
+# Zero-config run needs no file. Full menu: docs/configuration.md
+name: demo-agent
+pipeline:
+  vad:
+    provider: silero
+    # Optional tunables (launch defaults shown):
+    threshold: 0.5          # (0, 1]
+    min_speech_ms: 100
+    end_silence_ms: 350
+    preroll_ms: 200         # Whisper preroll before first speech frame
+  stt:
+    provider: local
+    # whisper-small (default) | whisper-medium | whisper-large-v3-turbo
+    # whisper-medium-q5_0 | whisper-large-v3-turbo-q5_0
+    # moonshine-streaming-small | moonshine-streaming-medium (English only)
+    model: whisper-small
+    language: en            # ISO code or auto
+  llm:
+    provider: local         # local | online
+    # local ids: lfm2.5-2.6b (default) | llama-3.2-1b | qwen3.5-0.8b | qwen3.5-2b
+    model: lfm2.5-2.6b
+    thinking: false         # true only on qwen3.5-2b
+    # {language} → STT language English name at generate time
+    system_prompt: "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji."
+    # online only (forbidden for local):
+    # base_url: https://api.openai.com/v1
+  tts:
+    provider: local         # local | online (online is reserved)
+    # pocket-tts (default) | kokoro | qwen3-0.6 | qwen3-1.7
+    model: pocket-tts
+    language: en            # Qwen voice language when using qwen3-*
+
+# Optional idle timers (defaults shown). 0 disables that timer.
+# auto-timeout:
+#   mic_mute_ms: 180000
+#   exit_ms: 600000
+
+# Optional turn dumps (off by default). audio: true implies timestamps.
+# diagnostics:
+#   timestamps: true
+#   audio: true
+#   directory: target/turn-debug
+"#;
+
 /// Validated agent configuration with one provider selected for each pipeline stage.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentConfig {
@@ -227,6 +273,14 @@ pipeline:
         )
     }
 
+    /// Commented launch-default yaml for `init` and TUI configure.
+    ///
+    /// Active keys parse to [`Self::v0`]. Comments list the model menus and
+    /// optional blocks so a stranger can edit without leaving the file.
+    pub fn init_yaml_template() -> &'static str {
+        INIT_YAML_TEMPLATE
+    }
+
     /// Write [`CONFIG_FILE_NAME`] under `dir`. Creates `dir` when missing.
     pub fn write_init(dir: &Path) -> Result<PathBuf> {
         fs::create_dir_all(dir)?;
@@ -237,8 +291,17 @@ pipeline:
                 message: "already exists".into(),
             });
         }
-        fs::write(&path, Self::v0().to_yaml())?;
+        fs::write(&path, Self::init_yaml_template())?;
         Ok(path)
+    }
+
+    /// Path to `dir/syllabix.yaml`, creating the commented template when absent.
+    pub fn ensure_config_file(dir: &Path) -> Result<PathBuf> {
+        let path = dir.join(CONFIG_FILE_NAME);
+        if path.is_file() {
+            return Ok(path);
+        }
+        Self::write_init(dir)
     }
 
     /// Silero turn policy for this config.
@@ -1739,10 +1802,34 @@ pipeline:
         let dir = tmp_dir("init");
         let path = AgentConfig::write_init(&dir).unwrap();
         assert_eq!(path, dir.join(CONFIG_FILE_NAME));
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("#"), "init template documents keys in comments");
+        assert!(text.contains("whisper-medium"), "init lists STT menu options");
+        assert!(text.contains("qwen3.5-2b"), "init lists LLM menu options");
         let loaded = AgentConfig::load_path(&path).unwrap();
         assert_eq!(loaded, AgentConfig::v0());
         let err = AgentConfig::write_init(&dir).unwrap_err();
         assert!(err.to_string().contains("already exists"), "{err}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn init_yaml_template_parses_to_launch_defaults() {
+        let cfg = AgentConfig::parse_yaml(AgentConfig::init_yaml_template()).unwrap();
+        assert_eq!(cfg, AgentConfig::v0());
+    }
+
+    #[test]
+    fn ensure_config_file_creates_once_and_keeps_edits() {
+        let dir = tmp_dir("ensure");
+        let path = AgentConfig::ensure_config_file(&dir).unwrap();
+        assert_eq!(path, dir.join(CONFIG_FILE_NAME));
+        assert!(path.is_file());
+        fs::write(&path, "name: kept\npipeline:\n  vad: {provider: silero}\n  stt: {provider: local, model: whisper-small, language: en}\n  llm: {provider: local, model: lfm2.5-2.6b}\n  tts: {provider: local, model: pocket-tts}\n").unwrap();
+        let again = AgentConfig::ensure_config_file(&dir).unwrap();
+        assert_eq!(again, path);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("name: kept"), "ensure must not overwrite");
         fs::remove_dir_all(&dir).unwrap();
     }
 
