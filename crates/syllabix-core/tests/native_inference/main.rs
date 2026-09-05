@@ -5,7 +5,7 @@
 //! a fake loop still runs so this binary is not a coverage hole.
 //!
 //! Default `cargo test` is the launch stack only (Silero, Whisper `small`,
-//! Llama 3.2 1B, Pocket TTS). Set `SYLLABIX_NATIVE_MODELS` to a comma-separated
+//! LFM2.5-2.6B, Pocket TTS). Set `SYLLABIX_NATIVE_MODELS` to a comma-separated
 //! list of yaml `pipeline.*.model` ids to run **only** those native suites
 //! (exclusive). Unknown ids fail fast. Ids with no native suite yet fail
 //! with `no native suite for <id>`. Whisper `small` may still load as a
@@ -41,7 +41,7 @@ use syllabix_core::{
 };
 
 /// Yaml ids the launch stack native tests cover.
-const LAUNCH_NATIVE_IDS: [&str; 3] = ["small", LLAMA_32_1B_ASSET, "pocket-tts"];
+const LAUNCH_NATIVE_IDS: [&str; 3] = ["small", LFM25_26B_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
 const SUITED_NATIVE_IDS: [&str; 8] = [
@@ -217,7 +217,7 @@ macro_rules! skip_unless_launch_stack {
     () => {
         if !crate::launch_stack_selected() {
             eprintln!(
-                "skipping launch-stack native test (needs small, llama-3.2-1b, kokoro in SYLLABIX_NATIVE_MODELS)"
+                "skipping launch-stack native test (needs small, lfm2.5-2.6b, pocket-tts in SYLLABIX_NATIVE_MODELS)"
             );
             return;
         }
@@ -257,17 +257,17 @@ impl Native {
 
     pub(crate) fn llm(&mut self) -> &LlamaLlm {
         self.ensure_llm();
-        self.llm.as_ref().expect("llama loaded")
+        self.llm.as_ref().expect("lfm loaded")
     }
 
     pub(crate) fn llm_mut(&mut self) -> &mut LlamaLlm {
         self.ensure_llm();
-        self.llm.as_mut().expect("llama loaded")
+        self.llm.as_mut().expect("lfm loaded")
     }
 
-    /// Phase-4-only LFM handle. It deliberately bypasses the yaml model menu:
-    /// loading it here proves the spike can coexist with the launch audio
-    /// stack without making it selectable by `syllabix run`.
+    /// LFM handle for the tools-dialect suite. The default `llm` slot above
+    /// already loads the same default id through `from_cache`; this keeps the
+    /// dedicated handle for the tools-aware gates.
     pub(crate) fn lfm_mut(&mut self) -> &mut LlamaLlm {
         if self.lfm.is_none() {
             let cache = ModelCache::v0();
@@ -292,7 +292,7 @@ impl Native {
             let mut progress = StderrProgress::new();
             let cancel = Cancel::new();
             let llm = LlamaLlm::from_cache(&cache, &HttpFetcher, &mut progress, &cancel)
-                .expect("load Llama 3.2 1B Q4_K_M once");
+                .expect("load LFM2.5-2.6B QAD Q4_0 once");
             assert!(!llm.thinking(), "v0 thinking is off until yaml enables it");
             self.llm = Some(llm);
         }
@@ -363,7 +363,7 @@ fn unset_native_models_selects_the_launch_stack() {
     let ids = parse_native_models(None).expect("parse");
     assert_eq!(
         ids,
-        BTreeSet::from(["small".into(), "llama-3.2-1b".into(), "pocket-tts".into(),])
+        BTreeSet::from(["small".into(), "lfm2.5-2.6b".into(), "pocket-tts".into()])
     );
 }
 

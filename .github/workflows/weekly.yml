@@ -75,7 +75,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
       # Keep cargo-llvm-cov aligned with DEVELOPMENT.md and local verification.
       - uses: taiki-e/install-action@v2
         with:
@@ -135,7 +135,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}

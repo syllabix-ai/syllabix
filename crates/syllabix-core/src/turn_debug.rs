@@ -790,7 +790,7 @@ mod tests {
             local,
             Some(crate::types::LlmDebugMeta {
                 provider: "local".into(),
-                model: "llama-3.2-1b".into(),
+                model: "lfm2.5-2.6b".into(),
                 ..Default::default()
             }),
         );

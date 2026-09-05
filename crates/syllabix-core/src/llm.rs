@@ -28,7 +28,7 @@ pub const QWEN35_2B_ASSET: &str = "qwen3.5-2b";
 pub const LLAMA_32_1B_ASSET: &str = "llama-3.2-1b";
 
 /// Manifest id for the LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF.
-/// It is an opt-in local `pipeline.llm.model`; the default remains Llama 3.2.
+/// It is the default local `pipeline.llm.model`; the other three ids are yaml opt-ins.
 pub const LFM25_26B_ASSET: &str = "lfm2.5-2.6b";
 
 /// Upper bound on collected text for one LFM tool turn (issue-89 lesson).
@@ -139,7 +139,7 @@ impl LlamaLlm {
         })
     }
 
-    /// Resolve the default `llama-3.2-1b` GGUF from the manifest cache, then load it.
+    /// Resolve the default `lfm2.5-2.6b` GGUF from the manifest cache, then load it.
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -169,7 +169,7 @@ impl LlamaLlm {
             return Err(Error::Config {
                 field: "pipeline.llm.model".into(),
                 message: format!(
-                    "unsupported value {model_id:?} (allowed: llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b, lfm2.5-2.6b)"
+                    "unsupported value {model_id:?} (allowed: lfm2.5-2.6b, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b)"
                 ),
             });
         }
@@ -1365,7 +1365,7 @@ mod tests {
             last_messages: Arc::new(Mutex::new(Vec::new())),
         }));
         assert_eq!(llm.name(), "local");
-        assert_eq!(LLAMA_32_1B_ASSET, BuiltinDefaults::v0().llm_model);
+        assert_eq!(LFM25_26B_ASSET, BuiltinDefaults::v0().llm_model);
         assert_eq!(QWEN35_08B_ASSET, "qwen3.5-0.8b");
         assert_eq!(QWEN35_2B_ASSET, "qwen3.5-2b");
         assert_eq!(LLAMA_32_1B_ASSET, "llama-3.2-1b");
@@ -1613,7 +1613,7 @@ mod tests {
     }
 
     #[test]
-    fn from_cache_requires_llama_asset() {
+    fn from_cache_requires_default_lfm_asset() {
         let root = std::env::temp_dir().join(format!(
             "syllabix-llm-missing-{}-{}",
             std::process::id(),
@@ -1640,7 +1640,7 @@ mod tests {
             Ok(_) => panic!("empty manifest should fail"),
         };
         assert!(matches!(err, Error::ModelCache { .. }));
-        assert!(err.to_string().contains("llama-3.2-1b"));
+        assert!(err.to_string().contains("lfm2.5-2.6b"));
     }
 
     #[test]

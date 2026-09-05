@@ -10,7 +10,7 @@ pipeline:
     language: en
   llm:
     provider: local
-    model: llama-3.2-1b
+    model: lfm2.5-2.6b
   tts:
     provider: local
     model: pocket-tts

@@ -7,7 +7,7 @@ Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace   # launch-stack native inference (small / llama-3.2-1b / pocket-tts)
+cargo test --workspace   # launch-stack native inference (small / lfm2.5-2.6b / pocket-tts)
 ./scripts/ci-local.sh    # Linux stand-in for GitHub Actions (fmt through tests, then Linux dist + smoke)
 ./scripts/check-repro.sh # two dist builds; run when the dist profile or packaging script changes
 ```
@@ -34,10 +34,11 @@ Cache directory:
 | --- | --- | --- |
 | First default `run` | Silero VAD | https://github.com/snakers4/silero-vad |
 | | Whisper `small` | https://huggingface.co/ggerganov/whisper.cpp |
-| | Llama 3.2 1B Instruct Q4_K_M | https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF |
+| | LFM2.5-2.6B QAD Q4_0 | https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF |
 | | Pocket TTS English ONNX/tokenizer/fixed voice | https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts |
 | `pipeline.tts.model` `kokoro` | Kokoro + default voice | https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX |
 | `pipeline.stt.model` other than `small` | Matching `ggml-*.bin` | https://huggingface.co/ggerganov/whisper.cpp |
+| `pipeline.llm.model` `llama-3.2-1b` | Q4_K_M GGUF | https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF |
 | `pipeline.llm.model` `qwen3.5-0.8b` | Q4_K_M GGUF | https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF |
 | `pipeline.llm.model` `qwen3.5-2b` | Q4_K_M GGUF | https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF |
 | `pipeline.tts.model` `qwen3-0.6` | Backbone GGUF + speech-tokenizer mmproj | https://huggingface.co/mradermacher/Qwen3-TTS-12Hz-0.6B-Base-GGUF |

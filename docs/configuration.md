@@ -10,9 +10,13 @@ Unknown keys fail at load.
 | --- | --- |
 | VAD | Silero (threshold 0.5, min speech 100 ms, end silence 350 ms, Whisper preroll 200 ms) |
 | STT | whisper.cpp `small`, language `en` |
-| LLM | llama.cpp, Llama 3.2 1B, thinking off |
+| LLM | llama.cpp, LFM2.5-2.6B, thinking off (LFM always thinks internally; think tags are stripped before TTS) |
 | TTS | Kokoro |
 | Echo | Full-duplex AEC3, on |
+
+Launch contract: the default is the best M4 16 GB combination for minimal
+delight (whisper `small` + `lfm2.5-2.6b` + Pocket TTS; evidence in
+`docs/eval/runs/` and `docs/reference-profiles.md`).
 
 `run --barge-in` is a CLI flag, not a yaml key. Off by default.
 
@@ -33,7 +37,7 @@ pipeline:
     language: en
   llm:
     provider: local
-    model: llama-3.2-1b
+    model: lfm2.5-2.6b
     thinking: false
     # optional; omit for the launch default. `{language}` → STT language name.
     system_prompt: "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji."
@@ -67,10 +71,10 @@ Omit any VAD tunable to keep the launch default. First `run` fetches only the se
 
 | `model` | Notes |
 | --- | --- |
-| `llama-3.2-1b` | Default; first-run cache |
+| `lfm2.5-2.6b` | Default; first-run cache (LiquidAI LFM2.5 QAD Q4_0) |
+| `llama-3.2-1b` | Fetched when selected |
 | `qwen3.5-0.8b` | Fetched when selected |
 | `qwen3.5-2b` | Fetched when selected |
-| `lfm2.5-2.6b` | LiquidAI LFM2.5 QAD Q4_0; fetched when selected |
 
 `thinking: true` enables chain-of-thought on `qwen3.5-2b` only (rejected for every other model). Thinking text is never spoken and is hidden in the TUI. Unknown local ids fail at load.
 

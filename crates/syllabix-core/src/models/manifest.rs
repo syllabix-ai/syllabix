@@ -55,8 +55,8 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// Launch stack: Silero, whisper.cpp `small`, Llama 3.2 1B (default),
-    /// and Pocket TTS. Qwen3.5 and other local TTS models are yaml-selectable.
+    /// Launch stack: Silero, whisper.cpp `small`, LFM2.5-2.6B (default),
+    /// and Pocket TTS. Llama 3.2 1B / Qwen3.5 and Kokoro / Qwen3-TTS are yaml-selectable.
     pub fn v0() -> Self {
         Self {
             version: 1,
@@ -253,12 +253,10 @@ impl Manifest {
                     "202c1fbf3a0f00b7586ca45b8328d696cc6cd980c3798979eaa4fefe8efd8320",
                     401_129_632,
                 ),
-                // LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF.
-                // Spike-only native suite id (`lfm2.5-2.6b`); not a yaml
-                // `pipeline.llm.model` choice until a later phase graduates
-                // it. SHA-256 is the HF LFS oid; size is the LFS/XET byte
+                // LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF (default LLM).
+                // SHA-256 is the HF LFS oid; size is the LFS/XET byte
                 // count. License is `lfm1.0` (founder exception to the
-                // open-weights filter for this spike).
+                // open-weights filter for this default).
                 asset(
                     "lfm2.5-2.6b",
                     ModelLayer::Llm,

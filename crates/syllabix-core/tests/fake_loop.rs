@@ -203,7 +203,7 @@ fn stop_after_turns_shuts_the_loop_down() {
 fn thirty_turns_config_helper_matches_launch_defaults() {
     let cfg = LoopConfig::thirty_turns();
     assert_eq!(cfg.mode, LoopMode::StopAfterTurns(30));
-    assert_eq!(cfg.defaults.llm_model, "llama-3.2-1b");
+    assert_eq!(cfg.defaults.llm_model, "lfm2.5-2.6b");
 }
 
 #[test]
