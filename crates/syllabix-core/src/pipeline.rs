@@ -64,6 +64,20 @@ pub enum LoopEvent {
         /// Last token of the generation.
         is_last: bool,
     },
+    /// Assistant turn started thinking (SpeechEnd committed). The mic is
+    /// muted from here until speaking starts, even with `--barge-in`.
+    Thinking {
+        /// Turn id.
+        turn: TurnId,
+    },
+    /// Native echo-cancellation state changed. A degraded reference requires
+    /// restarting the live session to recreate the full-duplex device path.
+    Aec {
+        /// Whether AEC is actively processing the speaker reference.
+        active: bool,
+        /// Whether recovery requires restarting the live session.
+        restart_required: bool,
+    },
     /// Developer-harness trace evidence. It is never forwarded to TTS.
     Tool {
         /// Turn that caused the call.
@@ -389,6 +403,9 @@ struct Shared {
     turn_debug: Option<TurnDebug>,
     controls: RuntimeControls,
     pause_vad: AtomicBool,
+    /// True from SpeechEnd until the first synthesized audio for the turn.
+    /// While set the mic stays muted even with `--barge-in` on.
+    thinking: AtomicBool,
     flush_playback: AtomicBool,
     assistant_turn: Mutex<Option<TurnId>>,
     interrupted: Mutex<HashSet<TurnId>>,
@@ -415,6 +432,7 @@ impl Shared {
             turn_debug,
             controls,
             pause_vad: AtomicBool::new(false),
+            thinking: AtomicBool::new(false),
             flush_playback: AtomicBool::new(false),
             assistant_turn: Mutex::new(None),
             interrupted: Mutex::new(HashSet::new()),
@@ -441,8 +459,22 @@ impl Shared {
 
     fn mark_assistant(&self, turn: TurnId) {
         *self.assistant_turn.lock().expect("assistant turn") = Some(turn);
-        if !self.controls.barge_in() {
-            self.pause_vad.store(true, Ordering::SeqCst);
+        // Thinking mutes the mic unconditionally. Speaking re-applies the
+        // barge-in flag when the first audio arrives.
+        self.thinking.store(true, Ordering::SeqCst);
+        self.pause_vad.store(true, Ordering::SeqCst);
+        self.emit(LoopEvent::Thinking { turn });
+    }
+
+    fn clear_thinking(&self) {
+        if self.thinking.swap(false, Ordering::SeqCst) {
+            let active = self
+                .assistant_turn
+                .lock()
+                .expect("assistant turn")
+                .is_some();
+            self.pause_vad
+                .store(active && !self.controls.barge_in(), Ordering::SeqCst);
         }
     }
 
@@ -450,12 +482,17 @@ impl Shared {
         let mut slot = self.assistant_turn.lock().expect("assistant turn");
         if *slot == Some(turn) {
             *slot = None;
+            self.thinking.store(false, Ordering::SeqCst);
             self.pause_vad.store(false, Ordering::SeqCst);
             self.controls.arm_idle();
         }
     }
 
     fn sync_barge_in(&self) {
+        if self.thinking.load(Ordering::SeqCst) {
+            self.pause_vad.store(true, Ordering::SeqCst);
+            return;
+        }
         let active = self
             .assistant_turn
             .lock()
@@ -478,6 +515,7 @@ impl Shared {
             let mut slot = self.assistant_turn.lock().expect("assistant turn");
             slot.take()
         };
+        self.thinking.store(false, Ordering::SeqCst);
         self.pause_vad.store(false, Ordering::SeqCst);
         cancel.cancel_generation();
         self.flush_playback.store(true, Ordering::SeqCst);
@@ -602,6 +640,8 @@ impl Shared {
                 None
             }
         };
+        // First audio ends thinking: speaking re-applies the barge-in flag.
+        self.clear_thinking();
         if let Some(timings) = timings {
             if let Some(debug) = &self.turn_debug {
                 if let Err(err) = debug.complete(chunk.turn, timings) {
@@ -1358,6 +1398,10 @@ fn sink_loop<K: AudioSink>(
                     }
                     continue;
                 }
+                // Enter speaking before a sink can block on the first audio
+                // chunk. With --barge-in this re-opens VAD so a new
+                // SpeechStart can cancel the blocked playback.
+                shared.clear_thinking();
                 match sink.play(audio.clone(), cancel) {
                     Ok(()) => {
                         shared.emit(LoopEvent::Playback { playing: true });
@@ -1655,6 +1699,28 @@ mod tests {
         assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
         controls.clock().advance(Duration::from_secs(5));
         assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+    }
+
+    #[test]
+    fn thinking_mutes_vad_even_with_barge_in() {
+        let shared = Shared::new(None, None, RuntimeControls::new(true), "local", None);
+        shared.mark_assistant(TurnId(0));
+        assert!(shared.thinking.load(Ordering::SeqCst));
+        assert!(shared.pause_vad.load(Ordering::SeqCst));
+
+        let chunk = SynthesizedAudio {
+            turn: TurnId(0),
+            generation: crate::types::GenerationId(0),
+            index: 0,
+            samples: vec![1],
+            is_last: false,
+        };
+        shared.note_audio(&chunk, Instant::now(), &Cancel::new());
+        assert!(!shared.thinking.load(Ordering::SeqCst));
+        assert!(
+            !shared.pause_vad.load(Ordering::SeqCst),
+            "speaking with --barge-in listens"
+        );
     }
 
     fn run_turns(n: usize) -> LoopReport {

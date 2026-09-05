@@ -19,6 +19,7 @@ use crate::audio::echo::{EchoCalibration, EchoController, EchoReference};
 use crate::audio::ring::{device_ring_capacity_samples, SampleRing};
 use crate::cancel::Cancel;
 use crate::error::{Error, Result};
+use crate::pipeline::LoopEvent;
 use crate::providers::{AudioCapture, AudioSink};
 use crate::turn_debug::PlaybackWatch;
 use crate::types::{AudioFrame, GenerationId, SynthesizedAudio, TurnId};
@@ -465,6 +466,7 @@ pub struct NativeCapture {
     conv: PcmConverter,
     echo: Option<EchoController>,
     echo_status: EchoCalibration,
+    aec_events: Option<mpsc::Sender<LoopEvent>>,
     split: FrameSplitter,
     pending: Vec<AudioFrame>,
     pcm_tap: bool,
@@ -478,15 +480,26 @@ pub struct NativeCapture {
 impl NativeCapture {
     /// Open the selected default (or first usable) input device.
     pub fn open() -> Result<Self> {
-        Self::open_inner(None)
+        Self::open_inner(None, None)
     }
 
     /// Open the microphone with full-duplex AEC fed by the speaker callback.
     pub fn open_with_echo(reference: EchoReference) -> Result<Self> {
-        Self::open_inner(Some(reference))
+        Self::open_inner(Some(reference), None)
     }
 
-    fn open_inner(reference: Option<EchoReference>) -> Result<Self> {
+    /// Open with AEC and report live calibration changes to the TUI.
+    pub fn open_with_echo_and_events(
+        reference: EchoReference,
+        events: Option<mpsc::Sender<LoopEvent>>,
+    ) -> Result<Self> {
+        Self::open_inner(Some(reference), events)
+    }
+
+    fn open_inner(
+        reference: Option<EchoReference>,
+        aec_events: Option<mpsc::Sender<LoopEvent>>,
+    ) -> Result<Self> {
         let inv = CpalInventory::new();
         let choice = select_input(&inv)?;
         let opened = spawn_input(choice)?;
@@ -502,6 +515,7 @@ impl NativeCapture {
             conv: PcmConverter::new(opened.device_format, PcmFormat::v0())?,
             echo,
             echo_status: EchoCalibration::WaitingForPlayback,
+            aec_events,
             split: FrameSplitter::new(),
             pending: Vec::new(),
             pcm_tap: false,
@@ -576,7 +590,19 @@ impl AudioCapture for NativeCapture {
                 let clean = echo.process_capture(&converted)?;
                 let status = echo.calibration();
                 if status != self.echo_status {
-                    report_echo_status(status);
+                    if let Some(events) = &self.aec_events {
+                        let (active, restart_required) = match status {
+                            EchoCalibration::WaitingForPlayback | EchoCalibration::Calibrating => {
+                                (false, false)
+                            }
+                            EchoCalibration::Active => (true, false),
+                            EchoCalibration::Degraded => (false, true),
+                        };
+                        let _ = events.send(LoopEvent::Aec {
+                            active,
+                            restart_required,
+                        });
+                    }
                     self.echo_status = status;
                 }
                 let capture_i16 = if self.pcm_tap {
@@ -602,23 +628,6 @@ impl AudioCapture for NativeCapture {
             let i16s = f32_to_i16(&clean);
             let frames = self.split.push(&i16s)?;
             self.pending = self.attach_capture_pcm(frames, &capture_i16);
-        }
-    }
-}
-
-fn report_echo_status(status: EchoCalibration) {
-    match status {
-        EchoCalibration::WaitingForPlayback => {}
-        EchoCalibration::Calibrating => {
-            eprintln!("echo: calibrating automatically; microphone remains open");
-        }
-        EchoCalibration::Active => {
-            eprintln!("echo: active");
-        }
-        EchoCalibration::Degraded => {
-            eprintln!(
-                "echo: speaker reference lost; microphone remains open. Use headphones if self-echo occurs."
-            );
         }
     }
 }
@@ -902,6 +911,7 @@ mod tests {
             conv: PcmConverter::new(device_format, PcmFormat::v0()).expect("v0 converter"),
             echo: None,
             echo_status: EchoCalibration::WaitingForPlayback,
+            aec_events: None,
             split: FrameSplitter::new(),
             pending: Vec::new(),
             pcm_tap: false,

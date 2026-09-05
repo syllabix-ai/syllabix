@@ -11,7 +11,12 @@ pub struct TranscriptUi {
     current_agent: Option<(TurnId, String)>,
     think: ThinkFilter,
     latency: String,
-    tool_call_count: usize,
+    spoken_reply_turn: Option<TurnId>,
+    thinking: bool,
+    using_tools: bool,
+    display_queue: Vec<String>,
+    aec_active: bool,
+    aec_restart_required: bool,
 }
 
 #[cfg_attr(coverage, allow(dead_code))]
@@ -20,6 +25,19 @@ impl TranscriptUi {
     pub fn apply(&mut self, event: LoopEvent) {
         match event {
             LoopEvent::Ready | LoopEvent::Playback { .. } => {}
+            LoopEvent::Thinking { .. } => {
+                self.flush_agent();
+                self.thinking = true;
+                self.using_tools = false;
+                self.spoken_reply_turn = None;
+            }
+            LoopEvent::Aec {
+                active,
+                restart_required,
+            } => {
+                self.aec_active = active;
+                self.aec_restart_required = restart_required;
+            }
             LoopEvent::Partial { turn, text } => {
                 self.partial_user = Some((turn, text));
             }
@@ -32,13 +50,18 @@ impl TranscriptUi {
                 if matches!(&self.partial_user, Some((id, _)) if *id == turn) {
                     self.partial_user = None;
                 }
+                self.thinking = true;
+                self.using_tools = false;
+                self.spoken_reply_turn = None;
                 // Non-English turns carry a visible language tag (fixed or
                 // auto-detected); plain English stays untagged.
-                if language.is_empty() || language == "en" {
-                    self.lines.push(format!("You: {text}"));
+                let line = if language.is_empty() || language == "en" {
+                    format!("You: {text}")
                 } else {
-                    self.lines.push(format!("You [{language}]: {text}"));
-                }
+                    format!("You [{language}]: {text}")
+                };
+                self.lines.push(line.clone());
+                self.display_queue.push(line);
             }
             LoopEvent::Assistant {
                 turn,
@@ -49,34 +72,73 @@ impl TranscriptUi {
                     self.flush_agent();
                 }
                 let spoken = self.think.push(&text, is_last);
+                if !spoken.is_empty() {
+                    self.thinking = false;
+                    self.using_tools = false;
+                    self.spoken_reply_turn = Some(turn);
+                }
                 match &mut self.current_agent {
                     Some((id, buf)) if *id == turn => buf.push_str(&spoken),
                     _ => self.current_agent = Some((turn, spoken)),
                 }
                 if is_last {
                     self.flush_agent();
+                    self.thinking = false;
                 }
             }
-            LoopEvent::Tool { event, .. } => {
-                if event.kind == "call" {
-                    self.tool_call_count += 1;
+            LoopEvent::Tool { turn, event } => {
+                if self.spoken_reply_turn == Some(turn) {
+                    return;
+                }
+                match event.kind.as_str() {
+                    "call" => {
+                        self.using_tools = true;
+                        self.thinking = false;
+                    }
+                    "result" => {
+                        self.using_tools = false;
+                        self.thinking = true;
+                    }
+                    _ => {}
                 }
             }
             LoopEvent::Timings { timings, .. } => {
                 self.latency = timings.format_line();
+                self.thinking = false;
+                self.using_tools = false;
             }
+        }
+    }
+
+    pub fn is_thinking(&self) -> bool {
+        self.thinking
+    }
+    pub fn is_using_tools(&self) -> bool {
+        self.using_tools
+    }
+    pub fn take_display(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.display_queue)
+    }
+    pub fn agent_stream(&self) -> Option<(TurnId, String)> {
+        self.current_agent.clone()
+    }
+
+    fn aec_pill(&self) -> &'static str {
+        if self.aec_active {
+            "AEC ● on"
+        } else if self.aec_restart_required {
+            "AEC ○ off — restart to fix"
+        } else {
+            "AEC ○ off"
         }
     }
 
     fn flush_agent(&mut self) {
         if let Some((_, text)) = self.current_agent.take() {
-            if self.tool_call_count > 0 {
-                self.lines
-                    .push(format!("tools-called:{}", self.tool_call_count));
-                self.tool_call_count = 0;
-            }
             if !text.is_empty() {
-                self.lines.push(format!("Agent: {text}"));
+                let line = format!("Agent: {text}");
+                self.lines.push(line.clone());
+                self.display_queue.push(line);
             }
         }
         self.think = ThinkFilter::default();
@@ -93,11 +155,7 @@ impl TranscriptUi {
         if let Some((_, text)) = &self.current_agent {
             if !text.is_empty() {
                 lines.push(format!("Agent: {text}"));
-            } else if self.think.in_think() {
-                lines.push("Agent: …".into());
             }
-        } else if self.think.in_think() {
-            lines.push("Agent: …".into());
         }
         if lines.is_empty() {
             "Listening… speak to start. q or Ctrl+C to quit.".into()
@@ -143,24 +201,32 @@ mod live_terminal {
 
     struct InlineRenderer {
         ui: TranscriptUi,
-        printed_lines: usize,
         ready: bool,
         playing: bool,
         footer_drawn: bool,
         partial_visible: bool,
         last_mic_muted: bool,
+        footer_text: Option<(String, String)>,
+        hint_shown: bool,
+        seen_agent: String,
+        pending_agent: String,
+        agent_open: bool,
     }
 
     impl InlineRenderer {
         fn new() -> Self {
             Self {
                 ui: TranscriptUi::default(),
-                printed_lines: 0,
                 ready: false,
                 playing: false,
                 footer_drawn: false,
                 partial_visible: false,
                 last_mic_muted: false,
+                footer_text: None,
+                hint_shown: false,
+                seen_agent: String::new(),
+                pending_agent: String::new(),
+                agent_open: false,
             }
         }
 
@@ -194,20 +260,72 @@ mod live_terminal {
             Ok(())
         }
 
-        fn footer(&self, controls: &RuntimeControls) -> (String, String) {
-            let status = if controls.mic_muted() {
-                "(mic muted — press u to listen)".to_string()
-            } else if controls.agent_muted() {
-                "(agent muted, listening...)".to_string()
-            } else if controls.speaker_muted() {
-                "(speaker muted, agent responding)".to_string()
-            } else if self.playing && controls.barge_in() {
-                "(audio playing, listening)".to_string()
-            } else if self.playing {
-                "(audio playing, enable barge-in to listen and interrupt)".to_string()
+        fn commit_live_reply(&mut self) {
+            self.seen_agent.clear();
+            self.pending_agent.clear();
+            self.agent_open = false;
+        }
+
+        fn queue_agent_text(&mut self, text: &str) {
+            if text.len() < self.seen_agent.len() || !text.starts_with(&self.seen_agent) {
+                self.seen_agent.clear();
+                self.pending_agent.clear();
+                self.pending_agent.push_str(text);
+                self.seen_agent.push_str(text);
+                return;
+            }
+            let suffix = &text[self.seen_agent.len()..];
+            self.pending_agent.push_str(suffix);
+            self.seen_agent.push_str(suffix);
+        }
+
+        fn flush_paragraphs(
+            &mut self,
+            out: &mut impl Write,
+            final_fragment: bool,
+            controls: &RuntimeControls,
+        ) -> std::io::Result<()> {
+            let ready_at = if final_fragment {
+                self.pending_agent.len()
             } else {
-                "(listening...)".to_string()
+                self.pending_agent.rfind('\n').map(|i| i + 1).unwrap_or(0)
             };
+            if ready_at == 0 {
+                return Ok(());
+            }
+            let remainder = self.pending_agent.split_off(ready_at);
+            let paragraph = std::mem::replace(&mut self.pending_agent, remainder);
+            self.clear_footer(out)?;
+            if !self.agent_open {
+                write!(out, "Agent: ")?;
+                self.agent_open = true;
+            }
+            write_terminal_text(out, &paragraph)?;
+            if !paragraph.ends_with('\n') {
+                write!(out, "\r\n")?;
+            }
+            self.draw_footer_at_cursor(out, controls)
+        }
+
+        fn footer(&self, controls: &RuntimeControls) -> (String, String) {
+            let (mic, agent_pill) = if controls.mic_muted() {
+                ("mic ◌ muted", "agent ○ idle (press u to listen)")
+            } else if controls.agent_muted() {
+                ("mic ● live", "agent ○ idle (agent muted)")
+            } else if controls.speaker_muted() {
+                ("mic ● live", "agent ○ idle")
+            } else if self.ui.is_using_tools() {
+                ("mic ◌ muted", "agent ⚙ using tools")
+            } else if self.ui.is_thinking() {
+                ("mic ◌ muted", "agent … thinking")
+            } else if self.playing && controls.barge_in() {
+                ("mic ● live", "agent 🔊 speaking — talk to interrupt")
+            } else if self.playing {
+                ("mic ◌ muted", "agent 🔊 speaking — press b for barge-in")
+            } else {
+                ("mic ● live", "agent ○ idle")
+            };
+            let status = format!("{mic}  ·  {agent_pill}  ·  {}", self.ui.aec_pill());
             let speaker = if controls.speaker_muted() {
                 "unmute"
             } else {
@@ -229,7 +347,7 @@ mod live_terminal {
             )
         }
 
-        fn draw_footer(
+        fn draw_footer_at_cursor(
             &mut self,
             out: &mut impl Write,
             controls: &RuntimeControls,
@@ -237,12 +355,35 @@ mod live_terminal {
             if !self.ready {
                 return Ok(());
             }
-            self.clear_footer(out)?;
-            let (status, help) = self.footer(controls);
-            write!(out, "{status}\r\n{help}")?;
+            self.draw_footer_text(out, self.footer(controls))
+        }
+
+        fn draw_footer_text(
+            &mut self,
+            out: &mut impl Write,
+            text: (String, String),
+        ) -> std::io::Result<()> {
+            write!(out, "{}\r\n{}", text.0, text.1)?;
             out.flush()?;
             self.footer_drawn = true;
+            self.footer_text = Some(text);
             Ok(())
+        }
+
+        fn refresh_footer(
+            &mut self,
+            out: &mut impl Write,
+            controls: &RuntimeControls,
+        ) -> std::io::Result<()> {
+            if !self.ready {
+                return Ok(());
+            }
+            let next = self.footer(controls);
+            if self.footer_drawn && self.footer_text.as_ref() == Some(&next) {
+                return Ok(());
+            }
+            self.clear_footer(out)?;
+            self.draw_footer_text(out, next)
         }
 
         fn apply(
@@ -251,40 +392,56 @@ mod live_terminal {
             out: &mut impl Write,
             controls: &RuntimeControls,
         ) -> std::io::Result<()> {
-            match event {
-                LoopEvent::Ready => self.ready = true,
-                LoopEvent::Playback { playing } => self.playing = playing,
-                LoopEvent::Timings { .. } => self.ui.apply(event),
-                LoopEvent::Partial { .. } => {
-                    self.clear_footer(out)?;
-                    self.clear_partial(out)?;
-                    self.ui.apply(event);
-                    if let Some(line) = self.ui.transcript_text().lines().last() {
-                        write!(out, "{line}\r\n")?;
-                        self.partial_visible = true;
-                    }
+            if matches!(event, LoopEvent::Partial { .. }) {
+                self.clear_footer(out)?;
+                self.clear_partial(out)?;
+                self.ui.apply(event);
+                if let Some(line) = self.ui.transcript_text().lines().last() {
+                    write!(out, "{line}\r\n")?;
+                    self.partial_visible = true;
                 }
-                event => {
-                    self.clear_footer(out)?;
-                    self.clear_partial(out)?;
-                    let is_inflight_assistant =
-                        matches!(&event, LoopEvent::Assistant { is_last: false, .. });
-                    self.ui.apply(event);
-                    if is_inflight_assistant {
-                        return self.draw_footer(out, controls);
-                    }
-                    let transcript = self.ui.transcript_text();
-                    let lines: Vec<_> = transcript.lines().collect();
-                    for line in &lines[self.printed_lines.min(lines.len())..] {
-                        write!(out, "{line}\r\n")?;
-                    }
-                    self.printed_lines = lines.len();
-                }
+                return self.refresh_footer(out, controls);
             }
-            self.draw_footer(out, controls)
+            let playback_ended = matches!(&event, LoopEvent::Playback { playing: false });
+            if matches!(&event, LoopEvent::Ready) {
+                self.ready = true;
+            }
+            if let LoopEvent::Playback { playing } = &event {
+                self.playing = *playing;
+            }
+            self.ui.apply(event);
+
+            let mut final_agent = None;
+            for line in self.ui.take_display() {
+                if let Some(text) = line.strip_prefix("Agent: ") {
+                    final_agent = Some(text.to_owned());
+                    continue;
+                }
+                self.commit_live_reply();
+                self.clear_footer(out)?;
+                self.clear_partial(out)?;
+                write!(out, "{line}\r\n")?;
+            }
+            if self.ready && !self.hint_shown {
+                write!(out, "Listening… speak to start. q or Ctrl+C to quit.\r\n")?;
+                self.hint_shown = true;
+            }
+            if let Some((_, text)) = self.ui.agent_stream() {
+                self.queue_agent_text(&text);
+            }
+            let final_fragment = final_agent.is_some();
+            if let Some(text) = final_agent {
+                self.queue_agent_text(&text);
+            }
+            self.flush_paragraphs(out, final_fragment, controls)?;
+            if playback_ended {
+                self.commit_live_reply();
+            }
+            self.refresh_footer(out, controls)
         }
 
         fn finish(&mut self, out: &mut impl Write, show_stats: bool) -> std::io::Result<()> {
+            self.commit_live_reply();
             self.clear_footer(out)?;
             if show_stats && !self.ui.latency_line().contains('—') {
                 write!(out, "stats: {}\r\n", compact_stats(self.ui.latency_line()))?;
@@ -300,6 +457,17 @@ mod live_terminal {
             .replace("TTFB", "tts")
     }
 
+    fn write_terminal_text(out: &mut impl Write, text: &str) -> std::io::Result<()> {
+        for piece in text.split_inclusive('\n') {
+            if let Some(line) = piece.strip_suffix('\n') {
+                write!(out, "{}\r\n", line.strip_suffix('\r').unwrap_or(line))?;
+            } else {
+                write!(out, "{piece}")?;
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     #[test]
     fn final_stats_are_compact() {
@@ -307,6 +475,14 @@ mod live_terminal {
             compact_stats("STT 375ms  TTFT 255ms  TTFB 1.67s  total 7.64s"),
             "stt 375ms  llm 255ms  tts 1.67s  total 7.64s"
         );
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn model_newlines_become_terminal_crlf() {
+        let mut out = Vec::new();
+        write_terminal_text(&mut out, "one\ntwo\n\nthree").expect("write model text");
+        assert_eq!(String::from_utf8(out).unwrap(), "one\r\ntwo\r\n\r\nthree");
     }
 
     pub fn run_conversation_tui(config: AgentConfig, cancel: Cancel, barge_in: bool) -> Result<()> {
@@ -347,7 +523,7 @@ mod live_terminal {
             if raw_mode && controls.mic_muted() != renderer.last_mic_muted {
                 renderer.last_mic_muted = controls.mic_muted();
                 renderer
-                    .draw_footer(&mut out, &controls)
+                    .refresh_footer(&mut out, &controls)
                     .map_err(Error::from)?;
             }
             if raw_mode && event::poll(Duration::from_millis(50)).map_err(Error::from)? {
@@ -382,7 +558,7 @@ mod live_terminal {
                             }
                         }
                         renderer
-                            .draw_footer(&mut out, &controls)
+                            .refresh_footer(&mut out, &controls)
                             .map_err(Error::from)?;
                     }
                 }
@@ -481,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_events_render_as_compact_summary() {
+    fn tool_events_stay_out_of_the_transcript() {
         let mut ui = TranscriptUi::default();
         // User turn so flush_agent has something to flush.
         ui.apply(LoopEvent::User {
@@ -509,9 +685,8 @@ mod tests {
             is_last: true,
         });
         let text = ui.transcript_text();
-        assert!(text.contains("tools-called:2"), "got: {text}");
         assert!(text.contains("Agent: Done."), "got: {text}");
-        // Raw tool detail must not appear.
+        assert!(!text.contains("tools-called:"), "got: {text}");
         assert!(!text.contains("exit:"), "got: {text}");
         assert!(!text.contains("[tool"), "got: {text}");
     }
@@ -529,7 +704,7 @@ mod tests {
             text: "<think>plan".into(),
             is_last: false,
         });
-        assert_eq!(ui.transcript_text(), "You: hey\nAgent: …");
+        assert_eq!(ui.transcript_text(), "You: hey");
         ui.apply(LoopEvent::Assistant {
             turn: TurnId(1),
             text: "</think> I'm well.".into(),
@@ -543,5 +718,21 @@ mod tests {
         let ui = TranscriptUi::default();
         assert!(ui.transcript_text().contains("Listening"));
         assert!(ui.latency_line().contains("STT"));
+    }
+
+    #[test]
+    fn aec_pill_tracks_native_state() {
+        let mut ui = TranscriptUi::default();
+        assert_eq!(ui.aec_pill(), "AEC ○ off");
+        ui.apply(LoopEvent::Aec {
+            active: true,
+            restart_required: false,
+        });
+        assert_eq!(ui.aec_pill(), "AEC ● on");
+        ui.apply(LoopEvent::Aec {
+            active: false,
+            restart_required: true,
+        });
+        assert_eq!(ui.aec_pill(), "AEC ○ off — restart to fix");
     }
 }
