@@ -302,7 +302,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     // Moonshine is English-only: any other language (including `auto`) would
     // mistranslate the `{language}` prompt pin, so reject it here where the
     // field is named.
-    if stt_model == SttModel::MoonshineStreamingSmall && language != crate::moonshine::LANGUAGE {
+    if stt_model.is_moonshine() && language != crate::moonshine::LANGUAGE {
         return Err(Error::Config {
             field: "pipeline.stt.language".into(),
             message: format!("unsupported value {language:?} (allowed: \"en\" with this model)"),
@@ -619,7 +619,7 @@ fn parse_stt_model(value: &str) -> Result<SttModel> {
         unsupported(
             "pipeline.stt.model",
             value,
-            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small",
+            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small, moonshine-streaming-medium",
         )
     })
 }
@@ -1254,20 +1254,34 @@ pipeline:
     #[test]
     fn moonshine_model_requires_english_under_local_stt() {
         // Moonshine is English-only even though its provider is uniformly local.
-        let yaml = AgentConfig::v0()
-            .to_yaml()
-            .replace("model: whisper-small", "model: moonshine-streaming-small")
-            .replace("language: en", "language: fr");
-        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
-        assert!(err.to_string().contains("pipeline.stt.language"), "{err}");
-        // The local Moonshine shape parses.
-        let yaml = AgentConfig::v0()
-            .to_yaml()
-            .replace("model: whisper-small", "model: moonshine-streaming-small");
-        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
-        assert_eq!(cfg.stt, SttProvider::Local);
-        assert_eq!(cfg.stt_model, SttModel::MoonshineStreamingSmall);
-        assert_eq!(cfg.language, "en");
+        for (id, expected) in [
+            (
+                "moonshine-streaming-small",
+                SttModel::MoonshineStreamingSmall,
+            ),
+            (
+                "moonshine-streaming-medium",
+                SttModel::MoonshineStreamingMedium,
+            ),
+        ] {
+            let yaml = AgentConfig::v0()
+                .to_yaml()
+                .replace("model: whisper-small", &format!("model: {id}"))
+                .replace("language: en", "language: fr");
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("pipeline.stt.language"),
+                "{id}: {err}"
+            );
+            // The local Moonshine shape parses.
+            let yaml = AgentConfig::v0()
+                .to_yaml()
+                .replace("model: whisper-small", &format!("model: {id}"));
+            let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+            assert_eq!(cfg.stt, SttProvider::Local);
+            assert_eq!(cfg.stt_model, expected);
+            assert_eq!(cfg.language, "en");
+        }
     }
 
     #[test]

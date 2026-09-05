@@ -1,4 +1,4 @@
-//! Moonshine streaming-small STT via ONNX Runtime.
+//! Moonshine streaming STT via ONNX Runtime (small and medium).
 //!
 //! Batch finalize only: one completed VAD [`Utterance`] in, one [`Transcript`]
 //! out — the same contract as [`WhisperStt`](crate::stt::WhisperStt). The VAD
@@ -7,8 +7,9 @@
 //! step; this module proves weights, decode loop, and the SentencePiece-style
 //! tokenizer first.
 //!
-//! Weights are the community INT8 export of
-//! `moonshine-ai/moonshine-streaming-small` (MIT): one encoder plus a first-step
+//! Weights are the community INT8 exports of
+//! `moonshine-ai/moonshine-streaming-small` and
+//! `moonshine-ai/moonshine-streaming-medium` (MIT): one encoder plus a first-step
 //! decoder and a KV-cache decoder, with `tokenizer.json`. English only.
 
 use std::ffi::{CStr, CString};
@@ -34,6 +35,11 @@ pub const ENCODER_ASSET: &str = "moonshine-encoder";
 pub const DECODER_ASSET: &str = "moonshine-decoder";
 pub const DECODER_PAST_ASSET: &str = "moonshine-decoder-past";
 pub const TOKENIZER_ASSET: &str = "moonshine-tokenizer";
+
+pub const MEDIUM_ENCODER_ASSET: &str = "moonshine-medium-encoder";
+pub const MEDIUM_DECODER_ASSET: &str = "moonshine-medium-decoder";
+pub const MEDIUM_DECODER_PAST_ASSET: &str = "moonshine-medium-decoder-past";
+pub const MEDIUM_TOKENIZER_ASSET: &str = "moonshine-medium-tokenizer";
 
 const BOS: i64 = 1;
 const EOS: i64 = 2;
@@ -287,7 +293,7 @@ fn session_outputs(session: &Session) -> Vec<String> {
     session.outputs.iter().map(|o| o.name.clone()).collect()
 }
 
-/// In-process Moonshine streaming-small adapter (batch finalize).
+/// In-process Moonshine streaming adapter (batch finalize; small or medium).
 pub struct MoonshineStt {
     encoder: Session,
     decoder: Session,
@@ -305,21 +311,38 @@ pub struct MoonshineStt {
 }
 
 impl MoonshineStt {
-    /// Resolve the four Moonshine assets and load every graph. Only these
-    /// ids are fetched; the Whisper menu stays untouched on disk.
+    /// Resolve the four Moonshine assets for `model` and load every graph.
+    /// Only the selected size's ids are fetched; Whisper and the other
+    /// Moonshine size stay untouched on disk.
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
         progress: &mut dyn Progress,
         cancel: &Cancel,
+        model: crate::defaults::SttModel,
     ) -> Result<Self> {
+        let ids = match model {
+            crate::defaults::SttModel::MoonshineStreamingSmall => [
+                ENCODER_ASSET,
+                DECODER_ASSET,
+                DECODER_PAST_ASSET,
+                TOKENIZER_ASSET,
+            ],
+            crate::defaults::SttModel::MoonshineStreamingMedium => [
+                MEDIUM_ENCODER_ASSET,
+                MEDIUM_DECODER_ASSET,
+                MEDIUM_DECODER_PAST_ASSET,
+                MEDIUM_TOKENIZER_ASSET,
+            ],
+            other => {
+                return Err(provider(format!(
+                    "MoonshineStt::from_cache requires a Moonshine model, got {}",
+                    other.as_str()
+                )));
+            }
+        };
         let mut paths = Vec::with_capacity(4);
-        for id in [
-            ENCODER_ASSET,
-            DECODER_ASSET,
-            DECODER_PAST_ASSET,
-            TOKENIZER_ASSET,
-        ] {
+        for id in ids {
             let asset = cache
                 .manifest()
                 .asset(id)

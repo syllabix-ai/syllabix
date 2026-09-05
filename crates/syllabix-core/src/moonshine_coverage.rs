@@ -15,6 +15,11 @@ pub const DECODER_ASSET: &str = "moonshine-decoder";
 pub const DECODER_PAST_ASSET: &str = "moonshine-decoder-past";
 pub const TOKENIZER_ASSET: &str = "moonshine-tokenizer";
 
+pub const MEDIUM_ENCODER_ASSET: &str = "moonshine-medium-encoder";
+pub const MEDIUM_DECODER_ASSET: &str = "moonshine-medium-decoder";
+pub const MEDIUM_DECODER_PAST_ASSET: &str = "moonshine-medium-decoder-past";
+pub const MEDIUM_TOKENIZER_ASSET: &str = "moonshine-medium-tokenizer";
+
 /// Placeholder for the native tokenizer type, retained for the public API.
 pub struct MoonshineTokenizer;
 
@@ -29,9 +34,19 @@ impl MoonshineStt {
         _fetcher: &dyn Fetcher,
         _progress: &mut dyn Progress,
         cancel: &Cancel,
+        model: crate::defaults::SttModel,
     ) -> Result<Self> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
+        }
+        if !model.is_moonshine() {
+            return Err(Error::Provider {
+                provider: PROVIDER_NAME,
+                message: format!(
+                    "MoonshineStt::from_cache requires a Moonshine model, got {}",
+                    model.as_str()
+                ),
+            });
         }
         Ok(Self { active_turn: None })
     }
@@ -101,6 +116,9 @@ mod tests {
         assert_eq!(stt.name(), PROVIDER_NAME);
         assert_eq!(stt.language(), LANGUAGE);
         assert!(stt.supports_partials());
+        assert_eq!(ENCODER_ASSET, "moonshine-encoder");
+        assert_eq!(MEDIUM_ENCODER_ASSET, "moonshine-medium-encoder");
+        assert_eq!(MEDIUM_TOKENIZER_ASSET, "moonshine-medium-tokenizer");
     }
 
     #[test]
