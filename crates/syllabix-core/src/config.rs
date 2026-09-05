@@ -17,6 +17,11 @@ use crate::vad::{VadSettings, END_SILENCE, MIN_SPEECH, SPEECH_THRESHOLD, WHISPER
 /// File name written by `init` and optionally read by `run`.
 pub const CONFIG_FILE_NAME: &str = "syllabix.yaml";
 
+/// Default idle duration before the mic auto-mutes (`auto-timeout.mic_mute_ms`).
+pub const DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS: u32 = 180_000;
+/// Default idle duration before `run` exits (`auto-timeout.exit_ms`).
+pub const DEFAULT_AUTO_TIMEOUT_EXIT_MS: u32 = 600_000;
+
 /// Validated agent configuration with one provider selected for each pipeline stage.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentConfig {
@@ -71,6 +76,12 @@ pub struct AgentConfig {
     pub diagnostics_audio: bool,
     /// Diagnostics output directory (`diagnostics.directory`).
     pub diagnostics_directory: PathBuf,
+    /// Idle milliseconds before auto mic-mute (`auto-timeout.mic_mute_ms`).
+    /// `0` disables. Default 180_000 (3 minutes).
+    pub auto_timeout_mic_mute_ms: u32,
+    /// Idle milliseconds before process exit (`auto-timeout.exit_ms`).
+    /// `0` disables. Default 600_000 (10 minutes).
+    pub auto_timeout_exit_ms: u32,
 }
 
 impl AgentConfig {
@@ -103,6 +114,8 @@ impl AgentConfig {
             diagnostics_timestamps: false,
             diagnostics_audio: false,
             diagnostics_directory: PathBuf::from(DEFAULT_TURN_DEBUG_DIR),
+            auto_timeout_mic_mute_ms: DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS,
+            auto_timeout_exit_ms: DEFAULT_AUTO_TIMEOUT_EXIT_MS,
         }
     }
 
@@ -247,7 +260,11 @@ impl Default for AgentConfig {
 
 fn parse_value(value: &Value) -> Result<AgentConfig> {
     let root = mapping(value, ".")?;
-    deny_unknown(root, ".", &["name", "pipeline", "diagnostics"])?;
+    deny_unknown(
+        root,
+        ".",
+        &["name", "pipeline", "diagnostics", "auto-timeout"],
+    )?;
     let name = required_string(root, "name", "name")?;
     let pipeline = mapping(
         root.get("pipeline").ok_or_else(|| missing("pipeline"))?,
@@ -377,6 +394,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     // implies `timestamps: true` — WAVs always ship with their sidecar.
     let (diagnostics_timestamps, diagnostics_audio, diagnostics_directory) =
         parse_diagnostics(root)?;
+    let (auto_timeout_mic_mute_ms, auto_timeout_exit_ms) = parse_auto_timeout(root)?;
 
     Ok(AgentConfig {
         name: name.to_string(),
@@ -400,7 +418,42 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         diagnostics_timestamps,
         diagnostics_audio,
         diagnostics_directory,
+        auto_timeout_mic_mute_ms,
+        auto_timeout_exit_ms,
     })
+}
+
+/// `auto-timeout: {mic_mute_ms, exit_ms}` — optional; defaults 180000 / 600000.
+/// `0` disables that timer. When both are positive, `exit_ms` must be greater
+/// than `mic_mute_ms`.
+fn parse_auto_timeout(root: &serde_yaml::Mapping) -> Result<(u32, u32)> {
+    let Some(value) = root.get("auto-timeout") else {
+        return Ok((
+            DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS,
+            DEFAULT_AUTO_TIMEOUT_EXIT_MS,
+        ));
+    };
+    let block = mapping(value, "auto-timeout")?;
+    deny_unknown(block, "auto-timeout", &["mic_mute_ms", "exit_ms"])?;
+    let mic_mute_ms = optional_timeout_ms(
+        block,
+        "auto-timeout",
+        "mic_mute_ms",
+        DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS,
+    )?;
+    let exit_ms = optional_timeout_ms(
+        block,
+        "auto-timeout",
+        "exit_ms",
+        DEFAULT_AUTO_TIMEOUT_EXIT_MS,
+    )?;
+    if mic_mute_ms > 0 && exit_ms > 0 && exit_ms <= mic_mute_ms {
+        return Err(Error::Config {
+            field: "auto-timeout.exit_ms".into(),
+            message: format!("must be greater than auto-timeout.mic_mute_ms ({mic_mute_ms})"),
+        });
+    }
+    Ok((mic_mute_ms, exit_ms))
 }
 
 /// `diagnostics: {timestamps, audio, directory}` — all optional, all default
@@ -465,6 +518,35 @@ fn required_string<'a>(map: &'a serde_yaml::Mapping, field: &str, key: &str) -> 
     value.as_str().ok_or_else(|| Error::Config {
         field: field.into(),
         message: "must be a string".into(),
+    })
+}
+
+fn optional_timeout_ms(
+    map: &serde_yaml::Mapping,
+    prefix: &str,
+    key: &str,
+    default: u32,
+) -> Result<u32> {
+    let Some(value) = map.get(key) else {
+        return Ok(default);
+    };
+    let field = format!("{prefix}.{key}");
+    let n = if let Some(n) = value.as_u64() {
+        n
+    } else if let Some(n) = value.as_i64() {
+        u64::try_from(n).map_err(|_| Error::Config {
+            field: field.clone(),
+            message: "must be a non-negative integer".into(),
+        })?
+    } else {
+        return Err(Error::Config {
+            field,
+            message: "must be a non-negative integer".into(),
+        });
+    };
+    u32::try_from(n).map_err(|_| Error::Config {
+        field,
+        message: "must be a non-negative integer".into(),
     })
 }
 
@@ -835,6 +917,123 @@ pipeline:
         )
         .expect_err("non-admitted local harness is rejected");
         assert!(err.to_string().contains("developer_harness"));
+    }
+
+    #[test]
+    fn auto_timeout_defaults_when_omitted() {
+        let cfg = AgentConfig::v0();
+        assert_eq!(
+            cfg.auto_timeout_mic_mute_ms,
+            DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS
+        );
+        assert_eq!(cfg.auto_timeout_exit_ms, DEFAULT_AUTO_TIMEOUT_EXIT_MS);
+        let parsed = AgentConfig::parse_yaml(
+            r#"
+name: demo
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm: { provider: local, model: lfm2.5-2.6b }
+  tts: { provider: local, model: pocket-tts }
+"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.auto_timeout_mic_mute_ms, 180_000);
+        assert_eq!(parsed.auto_timeout_exit_ms, 600_000);
+    }
+
+    #[test]
+    fn auto_timeout_zero_disables_each_timer() {
+        let cfg = AgentConfig::parse_yaml(
+            r#"
+name: demo
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm: { provider: local, model: lfm2.5-2.6b }
+  tts: { provider: local, model: pocket-tts }
+auto-timeout:
+  mic_mute_ms: 0
+  exit_ms: 0
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.auto_timeout_mic_mute_ms, 0);
+        assert_eq!(cfg.auto_timeout_exit_ms, 0);
+    }
+
+    #[test]
+    fn auto_timeout_custom_values_parse() {
+        let cfg = AgentConfig::parse_yaml(
+            r#"
+name: demo
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm: { provider: local, model: lfm2.5-2.6b }
+  tts: { provider: local, model: pocket-tts }
+auto-timeout:
+  mic_mute_ms: 60000
+  exit_ms: 120000
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.auto_timeout_mic_mute_ms, 60_000);
+        assert_eq!(cfg.auto_timeout_exit_ms, 120_000);
+    }
+
+    #[test]
+    fn auto_timeout_rejects_exit_not_after_mute() {
+        let err = AgentConfig::parse_yaml(
+            r#"
+name: demo
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm: { provider: local, model: lfm2.5-2.6b }
+  tts: { provider: local, model: pocket-tts }
+auto-timeout:
+  mic_mute_ms: 100000
+  exit_ms: 100000
+"#,
+        )
+        .expect_err("exit must be > mic_mute when both set");
+        assert!(err.to_string().contains("auto-timeout.exit_ms"), "{err}");
+    }
+
+    #[test]
+    fn auto_timeout_rejects_unknown_keys_and_negatives() {
+        let err = AgentConfig::parse_yaml(
+            r#"
+name: demo
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm: { provider: local, model: lfm2.5-2.6b }
+  tts: { provider: local, model: pocket-tts }
+auto-timeout:
+  idle_ms: 1
+"#,
+        )
+        .expect_err("unknown key");
+        assert!(err.to_string().contains("unknown field"), "{err}");
+        let err = AgentConfig::parse_yaml(
+            r#"
+name: demo
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm: { provider: local, model: lfm2.5-2.6b }
+  tts: { provider: local, model: pocket-tts }
+auto-timeout:
+  mic_mute_ms: -1
+"#,
+        )
+        .expect_err("negative");
+        assert!(
+            err.to_string().contains("auto-timeout.mic_mute_ms"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -29,7 +29,16 @@ pub fn run_live(
     events: Option<Sender<LoopEvent>>,
     barge_in: bool,
 ) -> Result<LoopReport> {
-    run_live_with_controls(config, cancel, events, RuntimeControls::new(barge_in))
+    run_live_with_controls(
+        config,
+        cancel,
+        events,
+        RuntimeControls::with_auto_timeout(
+            barge_in,
+            config.auto_timeout_mic_mute_ms,
+            config.auto_timeout_exit_ms,
+        ),
+    )
 }
 
 /// As [`run_live`], with controls that the inline terminal may change while running.
