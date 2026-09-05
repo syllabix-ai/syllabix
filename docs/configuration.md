@@ -133,6 +133,19 @@ Missing or empty key with `provider: online` fails at `run` start before devices
 
 Pocket TTS uses the pinned English SentencePiece tokenizer and the shipped fixed Alba voice; it accepts no user voice data or voice-registration input. Qwen engines read numbers and currency as words (`100` → “one hundred”), speak ten languages via optional `tts.language` (`en`, `zh`, `de`, `it`, `pt`, `es`, `fr`, `ja`, `ko`, `ru`), and pin one voice across sentences. Set `model: kokoro` to use Kokoro instead.
 
+## Auto-timeout
+
+Optional top-level block. When omitted, both timers use the launch defaults.
+`0` disables that timer.
+
+```yaml
+auto-timeout:
+  mic_mute_ms: 180000   # 3 minutes; 0 disables auto mic-mute
+  exit_ms: 600000       # 10 minutes; 0 disables idle exit
+```
+
+The idle clock runs while the agent is listening. It stops on user speech start and restarts after TTS playback finishes (and after skipped turns that never speak). Any keypress resets an armed clock. Auto mic-mute drops capture frames until you press `u` to listen again. When both timers are positive, `exit_ms` must be greater than `mic_mute_ms`.
+
 ## Diagnostics
 
 Yaml-only; default `run` writes nothing.

@@ -50,7 +50,9 @@ mod types;
 mod vad;
 
 pub use cancel::Cancel;
-pub use config::{AgentConfig, CONFIG_FILE_NAME};
+pub use config::{
+    AgentConfig, CONFIG_FILE_NAME, DEFAULT_AUTO_TIMEOUT_EXIT_MS, DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS,
+};
 pub use defaults::{
     BuiltinDefaults, LlmProvider, QueueCaps, SttModel, SttProvider, TtsModel, TtsProvider,
     VadProvider,
@@ -89,8 +91,8 @@ pub use openai::{
     CLOUD_FALLBACK_TEXT, DEFAULT_LLM_BASE_URL, MAX_TOOL_CALLS_PER_TURN, TOOL_LIMIT_TEXT,
 };
 pub use pipeline::{
-    is_blank_stt, run_loop, run_loop_captured, LoopConfig, LoopEvent, LoopMode, LoopReport,
-    PipelineStages, RuntimeControls,
+    is_blank_stt, run_loop, run_loop_captured, AutoTimeoutAction, IdleClock, LoopConfig, LoopEvent,
+    LoopMode, LoopReport, PipelineStages, RuntimeControls,
 };
 pub use pocket_tts::{
     PocketTts, POCKET_TTS_BOS_ASSET, POCKET_TTS_BUNDLE_ASSET, POCKET_TTS_FLOW_ASSET,

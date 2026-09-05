@@ -14,3 +14,8 @@ pipeline:
   tts:
     provider: local
     model: pocket-tts
+
+# Optional idle timers (defaults shown). Set either value to 0 to disable it.
+# auto-timeout:
+#   mic_mute_ms: 180000
+#   exit_ms: 600000

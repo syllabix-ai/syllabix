@@ -1,7 +1,7 @@
 //! In-memory conversation loop: VAD → STT → LLM → TTS → sink with bounded queues.
 
 use std::collections::{BTreeMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -92,6 +92,75 @@ enum SttWork {
     Finalize(Utterance),
 }
 
+/// Result of polling idle auto-timeout thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoTimeoutAction {
+    /// No threshold crossed.
+    None,
+    /// Mic should mute (or just muted).
+    MicMute,
+    /// Process should exit.
+    Exit,
+}
+
+/// Monotonic clock for idle auto-timeout.
+///
+/// Production uses the system clock. Tests inject a manual clock and advance it
+/// without sleeping.
+#[derive(Debug, Clone)]
+pub struct IdleClock(Arc<IdleClockInner>);
+
+#[derive(Debug)]
+enum IdleClockInner {
+    System,
+    Manual { now_ms: AtomicU64 },
+}
+
+impl IdleClock {
+    /// Wall / monotonic system clock (`Instant::now()`).
+    pub fn system() -> Self {
+        Self(Arc::new(IdleClockInner::System))
+    }
+
+    /// Deterministic clock starting at `start_ms` (tests only).
+    pub fn manual(start_ms: u64) -> Self {
+        Self(Arc::new(IdleClockInner::Manual {
+            now_ms: AtomicU64::new(start_ms),
+        }))
+    }
+
+    /// Current time in milliseconds on this clock.
+    pub fn now_ms(&self) -> u64 {
+        match &*self.0 {
+            IdleClockInner::System => {
+                // Relative origin is fine: only deltas matter for idle.
+                static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+                let origin = ORIGIN.get_or_init(Instant::now);
+                Instant::now()
+                    .saturating_duration_since(*origin)
+                    .as_millis() as u64
+            }
+            IdleClockInner::Manual { now_ms } => now_ms.load(Ordering::SeqCst),
+        }
+    }
+
+    /// Advance a manual clock. No-op for the system clock.
+    pub fn advance(&self, delta: Duration) {
+        let IdleClockInner::Manual { now_ms } = &*self.0 else {
+            return;
+        };
+        now_ms.fetch_add(delta.as_millis() as u64, Ordering::SeqCst);
+    }
+
+    /// Jump a manual clock to an absolute millisecond. No-op for system.
+    pub fn set_ms(&self, ms: u64) {
+        let IdleClockInner::Manual { now_ms } = &*self.0 else {
+            return;
+        };
+        now_ms.store(ms, Ordering::SeqCst);
+    }
+}
+
 /// Runtime controls shared by the inline terminal and the voice loop.
 #[derive(Debug, Clone)]
 pub struct RuntimeControls(Arc<RuntimeControlsInner>);
@@ -101,16 +170,55 @@ struct RuntimeControlsInner {
     barge_in: AtomicBool,
     speaker_muted: AtomicBool,
     agent_muted: AtomicBool,
+    mic_muted: AtomicBool,
+    /// `Duration::ZERO` disables.
+    mic_mute_after: Duration,
+    /// `Duration::ZERO` disables.
+    exit_after: Duration,
+    /// `None` means the idle clock is disarmed (active speech/turn).
+    /// Value is [`IdleClock::now_ms`] when armed.
+    idle_since_ms: Mutex<Option<u64>>,
+    clock: IdleClock,
 }
 
 impl RuntimeControls {
-    /// New controls with barge-in set from the command-line default.
+    /// New controls with barge-in set from the command-line default and launch
+    /// auto-timeout defaults (3 min mic mute / 10 min exit).
     pub fn new(barge_in: bool) -> Self {
+        Self::with_auto_timeout(
+            barge_in,
+            crate::config::DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS,
+            crate::config::DEFAULT_AUTO_TIMEOUT_EXIT_MS,
+        )
+    }
+
+    /// New controls with explicit auto-timeout thresholds (`0` disables).
+    pub fn with_auto_timeout(barge_in: bool, mic_mute_ms: u32, exit_ms: u32) -> Self {
+        Self::with_auto_timeout_clock(barge_in, mic_mute_ms, exit_ms, IdleClock::system())
+    }
+
+    /// Like [`with_auto_timeout`], with an injectable clock (tests).
+    pub fn with_auto_timeout_clock(
+        barge_in: bool,
+        mic_mute_ms: u32,
+        exit_ms: u32,
+        clock: IdleClock,
+    ) -> Self {
         Self(Arc::new(RuntimeControlsInner {
             barge_in: AtomicBool::new(barge_in),
             speaker_muted: AtomicBool::new(false),
             agent_muted: AtomicBool::new(false),
+            mic_muted: AtomicBool::new(false),
+            mic_mute_after: Duration::from_millis(u64::from(mic_mute_ms)),
+            exit_after: Duration::from_millis(u64::from(exit_ms)),
+            idle_since_ms: Mutex::new(None),
+            clock,
         }))
+    }
+
+    /// Shared idle clock (advance in tests).
+    pub fn clock(&self) -> &IdleClock {
+        &self.0.clock
     }
 
     pub fn barge_in(&self) -> bool {
@@ -122,6 +230,9 @@ impl RuntimeControls {
     pub fn agent_muted(&self) -> bool {
         self.0.agent_muted.load(Ordering::SeqCst)
     }
+    pub fn mic_muted(&self) -> bool {
+        self.0.mic_muted.load(Ordering::SeqCst)
+    }
     pub fn toggle_barge_in(&self) -> bool {
         !self.0.barge_in.fetch_xor(true, Ordering::SeqCst)
     }
@@ -130,6 +241,58 @@ impl RuntimeControls {
     }
     pub fn toggle_agent_muted(&self) -> bool {
         !self.0.agent_muted.fetch_xor(true, Ordering::SeqCst)
+    }
+
+    /// Clear mic mute and restart the idle clock (listening restored).
+    pub fn unmute_mic(&self) {
+        self.0.mic_muted.store(false, Ordering::SeqCst);
+        self.arm_idle();
+    }
+
+    /// Start or restart the idle clock from now (listening / post-TTS / keypress).
+    pub fn arm_idle(&self) {
+        *self.0.idle_since_ms.lock().expect("idle_since_ms") = Some(self.0.clock.now_ms());
+    }
+
+    /// Stop the idle clock while the user is speaking or a turn is in flight.
+    pub fn disarm_idle(&self) {
+        *self.0.idle_since_ms.lock().expect("idle_since_ms") = None;
+    }
+
+    /// True when the idle clock is armed (listening / post-TTS idle).
+    pub fn idle_armed(&self) -> bool {
+        self.0
+            .idle_since_ms
+            .lock()
+            .expect("idle_since_ms")
+            .is_some()
+    }
+
+    /// Reset the idle clock when it is currently armed (any keypress).
+    pub fn touch_idle(&self) {
+        let mut slot = self.0.idle_since_ms.lock().expect("idle_since_ms");
+        if slot.is_some() {
+            *slot = Some(self.0.clock.now_ms());
+        }
+    }
+
+    /// Check idle thresholds. Mic-mute is sticky until [`unmute_mic`].
+    pub fn poll_auto_timeout(&self) -> AutoTimeoutAction {
+        let since = match *self.0.idle_since_ms.lock().expect("idle_since_ms") {
+            Some(since) => since,
+            None => return AutoTimeoutAction::None,
+        };
+        let elapsed = Duration::from_millis(self.0.clock.now_ms().saturating_sub(since));
+        // Exit wins when both thresholds are crossed in the same poll.
+        if !self.0.exit_after.is_zero() && elapsed >= self.0.exit_after {
+            return AutoTimeoutAction::Exit;
+        }
+        if !self.0.mic_mute_after.is_zero() && elapsed >= self.0.mic_mute_after && !self.mic_muted()
+        {
+            self.0.mic_muted.store(true, Ordering::SeqCst);
+            return AutoTimeoutAction::MicMute;
+        }
+        AutoTimeoutAction::None
     }
 }
 
@@ -288,6 +451,7 @@ impl Shared {
         if *slot == Some(turn) {
             *slot = None;
             self.pause_vad.store(false, Ordering::SeqCst);
+            self.controls.arm_idle();
         }
     }
 
@@ -631,6 +795,7 @@ where
         tts_provider,
         tts_model,
     );
+    config.controls.arm_idle();
     let mut joins: Vec<JoinHandle<()>> = Vec::new();
 
     // Capture → VAD
@@ -816,6 +981,7 @@ fn vad_loop<V: Vad>(
      -> Result<()> {
         for event in &events {
             if let VadEvent::SpeechStart { turn } = event {
+                shared.controls.disarm_idle();
                 shared.interrupt_assistant(cancel);
                 *active = Some(*turn);
                 if let Some(debug) = &shared.turn_debug {
@@ -858,8 +1024,15 @@ fn vad_loop<V: Vad>(
         if cancel.is_shutdown() {
             return;
         }
+        match shared.controls.poll_auto_timeout() {
+            AutoTimeoutAction::Exit => {
+                cancel.shutdown();
+                return;
+            }
+            AutoTimeoutAction::MicMute | AutoTimeoutAction::None => {}
+        }
         shared.sync_barge_in();
-        if shared.pause_vad.load(Ordering::SeqCst) {
+        if shared.pause_vad.load(Ordering::SeqCst) || shared.controls.mic_muted() {
             match rx.recv_timeout(POLL) {
                 Ok(frame) => {
                     // AEC still receives live capture through `NativeCapture`,
@@ -1289,12 +1462,199 @@ mod tests {
         assert!(!controls.barge_in());
         assert!(!controls.speaker_muted());
         assert!(!controls.agent_muted());
+        assert!(!controls.mic_muted());
         assert!(controls.toggle_barge_in());
         assert!(controls.toggle_speaker_muted());
         assert!(controls.toggle_agent_muted());
         assert!(controls.barge_in());
         assert!(controls.speaker_muted());
         assert!(controls.agent_muted());
+    }
+
+    fn controls_with_clock(mic_mute_ms: u32, exit_ms: u32) -> RuntimeControls {
+        RuntimeControls::with_auto_timeout_clock(false, mic_mute_ms, exit_ms, IdleClock::manual(0))
+    }
+
+    #[test]
+    fn auto_timeout_running_exits_after_one_second() {
+        // Timer is armed and running; exit deadline is 1s — no wall sleep.
+        let controls = controls_with_clock(0, 1_000);
+        controls.arm_idle();
+        assert!(controls.idle_armed());
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+
+        controls.clock().advance(Duration::from_millis(999));
+        assert_eq!(
+            controls.poll_auto_timeout(),
+            AutoTimeoutAction::None,
+            "999ms is still under the 1s exit deadline"
+        );
+
+        controls.clock().advance(Duration::from_millis(1));
+        assert_eq!(
+            controls.poll_auto_timeout(),
+            AutoTimeoutAction::Exit,
+            "exactly 1000ms must exit"
+        );
+    }
+
+    #[test]
+    fn auto_timeout_mutes_then_exits_while_idle() {
+        let controls = controls_with_clock(30, 60);
+        controls.arm_idle();
+
+        controls.clock().advance(Duration::from_millis(29));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+
+        controls.clock().advance(Duration::from_millis(1));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::MicMute);
+        assert!(controls.mic_muted());
+        // Sticky: later polls stay None until exit.
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+
+        controls.clock().advance(Duration::from_millis(29));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+        controls.clock().advance(Duration::from_millis(1));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::Exit);
+
+        controls.unmute_mic();
+        assert!(!controls.mic_muted());
+        assert!(controls.idle_armed());
+    }
+
+    #[test]
+    fn auto_timeout_exit_wins_when_both_thresholds_crossed_in_one_poll() {
+        let controls = controls_with_clock(30, 60);
+        controls.arm_idle();
+        controls.clock().advance(Duration::from_millis(60));
+        assert_eq!(
+            controls.poll_auto_timeout(),
+            AutoTimeoutAction::Exit,
+            "skip MicMute when exit is already due"
+        );
+        // Mic may still be unmuted because Exit short-circuits before setting it.
+        assert!(!controls.mic_muted());
+    }
+
+    #[test]
+    fn auto_timeout_disarmed_during_speech_ignores_elapsed_time() {
+        let controls = controls_with_clock(40, 80);
+        controls.arm_idle();
+        controls.disarm_idle();
+        assert!(!controls.idle_armed());
+
+        controls.clock().advance(Duration::from_secs(10));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+        assert!(!controls.mic_muted());
+    }
+
+    #[test]
+    fn auto_timeout_touch_resets_only_when_armed() {
+        let controls = controls_with_clock(40, 0);
+        controls.arm_idle();
+        controls.clock().advance(Duration::from_millis(20));
+        controls.touch_idle();
+        controls.clock().advance(Duration::from_millis(39));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+        controls.clock().advance(Duration::from_millis(1));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::MicMute);
+
+        // Touch while disarmed is a no-op (does not re-arm).
+        let controls = controls_with_clock(10, 0);
+        controls.disarm_idle();
+        controls.touch_idle();
+        assert!(!controls.idle_armed());
+        controls.clock().advance(Duration::from_millis(50));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+    }
+
+    #[test]
+    fn auto_timeout_rearm_after_speech_starts_fresh_window() {
+        let controls = controls_with_clock(50, 100);
+        controls.arm_idle();
+        controls.clock().advance(Duration::from_millis(40));
+        // Speech starts: disarm, then later re-arm after TTS.
+        controls.disarm_idle();
+        controls.clock().advance(Duration::from_millis(1_000));
+        controls.arm_idle();
+        controls.clock().advance(Duration::from_millis(49));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+        controls.clock().advance(Duration::from_millis(1));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::MicMute);
+    }
+
+    #[test]
+    fn auto_timeout_mic_mute_only_when_exit_disabled() {
+        let controls = controls_with_clock(25, 0);
+        controls.arm_idle();
+        controls.clock().advance(Duration::from_millis(25));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::MicMute);
+        controls.clock().advance(Duration::from_secs(60));
+        assert_eq!(
+            controls.poll_auto_timeout(),
+            AutoTimeoutAction::None,
+            "exit disabled: stay muted forever without Exit"
+        );
+        assert!(controls.mic_muted());
+    }
+
+    #[test]
+    fn auto_timeout_exit_only_when_mic_mute_disabled() {
+        let controls = controls_with_clock(0, 40);
+        controls.arm_idle();
+        controls.clock().advance(Duration::from_millis(39));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+        assert!(!controls.mic_muted());
+        controls.clock().advance(Duration::from_millis(1));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::Exit);
+        assert!(!controls.mic_muted());
+    }
+
+    #[test]
+    fn auto_timeout_zero_disables_timers() {
+        let controls = controls_with_clock(0, 0);
+        controls.arm_idle();
+        controls.clock().advance(Duration::from_secs(3_600));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+        assert!(!controls.mic_muted());
+    }
+
+    #[test]
+    fn auto_timeout_unmute_clears_mute_and_restarts_window() {
+        let controls = controls_with_clock(20, 100);
+        controls.arm_idle();
+        controls.clock().advance(Duration::from_millis(20));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::MicMute);
+        assert!(controls.mic_muted());
+
+        controls.unmute_mic();
+        assert!(!controls.mic_muted());
+        // Fresh window from unmute: need another full mute period.
+        controls.clock().advance(Duration::from_millis(19));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+        controls.clock().advance(Duration::from_millis(1));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::MicMute);
+    }
+
+    #[test]
+    fn auto_timeout_double_arm_resets_elapsed() {
+        let controls = controls_with_clock(50, 0);
+        controls.arm_idle();
+        controls.clock().advance(Duration::from_millis(40));
+        controls.arm_idle(); // re-arm as if post-TTS fired again
+        controls.clock().advance(Duration::from_millis(40));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+        controls.clock().advance(Duration::from_millis(10));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::MicMute);
+    }
+
+    #[test]
+    fn auto_timeout_poll_before_arm_is_none() {
+        let controls = controls_with_clock(1, 1);
+        assert!(!controls.idle_armed());
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
+        controls.clock().advance(Duration::from_secs(5));
+        assert_eq!(controls.poll_auto_timeout(), AutoTimeoutAction::None);
     }
 
     fn run_turns(n: usize) -> LoopReport {

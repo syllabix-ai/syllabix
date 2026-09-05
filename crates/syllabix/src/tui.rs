@@ -148,6 +148,7 @@ mod live_terminal {
         playing: bool,
         footer_drawn: bool,
         partial_visible: bool,
+        last_mic_muted: bool,
     }
 
     impl InlineRenderer {
@@ -159,6 +160,7 @@ mod live_terminal {
                 playing: false,
                 footer_drawn: false,
                 partial_visible: false,
+                last_mic_muted: false,
             }
         }
 
@@ -193,7 +195,9 @@ mod live_terminal {
         }
 
         fn footer(&self, controls: &RuntimeControls) -> (String, String) {
-            let status = if controls.agent_muted() {
+            let status = if controls.mic_muted() {
+                "(mic muted — press u to listen)".to_string()
+            } else if controls.agent_muted() {
                 "(agent muted, listening...)".to_string()
             } else if controls.speaker_muted() {
                 "(speaker muted, agent responding)".to_string()
@@ -219,7 +223,10 @@ mod live_terminal {
             } else {
                 "barge-on"
             };
-            (status, format!("q:quit  m:{speaker}  a:{agent}  b:{barge}"))
+            (
+                status,
+                format!("q:quit  m:{speaker}  a:{agent}  b:{barge}  u:mic"),
+            )
         }
 
         fn draw_footer(
@@ -305,7 +312,11 @@ mod live_terminal {
     pub fn run_conversation_tui(config: AgentConfig, cancel: Cancel, barge_in: bool) -> Result<()> {
         let (event_tx, event_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
-        let controls = RuntimeControls::new(barge_in);
+        let controls = RuntimeControls::with_auto_timeout(
+            barge_in,
+            config.auto_timeout_mic_mute_ms,
+            config.auto_timeout_exit_ms,
+        );
         let loop_cancel = cancel.clone();
         let loop_controls = controls.clone();
         thread::spawn(move || {
@@ -333,6 +344,12 @@ mod live_terminal {
             if let Ok(done) = done_rx.try_recv() {
                 break done;
             }
+            if raw_mode && controls.mic_muted() != renderer.last_mic_muted {
+                renderer.last_mic_muted = controls.mic_muted();
+                renderer
+                    .draw_footer(&mut out, &controls)
+                    .map_err(Error::from)?;
+            }
             if raw_mode && event::poll(Duration::from_millis(50)).map_err(Error::from)? {
                 if let Event::Key(key) = event::read().map_err(Error::from)? {
                     if key.kind == KeyEventKind::Press
@@ -342,8 +359,10 @@ mod live_terminal {
                                 && key.modifiers.contains(KeyModifiers::CONTROL)))
                     {
                         quit_requested = key.code == KeyCode::Char('q');
+                        controls.touch_idle();
                         cancel.shutdown();
                     } else if key.kind == KeyEventKind::Press {
+                        controls.touch_idle();
                         match key.code {
                             KeyCode::Char('b') => {
                                 controls.toggle_barge_in();
@@ -355,7 +374,12 @@ mod live_terminal {
                             KeyCode::Char('a') => {
                                 controls.toggle_agent_muted();
                             }
-                            _ => continue,
+                            KeyCode::Char('u') => {
+                                controls.unmute_mic();
+                            }
+                            _ => {
+                                // Any other key still resets the idle clock.
+                            }
                         }
                         renderer
                             .draw_footer(&mut out, &controls)
