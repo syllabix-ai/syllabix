@@ -196,7 +196,7 @@ mod live_terminal {
 
         fn footer(&self, controls: &RuntimeControls) -> (String, String) {
             let status = if controls.mic_muted() {
-                "(mic muted — press u to listen)".to_string()
+                "(mic muted — press m or u to listen)".to_string()
             } else if controls.agent_muted() {
                 "(agent muted, listening...)".to_string()
             } else if controls.speaker_muted() {
@@ -208,11 +208,6 @@ mod live_terminal {
             } else {
                 "(listening...)".to_string()
             };
-            let speaker = if controls.speaker_muted() {
-                "unmute"
-            } else {
-                "mute"
-            };
             let agent = if controls.agent_muted() {
                 "agent-on"
             } else {
@@ -223,10 +218,19 @@ mod live_terminal {
             } else {
                 "barge-on"
             };
-            (
-                status,
-                format!("q:quit  m:{speaker}  a:{agent}  b:{barge}  u:mic"),
-            )
+            // While the mic is auto-muted, `m` restores listening (same as `u`).
+            // Otherwise `m` toggles speaker mute.
+            let m_action = if controls.mic_muted() || controls.speaker_muted() {
+                "unmute"
+            } else {
+                "mute"
+            };
+            let help = if controls.mic_muted() {
+                format!("q:quit  m:{m_action}  a:{agent}  b:{barge}  u:unmute")
+            } else {
+                format!("q:quit  m:{m_action}  a:{agent}  b:{barge}")
+            };
+            (status, help)
         }
 
         fn draw_footer(
@@ -368,8 +372,12 @@ mod live_terminal {
                                 controls.toggle_barge_in();
                             }
                             KeyCode::Char('m') => {
-                                controls.toggle_speaker_muted();
-                                renderer.playing = false;
+                                if controls.mic_muted() {
+                                    controls.unmute_mic();
+                                } else {
+                                    controls.toggle_speaker_muted();
+                                    renderer.playing = false;
+                                }
                             }
                             KeyCode::Char('a') => {
                                 controls.toggle_agent_muted();
