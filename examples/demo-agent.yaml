@@ -13,4 +13,4 @@ pipeline:
     model: llama-3.2-1b
   tts:
     provider: local
-    model: kokoro
+    model: pocket-tts

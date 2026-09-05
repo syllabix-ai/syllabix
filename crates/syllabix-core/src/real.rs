@@ -66,11 +66,11 @@ impl Llm for LiveLlm {
 
 /// The configured TTS implementation for one live run.
 pub enum LiveTts {
-    /// Kokoro ONNX (launch default).
+    /// Kokoro ONNX (yaml-selectable).
     Kokoro(KokoroTts),
     /// Qwen3-TTS through the shared ggml (row 31).
     Qwen(QwenTts),
-    /// Pocket TTS through the existing ONNX Runtime (P2).
+    /// Pocket TTS through the existing ONNX Runtime (launch default).
     Pocket(Box<PocketTts>),
 }
 

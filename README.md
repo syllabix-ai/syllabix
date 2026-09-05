@@ -33,7 +33,7 @@ certutil -hashfile syllabix.exe SHA256    # compare against the SHA256SUMS line
 | macOS Intel | `syllabix-Darwin-x86_64` |
 | Windows x64 | `syllabix-Windows-x86_64.exe` |
 
-First `run` fetches Silero, Whisper `small`, Llama 3.2 1B, and Kokoro (~1.5 GB) into `~/.cache/syllabix/models/v1` (`%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows; override the cache root with `$SYLLABIX_CACHE_DIR`) and verifies SHA-256. Later runs reuse that cache offline. `--help` and `init` do not need the cache.
+First `run` fetches Silero, Whisper `small`, Llama 3.2 1B, and Pocket TTS (~1.5 GB) into `~/.cache/syllabix/models/v1` (`%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows; override the cache root with `$SYLLABIX_CACHE_DIR`) and verifies SHA-256. Later runs reuse that cache offline. `--help` and `init` do not need the cache.
 
 The first-run download is large. Time-to-first-spoken-reply on a typical connection has not been published yet; do not plan on three minutes for a cold cache.
 
@@ -53,7 +53,7 @@ There is no `serve` command. Default `run` needs no yaml and no API key. After t
 
 ## Optional config
 
-[`syllabix init`](docs/configuration.md) writes `syllabix.yaml` if you want a different Whisper size, language, local LLM id, spoken `system_prompt`, Kokoro vs Qwen TTS, or a BYO-key online LLM (transcript text only; audio stays on the machine). A minimal example is [`examples/demo-agent.yaml`](examples/demo-agent.yaml).
+[`syllabix init`](docs/configuration.md) writes `syllabix.yaml` if you want a different Whisper size, language, local LLM id, spoken `system_prompt`, Kokoro or Qwen TTS, or a BYO-key online LLM (transcript text only; audio stays on the machine). A minimal example is [`examples/demo-agent.yaml`](examples/demo-agent.yaml).
 
 Per-turn timelines and WAVs are yaml-only (`diagnostics:`). See [docs/diagnostics.md](docs/diagnostics.md).
 

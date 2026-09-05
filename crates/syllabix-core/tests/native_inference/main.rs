@@ -1,14 +1,13 @@
-//! Native inference suite (whisper.cpp, llama.cpp, Kokoro, six-turn loop).
+//! Native inference suite (whisper.cpp, llama.cpp, Pocket TTS, six-turn loop).
 //!
-//! One integration binary so Whisper/Llama/Kokoro load once per `cargo test`
+//! One integration binary so Whisper/Llama/Pocket TTS load once per `cargo test`
 //! process. `cargo llvm-cov` sets `--cfg coverage` and skips weight loads;
 //! a fake loop still runs so this binary is not a coverage hole.
 //!
 //! Default `cargo test` is the launch stack only (Silero, Whisper `small`,
-//! Llama 3.2 1B, Kokoro). Set `SYLLABIX_NATIVE_MODELS` to a comma-separated
+//! Llama 3.2 1B, Pocket TTS). Set `SYLLABIX_NATIVE_MODELS` to a comma-separated
 //! list of yaml `pipeline.*.model` ids to run **only** those native suites
-//! (exclusive). P1 additionally accepts the internal-only `pocket-tts`
-//! feasibility id; it is not a YAML model until P2. Unknown ids fail fast. Ids with no native suite yet fail
+//! (exclusive). Unknown ids fail fast. Ids with no native suite yet fail
 //! with `no native suite for <id>`. Whisper `small` may still load as a
 //! TTS→ASR scorer when a TTS id is selected.
 
@@ -42,9 +41,9 @@ use syllabix_core::{
 };
 
 /// Yaml ids the launch stack native tests cover.
-const LAUNCH_NATIVE_IDS: [&str; 3] = ["small", LLAMA_32_1B_ASSET, "kokoro"];
+const LAUNCH_NATIVE_IDS: [&str; 3] = ["small", LLAMA_32_1B_ASSET, "pocket-tts"];
 
-/// Native-test ids that currently have a suite. Pocket remains feasibility-only.
+/// Native-test ids that currently have a suite.
 const SUITED_NATIVE_IDS: [&str; 8] = [
     "small",
     LLAMA_32_1B_ASSET,
@@ -99,14 +98,8 @@ fn all_yaml_model_ids() -> BTreeSet<&'static str> {
     ids
 }
 
-/// IDs accepted only by the native-inference harness. They deliberately do
-/// not imply configuration support in `pipeline.*.model`.
 fn all_native_model_ids() -> BTreeSet<&'static str> {
-    let mut ids = all_yaml_model_ids();
-    // P1 is deliberately not selectable from `pipeline.tts.model`; native
-    // feasibility needs an exclusive test id before P2 exposes that surface.
-    ids.insert("pocket-tts");
-    ids
+    all_yaml_model_ids()
 }
 
 /// Parse `SYLLABIX_NATIVE_MODELS`. `None` / blank ⇒ launch stack.
@@ -370,7 +363,7 @@ fn unset_native_models_selects_the_launch_stack() {
     let ids = parse_native_models(None).expect("parse");
     assert_eq!(
         ids,
-        BTreeSet::from(["small".into(), "llama-3.2-1b".into(), "kokoro".into()])
+        BTreeSet::from(["small".into(), "llama-3.2-1b".into(), "pocket-tts".into(),])
     );
 }
 
@@ -412,7 +405,7 @@ fn lfm_is_a_yaml_and_native_model_id() {
 #[test]
 fn latency_without_tts_fails() {
     let launch = parse_native_models(None).expect("launch");
-    latency_requires_tts(&launch, true).expect("kokoro is a TTS model");
+    latency_requires_tts(&launch, true).expect("Pocket TTS is a TTS model");
     let stt = parse_native_models(Some("small")).expect("stt");
     let err = latency_requires_tts(&stt, true).expect_err("no TTS");
     assert!(err.contains("SYLLABIX_NATIVE_LATENCY"), "{err}");

@@ -34,7 +34,7 @@ Each release also attaches `SHA256SUMS`. Verify before you run.
 
 ## First run
 
-The first `run` downloads the selected models over HTTPS (defaults: Silero, Whisper `small`, Llama 3.2 1B, Kokoro — about **1.5 GB**), checks SHA-256, and stores them in:
+The first `run` downloads the selected models over HTTPS (defaults: Silero, Whisper `small`, Llama 3.2 1B, Pocket TTS — about **1.5 GB**), checks SHA-256, and stores them in:
 
 - `$SYLLABIX_CACHE_DIR/models/v1` if `SYLLABIX_CACHE_DIR` is set
 - otherwise `~/.cache/syllabix/models/v1`

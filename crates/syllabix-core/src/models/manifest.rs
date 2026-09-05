@@ -56,7 +56,7 @@ pub struct Manifest {
 
 impl Manifest {
     /// Launch stack: Silero, whisper.cpp `small`, Llama 3.2 1B (default),
-    /// Qwen3.5 0.8B and 2B (yaml), Kokoro + default English voice.
+    /// and Pocket TTS. Qwen3.5 and other local TTS models are yaml-selectable.
     pub fn v0() -> Self {
         Self {
             version: 1,
@@ -149,10 +149,8 @@ impl Manifest {
                     "d583ccff3cdca2f7fae535cb998ac07e9fcb90f09737b9a41fa2734ec44a8f0b",
                     522_240,
                 ),
-                // P1 Pocket TTS feasibility contract. These are deliberately
-                // not selectable from yaml until P2: the native suite alone
-                // resolves them. The fixed precomputed voice means P1 never
-                // accepts microphone/user audio or performs voice registration.
+                // Pocket TTS uses a fixed precomputed voice and never accepts
+                // microphone/user audio or performs voice registration.
                 asset(
                     "pocket-tts-bundle",
                     ModelLayer::Tts,

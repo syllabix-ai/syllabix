@@ -169,8 +169,8 @@ impl TtsProvider {
     }
 }
 
-/// TTS model menu under `provider: local`. Kokoro stays the launch default;
-/// the Qwen3-TTS backbones and Pocket TTS are yaml opt-ins.
+/// TTS model menu under `provider: local`. Pocket TTS is the launch default;
+/// Kokoro and the Qwen3-TTS backbones are yaml opt-ins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsModel {
     /// Kokoro ONNX (`af_heart`, English).
@@ -259,7 +259,7 @@ pub struct BuiltinDefaults {
     pub llm_thinking: bool,
     /// TTS provider.
     pub tts: TtsProvider,
-    /// TTS model (`kokoro` default; `qwen3-0.6` / `qwen3-1.7` opt-in).
+    /// TTS model (`pocket-tts` default; other local models are opt-in).
     pub tts_model: TtsModel,
     /// STT language code (`en`). YAML may set this; v0 allows only `en`.
     pub language: &'static str,
@@ -285,7 +285,7 @@ impl BuiltinDefaults {
             llm_model: "llama-3.2-1b",
             llm_thinking: false,
             tts: TtsProvider::Local,
-            tts_model: TtsModel::Kokoro,
+            tts_model: TtsModel::PocketTts,
             language: "en",
             sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
             channels: DEFAULT_CHANNELS,
@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(d.llm_model, "llama-3.2-1b");
         assert!(!d.llm_thinking);
         assert_eq!(d.tts.as_str(), "local");
-        assert_eq!(d.tts_model.as_str(), "kokoro");
+        assert_eq!(d.tts_model.as_str(), "pocket-tts");
         assert_eq!(d.language, "en");
         assert_eq!(d.sample_rate_hz, 16_000);
         assert_eq!(d.channels, 1);
@@ -350,8 +350,8 @@ mod tests {
         }
         assert_eq!(
             BuiltinDefaults::v0().tts_model,
-            TtsModel::Kokoro,
-            "`kokoro` stays the launch default"
+            TtsModel::PocketTts,
+            "`pocket-tts` is the launch default"
         );
     }
 

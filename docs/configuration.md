@@ -39,7 +39,7 @@ pipeline:
     system_prompt: "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji."
   tts:
     provider: local
-    model: kokoro
+    model: pocket-tts
     language: en            # optional; Qwen3-TTS voice language
 ```
 
@@ -105,12 +105,12 @@ Missing or empty key with `provider: online` fails at `run` start before devices
 
 | `model` (under `local`) | Notes |
 | --- | --- |
-| `kokoro` | Default (~310 MB) |
-| `pocket-tts` | English Pocket TTS ONNX graph set + fixed Alba voice (~150 MB); fetched when selected |
+| `pocket-tts` | Default English Pocket TTS ONNX graph set + fixed Alba voice (~150 MB) |
+| `kokoro` | Kokoro ONNX + default voice (~310 MB); fetched when selected |
 | `qwen3-0.6` | Qwen3-TTS 0.6B + speech tokenizer; fetched when selected |
 | `qwen3-1.7` | Qwen3-TTS 1.7B + speech tokenizer; fetched when selected |
 
-Pocket TTS uses the pinned English SentencePiece tokenizer and the shipped fixed Alba voice; it accepts no user voice data or voice-registration input. Qwen engines read numbers and currency as words (`100` → “one hundred”), speak ten languages via optional `tts.language` (`en`, `zh`, `de`, `it`, `pt`, `es`, `fr`, `ja`, `ko`, `ru`), and pin one voice across sentences. Kokoro stays the zero-config default.
+Pocket TTS uses the pinned English SentencePiece tokenizer and the shipped fixed Alba voice; it accepts no user voice data or voice-registration input. Qwen engines read numbers and currency as words (`100` → “one hundred”), speak ten languages via optional `tts.language` (`en`, `zh`, `de`, `it`, `pt`, `es`, `fr`, `ja`, `ko`, `ru`), and pin one voice across sentences. Set `model: kokoro` to use Kokoro instead.
 
 ## Diagnostics
 

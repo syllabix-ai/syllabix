@@ -1,5 +1,4 @@
-//! P1 Pocket TTS native feasibility gate. This test-only id deliberately
-//! precedes any YAML or pipeline exposure; P2 owns that contract.
+//! Native inference coverage for the default Pocket TTS engine.
 
 use std::{
     env, fs,
@@ -14,10 +13,7 @@ use syllabix_core::{
 
 use crate::{native_latency_enabled, skip_unless_model, TTS_LATENCY_SENTENCES};
 
-// Pocket remains an opt-in repair candidate. Its P3 promotion decision keeps
-// the shared 80% gate; this lower native floor only prevents regressions below
-// the founder-accepted 77.8% baseline while the listening study is pending.
-const POCKET_TTS_ASR_REPAIR_MIN_WORD_MATCH: f64 = 0.75;
+const POCKET_TTS_ASR_MIN_WORD_MATCH: f64 = TTS_ASR_MIN_WORD_MATCH;
 
 fn token(text: &str, index: u32, is_last: bool) -> TokenChunk {
     TokenChunk {
@@ -200,8 +196,7 @@ fn pinned_onnx_graph_set_loads_and_text_fixture_is_deterministic() {
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
-/// Repair-PR machine proxy: Pocket speech must remain intelligible enough to
-/// exercise the pipeline. P3 retains the 80% promotion bar and human listen.
+/// Pocket speech must remain intelligible enough for the default pipeline.
 #[test]
 fn pocket_speech_round_trips_through_whisper_at_eighty_percent() {
     skip_unless_model!("pocket-tts");
@@ -227,13 +222,12 @@ fn pocket_speech_round_trips_through_whisper_at_eighty_percent() {
         expected,
     );
     assert!(
-        ratio >= POCKET_TTS_ASR_REPAIR_MIN_WORD_MATCH,
-        "Pocket TTS→ASR {:?} matched {:.1}% of {:?} (need {:.0}% repair floor; P3 needs {:.0}%)",
+        ratio >= POCKET_TTS_ASR_MIN_WORD_MATCH,
+        "Pocket TTS→ASR {:?} matched {:.1}% of {:?} (need {:.0}%)",
         transcript,
         ratio * 100.0,
         expected,
-        POCKET_TTS_ASR_REPAIR_MIN_WORD_MATCH * 100.0,
-        TTS_ASR_MIN_WORD_MATCH * 100.0,
+        POCKET_TTS_ASR_MIN_WORD_MATCH * 100.0,
     );
 }
 

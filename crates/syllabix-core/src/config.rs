@@ -707,7 +707,7 @@ fn parse_tts(value: &str) -> Result<TtsProvider> {
     }
 }
 
-/// `pipeline.tts.model`: the local weight menu. `kokoro` is the launch
+/// `pipeline.tts.model`: the local weight menu. `pocket-tts` is the launch
 /// default; opt-in model ids fetch their assets on first use only.
 fn parse_tts_model(provider: TtsProvider, value: &str) -> Result<TtsModel> {
     match provider {
@@ -776,7 +776,7 @@ mod tests {
         assert!(yaml.contains("thinking: false"));
         assert!(yaml.contains("system_prompt:"));
         assert!(yaml.contains("{language}"));
-        assert!(yaml.contains("model: kokoro"));
+        assert!(yaml.contains("model: pocket-tts"));
         assert!(yaml.contains("threshold: 0.5"));
         assert!(yaml.contains("min_speech_ms: 100"));
         assert!(yaml.contains("end_silence_ms: 350"));
@@ -888,7 +888,7 @@ pipeline:
     model: llama-3.2-1b
   tts:
     provider: local
-    model: kokoro
+    model: pocket-tts
 "#;
         assert_eq!(AgentConfig::parse_yaml(yaml).unwrap(), AgentConfig::v0());
     }
@@ -1261,7 +1261,7 @@ pipeline:
     fn tts_model_menu_parses_and_rejects_unknown_ids() {
         for model in TtsModel::ALL {
             let yaml = AgentConfig::v0().to_yaml().replace(
-                "model: kokoro\n    language",
+                "model: pocket-tts\n    language",
                 &format!("model: {}\n    language", model.as_str()),
             );
             let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
@@ -1270,7 +1270,7 @@ pipeline:
         for bad in ["qwen", "neutts", "large"] {
             let yaml = AgentConfig::v0()
                 .to_yaml()
-                .replace("model: kokoro", &format!("model: {bad}"));
+                .replace("model: pocket-tts", &format!("model: {bad}"));
             let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
             assert!(
                 err.to_string().contains("pipeline.tts.model"),
@@ -1304,15 +1304,15 @@ pipeline:
         assert!(err.to_string().contains("pipeline.tts.provider"), "{err}");
         assert!(err.to_string().contains("not supported yet"), "{err}");
         // Even a valid model id cannot sneak through an unsupported posture.
-        let yaml = yaml.replace("model: kokoro", "model: qwen3-0.6");
+        let yaml = yaml.replace("model: pocket-tts", "model: qwen3-0.6");
         assert!(AgentConfig::parse_yaml(&yaml).is_err());
     }
 
     #[test]
-    fn zero_config_stays_kokoro_by_construction() {
+    fn zero_config_uses_pocket_tts_by_construction() {
         let cfg = AgentConfig::v0();
         assert_eq!(cfg.tts, TtsProvider::Local);
-        assert_eq!(cfg.tts_model, TtsModel::Kokoro);
+        assert_eq!(cfg.tts_model, TtsModel::PocketTts);
     }
 
     #[test]
@@ -1320,7 +1320,7 @@ pipeline:
         for code in ["en", "fr", "de", "es", "ja", "zh"] {
             let yaml = AgentConfig::v0()
                 .to_yaml()
-                .replace("model: kokoro", "model: qwen3-0.6")
+                .replace("model: pocket-tts", "model: qwen3-0.6")
                 .replace("language: en\n", &format!("language: {code}\n"));
             let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
             assert_eq!(cfg.tts_model, TtsModel::Qwen06);
@@ -1328,7 +1328,7 @@ pipeline:
         }
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("model: kokoro", "model: qwen3-1.7");
+            .replace("model: pocket-tts", "model: qwen3-1.7");
         assert!(
             yaml.contains("  tts:\n    provider: local\n    model: qwen3-1.7\n    language: en")
         );
@@ -1337,8 +1337,8 @@ pipeline:
 
         for bad in ["auto", "tlh"] {
             let yaml = AgentConfig::v0().to_yaml().replace(
-                "  tts:\n    provider: local\n    model: kokoro\n    language: en",
-                &format!("  tts:\n    provider: local\n    model: kokoro\n    language: {bad}"),
+                "  tts:\n    provider: local\n    model: pocket-tts\n    language: en",
+                &format!("  tts:\n    provider: local\n    model: pocket-tts\n    language: {bad}"),
             );
             let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
             assert!(
