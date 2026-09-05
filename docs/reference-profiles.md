@@ -243,9 +243,17 @@ instrumentation gap this row exists to expose.
 
 ### Capture protocol
 
+Launch contract: the default is the best M4 16 GB combination for minimal
+delight. Reference evidence is Apple M4 / 16 GiB (`docs/eval/runs/`):
+`small` STT passes every gate; `lfm2.5-2.6b` leads the local LLM axis on
+first-token consistency (205–224 ms vs `qwen3.5-2b` 198–742 ms), throughput
+(~56–64 tok/s vs ~21–53 tok/s), and after-load RSS (~3.7 GB vs ~4.6 GB);
+`pocket-tts` leads TTS at RTF ~0.2. The zero-config default is therefore
+whisper `small` + `lfm2.5-2.6b` + Pocket TTS.
+
 Per configuration to measure (default stack first: whisper `small` +
-`llama-3.2-1b` + Pocket TTS; then `kokoro`, `qwen3-0.6`, `qwen3-1.7`, `qwen3.5-0.8b`,
-`qwen3.5-2b`, and the `online` LLM if relevant):
+`lfm2.5-2.6b` + Pocket TTS; then `kokoro`, `qwen3-0.6`, `qwen3-1.7`, `qwen3.5-0.8b`,
+`qwen3.5-2b`, `llama-3.2-1b`, and the `online` LLM if relevant):
 
 1. Write a scratch `syllabix.yaml` with diagnostics on.
 2. Hold ≥20 real conversations turns on profile A (built-in speakers, quiet room).
@@ -264,4 +272,4 @@ latency optimization row)*
 
 | Configuration | n | audible_latency p50/p95 | llm_ttft p50/p95 | stt_total p50/p95 | llm_end_to_first_pcm p50/p95 |
 |---|---:|---:|---:|---:|---:|
-| default (pocket-tts + llama-3.2-1b) | | | | | |
+| default (pocket-tts + lfm2.5-2.6b) | | | | | |

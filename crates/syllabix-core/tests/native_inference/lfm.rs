@@ -1,12 +1,12 @@
-//! LFM native gates. Run when `SYLLABIX_NATIVE_MODELS` lists
-//! the spike-only `lfm2.5-2.6b` id (QAD Q4_0 GGUF):
+//! LFM native gates. `lfm2.5-2.6b` (QAD Q4_0 GGUF) is the default LLM; it
+//! also runs as part of the launch stack with no env override:
 //!
 //! ```bash
 //! SYLLABIX_NATIVE_MODELS=lfm2.5-2.6b cargo test -p syllabix-core --features native-inference --test native_inference lfm
 //! ```
 //!
-//! Not the per-PR merge bar (weekly / reference-Mac only). The spike id is
-//! selectable through yaml as `lfm2.5-2.6b`; this suite additionally covers
+//! Not the per-PR merge bar (weekly / reference-Mac only). The default id is
+//! `lfm2.5-2.6b`; this suite additionally covers
 //! its native tools dialect. The co-residency
 //! gate also loads launch Whisper `small` and Kokoro in the same process;
 //! expect their caches plus the roughly 1.6 GB LFM GGUF on a cold machine.

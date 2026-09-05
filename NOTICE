@@ -70,11 +70,18 @@ Source: https://github.com/snakers4/silero-vad
 MIT License. Whisper models and code are Copyright (c) OpenAI.
 GGML conversion: https://huggingface.co/ggerganov/whisper.cpp
 
-### Llama 3.2 1B Instruct (`Llama-3.2-1B-Instruct-Q4_K_M.gguf`, default)
+### LFM2.5-2.6B QAD Q4_0 (`LFM2.5-2.6B-QAD-Q4_0.gguf`, default)
+
+LiquidAI LFM 1.0 license. Copyright LiquidAI.
+Source: https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF
+LFM is not distributed under the Apache-2.0 license that covers the
+rest of Syllabix.
+
+### Llama 3.2 1B Instruct (`Llama-3.2-1B-Instruct-Q4_K_M.gguf`, optional)
 
 Llama 3.2 Community License. Copyright (c) Meta Platforms, Inc. All rights
-reserved. This product uses assets from Llama 3.2 and is marked
-"Built with Meta Llama 3.2" as required by that license. The license and its
+reserved. Selected only when `syllabix.yaml` sets `pipeline.llm.model`;
+not fetched by the default zero-config run. The license and its
 acceptable use policy govern redistribution and use of this model:
 https://github.com/meta-llama/llama-models/blob/main/models/Llama_3.2_Model_License.md
 Llama 3.2 is not distributed under the Apache-2.0 license that covers the

@@ -33,7 +33,7 @@ certutil -hashfile syllabix.exe SHA256    # compare against the SHA256SUMS line
 | macOS Intel | `syllabix-Darwin-x86_64` |
 | Windows x64 | `syllabix-Windows-x86_64.exe` |
 
-First `run` fetches Silero, Whisper `small`, Llama 3.2 1B, and Pocket TTS (~1.5 GB) into `~/.cache/syllabix/models/v1` (`%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows; override the cache root with `$SYLLABIX_CACHE_DIR`) and verifies SHA-256. Later runs reuse that cache offline. `--help` and `init` do not need the cache.
+First `run` fetches Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB) into `~/.cache/syllabix/models/v1` (`%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows; override the cache root with `$SYLLABIX_CACHE_DIR`) and verifies SHA-256. Later runs reuse that cache offline. `--help` and `init` do not need the cache. The default is the best M4 16 GB combination for minimal delight (see `docs/reference-profiles.md`).
 
 The first-run download is large. Time-to-first-spoken-reply on a typical connection has not been published yet; do not plan on three minutes for a cold cache.
 
