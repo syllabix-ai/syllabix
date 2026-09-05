@@ -36,7 +36,7 @@ pub const MAX_SEARCH_QUERY_BYTES: usize = 256;
 pub const MAX_SEARCH_RESULTS: usize = 8;
 pub const DEFAULT_SEARCH_RESULTS: usize = 5;
 const FETCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-const FETCH_READ_TIMEOUT: Duration = Duration::from_millis(200);
+const FETCH_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A validated direct-argv inspection command.
@@ -185,11 +185,13 @@ fn validate_program(argv: &[String]) -> Result<(), String> {
 
 fn validate_df(argv: &[String]) -> Result<(), String> {
     match argv {
+        [program] if program == "df" => Ok(()),
+        [program, flag] if program == "df" && flag == "-h" => Ok(()),
         [program, path] if program == "df" && is_relative_path(path) => Ok(()),
         [program, flag, path] if program == "df" && flag == "-h" && is_relative_path(path) => {
             Ok(())
         }
-        _ => Err("df only accepts an optional -h and one workspace path".into()),
+        _ => Err("df only accepts an optional -h and an optional workspace-relative path".into()),
     }
 }
 
@@ -1207,6 +1209,8 @@ mod tests {
         for argv in [
             &["date"][..],
             &["pwd"][..],
+            &["df"][..],
+            &["df", "-h"][..],
             &["df", "."][..],
             &["df", "-h", "."][..],
             &["ls"][..],

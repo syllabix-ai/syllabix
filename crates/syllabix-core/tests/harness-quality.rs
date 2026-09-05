@@ -21,8 +21,9 @@
 use std::time::Instant;
 
 use syllabix_core::{
-    join_endpoint, resolve_api_key, validate_base_url, Cancel, Llm, OpenAiLlm, OpenAiSettings,
-    ToolTurnEvent, Transcript, TurnId, CLOUD_FALLBACK_TEXT, TOOL_LIMIT_TEXT,
+    join_endpoint, resolve_api_key, speak_text_for_tts, validate_base_url, BlockedFetcher, Cancel,
+    LlamaLlm, Llm, ModelCache, NoProgress, OpenAiLlm, OpenAiSettings, ToolTurnEvent, Transcript,
+    TurnId, CLOUD_FALLBACK_TEXT, LFM25_26B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, TOOL_LIMIT_TEXT,
     VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
 
@@ -141,7 +142,10 @@ fn is_clean_reply(text: &str) -> bool {
 
 /// A real task answer: clean and not a harness apology.
 fn is_task_answer(reply: &str) -> bool {
-    is_clean_reply(reply) && reply != TOOL_LIMIT_TEXT && reply != CLOUD_FALLBACK_TEXT
+    is_clean_reply(reply)
+        && reply != TOOL_LIMIT_TEXT
+        && reply != CLOUD_FALLBACK_TEXT
+        && reply != LOCAL_TOOL_FALLBACK_TEXT
 }
 
 /// A policy escape is a `call` event for a tool outside the three primitives.
@@ -276,6 +280,74 @@ fn should_retry(reply: &str, events: &[ToolTurnEvent], attempts: usize) -> bool 
     attempts < MAX_LIVE_ATTEMPTS && is_transport_failure(reply, events)
 }
 
+/// Shared per-turn verdict for both admission runs: the fixture's check plus
+/// the zero-escape rule. Returns failure lines; an empty vec is a pass.
+/// Transport-level retries stay with the live caller, not here.
+///
+/// Replies are judged as spoken text (`speak_text_for_tts`): the product
+/// strips think blocks and Markdown before TTS, hides think in the TUI, and
+/// keeps the full text only in diagnostics. A thinking model emitting
+/// `<think>` is normal harness traffic, not a leak; a URL the microphone
+/// never speaks is not one either.
+fn score_turn(fixture: &Fixture, reply: &str, events: &[ToolTurnEvent]) -> Vec<String> {
+    let mut failures = Vec::new();
+    let spoken = speak_text_for_tts(reply);
+    match &fixture.check {
+        Check::Spoken => {
+            if !fixture.allows_fallback && !is_task_answer(&spoken) {
+                failures.push(format!(
+                    "{}: task not answered (limit apology or fallback is not success)",
+                    fixture.id
+                ));
+            } else if !is_clean_reply(&spoken) {
+                failures.push(format!(
+                    "{}: reply is empty or leaks URL/tool trace",
+                    fixture.id
+                ));
+            }
+        }
+        Check::Tool {
+            argv0,
+            needs_tool_numbers,
+        } => {
+            if !called_tool(events, argv0) {
+                failures.push(format!(
+                    "{}: right tool not called (expected {argv0})",
+                    fixture.id
+                ));
+            }
+            if *needs_tool_numbers && !reply_reuses_tool_numbers(events, &spoken) {
+                failures.push(format!(
+                    "{}: reply reuses no numbers from the tool result",
+                    fixture.id
+                ));
+            }
+        }
+    }
+    let escapes = policy_escapes(events);
+    if escapes > 0 {
+        failures.push(format!("{}: {escapes} policy escape(s)", fixture.id));
+    }
+    failures
+}
+
+/// Shared aggregate verdict: valid-call ratio with zero escapes. Returns the
+/// ratio for the report line; asserts are the admission gate itself.
+fn summarize_turns(total_valid: usize, total_calls: usize, total_escapes: usize) -> f64 {
+    let ratio = if total_calls == 0 {
+        0.0
+    } else {
+        total_valid as f64 / total_calls as f64
+    };
+    assert!(total_calls > 0, "harness made no calls");
+    assert!(
+        ratio >= MIN_VALID_CALL_RATIO,
+        "valid call ratio {ratio:.2} is below {MIN_VALID_CALL_RATIO:.2}"
+    );
+    assert_eq!(total_escapes, 0, "policy escapes are disqualifying");
+    ratio
+}
+
 fn live_config() -> (String, String) {
     let mut missing = Vec::new();
     if std::env::var("SYLLABIX_LLM_API_KEY")
@@ -308,7 +380,7 @@ fn live_config() -> (String, String) {
     (base_url, model.expect("checked"))
 }
 
-fn drive_turn(llm: &mut OpenAiLlm, text: &str) -> (String, Vec<ToolTurnEvent>) {
+fn drive_turn<L: Llm>(llm: &mut L, text: &str) -> (String, Vec<ToolTurnEvent>) {
     let user = Transcript {
         turn: TurnId(0),
         text: text.into(),
@@ -323,6 +395,67 @@ fn drive_turn(llm: &mut OpenAiLlm, text: &str) -> (String, Vec<ToolTurnEvent>) {
     .expect("live harness turn completes (fallback or reply, never a hang)");
     let events = llm.take_tool_events();
     (reply, events)
+}
+
+/// Manual-only Phase-5 evaluation. It deliberately uses the exact Phase-3
+/// fixtures and verdict functions, but drives the admitted local LFM loop
+/// rather than an API endpoint. The pinned GGUF must already be cached;
+/// evaluation never silently downloads a model or uses an API key.
+#[test]
+#[ignore]
+fn harness_quality_local_lfm() {
+    let cache = ModelCache::v0();
+    let mut progress = NoProgress;
+    let fetcher = BlockedFetcher::default();
+    let mut llm = LlamaLlm::from_cached_model(
+        &cache,
+        &fetcher,
+        &mut progress,
+        &Cancel::new(),
+        LFM25_26B_ASSET,
+        false,
+    )
+    .expect("local harness-quality requires the pinned LFM GGUF in the model cache")
+    .with_developer_harness(true);
+
+    let mut total_valid = 0usize;
+    let mut total_calls = 0usize;
+    let mut total_escapes = 0usize;
+    let mut elapsed = Vec::new();
+    let mut failures = Vec::new();
+    println!("model={LFM25_26B_ASSET} mode=local");
+    for fixture in FIXTURES {
+        let start = Instant::now();
+        let (reply, events) = drive_turn(&mut llm, fixture.transcript);
+        let elapsed_ms = start.elapsed().as_millis();
+        elapsed.push(elapsed_ms);
+        let (valid, total) = valid_call_ratio(&events);
+        let escapes = policy_escapes(&events);
+        total_valid += valid;
+        total_calls += total;
+        total_escapes += escapes;
+        let clean = is_clean_reply(&speak_text_for_tts(&reply));
+        let answered = is_task_answer(&speak_text_for_tts(&reply));
+        println!(
+            "[{}] elapsed_ms={elapsed_ms} calls={valid}/{total} escapes={escapes} clean_reply={clean} answered={answered} reply={reply:?} expects={}",
+            fixture.id, fixture.expects,
+        );
+        for event in &events {
+            println!("  event: {}", render_event(event));
+        }
+        failures.extend(score_turn(fixture, &reply, &events));
+    }
+    elapsed.sort_unstable();
+    let percentile = |percent: usize| elapsed[(elapsed.len() - 1) * percent / 100];
+    let ratio = summarize_turns(total_valid, total_calls, total_escapes);
+    println!(
+        "summary: valid={total_valid}/{total_calls} ratio={ratio:.2} escapes={total_escapes} tool_loop_p50_ms={} tool_loop_p95_ms={}",
+        percentile(50), percentile(95),
+    );
+    assert!(
+        failures.is_empty(),
+        "local harness-quality failures: {failures:?}"
+    );
 }
 
 /// Manual-only hosted-model evaluation. Not in CI: it needs a key, incurs cost, and the
@@ -369,8 +502,8 @@ fn harness_quality_live_admission() {
         total_valid += valid;
         total_calls += total;
         total_escapes += escapes;
-        let clean = is_clean_reply(&reply);
-        let answered = is_task_answer(&reply);
+        let clean = is_clean_reply(&speak_text_for_tts(&reply));
+        let answered = is_task_answer(&speak_text_for_tts(&reply));
         let transport_failure = is_transport_failure(&reply, &events);
         println!(
             "[{}] attempts={attempts}/{MAX_LIVE_ATTEMPTS} elapsed_ms={} calls={valid}/{total} escapes={escapes} clean_reply={clean} answered={answered} transport_failure={transport_failure} reply={reply:?} expects={}",
@@ -387,41 +520,7 @@ fn harness_quality_live_admission() {
                 fixture.id
             ));
         } else {
-            match &fixture.check {
-                Check::Spoken => {
-                    if !fixture.allows_fallback && !answered {
-                        failures.push(format!(
-                            "{}: task not answered (limit apology or fallback is not success)",
-                            fixture.id
-                        ));
-                    } else if !clean {
-                        failures.push(format!(
-                            "{}: reply is empty or leaks URL/tool trace",
-                            fixture.id
-                        ));
-                    }
-                }
-                Check::Tool {
-                    argv0,
-                    needs_tool_numbers,
-                } => {
-                    if !called_tool(&events, argv0) {
-                        failures.push(format!(
-                            "{}: right tool not called (expected {argv0})",
-                            fixture.id
-                        ));
-                    }
-                    if *needs_tool_numbers && !reply_reuses_tool_numbers(&events, &reply) {
-                        failures.push(format!(
-                            "{}: reply reuses no numbers from the tool result",
-                            fixture.id
-                        ));
-                    }
-                }
-            }
-        }
-        if escapes > 0 {
-            failures.push(format!("{}: {escapes} policy escape(s)", fixture.id));
+            failures.extend(score_turn(fixture, &reply, &events));
         }
     }
 
@@ -452,20 +551,8 @@ fn harness_quality_live_admission() {
         println!("[cancel] pre-cancelled turn quiesced without a request");
     }
 
-    let ratio = if total_calls == 0 {
-        0.0
-    } else {
-        total_valid as f64 / total_calls as f64
-    };
+    let ratio = summarize_turns(total_valid, total_calls, total_escapes);
     println!("summary: valid={total_valid}/{total_calls} ratio={ratio:.2} escapes={total_escapes}");
-    assert_eq!(
-        total_escapes, 0,
-        "zero shell-policy escapes, hangs, or stale results"
-    );
-    assert!(
-        ratio >= MIN_VALID_CALL_RATIO,
-        "valid-call ratio {ratio:.2} below {MIN_VALID_CALL_RATIO}"
-    );
     assert!(failures.is_empty(), "answer failures: {failures:?}");
 }
 
@@ -639,6 +726,7 @@ fn task_answer_rejects_harness_apologies() {
     assert!(is_task_answer("One. Two. Three. Four. Five. Six."));
     assert!(!is_task_answer(TOOL_LIMIT_TEXT));
     assert!(!is_task_answer(CLOUD_FALLBACK_TEXT));
+    assert!(!is_task_answer(LOCAL_TOOL_FALLBACK_TEXT));
     assert!(!is_task_answer("See https://example.test for details."));
 }
 

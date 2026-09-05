@@ -111,6 +111,26 @@ cargo test -p syllabix-core --test harness-quality -- --ignored --nocapture
 
 All three variables are required and nothing is defaulted; the key comes from the environment only, never from yaml. The run prints the per-fixture verdict report (calls, escapes, latency, reply) and asserts ≥90% valid calls with zero policy escapes. Give the key rate-limit headroom first — quota exhaustion mid-run fails fixtures as unreachable, which is a billing state, not a model verdict.
 
+## Local LFM harness quality (manual)
+
+The local lfm2.5-2.6b loop is evaluated through the same five fixed
+voice-transcript fixtures and scoring rules, but runs the real local
+execute → result → re-prompt loop. It is ignored because it loads the pinned
+LFM GGUF; it never needs an API key and it refuses to download a missing
+model during evaluation.
+
+```bash
+cargo test -p syllabix-core --test harness-quality harness_quality_local_lfm -- --ignored --nocapture
+```
+
+The report includes each fixture, the aggregate valid-call ratio and policy
+escapes, plus tool-loop p50/p95. A pass requires ≥90% valid calls, zero
+escapes, task-shaped answers without URL/tool-trace leaks, and no stale
+continuation after cancellation. Run it repeatedly on the reference Mac and
+paste every report into the PR. Local developer-harness stays opt-in via
+yaml (`pipeline.llm.developer_harness: true` under `lfm2.5-2.6b`); the
+default voice path is unchanged.
+
 If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`, `src/openai.rs`, `src/types.rs`, `src/providers.rs`, or `tests/harness-quality.rs`), paste that verdict report into the PR body inside an HTML comment starting with `<!-- syllabix-harness-quality -->`, including the five fixture lines (`[disk-space]`, `[repo-search]`, `[known-fetch]`, `[discovery-primary-source]`, `[hostile-prompt]`) and the `summary: valid=X/Y ratio=… escapes=…` line. A CI check enforces this; CI itself never calls the model.
 
 ## Packaging (maintainers)
