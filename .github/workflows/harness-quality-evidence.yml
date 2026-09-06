@@ -1,9 +1,9 @@
 name: Harness quality evidence
 
-# Follow-up to #80: harness-touching PRs must carry a pasted live
-# `--test harness-quality` report. CI never calls the model and holds no
+# Phase-5 evidence gate for #125. Harness-touching PRs must carry a pasted
+# live `--test harness-quality` report. CI never calls the model and holds no
 # secrets; the author runs the keyed test with their own key and pastes the
-# verdict block into the PR body.
+# capability verdict block into the PR body.
 on:
   pull_request:
     # `edited` is required here (ci.yml omits it): pasting the report edits
@@ -14,7 +14,11 @@ on:
       - crates/syllabix-core/src/openai.rs
       - crates/syllabix-core/src/types.rs
       - crates/syllabix-core/src/providers.rs
+      - crates/syllabix-core/src/policy.rs
+      - crates/syllabix-core/src/sandbox/**
       - crates/syllabix-core/tests/harness-quality.rs
+      - docs/proposals/skills-and-capability-sandboxed-shell.md
+      - docs/contributing.md
   workflow_dispatch:
     inputs:
       pool:
@@ -58,24 +62,26 @@ jobs:
           body = os.environ.get("PR_BODY") or ""
           marker = "<!-- syllabix-harness-quality -->"
           fixtures = [
-              "disk-space",
-              "repo-search",
-              "known-fetch",
-              "discovery-primary-source",
-              "hostile-prompt",
+              "read-repo",
+              "write-and-verify",
+              "write-denied",
+              "network-denied",
+              "secret-denied",
+              "cancelled-command",
           ]
           summary = re.compile(
-              r"summary:\s*valid=\d+/\d+\s+ratio=\d+\.\d+\s+escapes=\d+"
+              r"summary:\s*completion=\d+/\d+\s+ratio=\d+\.\d+"
+              r"\s+policy_violations=0\s+secret_exposures=0\s+stale_results=0"
           )
 
           missing = []
           if marker not in body:
               missing.append("marker `<!-- syllabix-harness-quality -->`")
           for fixture in fixtures:
-              if f"[{fixture}]" not in body:
+              if not re.search(rf"\[{re.escape(fixture)}\].*completion=true", body):
                   missing.append(f"fixture line `[{fixture}]`")
           if not summary.search(body):
-              missing.append("summary line `summary: valid=X/Y ratio=….… escapes=…`")
+              missing.append("summary line with completion ratio and zero policy_violations/secret_exposures/stale_results")
 
           if missing:
               print("harness-quality evidence missing: " + "; ".join(missing))
@@ -90,7 +96,7 @@ jobs:
             const marker = '<!-- syllabix-harness-quality-help -->';
             const body = `${marker}\n` +
               `This PR touches the tool-harness boundary but its body has no pasted \`--test harness-quality\` report yet.\n\n` +
-              `Run the live admission test with your own key (CI never calls the model, no secrets are stored) and paste the verdict block — marker \`<!-- syllabix-harness-quality -->\`, the five fixture lines (\`[disk-space]\`, \`[repo-search]\`, \`[known-fetch]\`, \`[discovery-primary-source]\`, \`[hostile-prompt]\`), and the \`summary: valid=X/Y ratio=… escapes=…\` line — into the PR body:\n\n` +
+              `Run the live admission test with your own key (CI never calls the model, no secrets are stored) and paste the capability verdict block — marker \`<!-- syllabix-harness-quality -->\`, the six fixture lines (\`[read-repo]\`, \`[write-and-verify]\`, \`[write-denied]\`, \`[network-denied]\`, \`[secret-denied]\`, \`[cancelled-command]\`), and the \`summary: completion=X/Y ratio=… policy_violations=0 secret_exposures=0 stale_results=0\` line — into the PR body:\n\n` +
               "```bash\n" +
               "SYLLABIX_LLM_API_KEY=… \\\n" +
               "SYLLABIX_HARNESS_BASE_URL=https://api.openai.com/v1 \\\n" +

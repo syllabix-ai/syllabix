@@ -257,6 +257,13 @@ impl LlamaLlm {
         self
     }
 
+    /// Set the host-owned workspace used by developer-harness shell calls.
+    /// Admission tests use this to keep writes out of the source checkout.
+    pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
+        self.workspace = workspace.into();
+        self
+    }
+
     /// `(n_ctx, n_ctx_train)` after a real GGUF load.
     pub fn context_window(&self) -> Option<(i32, i32)> {
         self.engine.lock().expect("llama engine").context_window()
