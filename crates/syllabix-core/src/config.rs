@@ -11,6 +11,7 @@ use crate::defaults::{
 };
 use crate::error::{Error, Result};
 use crate::language::is_supported as is_supported_language;
+pub use crate::policy::{DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy};
 use crate::turn_debug::DEFAULT_TURN_DEBUG_DIR;
 use crate::vad::{VadSettings, END_SILENCE, MIN_SPEECH, SPEECH_THRESHOLD, WHISPER_PREROLL};
 
@@ -61,6 +62,10 @@ pub struct AgentConfig {
     /// Explicit developer-only opt-in for the API tool loop. It is
     /// never enabled by defaults or written by `init`.
     pub llm_developer_harness: bool,
+    /// Session capability ceiling when `llm_developer_harness` is on
+    /// (`pipeline.llm.developer_permissions`). Defaults to read-only /
+    /// network none / secrets none. Rejected unless the harness is enabled.
+    pub llm_developer_permissions: DeveloperPermissions,
     /// TTS provider (`local`; `online` is reserved and rejected).
     pub tts: TtsProvider,
     /// TTS model id (`kokoro`, `qwen3-0.6`, `qwen3-1.7`, or `pocket-tts`).
@@ -108,6 +113,7 @@ impl AgentConfig {
             system_prompt: crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             llm_base_url: None,
             llm_developer_harness: false,
+            llm_developer_permissions: DeveloperPermissions::default_session(),
             tts: defaults.tts,
             tts_model: defaults.tts_model,
             tts_language: "en".to_string(),
@@ -337,6 +343,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
             "system_prompt",
             "base_url",
             "developer_harness",
+            "developer_permissions",
         ],
     )?;
     let llm_provider = parse_llm(required_string(llm, "pipeline.llm.provider", "provider")?)?;
@@ -373,6 +380,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
                     .into(),
         });
     }
+    let llm_developer_permissions = parse_developer_permissions(llm, llm_developer_harness)?;
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
     deny_unknown(tts, "pipeline.tts", &["provider", "model", "language"])?;
@@ -412,6 +420,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         system_prompt,
         llm_base_url,
         llm_developer_harness,
+        llm_developer_permissions,
         tts: tts_provider,
         tts_model,
         tts_language,
@@ -484,6 +493,80 @@ fn mapping<'a>(value: &'a Value, field: &str) -> Result<&'a serde_yaml::Mapping>
         field: field.into(),
         message: "must be a mapping".into(),
     })
+}
+
+fn parse_developer_permissions(
+    llm: &serde_yaml::Mapping,
+    harness: bool,
+) -> Result<DeveloperPermissions> {
+    let Some(value) = llm.get("developer_permissions") else {
+        return Ok(DeveloperPermissions::default_session());
+    };
+    if !harness {
+        return Err(Error::Config {
+            field: "pipeline.llm.developer_permissions".into(),
+            message: "requires pipeline.llm.developer_harness: true".into(),
+        });
+    }
+    let map = mapping(value, "pipeline.llm.developer_permissions")?;
+    deny_unknown(
+        map,
+        "pipeline.llm.developer_permissions",
+        &["filesystem", "network", "secrets"],
+    )?;
+    let filesystem = match optional_string(map, "pipeline.llm.developer_permissions", "filesystem")?
+    {
+        Some(raw) => parse_filesystem_mode(&raw)?,
+        None => FilesystemMode::ReadOnly,
+    };
+    let network = match optional_string(map, "pipeline.llm.developer_permissions", "network")? {
+        Some(raw) => parse_network_mode(&raw)?,
+        None => NetworkMode::None,
+    };
+    let secrets = match optional_string(map, "pipeline.llm.developer_permissions", "secrets")? {
+        Some(raw) => parse_secret_policy(&raw)?,
+        None => SecretPolicy::None,
+    };
+    Ok(DeveloperPermissions {
+        filesystem,
+        network,
+        secrets,
+    })
+}
+
+fn parse_filesystem_mode(raw: &str) -> Result<FilesystemMode> {
+    match raw {
+        "read-only" => Ok(FilesystemMode::ReadOnly),
+        "workspace-write" => Ok(FilesystemMode::WorkspaceWrite),
+        "danger-full-access" => Ok(FilesystemMode::DangerFullAccess),
+        other => Err(Error::Config {
+            field: "pipeline.llm.developer_permissions.filesystem".into(),
+            message: format!(
+                "unsupported value {other:?} (allowed: \"read-only\", \"workspace-write\", \"danger-full-access\")"
+            ),
+        }),
+    }
+}
+
+fn parse_network_mode(raw: &str) -> Result<NetworkMode> {
+    match raw {
+        "none" => Ok(NetworkMode::None),
+        "allow" => Ok(NetworkMode::Allow),
+        other => Err(Error::Config {
+            field: "pipeline.llm.developer_permissions.network".into(),
+            message: format!("unsupported value {other:?} (allowed: \"none\", \"allow\")"),
+        }),
+    }
+}
+
+fn parse_secret_policy(raw: &str) -> Result<SecretPolicy> {
+    match raw {
+        "none" => Ok(SecretPolicy::None),
+        other => Err(Error::Config {
+            field: "pipeline.llm.developer_permissions.secrets".into(),
+            message: format!("unsupported value {other:?} (allowed: \"none\")"),
+        }),
+    }
 }
 
 fn deny_unknown(map: &serde_yaml::Mapping, prefix: &str, allowed: &[&str]) -> Result<()> {
@@ -936,6 +1019,153 @@ pipeline:
                 "{model}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn developer_permissions_default_and_gated() {
+        let defaults = AgentConfig::v0();
+        assert!(!defaults.llm_developer_harness);
+        assert_eq!(
+            defaults.llm_developer_permissions,
+            DeveloperPermissions::default_session()
+        );
+        assert_eq!(
+            defaults.llm_developer_permissions.filesystem,
+            FilesystemMode::ReadOnly
+        );
+        assert_eq!(
+            defaults.llm_developer_permissions.network,
+            NetworkMode::None
+        );
+        assert_eq!(
+            defaults.llm_developer_permissions.secrets,
+            SecretPolicy::None
+        );
+
+        let harness_default = AgentConfig::parse_yaml(
+            r#"
+name: harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm: { provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
+  tts: { provider: local, model: kokoro }
+"#,
+        )
+        .expect("harness without permissions uses defaults");
+        assert_eq!(
+            harness_default.llm_developer_permissions,
+            DeveloperPermissions::default_session()
+        );
+
+        let configured = AgentConfig::parse_yaml(
+            r#"
+name: harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm:
+    provider: online
+    model: gpt-test
+    base_url: https://example.test/v1
+    developer_harness: true
+    developer_permissions:
+      filesystem: workspace-write
+      network: allow
+      secrets: none
+  tts: { provider: local, model: kokoro }
+"#,
+        )
+        .expect("harness permissions parse");
+        assert_eq!(
+            configured.llm_developer_permissions.filesystem,
+            FilesystemMode::WorkspaceWrite
+        );
+        assert_eq!(
+            configured.llm_developer_permissions.network,
+            NetworkMode::Allow
+        );
+        assert_eq!(
+            configured.llm_developer_permissions.secrets,
+            SecretPolicy::None
+        );
+
+        let err = AgentConfig::parse_yaml(
+            r#"
+name: harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm:
+    provider: online
+    model: gpt-test
+    base_url: https://example.test/v1
+    developer_permissions:
+      filesystem: read-only
+  tts: { provider: local, model: kokoro }
+"#,
+        )
+        .expect_err("permissions without harness are rejected");
+        assert!(err.to_string().contains("developer_permissions"), "{err}");
+        assert!(err.to_string().contains("developer_harness"), "{err}");
+
+        let unknown = AgentConfig::parse_yaml(
+            r#"
+name: harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm:
+    provider: online
+    model: gpt-test
+    base_url: https://example.test/v1
+    developer_harness: true
+    developer_permissions:
+      filesystem: read-only
+      extra: true
+  tts: { provider: local, model: kokoro }
+"#,
+        )
+        .expect_err("unknown permissions keys are rejected");
+        assert!(unknown.to_string().contains("extra"), "{unknown}");
+
+        let secrets = AgentConfig::parse_yaml(
+            r#"
+name: harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm:
+    provider: online
+    model: gpt-test
+    base_url: https://example.test/v1
+    developer_harness: true
+    developer_permissions:
+      secrets: DEPLOY_TOKEN
+  tts: { provider: local, model: kokoro }
+"#,
+        )
+        .expect_err("non-none secrets are rejected");
+        assert!(secrets.to_string().contains("secrets"), "{secrets}");
+
+        let fs = AgentConfig::parse_yaml(
+            r#"
+name: harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm:
+    provider: online
+    model: gpt-test
+    base_url: https://example.test/v1
+    developer_harness: true
+    developer_permissions:
+      filesystem: readwrite
+  tts: { provider: local, model: kokoro }
+"#,
+        )
+        .expect_err("unknown filesystem mode is rejected");
+        assert!(fs.to_string().contains("filesystem"), "{fs}");
     }
 
     #[test]

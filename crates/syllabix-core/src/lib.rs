@@ -32,6 +32,7 @@ mod moonshine;
 mod moonshine;
 mod openai;
 mod pipeline;
+mod policy;
 // Pocket TTS native inference runs only in the model suite. llvm-cov skips
 // native weights and graph execution, so it compiles the public API stub.
 #[cfg(not(coverage))]
@@ -51,7 +52,8 @@ mod vad;
 
 pub use cancel::Cancel;
 pub use config::{
-    AgentConfig, CONFIG_FILE_NAME, DEFAULT_AUTO_TIMEOUT_EXIT_MS, DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS,
+    AgentConfig, DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy, CONFIG_FILE_NAME,
+    DEFAULT_AUTO_TIMEOUT_EXIT_MS, DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS,
 };
 pub use defaults::{
     BuiltinDefaults, LlmProvider, QueueCaps, SttModel, SttProvider, TtsModel, TtsProvider,

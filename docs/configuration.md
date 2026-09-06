@@ -124,6 +124,30 @@ SYLLABIX_LLM_API_KEY=sk-… syllabix run
 
 Missing or empty key with `provider: online` fails at `run` start before devices or weights load. Keyless loopback (Ollama, llama-server, vLLM) still needs a placeholder: `SYLLABIX_LLM_API_KEY=ollama syllabix run`.
 
+### Developer harness (explicit opt-in)
+
+`developer_harness: true` enables the developer-only tool loop. It is off by
+default and `syllabix init` does not write it. It is valid with `provider:
+online` or the local `lfm2.5-2.6b` model only; the ordinary spoken path remains
+tool-free.
+
+`developer_permissions` is an optional, session-fixed capability ceiling. It
+is valid only when `developer_harness` is true; unknown keys fail at load.
+Current executor behavior remains the existing allowlist while the sandboxed
+generic-shell provider is delivered in later phases.
+
+```yaml
+pipeline:
+  llm:
+    developer_harness: true
+    developer_permissions:
+      filesystem: workspace-write # read-only (default) | workspace-write | danger-full-access
+      network: none               # none (default) | allow
+      secrets: none               # the only supported value
+```
+
+Omitting `developer_permissions` uses `read-only`, `none`, and `none`.
+
 ## TTS
 
 `pipeline.tts.provider` is `local` (in-process) or `online` (reserved; fails fast).
