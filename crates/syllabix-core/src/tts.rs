@@ -4,22 +4,33 @@
 //! sentence boundary, the think filter runs first, and each completed
 //! sentence becomes one [`SynthesizedAudio`] through a [`WaveformEngine`].
 
+#[cfg(any(not(coverage), test))]
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(coverage))]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+#[cfg(not(coverage))]
 use ort::session::Session;
+#[cfg(not(coverage))]
 use syllabix_native::{QwenTtsContext, QwenTtsError};
 
+#[cfg(any(not(coverage), test))]
 use crate::audio::{f32_to_i16, PcmConverter, PcmFormat};
 use crate::cancel::Cancel;
 use crate::defaults::{BuiltinDefaults, TtsModel};
 use crate::error::{Error, Result};
-use crate::g2p::{english_to_kokoro_ids, pad_input_ids, KOKORO_MAX_PHONEME_TOKENS};
+#[cfg(not(coverage))]
+use crate::g2p::pad_input_ids;
+#[cfg(any(not(coverage), test))]
+use crate::g2p::{english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
 use crate::models::{Fetcher, ModelCache, Progress};
 use crate::providers::Tts;
 use crate::speech_text::{speak_text_for_tts, take_sentences, ThinkFilter};
-use crate::types::{GenerationId, SynthesizedAudio, TokenChunk, TurnId, DEFAULT_SAMPLE_RATE_HZ};
+#[cfg(any(not(coverage), test))]
+use crate::types::DEFAULT_SAMPLE_RATE_HZ;
+use crate::types::{GenerationId, SynthesizedAudio, TokenChunk, TurnId};
 
 /// Manifest id for the Kokoro ONNX graph.
 pub const KOKORO_ASSET: &str = "kokoro";
@@ -49,8 +60,11 @@ pub const QWEN_TTS_MMPROJ_ASSET: &str = "qwen3-tts-mmproj";
 /// Text → TTS → Whisper round-trip: at least 80% of reference words, in order.
 pub const TTS_ASR_MIN_WORD_MATCH: f64 = 0.8;
 
+#[cfg(any(not(coverage), test))]
 const VOICE_ROWS: usize = 510;
+#[cfg(any(not(coverage), test))]
 const STYLE_DIM: usize = 256;
+#[cfg(any(not(coverage), test))]
 const VOICE_BYTES: usize = VOICE_ROWS * STYLE_DIM * 4;
 
 /// Per-generation sentence buffering shared by both providers.
@@ -415,12 +429,14 @@ trait WaveformEngine: Send {
     }
 }
 
+#[cfg(not(coverage))]
 struct OrtKokoro {
     session: Session,
     voice: Vec<Vec<f32>>,
     model_path: PathBuf,
 }
 
+#[cfg(not(coverage))]
 impl OrtKokoro {
     fn load(model: &Path, voice: &Path) -> Result<Self> {
         let session = Session::builder()
@@ -480,6 +496,7 @@ impl OrtKokoro {
     }
 }
 
+#[cfg(not(coverage))]
 impl WaveformEngine for OrtKokoro {
     fn synthesize(
         &mut self,
@@ -513,12 +530,14 @@ impl WaveformEngine for OrtKokoro {
 
 /// Qwen3-TTS waveform engine over the shared ggml native path. One sentence
 /// per call; the underlying context keeps no cross-sentence state.
+#[cfg(not(coverage))]
 struct NativeQwen {
     ctx: QwenTtsContext,
     lang: String,
     voice_active: bool,
 }
 
+#[cfg(not(coverage))]
 impl NativeQwen {
     fn load_with_seed(model: &Path, mmproj: &Path, language: &str, seed: u32) -> Result<Self> {
         // Same cap as the LLM/STT engines: portable-CPU friendly.
@@ -539,6 +558,7 @@ impl NativeQwen {
     }
 }
 
+#[cfg(not(coverage))]
 impl WaveformEngine for NativeQwen {
     fn has_voice_anchor(&self) -> bool {
         self.voice_active
@@ -642,6 +662,67 @@ impl WaveformEngine for NativeQwen {
     }
 }
 
+#[cfg(coverage)]
+struct OrtKokoro;
+
+#[cfg(coverage)]
+impl OrtKokoro {
+    fn load(_model: &Path, _voice: &Path) -> Result<Self> {
+        Err(Error::Provider {
+            provider: "kokoro",
+            message: "Kokoro inference is not loaded in coverage tests.".into(),
+        })
+    }
+}
+
+#[cfg(coverage)]
+impl WaveformEngine for OrtKokoro {
+    fn synthesize(
+        &mut self,
+        _sentence: &str,
+        _cancel: &Cancel,
+        _generation: GenerationId,
+    ) -> Result<Vec<i16>> {
+        Err(Error::Provider {
+            provider: "kokoro",
+            message: "Kokoro inference is not loaded in coverage tests.".into(),
+        })
+    }
+}
+
+#[cfg(coverage)]
+struct NativeQwen;
+
+#[cfg(coverage)]
+impl NativeQwen {
+    fn load_with_seed(_model: &Path, _mmproj: &Path, _language: &str, _seed: u32) -> Result<Self> {
+        Err(Error::Provider {
+            provider: "qwen",
+            message: "Qwen inference is not loaded in coverage tests.".into(),
+        })
+    }
+}
+
+#[cfg(coverage)]
+impl WaveformEngine for NativeQwen {
+    fn has_voice_anchor(&self) -> bool {
+        false
+    }
+
+    fn synthesize(
+        &mut self,
+        _sentence: &str,
+        _cancel: &Cancel,
+        _generation: GenerationId,
+    ) -> Result<Vec<i16>> {
+        Err(Error::Provider {
+            provider: "qwen",
+            message: "Qwen inference is not loaded in coverage tests.".into(),
+        })
+    }
+}
+
+#[cfg(not(coverage))]
 unsafe extern "C" fn abort_on_shutdown(user_data: *mut std::ffi::c_void) -> bool {
     if user_data.is_null() {
         return false;
@@ -651,6 +732,7 @@ unsafe extern "C" fn abort_on_shutdown(user_data: *mut std::ffi::c_void) -> bool
 }
 
 /// Convert an engine's native-rate mono PCM to the 16 kHz pipeline format.
+#[cfg(any(not(coverage), test))]
 fn resample_i16_to_v0(samples: &[i16], rate_hz: i32) -> Vec<i16> {
     let f32_pcm: Vec<f32> = samples.iter().map(|s| f32::from(*s) / 32_767.0).collect();
     let mut conv = PcmConverter::new(
@@ -673,6 +755,7 @@ fn resample_i16_to_v0(samples: &[i16], rate_hz: i32) -> Vec<i16> {
     pcm
 }
 
+#[cfg(any(not(coverage), test))]
 fn phoneme_windows(sentence: &str) -> Result<Vec<Vec<i64>>> {
     match english_to_kokoro_ids(sentence) {
         Ok(ids) => Ok(vec![ids]),
@@ -713,6 +796,7 @@ fn phoneme_windows(sentence: &str) -> Result<Vec<Vec<i64>>> {
     }
 }
 
+#[cfg(any(not(coverage), test))]
 fn resample_to_v0(native: &[f32]) -> Vec<i16> {
     let mut conv = PcmConverter::new(
         PcmFormat {
@@ -730,6 +814,7 @@ fn resample_to_v0(native: &[f32]) -> Vec<i16> {
     f32_to_i16(&f32_pcm)
 }
 
+#[cfg(any(not(coverage), test))]
 fn load_voice(path: &Path) -> Result<Vec<Vec<f32>>> {
     let bytes = fs::read(path)?;
     if bytes.len() != VOICE_BYTES {
@@ -752,6 +837,7 @@ fn load_voice(path: &Path) -> Result<Vec<Vec<f32>>> {
     Ok(rows)
 }
 
+#[cfg(not(coverage))]
 fn ort_error(error: ort::Error) -> Error {
     Error::Provider {
         provider: "kokoro",
@@ -1131,5 +1217,18 @@ mod tests {
         };
         assert!(matches!(err, Error::ModelCache { .. }));
         assert!(err.to_string().contains("kokoro"));
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_native_tts_seams_are_callable() {
+        let cancel = Cancel::new();
+        let mut kokoro = OrtKokoro;
+        assert!(kokoro
+            .synthesize("hello", &cancel, GenerationId(0))
+            .is_err());
+        let mut qwen = NativeQwen;
+        assert!(!qwen.has_voice_anchor());
+        assert!(qwen.synthesize("hello", &cancel, GenerationId(0)).is_err());
     }
 }

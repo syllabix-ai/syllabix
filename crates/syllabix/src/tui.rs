@@ -1,5 +1,6 @@
 //! Inline transcript and status renderer for `syllabix run`.
 
+#[cfg(any(not(coverage), test))]
 use syllabix_core::{LoopEvent, ThinkFilter, TurnId};
 
 /// Subtle, theme-aware TUI colors.
@@ -10,13 +11,13 @@ use syllabix_core::{LoopEvent, ThinkFilter, TurnId};
 /// Disabled under `NO_COLOR` or `TERM=dumb`. Presentation-only:
 /// [`TranscriptUi`] stays plain for tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(coverage, allow(dead_code))]
+#[cfg(any(not(coverage), test))]
 pub(crate) struct TuiTheme {
     pub dark: bool,
     pub enabled: bool,
 }
 
-#[cfg_attr(coverage, allow(dead_code))]
+#[cfg(any(not(coverage), test))]
 impl TuiTheme {
     pub fn detect() -> Self {
         if std::env::var_os("NO_COLOR").is_some() {
@@ -124,7 +125,7 @@ impl TuiTheme {
 
 /// Rolling transcript shown in the TUI.
 #[derive(Debug, Default)]
-#[cfg_attr(coverage, allow(dead_code))]
+#[cfg(any(not(coverage), test))]
 pub struct TranscriptUi {
     lines: Vec<String>,
     partial_user: Option<(TurnId, String)>,
@@ -139,7 +140,7 @@ pub struct TranscriptUi {
     aec_restart_required: bool,
 }
 
-#[cfg_attr(coverage, allow(dead_code))]
+#[cfg(any(not(coverage), test))]
 impl TranscriptUi {
     /// Apply one pipeline event.
     pub fn apply(&mut self, event: LoopEvent) {
@@ -963,5 +964,47 @@ mod tests {
         };
         assert_eq!(off.paint_line("You: hello"), "You: hello");
         assert_eq!(off.dim("x"), "x");
+    }
+
+    #[test]
+    fn theme_and_transcript_accessors_cover_idle_paths() {
+        let _ = TuiTheme::detect();
+        let theme = TuiTheme {
+            dark: true,
+            enabled: true,
+        };
+        assert_eq!(theme.paint_line("ordinary text"), "ordinary text");
+
+        let mut ui = TranscriptUi::default();
+        ui.apply(LoopEvent::Ready);
+        ui.apply(LoopEvent::Playback { playing: true });
+        ui.apply(LoopEvent::Thinking { turn: TurnId(0) });
+        assert!(ui.is_thinking());
+        assert!(!ui.is_using_tools());
+        assert!(ui.agent_stream().is_none());
+        assert!(ui.take_display().is_empty());
+
+        ui.apply(LoopEvent::Assistant {
+            turn: TurnId(0),
+            text: "working".into(),
+            is_last: false,
+        });
+        assert!(ui.transcript_text().contains("Agent: working"));
+        ui.apply(LoopEvent::Tool {
+            turn: TurnId(0),
+            event: syllabix_core::ToolTurnEvent {
+                kind: "other".into(),
+                name: "noop".into(),
+                call_id: "c".into(),
+                arguments: String::new(),
+                content: String::new(),
+            },
+        });
+        ui.apply(LoopEvent::Assistant {
+            turn: TurnId(0),
+            text: " done".into(),
+            is_last: true,
+        });
+        assert!(!ui.take_display().is_empty());
     }
 }

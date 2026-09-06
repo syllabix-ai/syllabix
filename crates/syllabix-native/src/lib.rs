@@ -13,7 +13,6 @@ fn ggml_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-#[allow(dead_code)]
 mod ffi {
     use super::*;
 
@@ -32,12 +31,12 @@ mod ffi {
         _private: [u8; 0],
     }
 
+    #[cfg(not(coverage))]
     extern "C" {
         pub fn syllabix_native_hush_logs();
         pub fn syllabix_native_link_anchor() -> c_int;
         pub fn syllabix_llama_system_info() -> *const c_char;
         pub fn syllabix_llama_backend_init();
-        pub fn syllabix_llama_backend_free();
         pub fn syllabix_llama_n_gpu_layers() -> c_int;
         pub fn syllabix_whisper_use_gpu() -> c_int;
         pub fn syllabix_whisper_load(path: *const c_char) -> *mut WhisperContext;
@@ -166,6 +165,365 @@ mod ffi {
             pcm_user: *mut c_void,
         ) -> c_int;
         pub fn syllabix_qwen_tts_pcm_free(pcm: *mut i16);
+    }
+
+    // The coverage build must exercise the Rust safety/translation layer
+    // without loading multi-gigabyte native models. Keep prompt rendering on
+    // the real shim (it is pure and already weight-free); fake the calls that
+    // require a live native context.
+    #[cfg(coverage)]
+    extern "C" {
+        pub fn syllabix_llama_render_qwen(
+            roles: *const *const c_char,
+            contents: *const *const c_char,
+            n_messages: c_int,
+            tools_json: *const c_char,
+            thinking: c_int,
+            out: *mut c_char,
+            out_cap: c_int,
+        ) -> c_int;
+        pub fn syllabix_llama_render_lfm(
+            roles: *const *const c_char,
+            contents: *const *const c_char,
+            n_messages: c_int,
+            tools_json: *const c_char,
+            thinking: c_int,
+            out: *mut c_char,
+            out_cap: c_int,
+        ) -> c_int;
+    }
+
+    #[cfg(coverage)]
+    fn text(ptr: *const c_char) -> String {
+        if ptr.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
+
+    #[cfg(coverage)]
+    fn fail(text: &str, needle: &str) -> bool {
+        text.contains(needle)
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_native_hush_logs() {}
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_native_link_anchor() -> c_int {
+        1
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_llama_system_info() -> *const c_char {
+        if cfg!(target_os = "macos") {
+            c"coverage fake backend Metal".as_ptr()
+        } else {
+            c"coverage fake backend CPU".as_ptr()
+        }
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_llama_backend_init() {}
+
+    #[cfg(coverage)]
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_llama_n_gpu_layers() -> c_int {
+        if cfg!(target_os = "macos") {
+            -1
+        } else {
+            0
+        }
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_whisper_use_gpu() -> c_int {
+        i32::from(cfg!(target_os = "macos"))
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_whisper_load(path: *const c_char) -> *mut WhisperContext {
+        if fail(&text(path), "fail") {
+            std::ptr::null_mut()
+        } else {
+            std::ptr::dangling_mut::<WhisperContext>()
+        }
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_whisper_free(_ctx: *mut WhisperContext) {}
+
+    #[cfg(coverage)]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn syllabix_whisper_decode(
+        _ctx: *mut WhisperContext,
+        _pcm: *const f32,
+        _n_samples: c_int,
+        _n_threads: c_int,
+        language: *const c_char,
+        _abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        _abort_user: *mut c_void,
+        out: *mut c_char,
+        _out_cap: c_int,
+        out_lang: *mut c_char,
+        _out_lang_cap: c_int,
+    ) -> c_int {
+        let lang = text(language);
+        if lang == "cancel" {
+            return 1;
+        }
+        if lang == "error" {
+            return 2;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(c"hello from fake whisper".as_ptr(), out, 24);
+            if lang == "auto" {
+                std::ptr::copy_nonoverlapping(c"es".as_ptr(), out_lang, 3);
+            }
+        }
+        0
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_llama_load(path: *const c_char, _n_threads: c_int) -> *mut LlamaHandle {
+        if fail(&text(path), "fail") {
+            std::ptr::null_mut()
+        } else {
+            std::ptr::dangling_mut::<LlamaHandle>()
+        }
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_llama_free(_llm: *mut LlamaHandle) {}
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_llama_n_ctx(_llm: *const LlamaHandle) -> c_int {
+        4096
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_llama_n_ctx_train(_llm: *const LlamaHandle) -> c_int {
+        4096
+    }
+
+    #[cfg(coverage)]
+    unsafe fn message_text(contents: *const *const c_char, n: c_int) -> String {
+        if n <= 0 || contents.is_null() {
+            return String::new();
+        }
+        text(*contents)
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_llama_count_prompt_tokens(
+        _llm: *mut LlamaHandle,
+        _roles: *const *const c_char,
+        contents: *const *const c_char,
+        n_messages: c_int,
+        _thinking: c_int,
+    ) -> c_int {
+        if message_text(contents, n_messages).contains("count-fail") {
+            0
+        } else {
+            7
+        }
+    }
+
+    #[cfg(coverage)]
+    unsafe fn emit_token(
+        contents: *const *const c_char,
+        n_messages: c_int,
+        cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
+        user: *mut c_void,
+    ) -> c_int {
+        let message = message_text(contents, n_messages);
+        if message.contains("cancel") {
+            return 1;
+        }
+        if message.contains("error") {
+            return 2;
+        }
+        let piece = c"fake reply";
+        match cb {
+            Some(cb) => {
+                let rc = cb(piece.as_ptr(), 0, user);
+                if rc != 0 {
+                    return rc;
+                }
+                cb(c"".as_ptr(), 1, user)
+            }
+            None => 0,
+        }
+    }
+
+    #[cfg(coverage)]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn syllabix_llama_generate(
+        _llm: *mut LlamaHandle,
+        _roles: *const *const c_char,
+        contents: *const *const c_char,
+        n_messages: c_int,
+        _thinking: c_int,
+        _n_threads: c_int,
+        _abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        _abort_user: *mut c_void,
+        cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
+        user: *mut c_void,
+    ) -> c_int {
+        emit_token(contents, n_messages, cb, user)
+    }
+
+    #[cfg(coverage)]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn syllabix_llama_generate_with_tools(
+        llm: *mut LlamaHandle,
+        roles: *const *const c_char,
+        contents: *const *const c_char,
+        n_messages: c_int,
+        thinking: c_int,
+        _tools: *const c_char,
+        n_threads: c_int,
+        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        abort_user: *mut c_void,
+        cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
+        user: *mut c_void,
+    ) -> c_int {
+        syllabix_llama_generate(
+            llm, roles, contents, n_messages, thinking, n_threads, abort, abort_user, cb, user,
+        )
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_llama_count_prompt_tokens_with_tools(
+        llm: *mut LlamaHandle,
+        roles: *const *const c_char,
+        contents: *const *const c_char,
+        n_messages: c_int,
+        thinking: c_int,
+        _tools: *const c_char,
+    ) -> c_int {
+        syllabix_llama_count_prompt_tokens(llm, roles, contents, n_messages, thinking)
+    }
+
+    #[cfg(coverage)]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn syllabix_llama_generate_with_lfm_tools(
+        llm: *mut LlamaHandle,
+        roles: *const *const c_char,
+        contents: *const *const c_char,
+        n_messages: c_int,
+        thinking: c_int,
+        _tools: *const c_char,
+        n_threads: c_int,
+        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        abort_user: *mut c_void,
+        cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
+        user: *mut c_void,
+    ) -> c_int {
+        syllabix_llama_generate(
+            llm, roles, contents, n_messages, thinking, n_threads, abort, abort_user, cb, user,
+        )
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_llama_count_prompt_tokens_with_lfm_tools(
+        llm: *mut LlamaHandle,
+        roles: *const *const c_char,
+        contents: *const *const c_char,
+        n_messages: c_int,
+        thinking: c_int,
+        _tools: *const c_char,
+    ) -> c_int {
+        syllabix_llama_count_prompt_tokens(llm, roles, contents, n_messages, thinking)
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_qwen_tts_load(
+        model_path: *const c_char,
+        _mmproj_path: *const c_char,
+        _n_threads: c_int,
+        _seed: u32,
+    ) -> *mut QwenTtsHandle {
+        if fail(&text(model_path), "fail") {
+            std::ptr::null_mut()
+        } else {
+            std::ptr::dangling_mut::<QwenTtsHandle>()
+        }
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_qwen_tts_free(_tts: *mut QwenTtsHandle) {}
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_qwen_tts_has_voice(_tts: *const QwenTtsHandle) -> c_int {
+        1
+    }
+
+    #[cfg(coverage)]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn syllabix_qwen_tts_synthesize(
+        _tts: *mut QwenTtsHandle,
+        text_ptr: *const c_char,
+        _lang: *const c_char,
+        _abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        _abort_user: *mut c_void,
+        rate: *mut i32,
+        pcm: *mut *mut i16,
+        n_samples: *mut i64,
+    ) -> c_int {
+        let value = text(text_ptr);
+        if value.contains("cancel") {
+            return 1;
+        }
+        if value.contains("error") {
+            return 2;
+        }
+        unsafe {
+            *rate = 24_000;
+            *n_samples = 2;
+            *pcm = Box::into_raw(Box::new([100i16, -100i16])).cast::<i16>();
+        }
+        0
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_qwen_tts_synthesize_streaming(
+        _tts: *mut QwenTtsHandle,
+        text_ptr: *const c_char,
+        _lang: *const c_char,
+        _abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        _abort_user: *mut c_void,
+        cb: Option<unsafe extern "C" fn(i32, *const f32, i64, c_int, *mut c_void) -> c_int>,
+        user: *mut c_void,
+    ) -> c_int {
+        let value = text(text_ptr);
+        if value.contains("cancel") {
+            return 1;
+        }
+        if value.contains("error") {
+            return 2;
+        }
+        let first = [0.1f32, 0.2];
+        let second = [0.3f32];
+        if let Some(cb) = cb {
+            if cb(24_000, first.as_ptr(), 2, 0, user) != 0 {
+                return 2;
+            }
+            if cb(24_000, second.as_ptr(), 1, 1, user) != 0 {
+                return 2;
+            }
+        }
+        0
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_qwen_tts_pcm_free(pcm: *mut i16) {
+        if !pcm.is_null() {
+            drop(Box::from_raw(pcm.cast::<[i16; 2]>()));
+        }
     }
 }
 
@@ -312,6 +670,7 @@ impl Drop for WhisperContext {
 }
 
 /// Options for one greedy llama.cpp generate.
+#[derive(Clone, Copy)]
 pub struct LlamaGenerate {
     /// Append an empty think block to disable thinking where the model's chat
     /// format supports that convention.
@@ -1113,6 +1472,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(coverage))]
     fn missing_whisper_weights_do_not_load() {
         let err = match WhisperContext::load("/no/such/ggml-small.bin") {
             Err(err) => err,
@@ -1122,6 +1482,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(coverage))]
     fn missing_llama_weights_do_not_load() {
         let err = match LlamaContext::load("/no/such/model.gguf", 1) {
             Err(err) => err,
@@ -1131,6 +1492,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(coverage))]
     fn missing_qwen_tts_weights_do_not_load() {
         let err =
             match QwenTtsContext::load("/no/such/qwen3-tts.gguf", "/no/such/mmproj.gguf", 1, 0) {
@@ -1277,5 +1639,265 @@ mod tests {
     #[test]
     fn lfm_render_rejects_empty_messages() {
         assert!(LlamaContext::render_lfm_prompt(&[], "").is_err());
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_exercises_whisper_wrapper_without_weights() {
+        assert!(WhisperContext::load("fail-whisper").is_err());
+        let mut ctx = WhisperContext::load("fake-whisper").expect("fake context");
+        assert!(unsafe { ctx.decode(&[], 1, "en", None, std::ptr::null_mut()) }.is_err());
+        assert!(unsafe { ctx.decode(&[0.0], 1, "bad\0lang", None, std::ptr::null_mut()) }.is_err());
+        assert_eq!(
+            unsafe { ctx.decode(&[0.0], 1, "en", None, std::ptr::null_mut()) }
+                .unwrap()
+                .0,
+            "hello from fake whisper"
+        );
+        assert_eq!(
+            unsafe { ctx.decode(&[0.0], 1, "auto", None, std::ptr::null_mut()) }
+                .unwrap()
+                .1,
+            "es"
+        );
+        assert_eq!(
+            unsafe { ctx.decode(&[0.0], 1, "cancel", None, std::ptr::null_mut()) },
+            Err(DecodeError::Cancelled)
+        );
+        assert_eq!(
+            unsafe { ctx.decode(&[0.0], 1, "error", None, std::ptr::null_mut()) },
+            Err(DecodeError::Failed("whisper.cpp decode failed".into()))
+        );
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_exercises_llama_wrapper_without_weights() {
+        assert!(LlamaContext::load("fail-llama", 1).is_err());
+        let mut ctx = LlamaContext::load("fake-llama", 1).expect("fake context");
+        assert_eq!(ctx.n_ctx(), 4096);
+        assert_eq!(ctx.n_ctx_train(), 4096);
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: "hello".into(),
+        }];
+        assert_eq!(ctx.prompt_token_count(&messages, true).unwrap(), 7);
+        assert!(ctx
+            .prompt_token_count(
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: "count-fail".into()
+                }],
+                false
+            )
+            .is_err());
+        assert!(ctx
+            .prompt_token_count(
+                &[ChatMessage {
+                    role: "bad\0role".into(),
+                    content: "x".into()
+                }],
+                false
+            )
+            .is_err());
+        let opts = LlamaGenerate {
+            append_thinking_off_suffix: true,
+            n_threads: 1,
+        };
+        let mut pieces = Vec::new();
+        unsafe {
+            ctx.generate(
+                &messages,
+                opts,
+                None,
+                std::ptr::null_mut(),
+                &mut |s, last| {
+                    pieces.push((s.to_string(), last));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            pieces,
+            vec![("fake reply".into(), false), ("".into(), true)]
+        );
+        assert_eq!(
+            unsafe {
+                ctx.generate(
+                    &[ChatMessage {
+                        role: "user".into(),
+                        content: "cancel".into(),
+                    }],
+                    opts,
+                    None,
+                    std::ptr::null_mut(),
+                    &mut |_, _| Ok(()),
+                )
+            },
+            Err(LlamaError::Cancelled)
+        );
+        assert_eq!(
+            unsafe {
+                ctx.generate(
+                    &[ChatMessage {
+                        role: "user".into(),
+                        content: "error".into(),
+                    }],
+                    opts,
+                    None,
+                    std::ptr::null_mut(),
+                    &mut |_, _| Ok(()),
+                )
+            },
+            Err(LlamaError::Failed("llama.cpp generate failed".into()))
+        );
+        assert!(
+            unsafe { ctx.generate(&[], opts, None, std::ptr::null_mut(), &mut |_, _| Ok(())) }
+                .is_err()
+        );
+        assert!(unsafe {
+            ctx.generate(
+                &[ChatMessage {
+                    role: "bad\0role".into(),
+                    content: "x".into(),
+                }],
+                opts,
+                None,
+                std::ptr::null_mut(),
+                &mut |_, _| Ok(()),
+            )
+        }
+        .is_err());
+        assert!(ctx
+            .prompt_token_count_with_tools(&messages, false, "[]")
+            .is_ok());
+        assert!(unsafe {
+            ctx.generate_with_tools(
+                &messages,
+                "[]",
+                opts,
+                None,
+                std::ptr::null_mut(),
+                &mut |_, _| Ok(()),
+            )
+        }
+        .is_ok());
+        assert!(unsafe {
+            ctx.generate_with_tools(
+                &messages,
+                "bad\0tools",
+                opts,
+                None,
+                std::ptr::null_mut(),
+                &mut |_, _| Ok(()),
+            )
+        }
+        .is_err());
+        assert!(ctx
+            .prompt_token_count_with_lfm_tools(&messages, "[]")
+            .is_ok());
+        assert!(LlamaContext::render_lfm_prompt(&messages, "[]").is_ok());
+        assert!(unsafe {
+            ctx.generate_with_lfm_tools(
+                &messages,
+                "[]",
+                opts,
+                None,
+                std::ptr::null_mut(),
+                &mut |_, _| Ok(()),
+            )
+        }
+        .is_ok());
+        assert!(unsafe {
+            ctx.generate_with_lfm_tools(
+                &messages,
+                "bad\0tools",
+                opts,
+                None,
+                std::ptr::null_mut(),
+                &mut |_, _| Ok(()),
+            )
+        }
+        .is_err());
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_exercises_qwen_wrapper_without_weights() {
+        assert!(QwenTtsContext::load("fail-qwen", "fake-mmproj", 1, 0).is_err());
+        let mut ctx = QwenTtsContext::load("fake-qwen", "fake-mmproj", 1, 0).expect("fake context");
+        assert!(ctx.has_voice());
+        assert!(unsafe { ctx.synthesize("", "en", None, std::ptr::null_mut()) }.is_err());
+        assert!(unsafe { ctx.synthesize("bad\0text", "en", None, std::ptr::null_mut()) }.is_err());
+        assert!(
+            !unsafe { ctx.synthesize("hello", "en", None, std::ptr::null_mut()) }
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        assert_eq!(
+            unsafe { ctx.synthesize("cancel", "en", None, std::ptr::null_mut()) },
+            Err(QwenTtsError::Cancelled)
+        );
+        assert_eq!(
+            unsafe { ctx.synthesize("error", "en", None, std::ptr::null_mut()) },
+            Err(QwenTtsError::Failed("Qwen3-TTS synthesis failed".into()))
+        );
+        let mut windows = Vec::new();
+        unsafe {
+            ctx.synthesize_streaming(
+                "hello",
+                "en",
+                None,
+                std::ptr::null_mut(),
+                &mut |rate, pcm, last| {
+                    windows.push((rate, pcm.to_vec(), last));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(windows.len(), 2);
+        assert_eq!(
+            unsafe {
+                ctx.synthesize_streaming(
+                    "cancel",
+                    "en",
+                    None,
+                    std::ptr::null_mut(),
+                    &mut |_, _, _| Ok(()),
+                )
+            },
+            Err(QwenTtsError::Cancelled)
+        );
+        assert_eq!(
+            unsafe {
+                ctx.synthesize_streaming(
+                    "error",
+                    "en",
+                    None,
+                    std::ptr::null_mut(),
+                    &mut |_, _, _| Ok(()),
+                )
+            },
+            Err(QwenTtsError::Failed(
+                "Qwen3-TTS streaming synthesis failed".into()
+            ))
+        );
+        assert!(unsafe {
+            ctx.synthesize_streaming(
+                "bad\0text",
+                "en",
+                None,
+                std::ptr::null_mut(),
+                &mut |_, _, _| Ok(()),
+            )
+        }
+        .is_err());
+        assert_eq!(
+            unsafe { qwen_pcm_callback(1, std::ptr::null(), 1, 0, std::ptr::null_mut()) },
+            -1
+        );
     }
 }

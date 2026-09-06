@@ -206,6 +206,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mode_tokens_cover_every_variant() {
+        assert_eq!(FilesystemMode::ReadOnly.as_str(), "read-only");
+        assert_eq!(FilesystemMode::WorkspaceWrite.as_str(), "workspace-write");
+        assert_eq!(
+            FilesystemMode::DangerFullAccess.as_str(),
+            "danger-full-access"
+        );
+        assert_eq!(NetworkMode::None.as_str(), "none");
+        assert_eq!(NetworkMode::Allow.as_str(), "allow");
+        assert_eq!(SecretPolicy::None.as_str(), "none");
+    }
+
+    #[test]
+    fn default_session_matches_default_trait() {
+        let session = DeveloperPermissions::default_session();
+        assert_eq!(DeveloperPermissions::default(), session);
+        assert_eq!(session.filesystem, FilesystemMode::ReadOnly);
+        assert_eq!(session.network, NetworkMode::None);
+        assert_eq!(session.secrets, SecretPolicy::None);
+    }
+
+    #[test]
+    fn policy_deny_displays_and_errors() {
+        let deny = PolicyDeny {
+            message: String::from("allow required; configured network mode is none"),
+        };
+        assert_eq!(
+            deny.to_string(),
+            "allow required; configured network mode is none"
+        );
+        let _: &dyn std::error::Error = &deny;
+    }
+
+    #[test]
     fn filesystem_mode_orders_read_only_below_write_below_danger() {
         assert!(FilesystemMode::ReadOnly < FilesystemMode::WorkspaceWrite);
         assert!(FilesystemMode::WorkspaceWrite < FilesystemMode::DangerFullAccess);

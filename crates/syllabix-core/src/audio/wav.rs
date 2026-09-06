@@ -149,4 +149,131 @@ mod tests {
         let err = read_wav(Cursor::new(b"not a wav")).unwrap_err();
         assert!(matches!(err, Error::InvalidAudio { .. }));
     }
+
+    fn chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(id);
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(body);
+        if body.len() % 2 == 1 {
+            out.push(0);
+        }
+        out
+    }
+
+    fn fmt_body(audio_format: u16, channels: u16, rate: u32, bits: u16) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&audio_format.to_le_bytes());
+        body.extend_from_slice(&channels.to_le_bytes());
+        body.extend_from_slice(&rate.to_le_bytes());
+        body.extend_from_slice(&(rate * u32::from(channels) * 2).to_le_bytes());
+        body.extend_from_slice(&(channels * 2).to_le_bytes());
+        body.extend_from_slice(&bits.to_le_bytes());
+        body
+    }
+
+    fn riff(chunks: &[u8]) -> Vec<u8> {
+        let mut body = chunks.to_vec();
+        if body.len() < 32 {
+            body.resize(32, 0);
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(4 + body.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"WAVE");
+        out.extend_from_slice(&body);
+        out
+    }
+
+    #[test]
+    fn rejects_chunk_overrun() {
+        let mut file = Vec::from(*b"data");
+        file.extend_from_slice(&1000u32.to_le_bytes());
+        file.extend_from_slice(&[1, 2, 3, 4]);
+        let err = read_wav(Cursor::new(riff(&file))).unwrap_err();
+        assert_eq!(err.to_string(), "invalid audio: WAV chunk overruns file");
+    }
+
+    #[test]
+    fn rejects_missing_fmt_chunk() {
+        let data = chunk(b"data", &[0, 0]);
+        let err = read_wav(Cursor::new(riff(&data))).unwrap_err();
+        assert_eq!(err.to_string(), "invalid audio: WAV missing fmt chunk");
+    }
+
+    #[test]
+    fn rejects_missing_data_chunk() {
+        let fmt = chunk(b"fmt ", &fmt_body(1, 1, 16_000, 16));
+        let err = read_wav(Cursor::new(riff(&fmt))).unwrap_err();
+        assert_eq!(err.to_string(), "invalid audio: WAV missing data chunk");
+    }
+
+    #[test]
+    fn rejects_short_fmt_chunk() {
+        let fmt = chunk(b"fmt ", &[1, 0]);
+        let data = chunk(b"data", &[0, 0]);
+        let mut chunks = fmt;
+        chunks.extend_from_slice(&data);
+        let file = riff(&chunks);
+        let err = read_wav(Cursor::new(file)).unwrap_err();
+        assert_eq!(err.to_string(), "invalid audio: WAV fmt chunk too short");
+    }
+
+    #[test]
+    fn rejects_non_pcm_encoding() {
+        let fmt = chunk(b"fmt ", &fmt_body(3, 1, 16_000, 16));
+        let data = chunk(b"data", &[0, 0]);
+        let mut chunks = fmt;
+        chunks.extend_from_slice(&data);
+        let file = riff(&chunks);
+        let err = read_wav(Cursor::new(file)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid audio: WAV audio format 3 is not PCM"
+        );
+    }
+
+    #[test]
+    fn rejects_non_16_bit_samples() {
+        let fmt = chunk(b"fmt ", &fmt_body(1, 1, 16_000, 8));
+        let data = chunk(b"data", &[0]);
+        let mut chunks = fmt;
+        chunks.extend_from_slice(&data);
+        let file = riff(&chunks);
+        let err = read_wav(Cursor::new(file)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid audio: WAV bits-per-sample 8 is not 16"
+        );
+    }
+
+    #[test]
+    fn rejects_unaligned_data_chunk() {
+        // `data` with an odd body forces the pad-skip path and the alignment
+        // error together: size 3 pads to 4 bytes on disk.
+        let fmt = chunk(b"fmt ", &fmt_body(1, 1, 16_000, 16));
+        let mut chunks = fmt;
+        chunks.extend_from_slice(b"data");
+        chunks.extend_from_slice(&3u32.to_le_bytes());
+        chunks.extend_from_slice(&[1, 2, 3, 0]);
+        let file = riff(&chunks);
+        let err = read_wav(Cursor::new(file)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid audio: WAV data chunk is not 16-bit aligned"
+        );
+    }
+
+    #[test]
+    fn skips_unknown_chunks() {
+        let junk = chunk(b"JUNK", &[9, 9, 9, 9]);
+        let fmt = chunk(b"fmt ", &fmt_body(1, 1, 16_000, 16));
+        let data = chunk(b"data", &42i16.to_le_bytes());
+        let mut chunks = junk;
+        chunks.extend_from_slice(&fmt);
+        chunks.extend_from_slice(&data);
+        let file = riff(&chunks);
+        let wav = read_wav(Cursor::new(file)).unwrap();
+        assert_eq!(wav.samples, vec![42]);
+    }
 }
