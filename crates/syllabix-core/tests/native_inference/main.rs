@@ -32,7 +32,8 @@ use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use syllabix_core::{
-    SttModel, TtsModel, LFM25_26B_ASSET, LLAMA_32_1B_ASSET, QWEN35_08B_ASSET, QWEN35_2B_ASSET,
+    SttModel, TtsModel, LFM25_230M_ASSET, LFM25_2_6B_ASSET, LFM25_350M_ASSET, LLAMA_32_1B_ASSET,
+    QWEN35_08B_ASSET, QWEN35_2B_ASSET,
 };
 
 #[cfg(not(coverage))]
@@ -41,10 +42,10 @@ use syllabix_core::{
 };
 
 /// YAML identifiers covered by the default native test set.
-const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM25_26B_ASSET, "pocket-tts"];
+const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM25_2_6B_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
-const SUITED_NATIVE_IDS: [&str; 8] = [
+const SUITED_NATIVE_IDS: [&str; 10] = [
     "whisper-small",
     LLAMA_32_1B_ASSET,
     "kokoro",
@@ -52,7 +53,9 @@ const SUITED_NATIVE_IDS: [&str; 8] = [
     "qwen3-1.7",
     QWEN35_08B_ASSET,
     "pocket-tts",
-    LFM25_26B_ASSET,
+    LFM25_2_6B_ASSET,
+    LFM25_350M_ASSET,
+    LFM25_230M_ASSET,
 ];
 
 /// Every selectable local TTS model uses this fixed latency corpus.
@@ -90,7 +93,9 @@ fn all_yaml_model_ids() -> BTreeSet<&'static str> {
     ids.insert(LLAMA_32_1B_ASSET);
     ids.insert(QWEN35_08B_ASSET);
     ids.insert(QWEN35_2B_ASSET);
-    ids.insert(LFM25_26B_ASSET);
+    ids.insert(LFM25_2_6B_ASSET);
+    ids.insert(LFM25_350M_ASSET);
+    ids.insert(LFM25_230M_ASSET);
     for model in TtsModel::ALL {
         ids.insert(model.as_str());
     }
@@ -230,6 +235,7 @@ pub(crate) struct Native {
     stt: Option<WhisperStt>,
     llm: Option<LlamaLlm>,
     lfm: Option<LlamaLlm>,
+    lfm_asset_id: Option<&'static str>,
     tts: Option<KokoroTts>,
 }
 
@@ -240,6 +246,7 @@ impl Native {
             stt: None,
             llm: None,
             lfm: None,
+            lfm_asset_id: None,
             tts: None,
         }
     }
@@ -265,21 +272,33 @@ impl Native {
     }
 
     /// Dedicated LFM handle for tools-dialect tests. The regular `llm` slot
-    /// loads the same model for ordinary generation.
+    /// loads the launch default for ordinary generation.
     pub(crate) fn lfm_mut(&mut self) -> &mut LlamaLlm {
+        self.lfm_asset_mut(LFM25_2_6B_ASSET)
+    }
+
+    /// Load any yaml LFM id into the dedicated LFM slot (replacing a prior id).
+    pub(crate) fn lfm_asset_mut(&mut self, asset_id: &'static str) -> &mut LlamaLlm {
+        if self.lfm_asset_id != Some(asset_id) {
+            self.lfm = None;
+            self.lfm_asset_id = None;
+        }
         if self.lfm.is_none() {
             let cache = ModelCache::v0();
-            let asset = cache
-                .manifest()
-                .asset(LFM25_26B_ASSET)
-                .expect("manifest must contain the LFM spike asset");
             let mut progress = StderrProgress::new();
             let cancel = Cancel::new();
-            let path = cache
-                .resolve(asset, &HttpFetcher, &mut progress, &cancel)
-                .expect("resolve LFM QAD Q4_0 GGUF");
-            self.lfm =
-                Some(LlamaLlm::from_model_path(path).expect("load LFM QAD Q4_0 without segfault"));
+            self.lfm = Some(
+                LlamaLlm::from_cached_model(
+                    &cache,
+                    &HttpFetcher,
+                    &mut progress,
+                    &cancel,
+                    asset_id,
+                    false,
+                )
+                .unwrap_or_else(|err| panic!("load {asset_id} QAD Q4_0 without segfault: {err}")),
+            );
+            self.lfm_asset_id = Some(asset_id);
         }
         self.lfm.as_mut().expect("LFM loaded")
     }
@@ -400,8 +419,11 @@ fn suited_native_ids_are_recognized_by_the_native_harness() {
 
 #[test]
 fn lfm_is_a_yaml_and_native_model_id() {
-    assert!(all_native_model_ids().contains(LFM25_26B_ASSET));
-    assert!(all_yaml_model_ids().contains(LFM25_26B_ASSET));
+    for id in [LFM25_2_6B_ASSET, LFM25_350M_ASSET, LFM25_230M_ASSET] {
+        assert!(all_native_model_ids().contains(id), "{id}");
+        assert!(all_yaml_model_ids().contains(id), "{id}");
+        assert!(SUITED_NATIVE_IDS.contains(&id), "{id}");
+    }
 }
 
 #[test]

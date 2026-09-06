@@ -185,7 +185,7 @@ fn resolving_one_llm_id_does_not_fetch_the_other() {
 #[test]
 fn v0_manifest_is_complete() {
     let m = Manifest::v0();
-    assert_eq!(m.assets.len(), 32);
+    assert_eq!(m.assets.len(), 34);
     assert!(m.asset("silero").is_some());
     assert!(m.asset("whisper-small").is_some());
     assert!(m.asset("whisper-medium").is_some());
@@ -205,6 +205,8 @@ fn v0_manifest_is_complete() {
     assert!(m.asset("qwen3.5-2b").is_some());
     assert!(m.asset("llama-3.2-1b").is_some());
     assert!(m.asset("lfm2.5-2.6b").is_some());
+    assert!(m.asset("lfm2.5-350m").is_some());
+    assert!(m.asset("lfm2.5-230m").is_some());
     assert!(m.asset("kokoro").is_some());
     assert!(m.asset("kokoro-voice").is_some());
     // Qwen assets are fetched only when a Qwen TTS model is selected.

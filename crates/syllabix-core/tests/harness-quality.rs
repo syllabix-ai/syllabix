@@ -23,7 +23,7 @@ use std::time::Instant;
 use syllabix_core::{
     join_endpoint, resolve_api_key, speak_text_for_tts, validate_base_url, BlockedFetcher, Cancel,
     LlamaLlm, Llm, ModelCache, NoProgress, OpenAiLlm, OpenAiSettings, ToolTurnEvent, Transcript,
-    TurnId, CLOUD_FALLBACK_TEXT, LFM25_26B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, TOOL_LIMIT_TEXT,
+    TurnId, CLOUD_FALLBACK_TEXT, LFM25_2_6B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, TOOL_LIMIT_TEXT,
     VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
 
@@ -412,7 +412,7 @@ fn harness_quality_local_lfm() {
         &fetcher,
         &mut progress,
         &Cancel::new(),
-        LFM25_26B_ASSET,
+        LFM25_2_6B_ASSET,
         false,
     )
     .expect("local harness-quality requires the pinned LFM GGUF in the model cache")
@@ -423,7 +423,7 @@ fn harness_quality_local_lfm() {
     let mut total_escapes = 0usize;
     let mut elapsed = Vec::new();
     let mut failures = Vec::new();
-    println!("model={LFM25_26B_ASSET} mode=local");
+    println!("model={LFM25_2_6B_ASSET} mode=local");
     for fixture in FIXTURES {
         let start = Instant::now();
         let (reply, events) = drive_turn(&mut llm, fixture.transcript);

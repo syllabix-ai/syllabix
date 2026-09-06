@@ -334,6 +334,24 @@ impl Manifest {
                     "a247afd6414918eac8e520a9e6137dc271235461ecbe1180462221d5b8d40b03",
                     1_593_894_944,
                 ),
+                // LiquidAI LFM2.5-350M / 230M QAD Q4_0 GGUFs. Same LFM Open
+                // License v1.0 family as 2.6B; yaml opt-in only.
+                asset(
+                    "lfm2.5-350m",
+                    ModelLayer::Llm,
+                    "LFM2.5-350M-QAD-Q4_0.gguf",
+                    "https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF/resolve/main/LFM2.5-350M-QAD-Q4_0.gguf",
+                    "3d10b6ab8fc91a919534b9558e266255aca0bbc7f6d015963599aa9e74e05b1d",
+                    219_312_832,
+                ),
+                asset(
+                    "lfm2.5-230m",
+                    ModelLayer::Llm,
+                    "LFM2.5-230M-QAD-Q4_0.gguf",
+                    "https://huggingface.co/LiquidAI/LFM2.5-230M-GGUF/resolve/main/LFM2.5-230M-QAD-Q4_0.gguf",
+                    "e75f83268de11b2a1bcfab5f3b5c5c0c97569ddbbc0990aad88437e45b8ba292",
+                    149_081_056,
+                ),
             ],
         }
     }
@@ -374,8 +392,8 @@ mod tests {
         // Silero + five whisper ids + eight moonshine assets (small+medium) +
         // three GGUFs + Kokoro weights + voice + eight internal-only Pocket TTS
         // assets + two Qwen3-TTS backbones, each with its own projector, plus
-        // one LFM asset.
-        assert_eq!(m.assets.len(), 32);
+        // three LFM assets.
+        assert_eq!(m.assets.len(), 34);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -479,6 +497,18 @@ mod tests {
             "a247afd6414918eac8e520a9e6137dc271235461ecbe1180462221d5b8d40b03"
         );
         assert_eq!(m.asset("lfm2.5-2.6b").unwrap().size_bytes, 1_593_894_944);
+        assert_eq!(m.asset("lfm2.5-350m").unwrap().layer, ModelLayer::Llm);
+        assert_eq!(
+            m.asset("lfm2.5-350m").unwrap().sha256,
+            "3d10b6ab8fc91a919534b9558e266255aca0bbc7f6d015963599aa9e74e05b1d"
+        );
+        assert_eq!(m.asset("lfm2.5-350m").unwrap().size_bytes, 219_312_832);
+        assert_eq!(m.asset("lfm2.5-230m").unwrap().layer, ModelLayer::Llm);
+        assert_eq!(
+            m.asset("lfm2.5-230m").unwrap().sha256,
+            "e75f83268de11b2a1bcfab5f3b5c5c0c97569ddbbc0990aad88437e45b8ba292"
+        );
+        assert_eq!(m.asset("lfm2.5-230m").unwrap().size_bytes, 149_081_056);
         assert!(m.asset("missing").is_none());
         assert_eq!(SttModel::Small.as_str(), "whisper-small");
         for asset in &m.assets {

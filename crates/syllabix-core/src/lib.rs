@@ -71,10 +71,10 @@ pub use fake::{
 pub use g2p::{english_to_ipa, english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
 pub use live::{run_live, run_live_with_controls};
 pub use llm::{
-    is_v0_llm_model, render_system_prompt, system_prompt_for, LlamaLlm, LFM25_26B_ASSET,
-    LFM_TOOL_TURN_MAX_CHARS, LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS,
-    LOCAL_TOOL_FALLBACK_TEXT, QWEN35_08B_ASSET, QWEN35_2B_ASSET, V0_LLM_MODELS,
-    VOICE_SYSTEM_PROMPT, VOICE_SYSTEM_PROMPT_TEMPLATE,
+    is_v0_llm_model, render_system_prompt, system_prompt_for, LlamaLlm, LFM25_230M_ASSET,
+    LFM25_2_6B_ASSET, LFM25_350M_ASSET, LFM_TOOL_TURN_MAX_CHARS, LLAMA_32_1B_ASSET,
+    LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS, LOCAL_TOOL_FALLBACK_TEXT, QWEN35_08B_ASSET,
+    QWEN35_2B_ASSET, V0_LLM_MODELS, VOICE_SYSTEM_PROMPT, VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
 pub use memory::{process_rss_bytes, LOOP_RSS_GROWTH_CEILING_BYTES};
 pub use models::{

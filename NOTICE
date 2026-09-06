@@ -98,6 +98,18 @@ Source: https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF
 LFM is not distributed under the Apache-2.0 license that covers the
 rest of Syllabix.
 
+### LFM2.5-350M QAD Q4_0 (`LFM2.5-350M-QAD-Q4_0.gguf`, optional)
+
+LiquidAI LFM 1.0 license. Copyright LiquidAI.
+Source: https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF
+Selected only when `syllabix.yaml` sets `pipeline.llm.model: lfm2.5-350m`.
+
+### LFM2.5-230M QAD Q4_0 (`LFM2.5-230M-QAD-Q4_0.gguf`, optional)
+
+LiquidAI LFM 1.0 license. Copyright LiquidAI.
+Source: https://huggingface.co/LiquidAI/LFM2.5-230M-GGUF
+Selected only when `syllabix.yaml` sets `pipeline.llm.model: lfm2.5-230m`.
+
 ### Llama 3.2 1B Instruct (`Llama-3.2-1B-Instruct-Q4_K_M.gguf`, optional)
 
 Llama 3.2 Community License. Copyright (c) Meta Platforms, Inc. All rights

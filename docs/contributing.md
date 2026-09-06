@@ -38,6 +38,8 @@ Cache directory:
 | | Pocket TTS English ONNX/tokenizer/fixed voice | https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts |
 | `pipeline.tts.model` `kokoro` | Kokoro + default voice | https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX |
 | `pipeline.stt.model` other than `small` | Matching `ggml-*.bin` | https://huggingface.co/ggerganov/whisper.cpp |
+| `pipeline.llm.model` `lfm2.5-350m` | QAD Q4_0 GGUF | https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF |
+| `pipeline.llm.model` `lfm2.5-230m` | QAD Q4_0 GGUF | https://huggingface.co/LiquidAI/LFM2.5-230M-GGUF |
 | `pipeline.llm.model` `llama-3.2-1b` | Q4_K_M GGUF | https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF |
 | `pipeline.llm.model` `qwen3.5-0.8b` | Q4_K_M GGUF | https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF |
 | `pipeline.llm.model` `qwen3.5-2b` | Q4_K_M GGUF | https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF |

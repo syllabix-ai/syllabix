@@ -90,7 +90,9 @@ larger INT8 ONNX export (~590 MB vs ~360 MB for small) with the same runtime.
 
 | `model` | Notes |
 | --- | --- |
-| `lfm2.5-2.6b` | Default; first-run cache (LiquidAI LFM2.5 QAD Q4_0) |
+| `lfm2.5-2.6b` | Default; first-run cache (LiquidAI LFM2.5-2.6B QAD Q4_0) |
+| `lfm2.5-350m` | Fetched when selected (LiquidAI LFM2.5-350M QAD Q4_0) |
+| `lfm2.5-230m` | Fetched when selected (LiquidAI LFM2.5-230M QAD Q4_0) |
 | `llama-3.2-1b` | Fetched when selected |
 | `qwen3.5-0.8b` | Fetched when selected |
 | `qwen3.5-2b` | Fetched when selected |
