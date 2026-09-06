@@ -8,7 +8,7 @@ Unknown keys fail at load.
 
 | Layer | Default |
 | --- | --- |
-| VAD | Silero (threshold 0.5, min speech 100 ms, end silence 350 ms, Whisper preroll 200 ms) |
+| VAD | Silero (threshold 0.5, min speech 100 ms, end silence 350 ms, STT preroll 200 ms) |
 | STT | whisper.cpp `small`, language `en` |
 | LLM | llama.cpp, LFM2.5-2.6B, thinking off (LFM always thinks internally; think tags are stripped before TTS) |
 | TTS | Kokoro |
@@ -30,7 +30,7 @@ pipeline:
     threshold: 0.5          # optional; (0, 1]
     min_speech_ms: 100      # optional
     end_silence_ms: 350     # optional
-    preroll_ms: 200         # optional Whisper preroll
+    preroll_ms: 200         # optional STT preroll (final + Moonshine partials)
   stt:
     provider: local
     model: whisper-small
@@ -77,8 +77,10 @@ pipeline:
 
 Both Moonshine sizes are English-only: `en` is required; `auto` and other
 language codes fail at config load. They display partial transcript text
-automatically while VAD owns an active turn. There is no partials setting and
-no second endpointing timer: Silero's `end_silence_ms` remains the one turn-end
+automatically while VAD owns an active turn. Partials are seeded with the same
+`preroll_ms` onset audio the final utterance uses, so live text sees the word
+start Whisper already had on finalize. There is no partials setting and no
+second endpointing timer: Silero's `end_silence_ms` remains the one turn-end
 control, after which Moonshine finalizes the same utterance. Medium uses a
 larger INT8 ONNX export (~590 MB vs ~360 MB for small) with the same runtime.
 

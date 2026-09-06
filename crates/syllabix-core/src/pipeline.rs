@@ -100,10 +100,12 @@ pub enum LoopEvent {
 /// VAD remains the only endpoint authority: `Start` opens the engine's
 /// provisional state and `Finalize` carries the canonical utterance with
 /// every preroll/hangover frame, so endpoint timing never depends on
-/// partial-decode progress.
+/// partial-decode progress. `Start` is reliable and carries the VAD seed
+/// (preroll + buffered speech at promote time); provisional frames ride the
+/// separate lossy partial channel, so the onset survives partial drops.
 #[derive(Clone)]
 enum SttControl {
-    Start(TurnId),
+    Start { turn: TurnId, seed: Vec<AudioFrame> },
     Finalize(Utterance),
 }
 
@@ -1054,7 +1056,7 @@ fn vad_loop<V: Vad>(
                 frame: Option<&AudioFrame>|
      -> Result<()> {
         for event in &events {
-            if let VadEvent::SpeechStart { turn } = event {
+            if let VadEvent::SpeechStart { turn, seed } = event {
                 shared.controls.disarm_idle();
                 shared.interrupt_assistant(cancel);
                 *active = Some(*turn);
@@ -1062,24 +1064,36 @@ fn vad_loop<V: Vad>(
                     debug.start_turn(*turn);
                     debug.note_anchor(*turn, TimelineAnchor::SpeechStart, Instant::now());
                 }
-                control.send_cancellable(SttControl::Start(*turn), cancel)?;
+                control.send_cancellable(
+                    SttControl::Start {
+                        turn: *turn,
+                        seed: seed.clone(),
+                    },
+                    cancel,
+                )?;
             }
         }
         if let (Some(debug), Some(frame), Some(turn)) = (&shared.turn_debug, frame, *active) {
             debug.note_frame(turn, &frame.samples, frame.capture_pcm.as_deref());
         }
-        // Stream only frames belonging to an active VAD turn. The canonical
-        // final Utterance below still contains preroll/hangover frames.
+        // Stream only frames belonging to an active VAD turn. Skip the promote
+        // frame when SpeechStart just fired — it already rode the reliable
+        // `Start` seed, and re-streaming it would double-count the onset.
+        // The canonical final Utterance below still contains preroll/hangover.
         // Partial text is advisory: when the streaming engine decodes slower
         // than real time the channel fills and the frame is counted as
         // dropped instead of stalling VAD, capture, and the microphone.
+        let started_this_frame = events
+            .iter()
+            .any(|event| matches!(event, VadEvent::SpeechStart { .. }));
         if let (Some(turn), Some(frame)) = (*active, frame) {
-            if partials
-                .try_send(SttPartial {
-                    turn,
-                    frame: frame.clone(),
-                })
-                .is_err()
+            if !started_this_frame
+                && partials
+                    .try_send(SttPartial {
+                        turn,
+                        frame: frame.clone(),
+                    })
+                    .is_err()
             {
                 shared.note_partial_drop();
             }
@@ -1188,10 +1202,10 @@ fn stt_loop<S: Stt>(
             return;
         }
         match control.recv_timeout(POLL) {
-            Ok(SttControl::Start(turn)) => {
+            Ok(SttControl::Start { turn, seed }) => {
                 drain_partials(&partials);
                 active = Some(turn);
-                if let Err(err) = stt.start_turn(turn, cancel) {
+                if let Err(err) = stt.start_turn(turn, &seed, cancel) {
                     if !matches!(err, Error::Cancelled) {
                         shared.fail(err, cancel);
                     }
@@ -1201,7 +1215,11 @@ fn stt_loop<S: Stt>(
             Ok(SttControl::Finalize(utterance)) => {
                 // A fast turn can finalize before any control poll observes
                 // an idle window: decode the latest pending partial first so
-                // provisional text still precedes the final transcript.
+                // provisional text still precedes the final transcript. When
+                // the lossy channel holds nothing for the turn (e.g. a
+                // single-frame turn whose promote frame arrived via the
+                // reliable seed), fall back to the seeded buffer instead of
+                // emitting no provisional text at all.
                 if active == Some(utterance.turn)
                     && !shared.is_interrupted(utterance.turn)
                     && stt.supports_partials()
@@ -1210,6 +1228,8 @@ fn stt_loop<S: Stt>(
                         if !decode_partial(&mut stt, cancel, shared, latest.turn, &latest.frame) {
                             return;
                         }
+                    } else if !decode_flushed(&mut stt, cancel, shared, utterance.turn) {
+                        return;
                     }
                 } else {
                     drain_partials(&partials);
@@ -1332,6 +1352,27 @@ fn drain_to_latest_for_active(
     drain_to_latest(rx, active)
 }
 
+/// Run one seeded-buffer decode and emit non-blank text. Used on `Finalize`
+/// when the lossy partial channel holds nothing for the turn. Returns false
+/// when the worker must exit (cancellation or provider failure).
+fn decode_flushed<S: Stt>(stt: &mut S, cancel: &Cancel, shared: &Shared, turn: TurnId) -> bool {
+    match stt.flush_partial(turn, cancel) {
+        Ok(Some(text)) if !is_blank_stt(&text) => {
+            let at = Instant::now();
+            if let Some(debug) = &shared.turn_debug {
+                debug.note_anchor(turn, TimelineAnchor::SttPartial, at);
+            }
+            shared.emit(LoopEvent::Partial { turn, text });
+            true
+        }
+        Ok(_) => true,
+        Err(Error::Cancelled) => false,
+        Err(err) => {
+            shared.fail(err, cancel);
+            false
+        }
+    }
+}
 /// Run one provisional decode and emit non-blank text. Returns false when the
 /// worker must exit (cancellation or provider failure).
 fn decode_partial<S: Stt>(
@@ -1593,6 +1634,8 @@ mod tests {
     struct PartialStt {
         turn: Option<TurnId>,
         frames: usize,
+        seeded: bool,
+        flushed: bool,
     }
 
     impl Stt for PartialStt {
@@ -1612,15 +1655,38 @@ mod tests {
             true
         }
 
-        fn start_turn(&mut self, turn: TurnId, _cancel: &Cancel) -> Result<()> {
+        fn start_turn(
+            &mut self,
+            turn: TurnId,
+            seed: &[AudioFrame],
+            _cancel: &Cancel,
+        ) -> Result<()> {
             self.turn = Some(turn);
             self.frames = 0;
+            // The reliable seed carries the promote frame; the lossy channel
+            // must not redeliver it as new audio.
+            self.seeded = !seed.is_empty();
+            self.flushed = false;
             Ok(())
+        }
+
+        fn flush_partial(&mut self, turn: TurnId, _cancel: &Cancel) -> Result<Option<String>> {
+            if self.turn != Some(turn) || !self.seeded || self.flushed {
+                return Ok(None);
+            }
+            self.flushed = true;
+            Ok(Some("partial transcript".into()))
         }
 
         fn push_frame(&mut self, _frame: &AudioFrame, _cancel: &Cancel) -> Result<Option<String>> {
             self.frames += 1;
-            Ok((self.frames == 1).then(|| "partial transcript".into()))
+            let emit = self.frames == 1;
+            if emit {
+                // Mirror the engine's monotonic guard: once provisional text
+                // went out via the lossy path, the finalize flush stays quiet.
+                self.flushed = true;
+            }
+            Ok(emit.then(|| "partial transcript".into()))
         }
     }
 
@@ -1907,6 +1973,8 @@ mod tests {
                 stt: PartialStt {
                     turn: None,
                     frames: 0,
+                    seeded: false,
+                    flushed: false,
                 },
                 llm: FakeLlm::new(),
                 tts: FakeTts,
@@ -1934,6 +2002,139 @@ mod tests {
             .iter()
             .any(|(anchor, _)| *anchor == TimelineAnchor::SttPartial));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn single_frame_turn_still_emits_partial_from_seed() {
+        // The promote frame rides the reliable `Start` seed, so a one-frame
+        // turn leaves the lossy partial queue empty at `Finalize`. The
+        // seed-aware flush must still emit provisional text before the final
+        // transcript instead of finding nothing to decode.
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let report = run_loop(
+            LoopConfig {
+                events: Some(events_tx),
+                mode: LoopMode::StopAfterTurns(1),
+                ..LoopConfig::default()
+            },
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: PartialStt {
+                    turn: None,
+                    frames: 0,
+                    seeded: false,
+                    flushed: false,
+                },
+                llm: FakeLlm::new(),
+                tts: FakeTts,
+                sink: CollectingSink::default(),
+            },
+            scripted_frames(1, 1, 1),
+            Cancel::new(),
+        )
+        .unwrap();
+        assert_eq!(report.turns.len(), 1);
+        let events: Vec<_> = events_rx.try_iter().collect();
+        let partial = events
+            .iter()
+            .position(|event| matches!(event, LoopEvent::Partial { text, .. } if text == "partial transcript"))
+            .expect("seed-flush partial event");
+        let final_user = events
+            .iter()
+            .position(
+                |event| matches!(event, LoopEvent::User { text, .. } if text == "final transcript"),
+            )
+            .expect("final user event");
+        assert!(partial < final_user);
+    }
+
+    /// Recording streaming STT for the seed/composition test below.
+    struct RecordingStt {
+        turn: Option<TurnId>,
+        seed_seqs: Arc<Mutex<Vec<u64>>>,
+        pushed_seqs: Arc<Mutex<Vec<u64>>>,
+    }
+
+    impl Stt for RecordingStt {
+        fn name(&self) -> &'static str {
+            "recording-fixture"
+        }
+
+        fn transcribe(&mut self, utterance: &Utterance, _cancel: &Cancel) -> Result<Transcript> {
+            Ok(Transcript {
+                turn: utterance.turn,
+                text: "final transcript".into(),
+                language: "en".into(),
+            })
+        }
+
+        fn supports_partials(&self) -> bool {
+            true
+        }
+
+        fn start_turn(
+            &mut self,
+            turn: TurnId,
+            seed: &[AudioFrame],
+            _cancel: &Cancel,
+        ) -> Result<()> {
+            self.turn = Some(turn);
+            *self.seed_seqs.lock().expect("seed seqs") =
+                seed.iter().map(|frame| frame.seq).collect();
+            Ok(())
+        }
+
+        fn push_frame(&mut self, frame: &AudioFrame, _cancel: &Cancel) -> Result<Option<String>> {
+            self.pushed_seqs
+                .lock()
+                .expect("pushed seqs")
+                .push(frame.seq);
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn seed_and_lossy_partials_compose_without_duplicate_or_gap() {
+        // The reliable seed carries the onset (promote frame); live frames
+        // arrive lossy. The composition must neither double-count the promote
+        // frame nor lose the turn onset when the partial is shed.
+        let seed_seqs = Arc::new(Mutex::new(Vec::new()));
+        let pushed_seqs = Arc::new(Mutex::new(Vec::new()));
+        let report = run_loop(
+            LoopConfig {
+                mode: LoopMode::StopAfterTurns(1),
+                ..LoopConfig::default()
+            },
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: RecordingStt {
+                    turn: None,
+                    seed_seqs: Arc::clone(&seed_seqs),
+                    pushed_seqs: Arc::clone(&pushed_seqs),
+                },
+                llm: FakeLlm::new(),
+                tts: FakeTts,
+                sink: CollectingSink::default(),
+            },
+            scripted_frames(1, 3, 1),
+            Cancel::new(),
+        )
+        .unwrap();
+        assert_eq!(report.turns.len(), 1);
+        let seed = seed_seqs.lock().expect("seed seqs").clone();
+        let pushed = pushed_seqs.lock().expect("pushed seqs").clone();
+        assert!(!seed.is_empty(), "seed must carry the turn onset");
+        assert_eq!(seed[0], 0, "seed must start at the promote frame");
+        for seq in &pushed {
+            assert!(
+                !seed.contains(seq),
+                "seq {seq} decoded twice: once via seed, once via partial"
+            );
+            assert!(
+                *seq > *seed.last().expect("non-empty seed"),
+                "pushed seq {seq} precedes the seed tail: onset gap"
+            );
+        }
     }
 
     /// Streaming STT that decodes slower than real time. The first
@@ -1967,7 +2168,12 @@ mod tests {
             true
         }
 
-        fn start_turn(&mut self, turn: TurnId, _cancel: &Cancel) -> Result<()> {
+        fn start_turn(
+            &mut self,
+            turn: TurnId,
+            _seed: &[AudioFrame],
+            _cancel: &Cancel,
+        ) -> Result<()> {
             self.turn = Some(turn);
             Ok(())
         }

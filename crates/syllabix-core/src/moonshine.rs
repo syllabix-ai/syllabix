@@ -575,15 +575,32 @@ impl Stt for MoonshineStt {
         true
     }
 
-    fn start_turn(&mut self, turn: TurnId, cancel: &Cancel) -> Result<()> {
+    fn start_turn(&mut self, turn: TurnId, seed: &[AudioFrame], cancel: &Cancel) -> Result<()> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
         self.active_turn = Some(turn);
-        self.active_frames.clear();
+        // VAD hands preroll + buffered speech at promote time so the first
+        // partial decodes the same onset as the final utterance.pcm().
+        self.active_frames = seed.to_vec();
         self.frames_since_partial = 0;
         self.last_partial.clear();
         Ok(())
+    }
+
+    fn flush_partial(&mut self, turn: TurnId, cancel: &Cancel) -> Result<Option<String>> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        if self.active_turn != Some(turn) || self.active_frames.is_empty() {
+            return Ok(None);
+        }
+        if self.frames_since_partial == 0 && !self.last_partial.is_empty() {
+            // An idle-poll decode already covered the buffered audio.
+            return Ok(None);
+        }
+        self.frames_since_partial = 0;
+        self.decode_active(cancel)
     }
 
     fn push_frame(&mut self, frame: &AudioFrame, cancel: &Cancel) -> Result<Option<String>> {
@@ -593,12 +610,43 @@ impl Stt for MoonshineStt {
         if self.active_turn.is_none() {
             return Ok(None);
         }
+        // The promote frame travels in the reliable `seed`; the lossy partial
+        // channel may still redeliver it. Frames are seq-ordered, so anything
+        // at or behind the buffered tail is a duplicate, not new audio.
+        if self
+            .active_frames
+            .last()
+            .is_some_and(|last| last.seq >= frame.seq)
+        {
+            return Ok(None);
+        }
         self.active_frames.push(frame.clone());
         self.frames_since_partial += 1;
         if self.frames_since_partial < PARTIAL_EVERY_FRAMES {
             return Ok(None);
         }
         self.frames_since_partial = 0;
+        self.decode_active(cancel)
+    }
+
+    fn cancel_turn(&mut self, turn: TurnId) {
+        self.clear_active(turn);
+    }
+}
+
+impl MoonshineStt {
+    fn clear_active(&mut self, turn: TurnId) {
+        if self.active_turn == Some(turn) {
+            self.active_turn = None;
+            self.active_frames.clear();
+            self.frames_since_partial = 0;
+            self.last_partial.clear();
+        }
+    }
+
+    /// Decode the currently buffered (seed + pushed) frames and apply the
+    /// monotonic-prefix contract shared by live and finalize-flush decodes.
+    fn decode_active(&mut self, cancel: &Cancel) -> Result<Option<String>> {
         let utterance = Utterance {
             turn: self.active_turn.expect("active turn checked"),
             frames: self.active_frames.clone(),
@@ -614,21 +662,6 @@ impl Stt for MoonshineStt {
             Ok(Some(text))
         } else {
             Ok(None)
-        }
-    }
-
-    fn cancel_turn(&mut self, turn: TurnId) {
-        self.clear_active(turn);
-    }
-}
-
-impl MoonshineStt {
-    fn clear_active(&mut self, turn: TurnId) {
-        if self.active_turn == Some(turn) {
-            self.active_turn = None;
-            self.active_frames.clear();
-            self.frames_since_partial = 0;
-            self.last_partial.clear();
         }
     }
 }

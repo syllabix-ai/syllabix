@@ -145,10 +145,15 @@ impl crate::providers::Stt for LiveStt {
         matches!(self, Self::Moonshine(_))
     }
 
-    fn start_turn(&mut self, turn: crate::TurnId, cancel: &Cancel) -> Result<()> {
+    fn start_turn(
+        &mut self,
+        turn: crate::TurnId,
+        seed: &[crate::AudioFrame],
+        cancel: &Cancel,
+    ) -> Result<()> {
         match self {
-            Self::Whisper(stt) => stt.start_turn(turn, cancel),
-            Self::Moonshine(stt) => stt.start_turn(turn, cancel),
+            Self::Whisper(stt) => stt.start_turn(turn, seed, cancel),
+            Self::Moonshine(stt) => stt.start_turn(turn, seed, cancel),
         }
     }
 
@@ -156,6 +161,13 @@ impl crate::providers::Stt for LiveStt {
         match self {
             Self::Whisper(stt) => stt.push_frame(frame, cancel),
             Self::Moonshine(stt) => stt.push_frame(frame, cancel),
+        }
+    }
+
+    fn flush_partial(&mut self, turn: crate::TurnId, cancel: &Cancel) -> Result<Option<String>> {
+        match self {
+            Self::Whisper(stt) => stt.flush_partial(turn, cancel),
+            Self::Moonshine(stt) => stt.flush_partial(turn, cancel),
         }
     }
 

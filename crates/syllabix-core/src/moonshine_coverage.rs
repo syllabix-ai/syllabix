@@ -83,7 +83,7 @@ impl Stt for MoonshineStt {
         true
     }
 
-    fn start_turn(&mut self, turn: TurnId, cancel: &Cancel) -> Result<()> {
+    fn start_turn(&mut self, turn: TurnId, _seed: &[AudioFrame], cancel: &Cancel) -> Result<()> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
@@ -127,7 +127,7 @@ mod tests {
         cancel.shutdown();
         let mut stt = MoonshineStt { active_turn: None };
         assert!(matches!(
-            stt.start_turn(TurnId(1), &cancel),
+            stt.start_turn(TurnId(1), &[], &cancel),
             Err(Error::Cancelled)
         ));
     }
