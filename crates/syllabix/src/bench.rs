@@ -12,13 +12,18 @@ use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames, FrameSplitter, WavPcm},
     build_stt, build_tts, contains_words_in_order, process_rss_bytes, word_match_ratio,
     AgentConfig, Cancel, Error, HistoryTurn, HttpFetcher, LlamaLlm, Llm, ModelCache, Result,
-    StderrProgress, Stt, SttModel, TokenChunk, Transcript, Tts, TurnId, Utterance, WhisperStt,
-    DEFAULT_SAMPLE_RATE_HZ, TTS_ASR_MIN_WORD_MATCH,
+    StderrProgress, Stt, SttModel, TokenChunk, Transcript, Tts, TtsModel, TurnId, Utterance,
+    WhisperStt, DEFAULT_SAMPLE_RATE_HZ, TTS_ASR_MIN_WORD_MATCH, V0_LLM_MODELS,
 };
 
 const SCHEMA_VERSION: u8 = 3;
 const SCENARIOS_JSONL: &str = include_str!("../../../docs/eval/scenarios.jsonl");
 const NUMBER_FIXTURES: [&str; 5] = ["100", "$5", "3:45 pm", "USD", "API"];
+/// Safety rail for contributor LLM evidence. Product `run` still has no
+/// `n_predict`; fixtures pass well under 100 generated tokens, so 256 keeps
+/// gates meaningful while stopping a CPU host from filling the whole GGUF
+/// window when a model never emits EOS.
+const BENCH_LLM_MAX_GENERATED_TOKENS: usize = 256;
 
 #[derive(Debug, Deserialize)]
 struct Scenario {
@@ -121,11 +126,18 @@ pub(crate) fn run(out: PathBuf) -> Result<()> {
 
     let mut records = Vec::new();
 
-    // Each selected provider runs in a dedicated process so host-RSS snapshots
-    // cover one model lifetime rather than earlier components.
-    records.extend(run_named_worker("bench-asr-worker")?);
-    records.extend(run_named_worker("bench-llm-worker")?);
-    records.extend(run_named_worker("bench-tts-worker")?);
+    // One-axis coverage: every supported local STT, LLM, and TTS id in its own
+    // child process so host-RSS snapshots cover one model lifetime. Defaults
+    // are included; there is no STT×LLM×TTS cross-product.
+    for model in SttModel::ALL {
+        records.extend(run_named_worker("bench-asr-worker", model.as_str())?);
+    }
+    for model in V0_LLM_MODELS {
+        records.extend(run_named_worker("bench-llm-worker", model)?);
+    }
+    for model in TtsModel::ALL {
+        records.extend(run_named_worker("bench-tts-worker", model.as_str())?);
+    }
     write_jsonl(&out, &records)?;
     println!(
         "wrote {} component benchmark records to {}",
@@ -137,14 +149,24 @@ pub(crate) fn run(out: PathBuf) -> Result<()> {
 
 /// Private `bench-asr-worker` entry point. A distinct process gives the ASR
 /// memory snapshot one model lifetime with no LLM or TTS residency.
-pub(crate) fn run_asr_worker(out: PathBuf) -> Result<()> {
+pub(crate) fn run_asr_worker(out: PathBuf, model: String) -> Result<()> {
     if out.exists() {
         return Err(Error::Config {
             field: "bench.worker.out".into(),
             message: format!("refusing to overwrite {}", out.display()),
         });
     }
-    let config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
+    let mut config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
+    let stt_model = SttModel::parse(&model).ok_or_else(|| Error::Config {
+        field: "bench.worker.model".into(),
+        message: format!("unsupported STT model {model:?}"),
+    })?;
+    config.stt_model = stt_model;
+    // Moonshine is English-only; force `en` when sweeping that axis so a
+    // project yaml with another STT language cannot abort the worker.
+    if stt_model.is_moonshine() {
+        config.language = "en".into();
+    }
     let scenarios = scenarios()?;
     let cancel = Cancel::new();
     let cache = ModelCache::v0();
@@ -167,20 +189,30 @@ pub(crate) fn run_asr_worker(out: PathBuf) -> Result<()> {
 
 /// Private `bench-llm-worker` entry point. It owns precisely one local GGUF
 /// for comparable before-load, after-load, and peak host-RSS measurements.
-pub(crate) fn run_llm_worker(out: PathBuf) -> Result<()> {
+pub(crate) fn run_llm_worker(out: PathBuf, model: String) -> Result<()> {
     if out.exists() {
         return Err(Error::Config {
             field: "bench.worker.out".into(),
             message: format!("refusing to overwrite {}", out.display()),
         });
     }
-    let config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
+    let mut config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
     if !matches!(config.llm, syllabix_core::LlmProvider::Local) {
         return Err(Error::Config {
             field: "pipeline.llm.provider".into(),
             message: "bench measures local component ids only".into(),
         });
     }
+    if !syllabix_core::is_v0_llm_model(&model) {
+        return Err(Error::Config {
+            field: "bench.worker.model".into(),
+            message: format!("unsupported local LLM model {model:?}"),
+        });
+    }
+    config.llm_model = model;
+    // Thinking is a separate posture, not part of the model-id axis. Keep it
+    // off so every local GGUF is comparable, including when yaml enables it.
+    config.thinking = false;
     let cancel = Cancel::new();
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
@@ -209,14 +241,19 @@ pub(crate) fn run_llm_worker(out: PathBuf) -> Result<()> {
 
 /// Private `bench-tts-worker` entry point. TTS host-RSS is captured before
 /// Whisper `small` loads as the TTS→ASR scorer.
-pub(crate) fn run_tts_worker(out: PathBuf) -> Result<()> {
+pub(crate) fn run_tts_worker(out: PathBuf, model: String) -> Result<()> {
     if out.exists() {
         return Err(Error::Config {
             field: "bench.worker.out".into(),
             message: format!("refusing to overwrite {}", out.display()),
         });
     }
-    let config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
+    let mut config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
+    let tts_model = TtsModel::parse(&model).ok_or_else(|| Error::Config {
+        field: "bench.worker.model".into(),
+        message: format!("unsupported TTS model {model:?}"),
+    })?;
+    config.tts_model = tts_model;
     let scenarios = scenarios()?;
     let cancel = Cancel::new();
     let cache = ModelCache::v0();
@@ -236,7 +273,7 @@ pub(crate) fn run_tts_worker(out: PathBuf) -> Result<()> {
     write_jsonl(&out, &records)
 }
 
-fn run_named_worker(subcommand: &str) -> Result<Vec<Record>> {
+fn run_named_worker(subcommand: &str, model: &str) -> Result<Vec<Record>> {
     let temp = std::env::temp_dir().join(format!(
         "syllabix-{subcommand}-{}-{}.jsonl",
         std::process::id(),
@@ -245,6 +282,7 @@ fn run_named_worker(subcommand: &str) -> Result<Vec<Record>> {
     let output = Command::new(std::env::current_exe()?)
         .args([subcommand, "--out"])
         .arg(&temp)
+        .args(["--model", model])
         .output()?;
     if !output.status.success() {
         let _ = fs::remove_file(&temp);
@@ -378,12 +416,23 @@ fn benchmark_llm(
             })
             .collect();
         let prompt_tokens = llm.benchmark_prompt_tokens(&history, &user)?;
-        llm.generate(&history, &user, cancel, &mut |token| {
+        let mut capped = false;
+        let generate_result = llm.generate(&history, &user, cancel, &mut |token| {
             first_output_ms.get_or_insert_with(|| started.elapsed().as_millis());
             generated_tokens += 1;
             output.push_str(&token.text);
+            if generated_tokens >= BENCH_LLM_MAX_GENERATED_TOKENS {
+                capped = true;
+                // Invalidate this generation only; later cases keep running.
+                let _ = cancel.cancel_generation();
+            }
             Ok(())
-        })?;
+        });
+        match generate_result {
+            Ok(()) => {}
+            Err(Error::Cancelled) if capped && !cancel.is_shutdown() => {}
+            Err(err) => return Err(err),
+        }
         let elapsed_ms = started.elapsed().as_millis();
         memory_peak = memory_peak.max(required_rss("during LLM benchmark")?);
         let passed = llm_response_passes(scenario, &output);
@@ -954,5 +1003,38 @@ mod tests {
     fn token_rates_are_per_second_and_never_divide_by_zero() {
         assert!((tokens_per_second(25, 500) - 50.0).abs() < f64::EPSILON);
         assert_eq!(tokens_per_second(1, 0), 1_000.0);
+    }
+
+    #[test]
+    fn one_axis_menu_covers_every_supported_local_model() {
+        // Defaults are included; the sweep is one axis at a time, never a
+        // cross-product of STT × LLM × TTS.
+        assert!(SttModel::ALL.contains(&SttModel::Small));
+        assert_eq!(SttModel::ALL.len(), 7);
+        assert_eq!(V0_LLM_MODELS[0], "lfm2.5-2.6b");
+        assert_eq!(V0_LLM_MODELS.len(), 4);
+        assert!(TtsModel::ALL.contains(&TtsModel::PocketTts));
+        assert_eq!(TtsModel::ALL.len(), 4);
+        let stt_cases = scenarios()
+            .unwrap()
+            .iter()
+            .filter(|scenario| scenario.component == "stt")
+            .count();
+        let llm_cases = scenarios()
+            .unwrap()
+            .iter()
+            .filter(|scenario| scenario.component == "llm")
+            .count();
+        let tts_cases = scenarios()
+            .unwrap()
+            .iter()
+            .filter(|scenario| scenario.component == "tts")
+            .count();
+        assert_eq!(
+            SttModel::ALL.len() * stt_cases
+                + V0_LLM_MODELS.len() * llm_cases
+                + TtsModel::ALL.len() * tts_cases,
+            7 * 4 + 4 * 5 + 4 * 3
+        );
     }
 }

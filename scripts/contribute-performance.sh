@@ -94,7 +94,7 @@ EOF
   fi
 fi
 
-echo "== component benchmarks (no microphone or speakers) =="
+echo "== component benchmarks for every supported local model (no microphone or speakers) =="
 raw_run="$tmp/run.jsonl"
 "$binary" bench --out "$raw_run"
 fingerprint="$($validator --fingerprint "$raw_run")"
