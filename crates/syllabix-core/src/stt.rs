@@ -456,6 +456,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(coverage))]
     fn missing_model_file_is_a_provider_error() {
         let err = match WhisperStt::from_model_path("/no/such/ggml-small.bin", SttModel::Small) {
             Err(err) => err,

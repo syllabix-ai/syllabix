@@ -245,7 +245,142 @@ mod tests {
     }
 
     #[test]
-    fn draining_playback_does_not_retain_pcm() {
+    fn capture_iterates_frames_then_ends() {
+        let wav = WavPcm {
+            format: PcmFormat::v0(),
+            samples: sine_i16(16_000, 1, 440.0, Duration::from_millis(100), 0.3),
+        };
+        let frames = record_fixture_to_frames(&wav).unwrap();
+        assert!(!frames.is_empty());
+        let mut cap = FixtureCapture::from_frames(frames.clone());
+        assert_eq!(cap.name(), "fixture");
+        let cancel = Cancel::new();
+        let mut seen = 0;
+        while let Some(frame) = cap.next_frame(&cancel).unwrap() {
+            assert_eq!(frame.samples.len(), 512);
+            seen += 1;
+        }
+        assert_eq!(seen, frames.len());
+        assert!(cap.next_frame(&cancel).unwrap().is_none());
+    }
+
+    #[test]
+    fn device_roundtrip_preserves_speech_frames() {
+        let wav = WavPcm {
+            format: PcmFormat::v0(),
+            samples: sine_i16(16_000, 1, 440.0, Duration::from_millis(100), 0.3),
+        };
+        let frames = record_fixture_to_frames(&wav).unwrap();
+        let pcm = play_fixture_to_device_pcm(&frames, PcmFormat::v0()).unwrap();
+        assert!((pcm.len() as isize - frames.len() as isize * 512).abs() <= 2);
+    }
+
+    #[test]
+    fn playback_collects_and_flushes_on_last() {
+        let mut sink = FixturePlayback::new(PcmFormat::v0()).unwrap();
+        let cancel = Cancel::new();
+        let audio = |is_last: bool| SynthesizedAudio {
+            turn: TurnId(0),
+            generation: GenerationId(0),
+            index: 0,
+            samples: vec![100; 512],
+            is_last,
+        };
+        sink.play(audio(false), &cancel).unwrap();
+        let mid = sink.pcm.len();
+        assert!(mid > 0);
+        sink.play(audio(true), &cancel).unwrap();
+        assert!(sink.pcm.len() >= mid);
+        sink.interrupt();
+    }
+
+    #[test]
+    fn playback_drops_stale_generations() {
+        let mut sink = FixturePlayback::new(PcmFormat::v0()).unwrap();
+        // Fresh cancel lives at generation 0, so generation 99 is stale and
+        // must be dropped without touching the collected PCM.
+        let cancel = Cancel::new();
+        sink.play(
+            SynthesizedAudio {
+                turn: TurnId(0),
+                generation: GenerationId(99),
+                index: 0,
+                samples: vec![100; 512],
+                is_last: true,
+            },
+            &cancel,
+        )
+        .unwrap();
+        assert!(sink.pcm.is_empty());
+    }
+
+    #[test]
+    fn draining_playback_tracks_stale_and_interrupt() {
+        let mut sink = DrainingPlayback::new(PcmFormat::v0()).unwrap();
+        let cancel = Cancel::new();
+        sink.play(
+            SynthesizedAudio {
+                turn: TurnId(0),
+                generation: GenerationId(0),
+                index: 0,
+                samples: vec![100; 512],
+                is_last: false,
+            },
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(sink.stats().chunks(), 1);
+        sink.interrupt();
+        sink.play(
+            SynthesizedAudio {
+                turn: TurnId(0),
+                generation: GenerationId(0),
+                index: 1,
+                samples: vec![100; 512],
+                is_last: true,
+            },
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(sink.stats().chunks(), 2);
+        assert!(sink.stats().samples_played() > 0);
+        // Stale generations are dropped before conversion.
+        sink.play(
+            SynthesizedAudio {
+                turn: TurnId(0),
+                generation: GenerationId(99),
+                index: 2,
+                samples: vec![100; 512],
+                is_last: true,
+            },
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(sink.stats().chunks(), 2);
+    }
+
+    #[test]
+    fn draining_playback_cancel_is_visible() {
+        let mut sink = DrainingPlayback::new(PcmFormat::v0()).unwrap();
+        let cancel = Cancel::new();
+        cancel.shutdown();
+        let err = sink
+            .play(
+                SynthesizedAudio {
+                    turn: TurnId(0),
+                    generation: GenerationId(0),
+                    index: 0,
+                    samples: vec![1; 64],
+                    is_last: true,
+                },
+                &cancel,
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Cancelled));
+    }
+
+    #[test]
+    fn draining_playback_tracks_memory_and_samples() {
         let mut sink = DrainingPlayback::new(PcmFormat {
             sample_rate_hz: 48_000,
             channels: 2,

@@ -5,18 +5,24 @@
 
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread::{self, JoinHandle};
+#[cfg(any(not(coverage), test))]
+use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
+#[cfg(not(coverage))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+#[cfg(not(coverage))]
 use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
 
 use crate::audio::convert::{f32_to_i16, i16_to_f32, FrameSplitter, PcmConverter, PcmFormat};
-use crate::audio::devices::{
-    select_input, select_output, DeviceChoice, DeviceInfo, DeviceInventory,
-};
+use crate::audio::devices::DeviceChoice;
+#[cfg(not(coverage))]
+use crate::audio::devices::{select_input, select_output, DeviceInfo, DeviceInventory};
 use crate::audio::echo::{EchoCalibration, EchoController, EchoReference};
-use crate::audio::ring::{device_ring_capacity_samples, SampleRing};
+#[cfg(not(coverage))]
+use crate::audio::ring::device_ring_capacity_samples;
+use crate::audio::ring::SampleRing;
 use crate::cancel::Cancel;
 use crate::error::{Error, Result};
 use crate::pipeline::LoopEvent;
@@ -43,6 +49,7 @@ struct PlaybackDrainState {
 }
 
 impl PlaybackDrain {
+    #[cfg(any(not(coverage), test))]
     fn new() -> Self {
         Self {
             inner: Arc::new((Mutex::new(PlaybackDrainState::default()), Condvar::new())),
@@ -69,6 +76,7 @@ impl PlaybackDrain {
         }
     }
 
+    #[cfg(any(not(coverage), test))]
     fn on_callback(&self, rendered: usize) {
         let mut state = self.inner.0.lock().expect("playback drain");
         state.callback_count += 1;
@@ -122,6 +130,7 @@ pub fn backend_name() -> &'static str {
 }
 
 /// One selected cpal device and the stream config we will open.
+#[cfg(not(coverage))]
 pub struct SelectedCpalDevice {
     /// User-facing name.
     pub name: String,
@@ -134,10 +143,15 @@ pub struct SelectedCpalDevice {
     config: StreamConfig,
 }
 
+#[cfg(coverage)]
+pub struct SelectedCpalDevice;
+
+#[cfg(not(coverage))]
 struct CpalInventory {
     host: cpal::Host,
 }
 
+#[cfg(not(coverage))]
 impl CpalInventory {
     fn new() -> Self {
         Self {
@@ -159,6 +173,7 @@ impl CpalInventory {
     }
 }
 
+#[cfg(not(coverage))]
 impl DeviceInventory for CpalInventory {
     fn default_input(&self) -> Option<DeviceInfo> {
         let device = self.host.default_input_device()?;
@@ -197,6 +212,7 @@ impl DeviceInventory for CpalInventory {
     }
 }
 
+#[cfg(not(coverage))]
 fn map_cpal(err: impl std::fmt::Display, what: &str) -> Error {
     Error::AudioDevice {
         message: format!(
@@ -205,6 +221,7 @@ fn map_cpal(err: impl std::fmt::Display, what: &str) -> Error {
     }
 }
 
+#[cfg(not(coverage))]
 fn supported_to_config(cfg: SupportedStreamConfig) -> (PcmFormat, SampleFormat, StreamConfig) {
     let sample_format = cfg.sample_format();
     let device_format = PcmFormat {
@@ -215,6 +232,7 @@ fn supported_to_config(cfg: SupportedStreamConfig) -> (PcmFormat, SampleFormat, 
     (device_format, sample_format, config)
 }
 
+#[cfg(not(coverage))]
 fn open_input(choice: &DeviceChoice, host: &cpal::Host) -> Result<SelectedCpalDevice> {
     let device = find_input(host, &choice.device.name)?;
     let cfg = device
@@ -231,6 +249,7 @@ fn open_input(choice: &DeviceChoice, host: &cpal::Host) -> Result<SelectedCpalDe
     })
 }
 
+#[cfg(not(coverage))]
 fn open_output(choice: &DeviceChoice, host: &cpal::Host) -> Result<SelectedCpalDevice> {
     let device = find_output(host, &choice.device.name)?;
     let cfg = device
@@ -247,6 +266,7 @@ fn open_output(choice: &DeviceChoice, host: &cpal::Host) -> Result<SelectedCpalD
     })
 }
 
+#[cfg(not(coverage))]
 fn find_input(host: &cpal::Host, name: &str) -> Result<cpal::Device> {
     if let Some(dev) = host.default_input_device() {
         if dev.name().ok().as_deref() == Some(name) {
@@ -268,6 +288,7 @@ fn find_input(host: &cpal::Host, name: &str) -> Result<cpal::Device> {
     })
 }
 
+#[cfg(not(coverage))]
 fn find_output(host: &cpal::Host, name: &str) -> Result<cpal::Device> {
     if let Some(dev) = host.default_output_device() {
         if dev.name().ok().as_deref() == Some(name) {
@@ -307,6 +328,7 @@ impl Drop for StreamWorker {
     }
 }
 
+#[cfg(not(coverage))]
 struct OpenedStream {
     worker: StreamWorker,
     name: String,
@@ -315,8 +337,10 @@ struct OpenedStream {
     echo_ring: Option<Arc<SampleRing>>,
 }
 
+#[cfg(not(coverage))]
 type OpenedStreamMetadata = (String, PcmFormat, Arc<SampleRing>, Option<Arc<SampleRing>>);
 
+#[cfg(not(coverage))]
 fn spawn_input(choice: DeviceChoice) -> Result<OpenedStream> {
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let stop = Arc::new((Mutex::new(false), Condvar::new()));
@@ -379,6 +403,7 @@ fn spawn_input(choice: DeviceChoice) -> Result<OpenedStream> {
     })
 }
 
+#[cfg(not(coverage))]
 fn spawn_output(
     choice: DeviceChoice,
     tap_render: bool,
@@ -453,6 +478,7 @@ fn spawn_output(
     })
 }
 
+#[cfg(not(coverage))]
 fn recv_open(rx: mpsc::Receiver<Result<OpenedStreamMetadata>>) -> Result<OpenedStreamMetadata> {
     rx.recv().map_err(|_| Error::AudioDevice {
         message: "Audio thread exited before the device finished opening.".into(),
@@ -479,16 +505,19 @@ pub struct NativeCapture {
 
 impl NativeCapture {
     /// Open the selected default (or first usable) input device.
+    #[cfg(not(coverage))]
     pub fn open() -> Result<Self> {
         Self::open_inner(None, None)
     }
 
     /// Open the microphone with full-duplex AEC fed by the speaker callback.
+    #[cfg(not(coverage))]
     pub fn open_with_echo(reference: EchoReference) -> Result<Self> {
         Self::open_inner(Some(reference), None)
     }
 
     /// Open with AEC and report live calibration changes to the TUI.
+    #[cfg(not(coverage))]
     pub fn open_with_echo_and_events(
         reference: EchoReference,
         events: Option<mpsc::Sender<LoopEvent>>,
@@ -496,6 +525,7 @@ impl NativeCapture {
         Self::open_inner(Some(reference), events)
     }
 
+    #[cfg(not(coverage))]
     fn open_inner(
         reference: Option<EchoReference>,
         aec_events: Option<mpsc::Sender<LoopEvent>>,
@@ -648,17 +678,20 @@ pub struct NativePlayback {
 
 impl NativePlayback {
     /// Open the selected default (or first usable) output device.
+    #[cfg(not(coverage))]
     pub fn open() -> Result<Self> {
         Self::open_inner(false, None).map(|(playback, _)| playback)
     }
 
     /// Open speakers and tap the exact rendered PCM for full-duplex AEC.
+    #[cfg(not(coverage))]
     pub fn open_with_echo() -> Result<(Self, EchoReference)> {
         Self::open_with_echo_and_watch(None)
     }
 
     /// [`Self::open_with_echo`] plus timeline anchors for the speaker callback
     /// (`playback_first` / `playback_done` in the diagnostics sidecar).
+    #[cfg(not(coverage))]
     pub fn open_with_echo_and_watch(watch: Option<PlaybackWatch>) -> Result<(Self, EchoReference)> {
         let (playback, reference) = Self::open_inner(true, watch)?;
         Ok((
@@ -667,6 +700,7 @@ impl NativePlayback {
         ))
     }
 
+    #[cfg(not(coverage))]
     fn open_inner(
         tap_render: bool,
         watch: Option<PlaybackWatch>,
@@ -752,6 +786,7 @@ impl AudioSink for NativePlayback {
     }
 }
 
+#[cfg(not(coverage))]
 fn build_input_stream(selected: &SelectedCpalDevice, ring: Arc<SampleRing>) -> Result<Stream> {
     let err_fn = |err| {
         eprintln!("syllabix microphone error: {err}");
@@ -803,6 +838,7 @@ fn build_input_stream(selected: &SelectedCpalDevice, ring: Arc<SampleRing>) -> R
     }
 }
 
+#[cfg(not(coverage))]
 fn build_output_stream(
     selected: &SelectedCpalDevice,
     ring: Arc<SampleRing>,
@@ -887,9 +923,57 @@ fn build_output_stream(
 }
 
 /// Probe whether the host can name a default input and output (no stream).
+#[cfg(not(coverage))]
 pub fn probe_device_names() -> Result<(DeviceChoice, DeviceChoice)> {
     let inv = CpalInventory::new();
     Ok((select_input(&inv)?, select_output(&inv)?))
+}
+
+#[cfg(coverage)]
+fn coverage_audio_unavailable() -> Error {
+    Error::AudioDevice {
+        message: "Native audio devices are unavailable in coverage tests.".into(),
+    }
+}
+
+#[cfg(coverage)]
+impl NativeCapture {
+    pub fn open() -> Result<Self> {
+        Err(coverage_audio_unavailable())
+    }
+
+    pub fn open_with_echo(_reference: EchoReference) -> Result<Self> {
+        Err(coverage_audio_unavailable())
+    }
+
+    pub fn open_with_echo_and_events(
+        _reference: EchoReference,
+        _events: Option<mpsc::Sender<LoopEvent>>,
+    ) -> Result<Self> {
+        Err(coverage_audio_unavailable())
+    }
+}
+
+#[cfg(coverage)]
+impl NativePlayback {
+    pub fn open() -> Result<Self> {
+        Err(coverage_audio_unavailable())
+    }
+
+    pub fn open_with_echo() -> Result<(Self, EchoReference)> {
+        Err(coverage_audio_unavailable())
+    }
+
+    pub fn open_with_echo_and_watch(
+        _watch: Option<PlaybackWatch>,
+    ) -> Result<(Self, EchoReference)> {
+        Err(coverage_audio_unavailable())
+    }
+}
+
+#[cfg(coverage)]
+pub fn probe_device_names() -> Result<(DeviceChoice, DeviceChoice)> {
+    Err(coverage_audio_unavailable())
 }
 
 #[cfg(test)]
@@ -941,6 +1025,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(coverage))]
     fn cpal_errors_include_recovery_guidance() {
         let error = map_cpal("device busy", "Could not open microphone");
         let Error::AudioDevice { message } = error else {
@@ -963,6 +1048,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(coverage))]
     fn closed_stream_open_channel_is_actionable() {
         let (tx, rx) = mpsc::sync_channel(1);
         drop(tx);
@@ -976,6 +1062,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(coverage))]
     fn cpal_inventory_queries_are_safe_without_devices() {
         let inventory = CpalInventory::new();
         let _ = inventory.default_input();

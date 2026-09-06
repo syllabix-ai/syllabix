@@ -49,6 +49,137 @@ pub trait Stt: Send {
     fn cancel_turn(&mut self, _turn: TurnId) {}
 }
 
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::*;
+    use crate::types::{AudioFrame, GenerationId, Utterance};
+
+    struct StubStt;
+    impl Stt for StubStt {
+        fn name(&self) -> &'static str {
+            "stub-stt"
+        }
+
+        fn transcribe(&mut self, _utterance: &Utterance, _cancel: &Cancel) -> Result<Transcript> {
+            Ok(Transcript {
+                turn: TurnId(1),
+                text: String::from("hello"),
+                language: String::from("en"),
+            })
+        }
+    }
+
+    struct StubLlm;
+    impl Llm for StubLlm {
+        fn name(&self) -> &'static str {
+            "stub-llm"
+        }
+
+        fn generate(
+            &mut self,
+            _history: &[HistoryTurn],
+            _user: &Transcript,
+            _cancel: &Cancel,
+            _on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct StubTts;
+    impl Tts for StubTts {
+        fn name(&self) -> &'static str {
+            "stub-tts"
+        }
+
+        fn synthesize_chunk(
+            &mut self,
+            _token: &TokenChunk,
+            _cancel: &Cancel,
+        ) -> Result<Vec<SynthesizedAudio>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct StubSink {
+        played: usize,
+    }
+    impl AudioSink for StubSink {
+        fn play(&mut self, _audio: SynthesizedAudio, _cancel: &Cancel) -> Result<()> {
+            self.played += 1;
+            Ok(())
+        }
+    }
+
+    fn frame() -> AudioFrame {
+        AudioFrame {
+            seq: 0,
+            sample_rate_hz: 16_000,
+            channels: 1,
+            samples: vec![0; 256],
+            capture_pcm: None,
+        }
+    }
+
+    fn token() -> TokenChunk {
+        TokenChunk {
+            turn: TurnId(1),
+            generation: GenerationId(1),
+            index: 0,
+            text: String::from("hi"),
+            is_last: true,
+        }
+    }
+
+    #[test]
+    fn stt_defaults_keep_utterance_final_path() {
+        let mut stt = StubStt;
+        assert_eq!(stt.name(), "stub-stt");
+        assert!(!stt.supports_partials());
+        let cancel = Cancel::new();
+        stt.start_turn(TurnId(1), &cancel).expect("start_turn");
+        assert_eq!(stt.push_frame(&frame(), &cancel).expect("push"), None);
+        stt.cancel_turn(TurnId(1));
+    }
+
+    #[test]
+    fn llm_and_tts_defaults_report_no_live_meta() {
+        let llm = StubLlm;
+        assert_eq!(llm.name(), "stub-llm");
+        assert!(llm.debug_meta().is_none());
+        let mut llm = llm;
+        assert!(llm.take_tool_events().is_empty());
+
+        let tts = StubTts;
+        assert_eq!(tts.name(), "stub-tts");
+        assert!(tts.model_id().is_none());
+    }
+
+    #[test]
+    fn tts_chunk_into_fans_out_to_callback() {
+        let mut tts = StubTts;
+        let cancel = Cancel::new();
+        let token = token();
+        let mut seen = 0;
+        tts.synthesize_chunk_into(&token, &cancel, &mut |_| {
+            seen += 1;
+            Ok(())
+        })
+        .expect("fan-out");
+        assert_eq!(seen, 0);
+    }
+
+    #[test]
+    fn sink_defaults_finish_and_interrupt_silently() {
+        let mut sink = StubSink { played: 0 };
+        let cancel = Cancel::new();
+        sink.finish_turn(TurnId(7), &cancel).expect("finish");
+        sink.interrupt();
+        assert_eq!(sink.played, 0);
+    }
+}
+
 /// Streaming language model.
 pub trait Llm: Send {
     /// Config name (`llama.cpp`, `openai`).

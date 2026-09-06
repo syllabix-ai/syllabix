@@ -1973,6 +1973,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(coverage))]
     fn missing_model_file_is_a_provider_error() {
         let err = match LlamaLlm::from_model_path("/no/such/Qwen3.5-2B-Q4_K_M.gguf") {
             Err(err) => err,

@@ -131,10 +131,15 @@ fn run(barge_in: bool) -> Result<()> {
 }
 
 fn init(dir: Option<PathBuf>) -> Result<()> {
-    let target = dir.unwrap_or_else(|| PathBuf::from("."));
+    let target = init_target(dir);
     let path = AgentConfig::write_init(&target)?;
     println!("wrote {}", path.display());
     Ok(())
+}
+
+/// Resolve the `init` target directory without touching the filesystem.
+fn init_target(dir: Option<PathBuf>) -> PathBuf {
+    dir.unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[cfg(test)]
@@ -163,14 +168,7 @@ mod tests {
     #[test]
     fn parses_run() {
         let cli = Cli::try_parse_from(["syllabix", "run"]).expect("parse run");
-        match cli.command {
-            Commands::Run { barge_in } => assert!(!barge_in),
-            Commands::Init { .. } => panic!("expected run"),
-            Commands::Bench { .. } => panic!("expected run"),
-            Commands::BenchAsrWorker { .. } => panic!("expected run"),
-            Commands::BenchTtsWorker { .. } => panic!("expected run"),
-            Commands::BenchLlmWorker { .. } => panic!("expected run"),
-        }
+        assert!(matches!(cli.command, Commands::Run { barge_in: false }));
     }
 
     #[test]
@@ -190,14 +188,7 @@ mod tests {
     #[test]
     fn parses_init_without_dir() {
         let cli = Cli::try_parse_from(["syllabix", "init"]).expect("parse init");
-        match cli.command {
-            Commands::Init { dir } => assert!(dir.is_none()),
-            Commands::Run { .. } => panic!("expected init"),
-            Commands::Bench { .. } => panic!("expected init"),
-            Commands::BenchAsrWorker { .. } => panic!("expected init"),
-            Commands::BenchTtsWorker { .. } => panic!("expected init"),
-            Commands::BenchLlmWorker { .. } => panic!("expected init"),
-        }
+        assert!(matches!(cli.command, Commands::Init { dir: None }));
     }
 
     #[test]
@@ -207,11 +198,7 @@ mod tests {
             Commands::Init { dir } => {
                 assert_eq!(dir.as_deref(), Some(std::path::Path::new("demo-agent")));
             }
-            Commands::Run { .. } => panic!("expected init"),
-            Commands::Bench { .. } => panic!("expected init"),
-            Commands::BenchAsrWorker { .. } => panic!("expected init"),
-            Commands::BenchTtsWorker { .. } => panic!("expected init"),
-            Commands::BenchLlmWorker { .. } => panic!("expected init"),
+            _ => panic!("expected init"),
         }
     }
 
@@ -310,14 +297,7 @@ mod tests {
     #[test]
     fn parses_run_barge_in() {
         let cli = Cli::try_parse_from(["syllabix", "run", "--barge-in"]).expect("parse");
-        match cli.command {
-            Commands::Run { barge_in } => assert!(barge_in),
-            Commands::Init { .. } => panic!("expected run"),
-            Commands::Bench { .. } => panic!("expected run"),
-            Commands::BenchAsrWorker { .. } => panic!("expected run"),
-            Commands::BenchTtsWorker { .. } => panic!("expected run"),
-            Commands::BenchLlmWorker { .. } => panic!("expected run"),
-        }
+        assert!(matches!(cli.command, Commands::Run { barge_in: true }));
     }
 
     #[test]
@@ -350,6 +330,47 @@ mod tests {
             command: Commands::Run { barge_in: false },
         })
         .expect("coverage run");
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn execute_bench_variants_are_rejected_under_coverage() {
+        for cli in [
+            Cli {
+                command: Commands::Bench {
+                    out: PathBuf::from("run.jsonl"),
+                },
+            },
+            Cli {
+                command: Commands::BenchAsrWorker {
+                    out: PathBuf::from("worker.jsonl"),
+                    model: String::from("whisper-small"),
+                },
+            },
+            Cli {
+                command: Commands::BenchTtsWorker {
+                    out: PathBuf::from("worker.jsonl"),
+                    model: String::from("pocket-tts"),
+                },
+            },
+            Cli {
+                command: Commands::BenchLlmWorker {
+                    out: PathBuf::from("worker.jsonl"),
+                    model: String::from("lfm2.5-2.6b"),
+                },
+            },
+        ] {
+            assert!(matches!(execute(cli), Err(Error::NotImplemented { .. })));
+        }
+    }
+
+    #[test]
+    fn init_target_defaults_to_current_dir() {
+        assert_eq!(init_target(None), PathBuf::from("."));
+        assert_eq!(
+            init_target(Some(PathBuf::from("demo-agent"))),
+            PathBuf::from("demo-agent")
+        );
     }
 
     #[test]

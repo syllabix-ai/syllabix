@@ -16,6 +16,7 @@ const APOSTROPHES: &[char] = &[
 ];
 
 /// Kokoro pad id. Wrapped around every `input_ids` sequence.
+#[cfg(any(not(coverage), test))]
 pub const KOKORO_PAD_ID: i64 = 0;
 
 /// Phoneme tokens excluding the two pad ids. Model context is 512.
@@ -333,6 +334,7 @@ fn ipa_to_ids(ipa: &str) -> Vec<i64> {
 }
 
 /// Wrap phoneme ids with pad tokens for the ONNX graph.
+#[cfg(any(not(coverage), test))]
 pub fn pad_input_ids(ids: &[i64]) -> Vec<i64> {
     let mut out = Vec::with_capacity(ids.len() + 2);
     out.push(KOKORO_PAD_ID);
@@ -344,6 +346,15 @@ pub fn pad_input_ids(ids: &[i64]) -> Vec<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pad_input_ids_wraps_ids_with_kokoro_pad() {
+        assert_eq!(
+            pad_input_ids(&[24, 43, 4]),
+            vec![KOKORO_PAD_ID, 24, 43, 4, KOKORO_PAD_ID]
+        );
+        assert_eq!(pad_input_ids(&[]), vec![KOKORO_PAD_ID, KOKORO_PAD_ID]);
+    }
 
     #[test]
     fn hello_world_maps_to_vocab_ids() {
