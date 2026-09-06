@@ -2,6 +2,126 @@
 
 use syllabix_core::{LoopEvent, ThinkFilter, TurnId};
 
+/// Subtle, theme-aware TUI colors.
+///
+/// Body text always uses the terminal default foreground so it reads on
+/// both dark and light themes. Only labels/status get a tint, with a
+/// dark/light palette (measured ≥4.4:1 for dim text on both).
+/// Disabled under `NO_COLOR` or `TERM=dumb`. Presentation-only:
+/// [`TranscriptUi`] stays plain for tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(coverage, allow(dead_code))]
+pub(crate) struct TuiTheme {
+    pub dark: bool,
+    pub enabled: bool,
+}
+
+#[cfg_attr(coverage, allow(dead_code))]
+impl TuiTheme {
+    pub fn detect() -> Self {
+        if std::env::var_os("NO_COLOR").is_some() {
+            return Self {
+                dark: true,
+                enabled: false,
+            };
+        }
+        if matches!(std::env::var("TERM"), Ok(t) if t == "dumb") {
+            return Self {
+                dark: true,
+                enabled: false,
+            };
+        }
+        // Explicit override for testing / odd terminals. Env-only, no CLI/yaml.
+        if let Ok(v) = std::env::var("SYLLABIX_THEME") {
+            match v.to_ascii_lowercase().as_str() {
+                "light" => {
+                    return Self {
+                        dark: false,
+                        enabled: true,
+                    }
+                }
+                "dark" => {
+                    return Self {
+                        dark: true,
+                        enabled: true,
+                    }
+                }
+                "off" | "none" | "plain" => {
+                    return Self {
+                        dark: true,
+                        enabled: false,
+                    };
+                }
+                _ => {}
+            }
+        }
+        // xterm-style `COLORFGBG="fg;bg"`: last field is the background.
+        // 0-6,8 = dark background; 7,15 etc = light background.
+        let dark = std::env::var("COLORFGBG")
+            .ok()
+            .and_then(|s| s.rsplit(';').next()?.trim().parse::<u8>().ok())
+            .map(|bg| !matches!(bg, 7 | 15))
+            .unwrap_or(true);
+        Self {
+            dark,
+            enabled: true,
+        }
+    }
+
+    fn rgb(&self, r: u8, g: u8, b: u8, text: &str) -> String {
+        if !self.enabled {
+            return text.to_string();
+        }
+        format!("\x1b[38;2;{r};{g};{b}m{text}\x1b[0m")
+    }
+
+    pub fn user_label(&self, text: &str) -> String {
+        if self.dark {
+            self.rgb(125, 211, 252, text) // sky-300
+        } else {
+            self.rgb(3, 105, 161, text) // sky-700
+        }
+    }
+
+    pub fn agent_label(&self, text: &str) -> String {
+        if self.dark {
+            self.rgb(94, 234, 212, text) // teal-300
+        } else {
+            self.rgb(15, 118, 110, text) // teal-700
+        }
+    }
+
+    /// Dim text that works on both themes (~4.4:1 on black, ~4.8:1 on white).
+    pub fn dim(&self, text: &str) -> String {
+        self.rgb(100, 116, 139, text)
+    }
+
+    /// Paint one transcript line: tint the `You:`/`Agent:` prefix, keep the
+    /// body in the terminal default color. Returns input unchanged when disabled.
+    pub fn paint_line(&self, line: &str) -> String {
+        if !self.enabled {
+            return line.to_string();
+        }
+        for prefix in ["You [", "You:", "Agent: "] {
+            if line.starts_with(prefix) {
+                let end = if prefix == "You [" {
+                    line.find("]: ").map(|i| i + 3).unwrap_or(prefix.len())
+                } else {
+                    prefix.len()
+                };
+                let (head, tail) = line.split_at(end.min(line.len()));
+                let painted = if prefix.starts_with("You") {
+                    self.user_label(head)
+                } else {
+                    self.agent_label(head)
+                };
+                return format!("{painted}{tail}");
+            }
+        }
+        line.to_string()
+    }
+}
+
 /// Rolling transcript shown in the TUI.
 #[derive(Debug, Default)]
 #[cfg_attr(coverage, allow(dead_code))]
@@ -176,7 +296,7 @@ impl TranscriptUi {
 
 #[cfg(not(coverage))]
 mod live_terminal {
-    use super::TranscriptUi;
+    use super::{TranscriptUi, TuiTheme};
     use std::io::{stdout, Write};
     use std::sync::mpsc;
     use std::thread;
@@ -201,6 +321,7 @@ mod live_terminal {
 
     struct InlineRenderer {
         ui: TranscriptUi,
+        theme: TuiTheme,
         ready: bool,
         playing: bool,
         footer_drawn: bool,
@@ -217,6 +338,7 @@ mod live_terminal {
         fn new() -> Self {
             Self {
                 ui: TranscriptUi::default(),
+                theme: TuiTheme::detect(),
                 ready: false,
                 playing: false,
                 footer_drawn: false,
@@ -297,7 +419,7 @@ mod live_terminal {
             let paragraph = std::mem::replace(&mut self.pending_agent, remainder);
             self.clear_footer(out)?;
             if !self.agent_open {
-                write!(out, "Agent: ")?;
+                write!(out, "{}", self.theme.agent_label("Agent: "))?;
                 self.agent_open = true;
             }
             write_terminal_text(out, &paragraph)?;
@@ -355,7 +477,12 @@ mod live_terminal {
             out: &mut impl Write,
             text: (String, String),
         ) -> std::io::Result<()> {
-            write!(out, "{}\r\n{}", text.0, text.1)?;
+            write!(
+                out,
+                "{}\r\n{}",
+                self.theme.dim(&text.0),
+                self.theme.dim(&text.1)
+            )?;
             out.flush()?;
             self.footer_drawn = true;
             self.footer_text = Some(text);
@@ -389,7 +516,7 @@ mod live_terminal {
                 self.clear_partial(out)?;
                 self.ui.apply(event);
                 if let Some(line) = self.ui.transcript_text().lines().last() {
-                    write!(out, "{line}\r\n")?;
+                    write!(out, "{}\r\n", self.theme.paint_line(line))?;
                     self.partial_visible = true;
                 }
                 return self.refresh_footer(out, controls);
@@ -412,10 +539,15 @@ mod live_terminal {
                 self.commit_live_reply();
                 self.clear_footer(out)?;
                 self.clear_partial(out)?;
-                write!(out, "{line}\r\n")?;
+                write!(out, "{}\r\n", self.theme.paint_line(&line))?;
             }
             if self.ready && !self.hint_shown {
-                write!(out, "Listening… speak to start. q or Ctrl+C to quit.\r\n")?;
+                write!(
+                    out,
+                    "{}\r\n",
+                    self.theme
+                        .dim("Listening… speak to start. q or Ctrl+C to quit.")
+                )?;
                 self.hint_shown = true;
             }
             if let Some((_, text)) = self.ui.agent_stream() {
@@ -436,7 +568,12 @@ mod live_terminal {
             self.commit_live_reply();
             self.clear_footer(out)?;
             if show_stats && !self.ui.latency_line().contains('—') {
-                write!(out, "stats: {}\r\n", compact_stats(self.ui.latency_line()))?;
+                write!(
+                    out,
+                    "{}\r\n",
+                    self.theme
+                        .dim(&format!("stats: {}", compact_stats(self.ui.latency_line())))
+                )?;
             }
             write!(out, "\r\n")?;
             out.flush()
@@ -769,5 +906,62 @@ mod tests {
             restart_required: true,
         });
         assert_eq!(ui.aec_pill(), "AEC ○ off — restart to fix");
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' && chars.peek() == Some(&'[') {
+                for c in chars.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn theme_paint_keeps_body_readable_and_plain() {
+        let dark = TuiTheme {
+            dark: true,
+            enabled: true,
+        };
+        let light = TuiTheme {
+            dark: false,
+            enabled: true,
+        };
+        for line in ["You: hello", "You [fr]: bonjour", "Agent: hi there"] {
+            assert_eq!(strip_ansi(&dark.paint_line(line)), line);
+            assert_eq!(strip_ansi(&light.paint_line(line)), line);
+            assert!(dark.paint_line(line).contains("\x1b[38;2;"));
+            // Body text itself stays the terminal default (no second color).
+            assert!(!strip_ansi(&dark.paint_line(line)).contains("\x1b"));
+        }
+        // Dark/light palettes differ so both themes keep contrast.
+        assert_ne!(dark.user_label("You:"), light.user_label("You:"));
+        assert_ne!(dark.agent_label("Agent: "), light.agent_label("Agent: "));
+        // Transcript model itself never carries paint.
+        let mut ui = TranscriptUi::default();
+        ui.apply(LoopEvent::User {
+            turn: TurnId(0),
+            text: "hello".into(),
+            language: "en".into(),
+        });
+        assert!(!ui.transcript_text().contains('\x1b'));
+    }
+
+    #[test]
+    fn theme_disabled_is_plain_passthrough() {
+        let off = TuiTheme {
+            dark: true,
+            enabled: false,
+        };
+        assert_eq!(off.paint_line("You: hello"), "You: hello");
+        assert_eq!(off.dim("x"), "x");
     }
 }
