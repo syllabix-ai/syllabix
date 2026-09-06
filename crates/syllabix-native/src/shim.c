@@ -475,12 +475,35 @@ static int emit_piece(
 #define SYLLABIX_LFM_REPEAT_PENALTY 1.1f
 #define SYLLABIX_LFM_REPEAT_LAST_N 64
 
+/* meta-llama/Llama-3.2-1B-Instruct generation_config.json
+ * (`do_sample=true, temperature=0.6, top_p=0.9`). */
+#define SYLLABIX_LLAMA32_TEMPERATURE 0.6f
+#define SYLLABIX_LLAMA32_TOP_P 0.9f
+
+/* Qwen/Qwen3.5-0.8B and Qwen/Qwen3.5-2B README presets for text tasks.
+ * The voice default is non-thinking; `thinking: true` on qwen3.5-2b uses the
+ * thinking preset. `min_p=0.0` is disabled, so no min-p sampler is added.
+ * `top_p=1.0` on the non-thinking path keeps every token; the effective
+ * shaping there is top-k plus the presence penalty. */
+#define SYLLABIX_QWEN_TOP_K 20
+#define SYLLABIX_QWEN_TEMPERATURE 1.0f
+#define SYLLABIX_QWEN_TOP_P 1.0f
+#define SYLLABIX_QWEN_PRESENCE_PENALTY 2.0f
+#define SYLLABIX_QWEN_THINK_TOP_P 0.95f
+#define SYLLABIX_QWEN_THINK_PRESENCE_PENALTY 1.5f
+#define SYLLABIX_QWEN_REPEAT_LAST_N 64
+
 static int is_lfm_template(const char *tmpl) {
     return tmpl != NULL && strstr(tmpl, "tool_call_start") != NULL;
 }
 
+static int is_llama32_template(const char *tmpl) {
+    return tmpl != NULL && strstr(tmpl, "<|start_header_id|>") != NULL;
+}
+
 static struct llama_sampler *make_chat_sampler(const struct syllabix_llama *llm,
-                                               const struct llama_vocab *vocab) {
+                                               const struct llama_vocab *vocab,
+                                               int thinking) {
     struct llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
     if (smpl == NULL) {
         return NULL;
@@ -495,6 +518,23 @@ static struct llama_sampler *make_chat_sampler(const struct syllabix_llama *llm,
         llama_sampler_chain_add(smpl, llama_sampler_init_top_k(SYLLABIX_LFM_TOP_K));
         llama_sampler_chain_add(smpl, llama_sampler_init_temp(SYLLABIX_LFM_TEMPERATURE));
         llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    } else if (is_qwen_template(tmpl)) {
+        const float top_p = thinking ? SYLLABIX_QWEN_THINK_TOP_P : SYLLABIX_QWEN_TOP_P;
+        const float presence =
+            thinking ? SYLLABIX_QWEN_THINK_PRESENCE_PENALTY : SYLLABIX_QWEN_PRESENCE_PENALTY;
+        llama_sampler_chain_add(
+            smpl,
+            llama_sampler_init_penalties(
+                llama_vocab_n_tokens(vocab), SYLLABIX_QWEN_REPEAT_LAST_N, 1.0f, 0.0f,
+                presence));
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_k(SYLLABIX_QWEN_TOP_K));
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(SYLLABIX_QWEN_TEMPERATURE));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    } else if (is_llama32_template(tmpl)) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(SYLLABIX_LLAMA32_TOP_P, 1));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(SYLLABIX_LLAMA32_TEMPERATURE));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
     } else {
         llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
     }
@@ -504,12 +544,14 @@ static struct llama_sampler *make_chat_sampler(const struct syllabix_llama *llm,
 /* Shared prefill + decode loop over an already-built prompt.
  * Takes `prompt` (caller-allocated, `prompt_len` bytes); frees it before
  * returning. Plain and tools-aware entries share this so only prompt
- * construction differs between the two paths. */
+ * construction differs between the two paths. `thinking` selects the Qwen
+ * thinking sampler preset; other templates ignore it. */
 static int run_prompt(
     struct syllabix_llama *llm,
     char *prompt,
     int32_t prompt_len,
     int n_threads,
+    int thinking,
     bool (*abort_cb)(void *user),
     void *abort_user,
     int (*token_cb)(const char *piece, int is_last, void *user),
@@ -546,7 +588,7 @@ static int run_prompt(
     }
     free(tokens);
 
-    struct llama_sampler *smpl = make_chat_sampler(llm, vocab);
+    struct llama_sampler *smpl = make_chat_sampler(llm, vocab, thinking);
     if (smpl == NULL) {
         return -1;
     }
@@ -693,7 +735,8 @@ int syllabix_llama_generate(
 
     prompt[prompt_len] = '\0';
     int status = run_prompt(
-        llm, prompt, prompt_len, n_threads, abort_cb, abort_user, token_cb, token_user);
+        llm, prompt, prompt_len, n_threads, thinking, abort_cb, abort_user, token_cb,
+        token_user);
     free(prompt);
     return status;
 }
@@ -750,7 +793,8 @@ int syllabix_llama_generate_with_tools(
     }
     prompt[prompt_len] = '\0';
     int status = run_prompt(
-        llm, prompt, prompt_len, n_threads, abort_cb, abort_user, token_cb, token_user);
+        llm, prompt, prompt_len, n_threads, thinking, abort_cb, abort_user, token_cb,
+        token_user);
     free(prompt);
     return status;
 }
@@ -920,7 +964,8 @@ int syllabix_llama_generate_with_lfm_tools(
     }
     prompt[prompt_len] = '\0';
     int status = run_prompt(
-        llm, prompt, prompt_len, n_threads, abort_cb, abort_user, token_cb, token_user);
+        llm, prompt, prompt_len, n_threads, thinking, abort_cb, abort_user, token_cb,
+        token_user);
     free(prompt);
     return status;
 }
