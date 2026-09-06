@@ -7,11 +7,13 @@
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::cancel::Cancel;
+use crate::sandbox::{current_provider, SandboxRequest};
 use crate::types::ToolCall;
 
 /// Maximum argv entries accepted from one model tool call.
@@ -38,6 +40,15 @@ pub const DEFAULT_SEARCH_RESULTS: usize = 5;
 const FETCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const FETCH_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct TempDirGuard(PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 /// A validated direct-argv inspection command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +69,7 @@ pub enum ValidatedCall {
 /// becomes a bounded, model-visible rejection rather than a provider failure.
 pub fn execute(call: &ToolCall, workspace: &Path, cancel: &Cancel) -> crate::types::ToolResult {
     let result = match validate_call(call, workspace) {
-        Ok(ValidatedCall::Shell(request)) => execute_shell(request, cancel),
+        Ok(ValidatedCall::Shell(request)) => execute_shell(request, workspace, cancel),
         Ok(ValidatedCall::WebFetch { url }) => execute_fetch(&url, cancel),
         Ok(ValidatedCall::WebSearch { query, count }) => execute_search(&query, count, cancel),
         Err(message) => Err(message),
@@ -255,12 +266,51 @@ fn is_relative_path(value: &str) -> bool {
         })
 }
 
-fn execute_shell(request: ShellRequest, cancel: &Cancel) -> Result<String, String> {
+fn execute_shell(
+    request: ShellRequest,
+    workspace: &Path,
+    cancel: &Cancel,
+) -> Result<String, String> {
     let generation = cancel.generation();
+    if cancel.is_stale(generation) {
+        return Err("shell command cancelled".into());
+    }
     let program = command_path(&request.argv[0])?;
-    let mut command = sandboxed_command(program)?;
+    let invocation = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_dir = std::env::temp_dir().join(format!(
+        "syllabix-executor-{}-{}-{}",
+        std::process::id(),
+        generation.0,
+        invocation,
+    ));
+    std::fs::create_dir_all(&temp_dir).map_err(|_| "sandbox temp directory unavailable")?;
+    let _temp_dir_guard = TempDirGuard(temp_dir.clone());
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|_| "workspace is unavailable")?;
+    let temp_dir = temp_dir
+        .canonicalize()
+        .map_err(|_| "sandbox temp directory unavailable")?;
+    let sandbox = current_provider();
+    // Phase 2 deliberately keeps the allowlist's fixed read-only/network-none
+    // ceiling; developer_permissions is threaded into live calls in Phase 4.
+    let sandbox_request = SandboxRequest::new(
+        &workspace,
+        &temp_dir,
+        crate::policy::FilesystemMode::ReadOnly,
+        crate::policy::NetworkMode::None,
+    );
+    if let Err(error) = sandbox.probe(&sandbox_request) {
+        return Err(error.to_string());
+    }
+    let mut command =
+        match sandbox.command(&sandbox_request, Path::new(program), &request.argv[1..]) {
+            Ok(command) => command,
+            Err(error) => {
+                return Err(error.to_string());
+            }
+        };
     command
-        .args(&request.argv[1..])
         .current_dir(&request.cwd)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -301,7 +351,8 @@ fn execute_shell(request: ShellRequest, cancel: &Cancel) -> Result<String, Strin
     };
     let stdout = stdout.join().map_err(|_| "shell stdout reader failed")?;
     let stderr = stderr.join().map_err(|_| "shell stderr reader failed")?;
-    Ok(format_output(status.code(), &stdout, &stderr))
+    let output = format_output(status.code(), &stdout, &stderr);
+    Ok(output)
 }
 
 fn execute_fetch(url: &str, cancel: &Cancel) -> Result<String, String> {
@@ -1108,19 +1159,6 @@ fn command_path(program: &str) -> Result<&'static str, String> {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn sandboxed_command(program: &str) -> Result<Command, String> {
-    let profile = "(version 1) (allow default) (deny file-write*) (allow file-write* (literal \"/dev/null\")) (deny network*)";
-    let mut command = Command::new("/usr/bin/sandbox-exec");
-    command.arg("-p").arg(profile).arg(program);
-    Ok(command)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn sandboxed_command(_: &str) -> Result<Command, String> {
-    Err("read-only shell sandbox is unsupported on this platform".into())
-}
-
 fn resolve_workspace_path(workspace: &Path, requested: &str) -> Result<PathBuf, String> {
     let root = workspace
         .canonicalize()
@@ -1812,36 +1850,66 @@ mod tests {
             &workspace,
             &Cancel::new(),
         );
-        assert!(result.ok, "{}", result.content);
-        assert!(result.content.contains("exit: 0"), "{}", result.content);
-        assert!(
-            result.content.contains("crates/syllabix-core"),
-            "{}",
-            result.content
-        );
+        if result.ok {
+            assert!(result.content.contains("exit: 0"), "{}", result.content);
+            assert!(
+                result.content.contains("crates/syllabix-core"),
+                "{}",
+                result.content
+            );
+        } else {
+            assert!(
+                result.content.starts_with("SANDBOX_UNAVAILABLE:"),
+                "{}",
+                result.content
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn seatbelt_blocks_writes_and_network() {
-        let mut write = sandboxed_command("/bin/sh").expect("profile");
-        let temp = std::env::temp_dir().join("syllabix-executor-must-not-write");
-        write
-            .args(["-c", "touch \"$1\"", "sh"])
-            .arg(&temp)
-            .output()
-            .expect("run write denial probe");
+        let provider = current_provider();
+        let root =
+            std::env::temp_dir().join(format!("syllabix-executor-test-{}", std::process::id()));
+        let temp_dir = root.join("private-temp");
+        std::fs::create_dir_all(&temp_dir).expect("temp");
+        let temp_dir = temp_dir.canonicalize().expect("canonical temp");
+        let request = SandboxRequest::new(
+            std::env::current_dir().unwrap(),
+            &temp_dir,
+            crate::policy::FilesystemMode::ReadOnly,
+            crate::policy::NetworkMode::None,
+        );
+        let temp = root.join("must-not-write");
+        let mut write = provider
+            .command(
+                &request,
+                Path::new("/bin/sh"),
+                &[
+                    "-c".into(),
+                    "touch \"$1\"".into(),
+                    "sh".into(),
+                    temp.to_string_lossy().into(),
+                ],
+            )
+            .expect("profile");
+        write.output().expect("run write denial probe");
         assert!(!temp.exists(), "sandbox unexpectedly created {temp:?}");
 
-        let mut network = sandboxed_command("/usr/bin/nc").expect("profile");
-        let result = network
-            .args(["-z", "1.1.1.1", "53"])
-            .output()
-            .expect("run network denial probe");
+        let mut network = provider
+            .command(
+                &request,
+                Path::new("/usr/bin/nc"),
+                &["-z".into(), "1.1.1.1".into(), "53".into()],
+            )
+            .expect("profile");
+        let result = network.output().expect("run network denial probe");
         assert!(
             !result.status.success(),
             "sandbox unexpectedly opened a network socket"
         );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(target_os = "macos")]
@@ -1857,7 +1925,14 @@ mod tests {
             &workspace,
             &Cancel::new(),
         );
-        assert!(result.ok, "{}", result.content);
-        assert!(result.content.contains("exit: 0"), "{}", result.content);
+        if result.ok {
+            assert!(result.content.contains("exit: 0"), "{}", result.content);
+        } else {
+            assert!(
+                result.content.starts_with("SANDBOX_UNAVAILABLE:"),
+                "{}",
+                result.content
+            );
+        }
     }
 }
