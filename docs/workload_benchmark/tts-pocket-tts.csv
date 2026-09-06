@@ -1,0 +1,4 @@
+machine,passed,avg_elapsed_ms,avg_first_output_ms,avg_rtf,avg_generated_audio_ms,avg_word_match,avg_mem_after_mib,avg_mem_peak_mib
+linux-x86_64-xeon-4c-15.6gib,3/3,2939.667,546.0,0.513,5813.333,1.0,310.2,596.2
+linux-x86_64-xeon-8c-15.6gib,3/3,5692.667,1014.0,0.977,5893.333,1.0,320.3,657.5
+macos-aarch64-m4-10c-16.0gib,3/3,1955.0,291.0,0.317,5600.0,1.0,337.6,703.7
