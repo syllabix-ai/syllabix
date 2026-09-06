@@ -26,39 +26,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  performance-ledger:
-    name: performance ledger
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-      - name: Validate immutable runs and render views
-        run: python3 scripts/validate-performance-ledger.py
-      - name: Test ledger validator
-        run: python3 scripts/test-performance-ledger.py
-      - name: Commit refreshed generated views
-        run: |
-          if git diff --quiet -- docs/eval/results.csv docs/eval/results.md; then
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/eval/results.csv docs/eval/results.md
-          git commit -m "docs(eval): refresh generated performance ledger"
-          git push
-      - name: Add generated ledger to the run summary
-        run: cat docs/eval/results.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Store generated ledger
-        uses: actions/upload-artifact@v4
-        with:
-          name: performance-ledger
-          path: |
-            docs/eval/results.csv
-            docs/eval/results.md
-          if-no-files-found: error
-
   # Keeps the Linux coverage baseline honest now that the per-PR coverage
   # gate runs on macOS (Darwin-specific code paths shift line coverage).
   coverage-linux:

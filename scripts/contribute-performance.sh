@@ -14,7 +14,7 @@ if [[ $# -ne 0 ]]; then
 fi
 
 cd "$root"
-validator="$root/scripts/validate-performance-ledger.py"
+validator="$root/scripts/summarize-benchmarks.py"
 if [[ ! -x "$validator" ]]; then
   echo "missing executable validator: $validator" >&2
   exit 1
