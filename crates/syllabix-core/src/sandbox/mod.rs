@@ -1,9 +1,8 @@
 //! Capability sandbox providers for host-owned developer-harness commands.
 //!
-//! The provider is intentionally separate from the current argv allowlist. It
-//! gives the generic shell and future skill entrypoints one seam for asking the
-//! host to enforce a policy, while the allowlist remains the live default until
-//! the generic-shell phase.
+//! The provider gives the generic shell and future skill entrypoints one seam
+//! for asking the host to enforce a policy. Developer-harness shell calls fail
+//! closed when the selected provider cannot uphold the requested mode.
 //!
 //! Platform backends:
 //! - macOS: Seatbelt via `sandbox-exec`

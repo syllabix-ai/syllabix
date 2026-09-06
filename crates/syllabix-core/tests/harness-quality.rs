@@ -22,9 +22,9 @@ use std::time::Instant;
 
 use syllabix_core::{
     join_endpoint, resolve_api_key, speak_text_for_tts, validate_base_url, BlockedFetcher, Cancel,
-    LlamaLlm, Llm, ModelCache, NoProgress, OpenAiLlm, OpenAiSettings, ToolTurnEvent, Transcript,
-    TurnId, CLOUD_FALLBACK_TEXT, LFM25_2_6B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, TOOL_LIMIT_TEXT,
-    VOICE_SYSTEM_PROMPT_TEMPLATE,
+    DeveloperPermissions, LlamaLlm, Llm, ModelCache, NoProgress, OpenAiLlm, OpenAiSettings,
+    ToolTurnEvent, Transcript, TurnId, CLOUD_FALLBACK_TEXT, LFM25_2_6B_ASSET,
+    LOCAL_TOOL_FALLBACK_TEXT, TOOL_LIMIT_TEXT, VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
 
 /// Base URL environment variable for the manual run. It is required because
@@ -485,6 +485,7 @@ fn harness_quality_live_admission() {
                     model: model.clone(),
                     system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
                     developer_harness: true,
+                    developer_permissions: DeveloperPermissions::default_session(),
                 },
                 api_key.clone(),
             );
@@ -532,6 +533,7 @@ fn harness_quality_live_admission() {
                 model: model.clone(),
                 system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
                 developer_harness: true,
+                developer_permissions: DeveloperPermissions::default_session(),
             },
             api_key.clone(),
         );
