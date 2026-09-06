@@ -14,6 +14,7 @@ use crate::error::{Error, Result};
 use crate::executor;
 use crate::fake::LlmCall;
 use crate::models::{Fetcher, ModelCache, Progress};
+use crate::policy::DeveloperPermissions;
 use crate::providers::Llm;
 use crate::types::{
     HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript,
@@ -137,6 +138,7 @@ pub struct LlamaLlm {
     system_prompt: String,
     tool_events: Arc<Mutex<Vec<ToolTurnEvent>>>,
     developer_harness: bool,
+    developer_permissions: DeveloperPermissions,
     workspace: PathBuf,
 }
 
@@ -150,6 +152,7 @@ impl Clone for LlamaLlm {
             system_prompt: self.system_prompt.clone(),
             tool_events: Arc::clone(&self.tool_events),
             developer_harness: self.developer_harness,
+            developer_permissions: self.developer_permissions.clone(),
             workspace: self.workspace.clone(),
         }
     }
@@ -171,6 +174,7 @@ impl LlamaLlm {
             system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             tool_events: Arc::new(Mutex::new(Vec::new())),
             developer_harness: false,
+            developer_permissions: DeveloperPermissions::default_session(),
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         })
     }
@@ -247,6 +251,12 @@ impl LlamaLlm {
         self
     }
 
+    /// Set the immutable capability ceiling used by the local developer harness.
+    pub fn with_developer_permissions(mut self, permissions: DeveloperPermissions) -> Self {
+        self.developer_permissions = permissions;
+        self
+    }
+
     /// `(n_ctx, n_ctx_train)` after a real GGUF load.
     pub fn context_window(&self) -> Option<(i32, i32)> {
         self.engine.lock().expect("llama engine").context_window()
@@ -307,6 +317,7 @@ impl LlamaLlm {
             system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             tool_events: Arc::new(Mutex::new(Vec::new())),
             developer_harness: false,
+            developer_permissions: DeveloperPermissions::default_session(),
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
@@ -711,7 +722,12 @@ impl LlamaLlm {
                     &call.arguments.to_string(),
                     "",
                 );
-                let result = executor::execute(&call, &self.workspace, cancel);
+                let result = executor::execute_with_permissions(
+                    &call,
+                    &self.workspace,
+                    &self.developer_permissions,
+                    cancel,
+                );
                 if cancel.is_shutdown() || cancel.is_stale(generation) {
                     return Err(Error::Cancelled);
                 }
@@ -1151,7 +1167,7 @@ fn is_thinking_tag_supported_model(model_id: &str) -> bool {
     matches!(model_id, QWEN35_2B_ASSET)
 }
 
-/// Tool schemas for the local Qwen tools-aware prompt. The same
+/// Tool schemas for the local tools-aware prompt. The same
 /// three host-owned primitives the online adapter sends (`web_fetch`,
 /// `web_search`, `shell`); serialized as the `<tools>` JSON array the Qwen
 /// template consumes. One shared representation, translated at each adapter
@@ -1202,20 +1218,24 @@ pub fn local_tool_definitions_json() -> String {
             "type": "function",
             "function": {
                 "name": "shell",
-                "description": "Execute a read-only command via direct argv in the workspace. The workspace is the default cwd (.). Use only relative paths; absolute paths are rejected. For recursive file search use find with -name.",
+                "description": "Run a developer command in the workspace through a bounded, capability-sandboxed shell. Shell syntax is allowed; the host controls cwd, environment, timeout, output, network, and the configured filesystem ceiling. Request less filesystem authority with permission; it can never widen the session ceiling.",
                 "parameters": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["argv"],
+                    "required": ["command"],
                     "properties": {
-                        "argv": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Command and argument array."
-                        },
-                        "cwd": {
+                        "command": {
                             "type": "string",
-                            "description": "Optional relative path within the workspace. Defaults to \".\" (the workspace root); absolute paths are rejected."
+                            "description": "Shell command to run."
+                        },
+                        "workdir": {
+                            "type": "string",
+                            "description": "Optional relative path within the workspace. Defaults to the workspace root; absolute paths are rejected."
+                        },
+                        "permission": {
+                            "type": "string",
+                            "enum": ["read-only", "workspace-write", "danger-full-access"],
+                            "description": "Optional filesystem permission request; the host denies requests above the configured session ceiling."
                         }
                     }
                 }
@@ -1331,20 +1351,31 @@ pub fn normalize_local_tool_call(
     if !parsed.arguments.is_object() {
         return Err("tool call arguments must be a JSON object".to_string());
     }
-    // Both local templates serialize scalar values as strings (LFM's
-    // Pythonic dialect quotes every value; Qwen `<parameter>` blocks are
-    // text). Normalize once at the provider edge into the executor's typed
-    // contract. Unparsable values are left for the validator to reject.
+    // Local dialects serialize scalar values as strings. Keep the generic
+    // shell's command string intact; the host owns shell invocation and
+    // policy validation rather than this adapter splitting or interpreting it.
+    // Accept the pre-Phase-4 in-memory fixture spelling while old recordings
+    // drain; it is not advertised in either model-facing schema.
     if parsed.name == "shell" {
-        if let Some(argv) = parsed.arguments.get_mut("argv") {
-            if let Some(words) = argv.as_str() {
-                *argv = serde_json::Value::Array(
-                    words
-                        .split_whitespace()
-                        .map(|word| serde_json::Value::String(word.to_string()))
-                        .collect(),
-                );
-            }
+        if let Some(argv) = parsed
+            .arguments
+            .get("argv")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+        {
+            let command = parsed.arguments.as_object_mut().expect("object");
+            command.insert("command".into(), serde_json::Value::String(argv));
+            command.remove("argv");
+        }
+        if let Some(cwd) = parsed
+            .arguments
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+        {
+            let command = parsed.arguments.as_object_mut().expect("object");
+            command.insert("workdir".into(), serde_json::Value::String(cwd));
+            command.remove("cwd");
         }
     }
     if parsed.name == "web_search" {
@@ -2095,11 +2126,11 @@ mod tests {
         assert!(shell["description"]
             .as_str()
             .expect("shell description")
-            .contains("default cwd (.)"));
-        assert!(shell["parameters"]["properties"]["cwd"]["description"]
+            .contains("capability-sandboxed shell"));
+        assert!(shell["parameters"]["properties"]["workdir"]["description"]
             .as_str()
-            .expect("cwd description")
-            .contains("Defaults to \".\""));
+            .expect("workdir description")
+            .contains("workspace root"));
     }
 
     #[test]
@@ -2115,6 +2146,7 @@ mod tests {
         let normalized = normalize_local_tool_call(0, calls[0].clone()).expect("normalize");
         assert_eq!(normalized.id, "local-call-0");
         assert_eq!(normalized.name, "shell");
+        assert_eq!(normalized.arguments["command"], "df -h .");
         assert!(normalized.arguments.is_object());
     }
 
@@ -2337,7 +2369,7 @@ mod tests {
         .expect("stripped special-token call parses");
         let call =
             normalize_local_tool_call(0, calls.into_iter().next().unwrap()).expect("normalize");
-        assert_eq!(call.arguments["argv"], serde_json::json!(["df", "-h", "."]));
+        assert_eq!(call.arguments["command"], "df -h .");
         assert!(looks_like_lfm_tool_text(
             "<think>x</think>[shell(argv=['date'])]"
         ));
