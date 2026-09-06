@@ -406,7 +406,8 @@ mod production {
                     config.thinking,
                 )?
                 .with_system_prompt(config.system_prompt.clone())
-                .with_developer_harness(config.llm_developer_harness),
+                .with_developer_harness(config.llm_developer_harness)
+                .with_developer_permissions(config.llm_developer_permissions.clone()),
             )),
             crate::LlmProvider::Online => {
                 let key = llm_api_key.ok_or_else(|| Error::Config {

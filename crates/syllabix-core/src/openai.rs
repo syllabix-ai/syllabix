@@ -20,6 +20,7 @@ use crate::config::AgentConfig;
 use crate::error::{Error, Result};
 use crate::executor;
 use crate::llm::LLAMA_MAX_HISTORY_TURNS;
+use crate::policy::DeveloperPermissions;
 use crate::providers::Llm;
 use crate::types::{
     HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript,
@@ -127,6 +128,8 @@ pub struct OpenAiSettings {
     /// Whether this explicit developer-only run advertises the two developer
     /// harness schemas. Default runs omit the API `tools` member entirely.
     pub developer_harness: bool,
+    /// Immutable capability ceiling for developer-harness shell calls.
+    pub developer_permissions: DeveloperPermissions,
 }
 
 impl OpenAiSettings {
@@ -141,6 +144,7 @@ impl OpenAiSettings {
             model: config.llm_model.clone(),
             system_prompt: config.system_prompt.clone(),
             developer_harness: config.llm_developer_harness,
+            developer_permissions: config.llm_developer_permissions.clone(),
         }
     }
 }
@@ -470,7 +474,12 @@ impl OpenAiLlm {
                     provider: PROVIDER_NAME,
                     message: format!("developer workspace is unavailable: {err}"),
                 })?;
-                let result = executor::execute(&call, &workspace, cancel);
+                let result = executor::execute_with_permissions(
+                    &call,
+                    &workspace,
+                    &self.settings.developer_permissions,
+                    cancel,
+                );
                 if cancel.is_shutdown() || cancel.is_stale(generation) {
                     return Err(Error::Cancelled);
                 }
@@ -637,20 +646,24 @@ fn tool_definitions() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "shell",
-                "description": "Execute a read-only command via direct argv in the workspace. Allowed commands: date (current time), df (disk space, e.g. ['df', '-h', '.']), pwd, ls (list directory), git (status, diff, log, show, branch), find (find files by name), cargo (metadata, tree). Content search is not available; use find to locate files by name.",
+                "description": "Run a developer command in the workspace through a bounded, capability-sandboxed shell. Shell syntax is allowed; the host controls cwd, environment, timeout, output, network, and the configured filesystem ceiling. Request less filesystem authority with permission; it can never widen the session ceiling.",
                 "parameters": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["argv"],
+                    "required": ["command"],
                     "properties": {
-                        "argv": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Command and argument array, e.g. ['df', '-h', '.'] or ['git', 'status', '--short']."
+                        "command": {
+                            "type": "string",
+                            "description": "Shell command to run, for example `rg -n TODO src` or `cargo test`."
                         },
-                        "cwd": {
+                        "workdir": {
                             "type": "string",
                             "description": "Optional relative path within the workspace."
+                        },
+                        "permission": {
+                            "type": "string",
+                            "enum": ["read-only", "workspace-write", "danger-full-access"],
+                            "description": "Optional filesystem permission request; the host denies requests above the configured session ceiling."
                         }
                     }
                 }
@@ -668,10 +681,26 @@ fn normalize_tool_call(raw: RawToolCall) -> std::result::Result<ToolCall, String
         .name
         .filter(|value| matches!(value.as_str(), "web_fetch" | "web_search" | "shell"))
         .ok_or_else(|| "tool call has an unknown name".to_string())?;
-    let arguments: serde_json::Value = serde_json::from_str(&raw.arguments)
+    let mut arguments: serde_json::Value = serde_json::from_str(&raw.arguments)
         .map_err(|_| "tool call arguments are not valid JSON".to_string())?;
     if !arguments.is_object() {
         return Err("tool call arguments must be a JSON object".into());
+    }
+    // Drain pre-Phase-4 recordings without re-advertising the old schema.
+    if name == "shell" {
+        if let Some(argv) = arguments.get("argv").and_then(|v| v.as_array()) {
+            let command = argv
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let object = arguments.as_object_mut().expect("object");
+            object.insert("command".into(), serde_json::Value::String(command));
+            object.remove("argv");
+            if let Some(cwd) = object.remove("cwd") {
+                object.insert("workdir".into(), cwd);
+            }
+        }
     }
     Ok(ToolCall {
         id,
@@ -988,6 +1017,7 @@ mod tests {
                 model: "gpt-test".into(),
                 system_prompt: crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
                 developer_harness: false,
+                developer_permissions: crate::policy::DeveloperPermissions::default_session(),
             },
             Zeroizing::new(TEST_KEY.into()),
             OpenAiTimeouts {
@@ -1283,7 +1313,11 @@ mod tests {
         assert!(requests[0].contains("shell"), "{}", requests[0]);
         assert!(requests[1].contains("\"role\":\"tool\""), "{}", requests[1]);
         assert!(requests[1].contains("call-1"), "{}", requests[1]);
-        assert!(requests[1].contains("exit"), "{}", requests[1]);
+        assert!(
+            requests[1].contains("exit") || requests[1].contains("SANDBOX_UNAVAILABLE"),
+            "{}",
+            requests[1]
+        );
     }
 
     #[test]
@@ -1728,7 +1762,7 @@ mod tests {
         }
         let call = normalize_tool_call(raw).expect("fragmented call parses");
         assert_eq!(call.name, "shell");
-        assert_eq!(call.arguments["argv"][1], "status");
+        assert_eq!(call.arguments["command"], "git status");
         assert!(normalize_tool_call(RawToolCall {
             id: Some("x".into()),
             name: Some("unknown".into()),

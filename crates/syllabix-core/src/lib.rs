@@ -36,6 +36,7 @@ mod pocket_tts;
 mod providers;
 mod queue;
 mod real;
+mod sandbox;
 mod speech_text;
 mod stt;
 mod tts;
@@ -98,9 +99,19 @@ pub use pocket_tts::{
     POCKET_TTS_FLOW_MAIN_ASSET, POCKET_TTS_MIMI_DECODER_ASSET, POCKET_TTS_TEXT_CONDITIONER_ASSET,
     POCKET_TTS_TOKENIZER_ASSET, POCKET_TTS_VOICE_ASSET,
 };
+pub use policy::{Enforcement, ExecutionPlan, Provenance};
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
 pub use real::{build_llm, build_stt, build_tts, load_real_providers, LiveLlm, LiveStt, LiveTts};
+#[cfg(target_os = "macos")]
+pub use sandbox::MacOsSandboxProvider;
+pub use sandbox::{
+    current_provider, SandboxError, SandboxProvider, SandboxRequest, UnavailableSandboxProvider,
+};
+#[cfg(target_os = "linux")]
+pub use sandbox::{
+    BubblewrapSandboxProvider, LandlockSandboxProvider, LinuxSandboxProvider, LinuxSandboxRunner,
+};
 pub use speech_text::{
     speak_text_for_tts, strip_markdown_for_speech, strip_think_for_speech, take_sentences,
     ThinkFilter,

@@ -96,7 +96,7 @@ files disabled:
 | Windows | `pwsh -NoLogo -NoProfile -NonInteractive -Command <command>` |
 
 The host, not the agent, supplies the working directory, sanitized environment,
-timeout, output cap, cancellation handle, and effective permission mode. Direct
+output cap, cancellation handle, and effective permission mode. Direct
 argv is still preferred for generated skill entrypoints because it avoids quoting
 ambiguity, but the general shell tool intentionally supports shell syntax.
 
@@ -351,6 +351,14 @@ disabled user namespaces are a common Bubblewrap failure case. Report the
 Landlock ABI's enforcement capability accurately and fail closed when it
 cannot meet the requested promise.
 
+**Phase 3 status:** shipped in-tree. `LinuxSandboxProvider` selects Bubblewrap
+when `bwrap` probes cleanly (`--ro-bind / /`, private PID, optional
+`--unshare-net`, workspace/temp binds for `workspace-write`), otherwise the
+Landlock path applies rules via `pre_exec` before exec (single-binary launcher).
+ABI ≥3 can report `Enforcement::Full` for filesystem-only requests; older ABIs
+and any `network: none` Landlock path report `Partial`. There is no silent
+unconfined fallback.
+
 ### Windows
 
 Use a restricted token plus NTFS ACL-based write grants: `workspace-write`
@@ -502,7 +510,7 @@ the new absolute security counters, never call a model itself.
 - Policy resolution: a skill can request less but never more than the configured
   session ceiling; model-provided mode cannot bypass it.
 - Shell startup-file suppression and environment/secret scrubbing.
-- Bounded stdout/stderr, timeout, cancellation, process-tree cleanup, and no
+- Bounded stdout/stderr, cancellation, process-tree cleanup, and no
   stale continuation after cancellation.
 - A request above the configured ceiling is denied before spawn and cannot be
   retried at a wider mode within the session.

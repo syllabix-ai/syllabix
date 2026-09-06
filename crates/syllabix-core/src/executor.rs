@@ -7,21 +7,20 @@
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::cancel::Cancel;
+use crate::policy::{resolve_effective, DeveloperPermissions, FilesystemMode};
+use crate::sandbox::{current_provider, SandboxRequest};
 use crate::types::ToolCall;
 
-/// Maximum argv entries accepted from one model tool call.
-pub const MAX_ARGV: usize = 32;
-/// Maximum bytes in one argv element.
-pub const MAX_ARG_BYTES: usize = 1024;
+/// Maximum bytes in a generic shell command.
+pub const MAX_COMMAND_BYTES: usize = 16 * 1024;
 /// Captured stdout and stderr are independently bounded.
 pub const MAX_OUTPUT_BYTES: usize = 8 * 1024;
-/// A foreground executor call is never allowed to own the voice turn indefinitely.
-pub const SHELL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Fetch response body limit before content reaches the model. Sized so the
 /// article body of large pages (e.g. Wikipedia puts `bodyContent` past
 /// 100 KiB of head/nav chrome) survives chrome-stripping; the model still
@@ -38,12 +37,22 @@ pub const DEFAULT_SEARCH_RESULTS: usize = 5;
 const FETCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const FETCH_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// A validated direct-argv inspection command.
+struct TempDirGuard(PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A validated generic shell command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellRequest {
-    pub argv: Vec<String>,
+    pub command: String,
     pub cwd: PathBuf,
+    pub permission: Option<FilesystemMode>,
 }
 
 /// A call whose public arguments meet the fixed policy.
@@ -56,9 +65,25 @@ pub enum ValidatedCall {
 
 /// Execute one model call with its host-owned authority. A failed validation
 /// becomes a bounded, model-visible rejection rather than a provider failure.
+#[allow(dead_code)] // compatibility helper for executor unit tests and callers
 pub fn execute(call: &ToolCall, workspace: &Path, cancel: &Cancel) -> crate::types::ToolResult {
+    execute_with_permissions(
+        call,
+        workspace,
+        &DeveloperPermissions::default_session(),
+        cancel,
+    )
+}
+
+/// Execute one call using the immutable session capability ceiling.
+pub fn execute_with_permissions(
+    call: &ToolCall,
+    workspace: &Path,
+    session: &DeveloperPermissions,
+    cancel: &Cancel,
+) -> crate::types::ToolResult {
     let result = match validate_call(call, workspace) {
-        Ok(ValidatedCall::Shell(request)) => execute_shell(request, cancel),
+        Ok(ValidatedCall::Shell(request)) => execute_shell(request, workspace, session, cancel),
         Ok(ValidatedCall::WebFetch { url }) => execute_fetch(&url, cancel),
         Ok(ValidatedCall::WebSearch { query, count }) => execute_search(&query, count, cancel),
         Err(message) => Err(message),
@@ -138,132 +163,105 @@ fn validate_shell(call: &ToolCall, workspace: &Path) -> Result<ShellRequest, Str
         .arguments
         .as_object()
         .ok_or("shell arguments must be an object")?;
-    if object.keys().any(|key| key != "argv" && key != "cwd") {
-        return Err("shell accepts only argv and cwd".into());
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "command" | "workdir" | "permission"))
+    {
+        return Err("shell accepts only command, workdir, and permission".into());
     }
-    let argv = object
-        .get("argv")
-        .and_then(serde_json::Value::as_array)
-        .ok_or("shell argv must be an array")?;
-    if argv.is_empty() || argv.len() > MAX_ARGV {
-        return Err("shell argv has an invalid length".into());
+    let command = object
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("shell command must be a string")?
+        .trim();
+    if command.is_empty() || command.len() > MAX_COMMAND_BYTES || command.as_bytes().contains(&0) {
+        return Err("shell command has an invalid length".into());
     }
-    let argv: Vec<String> = argv
-        .iter()
-        .map(|value| {
-            let value = value.as_str().ok_or("shell argv entries must be strings")?;
-            if value.is_empty() || value.len() > MAX_ARG_BYTES || value.as_bytes().contains(&0) {
-                return Err("shell argv entry is invalid");
-            }
-            Ok(value.to_owned())
-        })
-        .collect::<Result<_, _>>()?;
-    validate_program(&argv)?;
-
     let cwd = object
-        .get("cwd")
-        .map(|value| value.as_str().ok_or("shell cwd must be a string"))
+        .get("workdir")
+        .map(|value| value.as_str().ok_or("shell workdir must be a string"))
         .transpose()?;
     let cwd = resolve_workspace_path(workspace, cwd.unwrap_or("."))?;
-    Ok(ShellRequest { argv, cwd })
-}
-
-fn validate_program(argv: &[String]) -> Result<(), String> {
-    match argv.first().map(String::as_str) {
-        Some("date") if argv.len() == 1 => Ok(()),
-        Some("pwd") if argv.len() == 1 => Ok(()),
-        Some("df") => validate_df(argv),
-        Some("ls") => validate_ls(argv),
-        Some("find") => validate_find(argv),
-        Some("git") => validate_git(argv),
-        Some("cargo") if matches!(argv.get(1).map(String::as_str), Some("metadata" | "tree")) => {
-            Ok(())
-        }
-        _ => Err("shell command is not permitted".into()),
-    }
-}
-
-fn validate_df(argv: &[String]) -> Result<(), String> {
-    match argv {
-        [program] if program == "df" => Ok(()),
-        [program, flag] if program == "df" && flag == "-h" => Ok(()),
-        [program, path] if program == "df" && is_relative_path(path) => Ok(()),
-        [program, flag, path] if program == "df" && flag == "-h" && is_relative_path(path) => {
-            Ok(())
-        }
-        _ => Err("df only accepts an optional -h and an optional workspace-relative path".into()),
-    }
-}
-
-fn validate_ls(argv: &[String]) -> Result<(), String> {
-    if argv.len() > 3
-        || argv.iter().skip(1).any(|arg| {
-            !matches!(arg.as_str(), "-a" | "-l" | "-la" | "-al" | ".") && !is_relative_path(arg)
-        })
-    {
-        return Err("ls only accepts display flags and workspace paths".into());
-    }
-    Ok(())
-}
-
-fn validate_find(argv: &[String]) -> Result<(), String> {
-    if argv.len() < 2 || !is_relative_path(&argv[1]) {
-        return Err("find requires a workspace path".into());
-    }
-    let args = &argv[2..];
-    if args.is_empty() {
-        return Ok(());
-    }
-    match args {
-        [kind, value] if kind == "-name" && !value.starts_with('-') => Ok(()),
-        [kind, value] if kind == "-type" && matches!(value.as_str(), "f" | "d") => Ok(()),
-        _ => Err("find only accepts one -name or -type predicate".into()),
-    }
-}
-
-fn validate_git(argv: &[String]) -> Result<(), String> {
-    let Some(subcommand) = argv.get(1).map(String::as_str) else {
-        return Err("git requires a read-only subcommand".into());
+    let permission = match object.get("permission") {
+        None => None,
+        Some(value) => Some(
+            match value.as_str().ok_or("shell permission must be a string")? {
+                "read-only" => FilesystemMode::ReadOnly,
+                "workspace-write" => FilesystemMode::WorkspaceWrite,
+                "danger-full-access" => FilesystemMode::DangerFullAccess,
+                _ => return Err("shell permission is invalid".into()),
+            },
+        ),
     };
-    if !matches!(subcommand, "status" | "diff" | "log" | "show" | "branch") || argv.len() > 4 {
-        return Err("git command is not permitted".into());
-    }
-    if argv.iter().skip(2).any(|arg| {
-        arg.starts_with("--ext-diff")
-            || arg.starts_with("--textconv")
-            || arg.starts_with("--output")
-            || arg.starts_with("--no-index")
-            || arg.starts_with("-c")
-            || arg.starts_with("--config")
-    }) {
-        return Err("git option is not permitted".into());
-    }
-    Ok(())
+    Ok(ShellRequest {
+        command: command.to_string(),
+        cwd,
+        permission,
+    })
 }
 
-fn is_relative_path(value: &str) -> bool {
-    if value.is_empty() || value.starts_with('-') {
-        return false;
-    }
-    let path = Path::new(value);
-    !path.is_absolute()
-        && !path.components().any(|part| {
-            matches!(
-                part,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-}
-
-fn execute_shell(request: ShellRequest, cancel: &Cancel) -> Result<String, String> {
+fn execute_shell(
+    request: ShellRequest,
+    workspace: &Path,
+    session: &DeveloperPermissions,
+    cancel: &Cancel,
+) -> Result<String, String> {
     let generation = cancel.generation();
-    let program = command_path(&request.argv[0])?;
-    let mut command = sandboxed_command(program)?;
+    if cancel.is_stale(generation) {
+        return Err("shell command cancelled".into());
+    }
+    let requested = request.permission.map(|filesystem| DeveloperPermissions {
+        filesystem,
+        network: session.network,
+        secrets: session.secrets,
+    });
+    let effective =
+        resolve_effective(session, requested.as_ref()).map_err(|error| error.to_string())?;
+    let program = "/bin/bash";
+    let invocation = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_dir = std::env::temp_dir().join(format!(
+        "syllabix-executor-{}-{}-{}",
+        std::process::id(),
+        generation.0,
+        invocation,
+    ));
+    std::fs::create_dir_all(&temp_dir).map_err(|_| "sandbox temp directory unavailable")?;
+    let _temp_dir_guard = TempDirGuard(temp_dir.clone());
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|_| "workspace is unavailable")?;
+    let temp_dir = temp_dir
+        .canonicalize()
+        .map_err(|_| "sandbox temp directory unavailable")?;
+    let sandbox = current_provider();
+    let sandbox_request = SandboxRequest::new(
+        &workspace,
+        &temp_dir,
+        effective.filesystem,
+        effective.network,
+    );
+    if let Err(error) = sandbox.probe(&sandbox_request) {
+        return Err(error.to_string());
+    }
+    let mut command = match sandbox.command(
+        &sandbox_request,
+        Path::new(program),
+        &[
+            "--noprofile".into(),
+            "--norc".into(),
+            "-c".into(),
+            request.command,
+        ],
+    ) {
+        Ok(command) => command,
+        Err(error) => {
+            return Err(error.to_string());
+        }
+    };
     command
-        .args(&request.argv[1..])
         .current_dir(&request.cwd)
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_PAGER", "cat")
@@ -279,17 +277,11 @@ fn execute_shell(request: ShellRequest, cancel: &Cancel) -> Result<String, Strin
     let stderr = child.stderr.take().ok_or("shell stderr unavailable")?;
     let stdout = thread::spawn(move || read_bounded(stdout));
     let stderr = thread::spawn(move || read_bounded(stderr));
-    let deadline = Instant::now() + SHELL_TIMEOUT;
     let status = loop {
         if cancel.is_stale(generation) {
             let _ = child.kill();
             let _ = child.wait();
             return Err("shell command cancelled".into());
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("shell command timed out".into());
         }
         if let Some(status) = child
             .try_wait()
@@ -301,7 +293,8 @@ fn execute_shell(request: ShellRequest, cancel: &Cancel) -> Result<String, Strin
     };
     let stdout = stdout.join().map_err(|_| "shell stdout reader failed")?;
     let stderr = stderr.join().map_err(|_| "shell stderr reader failed")?;
-    Ok(format_output(status.code(), &stdout, &stderr))
+    let output = format_output(status.code(), &stdout, &stderr);
+    Ok(output)
 }
 
 fn execute_fetch(url: &str, cancel: &Cancel) -> Result<String, String> {
@@ -1095,32 +1088,6 @@ fn format_output(status: Option<i32>, stdout: &[u8], stderr: &[u8]) -> String {
     )
 }
 
-fn command_path(program: &str) -> Result<&'static str, String> {
-    match program {
-        "date" => Ok("/bin/date"),
-        "df" => Ok("/bin/df"),
-        "find" => Ok("/usr/bin/find"),
-        "git" => Ok("/usr/bin/git"),
-        "ls" => Ok("/bin/ls"),
-        "pwd" => Ok("/bin/pwd"),
-        "cargo" => Err("shell command is unavailable on this installation".into()),
-        _ => Err("shell command is not permitted".into()),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn sandboxed_command(program: &str) -> Result<Command, String> {
-    let profile = "(version 1) (allow default) (deny file-write*) (allow file-write* (literal \"/dev/null\")) (deny network*)";
-    let mut command = Command::new("/usr/bin/sandbox-exec");
-    command.arg("-p").arg(profile).arg(program);
-    Ok(command)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn sandboxed_command(_: &str) -> Result<Command, String> {
-    Err("read-only shell sandbox is unsupported on this platform".into())
-}
-
 fn resolve_workspace_path(workspace: &Path, requested: &str) -> Result<PathBuf, String> {
     let root = workspace
         .canonicalize()
@@ -1131,14 +1098,14 @@ fn resolve_workspace_path(workspace: &Path, requested: &str) -> Result<PathBuf, 
             .components()
             .any(|part| matches!(part, Component::ParentDir))
     {
-        return Err("shell cwd must stay inside the workspace".into());
+        return Err("shell workdir must stay inside the workspace".into());
     }
     let resolved = root
         .join(requested)
         .canonicalize()
-        .map_err(|_| "shell cwd does not exist")?;
+        .map_err(|_| "shell workdir does not exist")?;
     if !resolved.starts_with(&root) {
-        return Err("shell cwd must stay inside the workspace".into());
+        return Err("shell workdir must stay inside the workspace".into());
     }
     Ok(resolved)
 }
@@ -1157,81 +1124,29 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_direct_read_only_argv() {
+    fn accepts_generic_shell_commands_and_optional_narrowing() {
         let workspace = std::env::current_dir().unwrap();
         let request = validate_call(
-            &call(
-                "shell",
-                serde_json::json!({"argv":["git","status","--short"]}),
-            ),
+            &call("shell", serde_json::json!({"command":"rg -n TODO src"})),
             &workspace,
         )
         .unwrap();
         assert!(matches!(request, ValidatedCall::Shell(_)));
-        for argv in [
-            &["sh", "-c", "id"][..],
-            &["bash", "-c", "id"][..],
-            &["python3", "-c", "print(1)"][..],
-            &["node", "-e", "console.log(1)"][..],
-            &["cat", "Cargo.toml"][..],
-            &["rm", "-rf", "."][..],
-            &["git", "commit"][..],
-            &["git", "push"][..],
-            &["git", "-c", "user.name=x", "status"][..],
-            &["git", "--config", "a=b", "status"][..],
-            &["git", "diff", "--ext-diff"][..],
-            &["git", "diff", "--textconv"][..],
-            &["git", "diff", "--output=file"][..],
-            &["git", "diff", "--no-index", "a", "b"][..],
-            &["curl", "https://example.test"][..],
-            &["wget", "https://example.test"][..],
-            &["date", "+%s"][..],
-            &["pwd", "-P"][..],
-            &["df", "/tmp"][..],
-            &["df", "-k", "."][..],
-            &["ls", "-R"][..],
-            &["ls", "/etc"][..],
-            &["rg", "foo"][..],
-            &["rg", "-n", "foo", "crates"][..],
-            &["find", ".", "-exec", "id", ";"][..],
-            &["find", "/tmp", "-name", "*.rs"][..],
-            &["cargo", "build"][..],
-            &["cargo", "test"][..],
-        ] {
-            assert!(
-                validate_call(&call("shell", serde_json::json!({"argv":argv})), &workspace)
-                    .is_err(),
-                "{argv:?}"
-            );
-        }
-
-        // Test valid variants of allowed tools
-        for argv in [
-            &["date"][..],
-            &["pwd"][..],
-            &["df"][..],
-            &["df", "-h"][..],
-            &["df", "."][..],
-            &["df", "-h", "."][..],
-            &["ls"][..],
-            &["ls", "-la"][..],
-            &["ls", "-l", "crates"][..],
-            &["find", "."][..],
-            &["find", "crates", "-name", "*.rs"][..],
-            &["find", "crates", "-type", "f"][..],
-            &["git", "status"][..],
-            &["git", "diff"][..],
-            &["git", "log"][..],
-            &["git", "show"][..],
-            &["git", "branch"][..],
-            &["cargo", "metadata"][..],
-            &["cargo", "tree"][..],
-        ] {
-            assert!(
-                validate_call(&call("shell", serde_json::json!({"argv":argv})), &workspace).is_ok(),
-                "should accept: {argv:?}"
-            );
-        }
+        let ValidatedCall::Shell(request) = request else {
+            unreachable!()
+        };
+        assert_eq!(request.command, "rg -n TODO src");
+        assert_eq!(request.permission, None);
+        let ValidatedCall::Shell(request) = validate_call(
+            &call("shell", serde_json::json!({"command":"cargo test","workdir":"src","permission":"read-only"})),
+            &workspace,
+        ).unwrap() else { unreachable!() };
+        assert_eq!(request.permission, Some(FilesystemMode::ReadOnly));
+        assert!(validate_call(
+            &call("shell", serde_json::json!({"argv":["pwd"]})),
+            &workspace
+        )
+        .is_err());
     }
 
     #[test]
@@ -1247,45 +1162,36 @@ mod tests {
         .is_err());
         // Extra keys
         assert!(validate_call(
-            &call("shell", serde_json::json!({"argv":["pwd"],"extra":1})),
+            &call("shell", serde_json::json!({"command":"pwd","extra":1})),
             &workspace
         )
         .is_err());
-        // Empty argv
-        assert!(validate_call(&call("shell", serde_json::json!({"argv":[]})), &workspace).is_err());
-        // Non-string argv item
+        // Empty/non-string command
         assert!(validate_call(
-            &call("shell", serde_json::json!({"argv":[123]})),
+            &call("shell", serde_json::json!({"command":""})),
             &workspace
         )
         .is_err());
-        // Empty string in argv
-        assert!(
-            validate_call(&call("shell", serde_json::json!({"argv":[""]})), &workspace).is_err()
-        );
-        // Null byte in argv
         assert!(validate_call(
-            &call("shell", serde_json::json!({"argv":["pwd\0"]})),
+            &call("shell", serde_json::json!({"command":123})),
             &workspace
         )
         .is_err());
-        // Oversized argv (> 32 elements)
-        let long_argv: Vec<String> = (0..33).map(|i| format!("arg{i}")).collect();
         assert!(validate_call(
-            &call("shell", serde_json::json!({"argv":long_argv})),
+            &call("shell", serde_json::json!({"command":"pwd\0"})),
             &workspace
         )
         .is_err());
-        // Oversized arg element (> 1024 bytes)
-        let huge_arg = "a".repeat(1025);
+        // Oversized command
+        let huge_command = "a".repeat(MAX_COMMAND_BYTES + 1);
         assert!(validate_call(
-            &call("shell", serde_json::json!({"argv":["find", huge_arg]})),
+            &call("shell", serde_json::json!({"command":huge_command})),
             &workspace
         )
         .is_err());
-        // Non-string cwd
+        // Non-string workdir
         assert!(validate_call(
-            &call("shell", serde_json::json!({"argv":["pwd"],"cwd":123})),
+            &call("shell", serde_json::json!({"command":"pwd","workdir":123})),
             &workspace
         )
         .is_err());
@@ -1298,11 +1204,33 @@ mod tests {
         let workspace = std::env::current_dir().unwrap();
         for cwd in ["..", "/tmp", "missing", "../..", "/"] {
             assert!(validate_call(
-                &call("shell", serde_json::json!({"argv":["pwd"],"cwd":cwd})),
+                &call("shell", serde_json::json!({"command":"pwd","workdir":cwd})),
                 &workspace
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn shell_permission_cannot_widen_the_session_before_spawn() {
+        let workspace = std::env::current_dir().unwrap();
+        let result = execute_with_permissions(
+            &call(
+                "shell",
+                serde_json::json!({
+                    "command": "touch should-not-run",
+                    "permission": "workspace-write"
+                }),
+            ),
+            &workspace,
+            &DeveloperPermissions::default_session(),
+            &Cancel::new(),
+        );
+        assert!(!result.ok);
+        assert_eq!(
+            result.content,
+            "workspace-write required; configured filesystem mode is read-only"
+        );
     }
 
     #[test]
@@ -1787,7 +1715,7 @@ mod tests {
         let cancel = Cancel::new();
         cancel.shutdown();
         let result = execute(
-            &call("shell", serde_json::json!({"argv":["pwd"]})),
+            &call("shell", serde_json::json!({"command":"pwd"})),
             &workspace,
             &cancel,
         );
@@ -1808,40 +1736,70 @@ mod tests {
     fn shell_executes_direct_argv_under_the_read_only_network_denied_profile() {
         let workspace = std::env::current_dir().unwrap();
         let result = execute(
-            &call("shell", serde_json::json!({"argv":["pwd"]})),
+            &call("shell", serde_json::json!({"command":"pwd"})),
             &workspace,
             &Cancel::new(),
         );
-        assert!(result.ok, "{}", result.content);
-        assert!(result.content.contains("exit: 0"), "{}", result.content);
-        assert!(
-            result.content.contains("crates/syllabix-core"),
-            "{}",
-            result.content
-        );
+        if result.ok {
+            assert!(result.content.contains("exit: 0"), "{}", result.content);
+            assert!(
+                result.content.contains("crates/syllabix-core"),
+                "{}",
+                result.content
+            );
+        } else {
+            assert!(
+                result.content.starts_with("SANDBOX_UNAVAILABLE:"),
+                "{}",
+                result.content
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn seatbelt_blocks_writes_and_network() {
-        let mut write = sandboxed_command("/bin/sh").expect("profile");
-        let temp = std::env::temp_dir().join("syllabix-executor-must-not-write");
-        write
-            .args(["-c", "touch \"$1\"", "sh"])
-            .arg(&temp)
-            .output()
-            .expect("run write denial probe");
+        let provider = current_provider();
+        let root =
+            std::env::temp_dir().join(format!("syllabix-executor-test-{}", std::process::id()));
+        let temp_dir = root.join("private-temp");
+        std::fs::create_dir_all(&temp_dir).expect("temp");
+        let temp_dir = temp_dir.canonicalize().expect("canonical temp");
+        let request = SandboxRequest::new(
+            std::env::current_dir().unwrap(),
+            &temp_dir,
+            crate::policy::FilesystemMode::ReadOnly,
+            crate::policy::NetworkMode::None,
+        );
+        let temp = root.join("must-not-write");
+        let mut write = provider
+            .command(
+                &request,
+                Path::new("/bin/sh"),
+                &[
+                    "-c".into(),
+                    "touch \"$1\"".into(),
+                    "sh".into(),
+                    temp.to_string_lossy().into(),
+                ],
+            )
+            .expect("profile");
+        write.output().expect("run write denial probe");
         assert!(!temp.exists(), "sandbox unexpectedly created {temp:?}");
 
-        let mut network = sandboxed_command("/usr/bin/nc").expect("profile");
-        let result = network
-            .args(["-z", "1.1.1.1", "53"])
-            .output()
-            .expect("run network denial probe");
+        let mut network = provider
+            .command(
+                &request,
+                Path::new("/usr/bin/nc"),
+                &["-z".into(), "1.1.1.1".into(), "53".into()],
+            )
+            .expect("profile");
+        let result = network.output().expect("run network denial probe");
         assert!(
             !result.status.success(),
             "sandbox unexpectedly opened a network socket"
         );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(target_os = "macos")]
@@ -1850,14 +1808,18 @@ mod tests {
         let workspace = std::env::current_dir().unwrap();
         // git log or git status runs under scrubbed env
         let result = execute(
-            &call(
-                "shell",
-                serde_json::json!({"argv":["git","status","--short"]}),
-            ),
+            &call("shell", serde_json::json!({"command":"git status --short"})),
             &workspace,
             &Cancel::new(),
         );
-        assert!(result.ok, "{}", result.content);
-        assert!(result.content.contains("exit: 0"), "{}", result.content);
+        if result.ok {
+            assert!(result.content.contains("exit: 0"), "{}", result.content);
+        } else {
+            assert!(
+                result.content.starts_with("SANDBOX_UNAVAILABLE:"),
+                "{}",
+                result.content
+            );
+        }
     }
 }

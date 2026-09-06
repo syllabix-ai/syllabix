@@ -3,8 +3,8 @@
 //! This module is the typed seam for capability-sandboxed execution
 //! ([#111](https://github.com/syllabix-ai/syllabix/issues/111)). The configured
 //! session permissions are a ceiling: a call or skill may narrow them, never
-//! widen them. The current allowlist executor does not yet consume
-//! [`ExecutionPlan`]; that wiring lands with the generic shell.
+//! widen them. The generic developer-harness shell resolves every invocation
+//! through this policy before it reaches an OS sandbox provider.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -116,10 +116,10 @@ impl Default for DeveloperPermissions {
     }
 }
 
-/// Host-owned plan for one sandboxed child. Built by future shell/skill
-/// adapters; unused by the current allowlist path.
+/// Host-owned plan for one sandboxed child. The generic shell currently builds
+/// the equivalent provider request directly; skills will reuse this shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // constructed when generic-shell and skill adapters land
+#[allow(dead_code)] // reused by the trusted skill entrypoint phase
 pub struct ExecutionPlan {
     /// Absolute or PATH-resolved program.
     pub program: PathBuf,
@@ -143,7 +143,7 @@ pub struct ExecutionPlan {
 
 /// Structured denial when a request would widen the session ceiling.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // returned by resolve_effective; call sites land with generic shell
+#[allow(dead_code)] // returned directly by generic-shell plan builders
 pub struct PolicyDeny {
     /// Human-readable crossed-boundary message.
     pub message: String,
