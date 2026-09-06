@@ -162,7 +162,12 @@ impl SileroVad {
         let turn = TurnId(self.next_turn);
         self.next_turn += 1;
         self.active = Some(turn);
-        Some(VadEvent::SpeechStart { turn })
+        // Snapshot preroll + speech-so-far so streaming STT can start from the
+        // same onset the final utterance will carry. The promote frame is
+        // included here; the pipeline must not also stream it as a partial.
+        let mut seed = self.preroll.clone();
+        seed.extend(self.current.iter().cloned());
+        Some(VadEvent::SpeechStart { turn, seed })
     }
 
     fn finish(&mut self) -> Option<VadEvent> {
@@ -450,7 +455,10 @@ mod tests {
                 );
             }
             if seq + 1 == (1 + MIN_SPEECH_FRAMES) as u64 {
-                assert_eq!(events, vec![VadEvent::SpeechStart { turn: TurnId(0) }]);
+                assert!(matches!(
+                    &events[..],
+                    [VadEvent::SpeechStart { turn: TurnId(0), seed }] if !seed.is_empty()
+                ));
             }
             if seq + 1 == (1 + MIN_SPEECH_FRAMES + END_SILENCE_FRAMES - 1) as u64 {
                 assert_eq!(
@@ -462,7 +470,14 @@ mod tests {
         }
 
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0], VadEvent::SpeechStart { turn: TurnId(0) });
+        let VadEvent::SpeechStart { turn, seed } = &events[0] else {
+            panic!("expected SpeechStart");
+        };
+        assert_eq!(*turn, TurnId(0));
+        assert!(
+            !seed.is_empty(),
+            "SpeechStart seed must include preroll and/or buffered speech"
+        );
         let VadEvent::SpeechEnd { utterance } = &events[1] else {
             panic!("expected a speech end");
         };
@@ -617,6 +632,30 @@ mod tests {
     }
 
     #[test]
+    fn speech_start_seed_includes_preroll_and_buffered_speech() {
+        // One silence frame (preroll) then MIN_SPEECH_FRAMES of speech.
+        let probabilities = std::iter::once(0.2)
+            .chain(std::iter::repeat_n(0.9, MIN_SPEECH_FRAMES))
+            .collect();
+        let mut vad = SileroVad::with_scorer(Box::new(ScriptedScorer(probabilities)));
+        let mut start = None;
+        for seq in 0..(1 + MIN_SPEECH_FRAMES) as u64 {
+            for event in push_seq(&mut vad, seq) {
+                if let VadEvent::SpeechStart { turn, seed } = event {
+                    start = Some((turn, seed));
+                }
+            }
+        }
+        let (turn, seed) = start.expect("SpeechStart");
+        assert_eq!(turn, TurnId(0));
+        // preroll (seq 0) + every speech frame through promote (seq 1..=MIN_SPEECH_FRAMES)
+        assert_eq!(seed.len(), 1 + MIN_SPEECH_FRAMES);
+        assert_eq!(seed[0].seq, 0, "seed must lead with preroll");
+        assert_eq!(seed[1].seq, 1);
+        assert_eq!(seed.last().unwrap().seq, MIN_SPEECH_FRAMES as u64);
+    }
+
+    #[test]
     fn flush_closes_active_speech_without_waiting_for_silence() {
         let mut vad =
             SileroVad::with_scorer(Box::new(ScriptedScorer(vec![0.8; MIN_SPEECH_FRAMES])));
@@ -624,7 +663,13 @@ mod tests {
         for seq in 0..MIN_SPEECH_FRAMES as u64 {
             events.extend(push_seq(&mut vad, seq));
         }
-        assert_eq!(events, vec![VadEvent::SpeechStart { turn: TurnId(0) }]);
+        assert!(matches!(
+            &events[..],
+            [VadEvent::SpeechStart {
+                turn: TurnId(0),
+                ..
+            }]
+        ));
         let events = vad.flush().unwrap();
         assert!(
             matches!(events.as_slice(), [VadEvent::SpeechEnd { utterance }] if utterance.frames.len() == MIN_SPEECH_FRAMES)
@@ -666,13 +711,25 @@ mod tests {
         for seq in 0..MIN_SPEECH_FRAMES as u64 {
             events.extend(push_seq(&mut vad, seq));
         }
-        assert_eq!(events, vec![VadEvent::SpeechStart { turn: TurnId(0) }]);
+        assert!(matches!(
+            &events[..],
+            [VadEvent::SpeechStart {
+                turn: TurnId(0),
+                ..
+            }]
+        ));
         vad.reset();
         events.clear();
         for seq in 0..MIN_SPEECH_FRAMES as u64 {
             events.extend(push_seq(&mut vad, seq));
         }
-        assert_eq!(events, vec![VadEvent::SpeechStart { turn: TurnId(0) }]);
+        assert!(matches!(
+            &events[..],
+            [VadEvent::SpeechStart {
+                turn: TurnId(0),
+                ..
+            }]
+        ));
     }
 
     #[test]

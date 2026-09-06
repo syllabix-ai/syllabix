@@ -35,8 +35,22 @@ pub trait Stt: Send {
 
     /// VAD opened `turn`. This is notification only: VAD remains the single
     /// owner of start/end timing and the shared `end_silence_ms` setting.
-    fn start_turn(&mut self, _turn: TurnId, _cancel: &Cancel) -> Result<()> {
+    ///
+    /// `seed` is the preroll-plus-buffered speech already held by VAD at
+    /// promote time. Partial-capable engines should prepend it before live
+    /// frames; utterance-final engines may ignore it.
+    fn start_turn(&mut self, _turn: TurnId, _seed: &[AudioFrame], _cancel: &Cancel) -> Result<()> {
         Ok(())
+    }
+
+    /// Decode the currently seeded/buffered audio without consuming a new
+    /// frame. The pipeline calls this on `Finalize` when the lossy partial
+    /// channel holds nothing for the turn (e.g. a single-frame turn whose
+    /// promote frame arrived via the reliable `seed` instead), so provisional
+    /// text still precedes the final transcript. The default keeps the
+    /// established utterance-final path: no provisional text.
+    fn flush_partial(&mut self, _turn: TurnId, _cancel: &Cancel) -> Result<Option<String>> {
+        Ok(None)
     }
 
     /// One post-AEC frame from an active VAD turn. Returning text updates the

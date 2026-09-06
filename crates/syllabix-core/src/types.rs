@@ -85,6 +85,7 @@ pub struct Utterance {
     pub turn: TurnId,
     /// 200 ms post-AEC preroll (when available) plus every frame after speech-start
     /// until end-of-utterance, including below-threshold dips and the 350 ms hangover.
+    /// Streaming STT also receives that preroll up front via [`VadEvent::SpeechStart::seed`].
     pub frames: Vec<AudioFrame>,
 }
 
@@ -105,6 +106,10 @@ pub enum VadEvent {
     SpeechStart {
         /// New turn.
         turn: TurnId,
+        /// Post-AEC preroll plus speech frames already buffered when the turn
+        /// opens. Streaming STT (Moonshine) seeds partials from this so live
+        /// text sees the same onset as the final utterance; Whisper ignores it.
+        seed: Vec<AudioFrame>,
     },
     /// Mic returned to silence (or flush) and the utterance is complete.
     SpeechEnd {

@@ -71,7 +71,12 @@ impl FakeVad {
         if self.current.is_none() {
             let turn = TurnId(self.next_turn);
             self.next_turn += 1;
-            events.push(VadEvent::SpeechStart { turn });
+            // No preroll buffer here; the seed is the promote frame itself so
+            // streaming STT still starts from the same onset as the utterance.
+            events.push(VadEvent::SpeechStart {
+                turn,
+                seed: vec![frame.clone()],
+            });
             self.current = Some((turn, Vec::new()));
         }
         if let Some((_, frames)) = self.current.as_mut() {
@@ -518,7 +523,7 @@ mod tests {
         let starts: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                VadEvent::SpeechStart { turn } => Some(*turn),
+                VadEvent::SpeechStart { turn, .. } => Some(*turn),
                 VadEvent::SpeechEnd { .. } => None,
             })
             .collect();
