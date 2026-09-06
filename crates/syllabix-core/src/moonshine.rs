@@ -12,16 +12,13 @@
 //! `moonshine-ai/moonshine-streaming-medium` (MIT): one encoder plus a first-step
 //! decoder and a KV-cache decoder, with `tokenizer.json`. English only.
 
-use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
-use std::ptr;
 
-use ort::{session::Session, AsPointer};
 use tokenizers::Tokenizer;
 
 use crate::error::{Error, Result};
 use crate::models::{Fetcher, ModelCache, Progress};
+use crate::onnx::{OnnxData, OnnxSession, OnnxTensor, OrtSession};
 use crate::providers::Stt;
 use crate::types::{AudioFrame, Transcript, TurnId, Utterance};
 use crate::Cancel;
@@ -58,10 +55,6 @@ fn provider(message: impl Into<String>) -> Error {
         provider: PROVIDER_NAME,
         message: message.into(),
     }
-}
-
-fn ort_error(error: ort::Error) -> Error {
-    provider(error.to_string())
 }
 
 /// BPE decoder for the Moonshine 32k `tokenizer.json`.
@@ -105,199 +98,18 @@ impl MoonshineTokenizer {
     }
 }
 
-/// Minimal C-API runner for dynamic-shape tensors (KV cache, variable-length
-/// audio). Mirrors the `pocket_tts` escape hatch: the high-level `ort::inputs!`
-/// macro cannot name 42 KV inputs that change shape every decode step.
-struct RawTensor {
-    shape: Vec<i64>,
-    data: RawData,
-}
-
-enum RawData {
-    F32(Vec<f32>),
-    I64(Vec<i64>),
-}
-
-impl RawTensor {
-    fn f32(shape: Vec<i64>, data: Vec<f32>) -> Self {
-        Self {
-            shape,
-            data: RawData::F32(data),
-        }
-    }
-
-    fn i64(shape: Vec<i64>, data: Vec<i64>) -> Self {
-        Self {
-            shape,
-            data: RawData::I64(data),
-        }
-    }
-}
-
-struct RawValue(*mut ort_sys::OrtValue);
-impl Drop for RawValue {
-    fn drop(&mut self) {
-        unsafe { ort::ortsys!(ReleaseValue)(self.0) };
-    }
-}
-
-struct RawRunner<'a> {
-    session: &'a mut Session,
-    allocator: *mut ort_sys::OrtAllocator,
-}
-
-impl<'a> RawRunner<'a> {
-    fn new(session: &'a mut Session) -> Result<Self> {
-        let mut allocator = ptr::null_mut();
-        check(unsafe { ort::ortsys!(GetAllocatorWithDefaultOptions)(&mut allocator) })?;
-        Ok(Self { session, allocator })
-    }
-
-    fn run(&mut self, inputs: &[(&str, &RawTensor)], outputs: &[&str]) -> Result<Vec<RawTensor>> {
-        let names = inputs
-            .iter()
-            .map(|(n, _)| CString::new(*n).map_err(|_| provider("invalid input name")))
-            .collect::<Result<Vec<_>>>()?;
-        let out_names = outputs
-            .iter()
-            .map(|n| CString::new(*n).map_err(|_| provider("invalid output name")))
-            .collect::<Result<Vec<_>>>()?;
-        let values = inputs
-            .iter()
-            .map(|(_, t)| self.value(t))
-            .collect::<Result<Vec<_>>>()?;
-        let in_names = names
-            .iter()
-            .map(|n| n.as_ptr())
-            .collect::<Vec<*const c_char>>();
-        let in_values = values.iter().map(|v| v.0.cast_const()).collect::<Vec<_>>();
-        let out_ptrs = out_names.iter().map(|n| n.as_ptr()).collect::<Vec<_>>();
-        let mut raw_outputs = vec![ptr::null_mut(); outputs.len()];
-        check(unsafe {
-            ort::ortsys!(Run)(
-                self.session.ptr_mut(),
-                ptr::null(),
-                in_names.as_ptr(),
-                in_values.as_ptr(),
-                in_values.len(),
-                out_ptrs.as_ptr(),
-                out_ptrs.len(),
-                raw_outputs.as_mut_ptr(),
-            )
-        })?;
-        raw_outputs
-            .into_iter()
-            .map(|p| self.read(RawValue(p)))
-            .collect()
-    }
-
-    fn value(&self, tensor: &RawTensor) -> Result<RawValue> {
-        let (element_type, byte_len, source): (
-            ort_sys::ONNXTensorElementDataType,
-            usize,
-            *const c_void,
-        ) = match &tensor.data {
-            RawData::F32(data) => (
-                ort_sys::ONNXTensorElementDataType::ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
-                data.len() * size_of::<f32>(),
-                data.as_ptr().cast(),
-            ),
-            RawData::I64(data) => (
-                ort_sys::ONNXTensorElementDataType::ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
-                data.len() * size_of::<i64>(),
-                data.as_ptr().cast(),
-            ),
-        };
-        let mut value = ptr::null_mut();
-        check(unsafe {
-            ort::ortsys!(CreateTensorAsOrtValue)(
-                self.allocator,
-                tensor.shape.as_ptr(),
-                tensor.shape.len(),
-                element_type,
-                &mut value,
-            )
-        })?;
-        let value = RawValue(value);
-        if byte_len != 0 {
-            let mut data: *mut c_void = ptr::null_mut();
-            check(unsafe { ort::ortsys!(GetTensorMutableData)(value.0, &mut data) })?;
-            unsafe {
-                ptr::copy_nonoverlapping(source.cast::<u8>(), data.cast::<u8>(), byte_len);
-            }
-        }
-        Ok(value)
-    }
-
-    fn read(&self, value: RawValue) -> Result<RawTensor> {
-        let mut info = ptr::null_mut();
-        check(unsafe { ort::ortsys!(GetTensorTypeAndShape)(value.0, &mut info) })?;
-        let mut rank = 0;
-        check(unsafe { ort::ortsys!(GetDimensionsCount)(info, &mut rank) })?;
-        let mut element_type =
-            ort_sys::ONNXTensorElementDataType::ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
-        check(unsafe { ort::ortsys!(GetTensorElementType)(info, &mut element_type) })?;
-        let mut shape = vec![0_i64; rank];
-        check(unsafe { ort::ortsys!(GetDimensions)(info, shape.as_mut_ptr(), rank) })?;
-        unsafe { ort::ortsys!(ReleaseTensorTypeAndShapeInfo)(info) };
-        let len = shape
-            .iter()
-            .try_fold(1_usize, |a, d| {
-                usize::try_from(*d).ok().and_then(|d| a.checked_mul(d))
-            })
-            .ok_or_else(|| provider("invalid output shape"))?;
-        let mut data: *mut c_void = ptr::null_mut();
-        if len != 0 {
-            check(unsafe { ort::ortsys!(GetTensorMutableData)(value.0, &mut data) })?;
-        }
-        match element_type {
-            ort_sys::ONNXTensorElementDataType::ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT => {
-                let mut out = vec![0_f32; len];
-                if len != 0 {
-                    unsafe {
-                        ptr::copy_nonoverlapping(data.cast::<f32>(), out.as_mut_ptr(), len);
-                    }
-                }
-                Ok(RawTensor::f32(shape, out))
-            }
-            _ => Err(provider("unexpected non-f32 decoder output")),
-        }
-    }
-}
-
-fn check(status: ort_sys::OrtStatusPtr) -> Result<()> {
-    if status.is_null() {
-        return Ok(());
-    }
-    let message = unsafe {
-        CStr::from_ptr(ort::ortsys!(GetErrorMessage)(status))
-            .to_string_lossy()
-            .into_owned()
-    };
-    unsafe { ort::ortsys!(ReleaseStatus)(status) };
-    Err(provider(format!("ONNX Runtime C API: {message}")))
-}
-
-fn load_session(path: &Path, label: &str) -> Result<Session> {
-    Session::builder()
-        .map_err(ort_error)?
-        .commit_from_file(path)
-        .map_err(|err| provider(format!("could not load {label} {}: {err}", path.display())))
-}
-
-fn session_names(session: &Session) -> Vec<String> {
-    session.inputs.iter().map(|i| i.name.clone()).collect()
-}
-
-fn session_outputs(session: &Session) -> Vec<String> {
-    session.outputs.iter().map(|o| o.name.clone()).collect()
+fn load_session(path: &Path, label: &str) -> Result<Box<dyn OnnxSession>> {
+    OrtSession::load(path, PROVIDER_NAME, label).map(|session| Box::new(session) as _)
 }
 
 /// In-process Moonshine streaming adapter (batch finalize; small or medium).
+///
+/// Sessions are injected as [`OnnxSession`] so coverage tests can script
+/// inference without downloading weights; production builds [`OrtSession`].
 pub struct MoonshineStt {
-    encoder: Session,
-    decoder: Session,
-    decoder_past: Session,
+    encoder: Box<dyn OnnxSession>,
+    decoder: Box<dyn OnnxSession>,
+    decoder_past: Box<dyn OnnxSession>,
     /// Maps each decoder output KV tensor to its `decoder_with_past` input.
     kv_map: Vec<(usize, usize)>,
     past_inputs: Vec<String>,
@@ -361,11 +173,22 @@ impl MoonshineStt {
         let encoder = load_session(encoder_path, "moonshine encoder")?;
         let decoder = load_session(decoder_path, "moonshine decoder")?;
         let decoder_past = load_session(past_path, "moonshine KV decoder")?;
-        Self::validate_contract(&encoder, &decoder, &decoder_past)?;
-        let kv_map = build_kv_map(&decoder, &decoder_past)?;
-        let past_inputs = session_names(&decoder_past);
-        let past_outputs = session_outputs(&decoder_past);
         let tokenizer = MoonshineTokenizer::from_file(tokenizer_path)?;
+        Self::from_parts(encoder, decoder, decoder_past, tokenizer)
+    }
+
+    /// Assemble an adapter from injected sessions. Production passes
+    /// [`OrtSession`]; coverage tests pass scripted mocks.
+    pub(crate) fn from_parts(
+        encoder: Box<dyn OnnxSession>,
+        decoder: Box<dyn OnnxSession>,
+        decoder_past: Box<dyn OnnxSession>,
+        tokenizer: MoonshineTokenizer,
+    ) -> Result<Self> {
+        Self::validate_contract(encoder.as_ref(), decoder.as_ref(), decoder_past.as_ref())?;
+        let kv_map = build_kv_map(&decoder.output_names(), &decoder_past.input_names())?;
+        let past_inputs = decoder_past.input_names();
+        let past_outputs = decoder_past.output_names();
         Ok(Self {
             encoder,
             decoder,
@@ -382,26 +205,30 @@ impl MoonshineStt {
         })
     }
 
-    fn validate_contract(encoder: &Session, decoder: &Session, past: &Session) -> Result<()> {
-        if session_names(encoder) != ["input_values", "attention_mask"] {
+    fn validate_contract(
+        encoder: &dyn OnnxSession,
+        decoder: &dyn OnnxSession,
+        past: &dyn OnnxSession,
+    ) -> Result<()> {
+        if encoder.input_names() != ["input_values", "attention_mask"] {
             return Err(provider(format!(
                 "unexpected encoder inputs: {}",
-                session_names(encoder).join(", ")
+                encoder.input_names().join(", ")
             )));
         }
-        if session_outputs(encoder) != ["encoder_hidden_states"] {
+        if encoder.output_names() != ["encoder_hidden_states"] {
             return Err(provider("unexpected encoder outputs"));
         }
-        if session_names(decoder) != ["decoder_input_ids", "encoder_hidden_states"] {
+        if decoder.input_names() != ["decoder_input_ids", "encoder_hidden_states"] {
             return Err(provider(format!(
                 "unexpected decoder inputs: {}",
-                session_names(decoder).join(", ")
+                decoder.input_names().join(", ")
             )));
         }
-        if !session_outputs(decoder).starts_with(&["logits".to_string()]) {
+        if !decoder.output_names().starts_with(&["logits".to_string()]) {
             return Err(provider("decoder must emit logits first"));
         }
-        if !session_outputs(past).starts_with(&["logits".to_string()]) {
+        if !past.output_names().starts_with(&["logits".to_string()]) {
             return Err(provider("KV decoder must emit logits first"));
         }
         Ok(())
@@ -431,11 +258,10 @@ impl MoonshineStt {
             audio.resize(audio.len() + ENCODER_PAD - remainder, 0.0);
         }
         let mask = vec![1_i64; audio.len()];
-        let audio_tensor = RawTensor::f32(vec![1, audio.len() as i64], audio);
-        let mask_tensor = RawTensor::i64(vec![1, mask.len() as i64], mask);
+        let audio_tensor = OnnxTensor::f32(vec![1, audio.len() as i64], audio);
+        let mask_tensor = OnnxTensor::i64(vec![1, mask.len() as i64], mask);
         let hidden = {
-            let mut runner = RawRunner::new(&mut self.encoder)?;
-            let out = runner.run(
+            let out = self.encoder.run(
                 &[
                     ("input_values", &audio_tensor),
                     ("attention_mask", &mask_tensor),
@@ -448,26 +274,26 @@ impl MoonshineStt {
         };
         let hidden_shape = hidden.shape.clone();
         let hidden_data = match hidden.data {
-            RawData::F32(data) => data,
-            RawData::I64(_) => return Err(provider("encoder emitted non-f32 states")),
+            OnnxData::F32(data) => data,
+            _ => return Err(provider("encoder emitted non-f32 states")),
         };
-        let hidden_tensor = RawTensor::f32(hidden_shape, hidden_data);
+        let hidden_tensor = OnnxTensor::f32(hidden_shape, hidden_data);
 
         // Clone the session contracts up front: the runners below borrow the
         // sessions mutably while the name tables are still needed.
         let kv_output_names: Vec<String> =
-            session_outputs(&self.decoder).into_iter().skip(1).collect();
+            self.decoder.output_names().into_iter().skip(1).collect();
         let past_inputs = self.past_inputs.clone();
         let past_outputs = self.past_outputs.clone();
         let kv_map = self.kv_map.clone();
 
         let max_tokens = ((pcm_f32.len() as f64 * MAX_TOKENS_PER_SECOND / 16_000.0) as usize + 8)
             .min(MAX_TOKENS_ABSOLUTE);
-        let id_tensor = RawTensor::i64(vec![1, 1], vec![BOS]);
+        let id_tensor = OnnxTensor::i64(vec![1, 1], vec![BOS]);
         let mut names: Vec<&str> = vec!["logits"];
         names.extend(kv_output_names.iter().map(|s| s.as_str()));
-        let mut runner = RawRunner::new(&mut self.decoder)?;
-        let mut tensors = runner
+        let mut tensors = self
+            .decoder
             .run(
                 &[
                     ("decoder_input_ids", &id_tensor),
@@ -479,7 +305,7 @@ impl MoonshineStt {
         let mut logits = tensors
             .next()
             .ok_or_else(|| provider("decoder returned no logits"))?;
-        let mut kv: Vec<RawTensor> = tensors.collect();
+        let mut kv: Vec<OnnxTensor> = tensors.collect();
         if kv.len() != kv_map.len() {
             return Err(provider(
                 "decoder KV count does not match the past-input map",
@@ -495,16 +321,15 @@ impl MoonshineStt {
                 break;
             }
             ids.push(next);
-            let id_tensor = RawTensor::i64(vec![1, 1], vec![next]);
-            let mut inputs: Vec<(&str, &RawTensor)> = Vec::with_capacity(2 + kv.len());
+            let id_tensor = OnnxTensor::i64(vec![1, 1], vec![next]);
+            let mut inputs: Vec<(&str, &OnnxTensor)> = Vec::with_capacity(2 + kv.len());
             inputs.push(("decoder_input_ids", &id_tensor));
             inputs.push(("encoder_hidden_states", &hidden_tensor));
             for (slot, tensor) in kv.iter().enumerate() {
                 inputs.push((past_inputs[kv_map[slot].1].as_str(), tensor));
             }
-            let mut runner = RawRunner::new(&mut self.decoder_past)?;
             let out_names: Vec<&str> = past_outputs.iter().map(|s| s.as_str()).collect();
-            let mut tensors = runner.run(&inputs, &out_names)?.into_iter();
+            let mut tensors = self.decoder_past.run(&inputs, &out_names)?.into_iter();
             logits = tensors
                 .next()
                 .ok_or_else(|| provider("KV decoder returned no logits"))?;
@@ -526,9 +351,9 @@ fn validate_language(language: &str) -> Result<()> {
 }
 
 /// Index of the largest logit. Logits arrive as `[1, 1, vocab]`.
-fn argmax(logits: &RawTensor) -> Result<i64> {
+fn argmax(logits: &OnnxTensor) -> Result<i64> {
     match &logits.data {
-        RawData::F32(data) => {
+        OnnxData::F32(data) => {
             let (mut best_index, mut best_value) = (0_i64, f32::NEG_INFINITY);
             for (index, value) in data.iter().enumerate() {
                 if *value > best_value {
@@ -538,7 +363,7 @@ fn argmax(logits: &RawTensor) -> Result<i64> {
             }
             Ok(best_index)
         }
-        RawData::I64(_) => Err(provider("logits are not f32")),
+        _ => Err(provider("logits are not f32")),
     }
 }
 
@@ -635,9 +460,7 @@ impl MoonshineStt {
 
 /// Map each decoder KV output to its `decoder_with_past` input: `present_X`
 /// feeds `past_X`, and cross-attention tensors feed their `*_orig` inputs.
-fn build_kv_map(decoder: &Session, past: &Session) -> Result<Vec<(usize, usize)>> {
-    let decoder_outputs = session_outputs(decoder);
-    let past_inputs = session_names(past);
+fn build_kv_map(decoder_outputs: &[String], past_inputs: &[String]) -> Result<Vec<(usize, usize)>> {
     let mut map = Vec::new();
     for (out_index, name) in decoder_outputs.iter().enumerate().skip(1) {
         let rest = name.strip_prefix("present_").ok_or_else(|| {
@@ -760,116 +583,9 @@ mod tests {
         assert!(err.to_string().contains("four pinned moonshine assets"));
     }
 
-    /// Full weights + fixture check. Ignored by default (needs ~360 MB of
-    /// ONNX + tokenizer): point `SYLLABIX_MOONSHINE_DIR` at a directory with
-    /// `encoder_model_int8.onnx`, `decoder_model_int8.onnx`,
-    /// `decoder_with_past_model_int8.onnx`, `tokenizer.json`, then:
-    /// `cargo test -p syllabix-core --lib moonshine::tests::native -- --ignored --nocapture`
-    #[test]
-    #[ignore]
-    fn native_recorded_fixtures_meet_word_match_gate() {
-        let dir = std::env::var("SYLLABIX_MOONSHINE_DIR")
-            .expect("SYLLABIX_MOONSHINE_DIR must point at the moonshine ONNX directory");
-        let root = Path::new(&dir);
-        let mut stt = MoonshineStt::from_paths(&[
-            root.join("encoder_model_int8.onnx"),
-            root.join("decoder_model_int8.onnx"),
-            root.join("decoder_with_past_model_int8.onnx"),
-            root.join("tokenizer.json"),
-        ])
-        .expect("moonshine weights load");
-        assert_eq!(stt.name(), PROVIDER_NAME);
-        assert_eq!(stt.language(), LANGUAGE);
-        let fixtures: &[(&str, &[&str], f64)] = &[
-            (
-                "jfk.wav",
-                &[
-                    "and",
-                    "so",
-                    "my",
-                    "fellow",
-                    "americans",
-                    "ask",
-                    "not",
-                    "what",
-                    "your",
-                    "country",
-                    "can",
-                    "do",
-                    "for",
-                    "you",
-                    "ask",
-                    "what",
-                    "you",
-                    "can",
-                    "do",
-                    "for",
-                    "your",
-                    "country",
-                ],
-                1.0,
-            ),
-            (
-                "librispeech-1089-134686-0000.wav",
-                &[
-                    "he", "hoped", "there", "would", "be", "stew", "for", "dinner", "turnips",
-                    "and", "carrots", "and", "bruised", "potatoes", "and", "fat", "mutton",
-                    "pieces", "to", "be", "ladled", "out", "in", "thick", "peppered", "flour",
-                    "fattened", "sauce",
-                ],
-                0.8,
-            ),
-            (
-                "librispeech-121-127105-0009.wav",
-                &["she", "has", "been", "dead", "these", "twenty", "years"],
-                0.8,
-            ),
-            (
-                "librispeech-1995-1837-0005.wav",
-                &[
-                    "she", "was", "so", "strange", "and", "human", "a", "creature",
-                ],
-                0.8,
-            ),
-        ];
-        for (index, (file, expected, minimum)) in fixtures.iter().enumerate() {
-            let wav = std::fs::read(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/fixtures/stt")
-                    .join(file),
-            )
-            .unwrap_or_else(|err| panic!("{file} fixture: {err}"));
-            let pcm = crate::audio::read_wav(std::io::Cursor::new(wav))
-                .unwrap_or_else(|err| panic!("{file} parses: {err}"));
-            let frames = crate::audio::record_fixture_to_frames(&pcm)
-                .unwrap_or_else(|err| panic!("{file} frames: {err}"));
-            let transcript = stt
-                .transcribe(
-                    &Utterance {
-                        turn: crate::types::TurnId(index as u64),
-                        frames,
-                    },
-                    &Cancel::new(),
-                )
-                .unwrap_or_else(|err| panic!("{file} transcribes: {err}"));
-            let ratio = crate::stt::word_match_ratio(&transcript.text, expected);
-            eprintln!(
-                "Moonshine {file}: {:.1}% word match ({:?})",
-                ratio * 100.0,
-                transcript.text
-            );
-            assert!(
-                ratio >= *minimum,
-                "{file} transcript {:?} matched {:.1}% of {:?} (need {:.0}%)",
-                transcript.text,
-                ratio * 100.0,
-                expected,
-                minimum * 100.0
-            );
-            assert_eq!(transcript.language, LANGUAGE);
-        }
-    }
-
+    // Full-weights listening gate lives in `moonshine_tests.rs`
+    // (`native_recorded_fixtures_meet_word_match_gate`, ignored by default)
+    // so the measured file carries no never-executed native body.
     #[test]
     fn provider_name_is_moonshine() {
         assert_eq!(PROVIDER_NAME, "moonshine");
@@ -877,3 +593,7 @@ mod tests {
         assert_eq!(crate::defaults::SttModel::Small.as_str(), "whisper-small");
     }
 }
+
+#[cfg(test)]
+#[path = "moonshine_tests.rs"]
+mod moonshine_tests;

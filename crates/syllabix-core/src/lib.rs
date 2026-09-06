@@ -3,8 +3,8 @@
 //! The runtime connects Silero, whisper.cpp, llama.cpp, and text-to-speech
 //! providers through bounded queues. Native inference tests share one binary
 //! so large model weights load only once per test process. `SYLLABIX_NATIVE_MODELS`
-//! selects specific model suites, while `cfg(coverage)` replaces native inference
-//! with lightweight implementations. Model weights live in the first-run cache
+//! selects specific model suites, while `cfg(coverage)` replaces live audio
+//! loops with lightweight fakes. Model weights live in the first-run cache
 //! rather than the executable.
 
 pub mod audio;
@@ -23,22 +23,15 @@ mod live;
 mod llm;
 mod memory;
 // Moonshine's production adapter dynamically loads three ONNX graphs and a
-// tokenizer. Coverage intentionally avoids external model inference, so use a
-// small contract-preserving stand-in there (as Pocket TTS does below).
-#[cfg(not(coverage))]
+// tokenizer. Coverage tests inject scripted sessions instead of downloading
+// weights, so the real adapter always compiles.
 mod moonshine;
-#[cfg(coverage)]
-#[path = "moonshine_coverage.rs"]
-mod moonshine;
+mod onnx;
 mod openai;
 mod pipeline;
 mod policy;
-// Pocket TTS native inference runs only in the model suite. llvm-cov skips
-// native weights and graph execution, so it compiles the public API stub.
-#[cfg(not(coverage))]
-mod pocket_tts;
-#[cfg(coverage)]
-#[path = "pocket_tts_coverage.rs"]
+// Pocket TTS native inference runs in the model suite; coverage tests inject
+// scripted sessions, so the real adapter always compiles.
 mod pocket_tts;
 mod providers;
 mod queue;

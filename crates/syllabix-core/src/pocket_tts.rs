@@ -6,20 +6,15 @@
 //! output. The fixed `alba` state is only inspected here;
 //! no user audio is accepted and no voice state is registered.
 
-use std::{
-    ffi::{CStr, CString},
-    os::raw::{c_char, c_void},
-    path::{Path, PathBuf},
-    ptr,
-};
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use ort::{session::Session, AsPointer};
 use sentencepiece_rs::SentencePieceProcessor;
 
 use crate::audio::{f32_to_i16, PcmConverter, PcmFormat};
 use crate::models::{Fetcher, ModelCache, Progress};
+use crate::onnx::{OnnxData, OnnxSession, OnnxTensor, OrtSession};
 use crate::providers::Tts;
 use crate::speech_text::{speak_text_for_tts, take_sentences, ThinkFilter};
 use crate::{Cancel, Error, GenerationId, Result, SynthesizedAudio, TokenChunk, TurnId};
@@ -62,20 +57,48 @@ const SHORT_EOS_WINDOW_FRAMES: usize = 5;
 const SHORT_PROMPT_WORDS: usize = 4;
 
 /// Pocket TTS engine backed by the pinned English ONNX graph set.
+///
+/// Sessions are injected as [`OnnxSession`] so coverage tests can script
+/// inference without downloading weights; production builds [`OrtSession`].
 pub struct PocketTts {
-    text_conditioner: Session,
-    flow_main: Session,
-    flow: Session,
-    decoder: Session,
+    text_conditioner: Box<dyn OnnxSession>,
+    flow_main: Box<dyn OnnxSession>,
+    flow: Box<dyn OnnxSession>,
+    decoder: Box<dyn OnnxSession>,
     flow_state: Vec<StateSpec>,
     mimi_state: Vec<StateSpec>,
     voice: PathBuf,
-    tokenizer: SentencePieceProcessor,
+    tokenizer: Box<dyn PocketTokenizer>,
     think: ThinkFilter,
     buffer: String,
     turn: Option<TurnId>,
     generation: Option<GenerationId>,
     next_index: u32,
+}
+
+/// Tokenizer behind [`PocketTts`]: production reads `tokenizer.model` from
+/// the cache, coverage tests inject canned ids.
+pub(crate) trait PocketTokenizer: Send {
+    fn encode_to_ids(&self, text: &str) -> Result<Vec<i64>>;
+}
+
+struct OrtPocketTokenizer(SentencePieceProcessor);
+
+impl OrtPocketTokenizer {
+    fn open(path: &Path) -> Result<Self> {
+        SentencePieceProcessor::open(path)
+            .map(Self)
+            .map_err(|err| provider(&format!("could not load tokenizer.model: {err}")))
+    }
+}
+
+impl PocketTokenizer for OrtPocketTokenizer {
+    fn encode_to_ids(&self, text: &str) -> Result<Vec<i64>> {
+        self.0
+            .encode_to_ids(text)
+            .map(|ids| ids.into_iter().map(|id| id as i64).collect())
+            .map_err(|err| provider(&format!("could not tokenize Pocket TTS text: {err}")))
+    }
 }
 
 impl PocketTts {
@@ -103,7 +126,33 @@ impl PocketTts {
         let flow_main = load_graph(flow_main, "flow LM main")?;
         let flow = load_graph(flow, "flow LM flow")?;
         let decoder = load_graph(decoder, "Mimi decoder")?;
-        validate_text_contract(&text_conditioner)?;
+        let tokenizer = OrtPocketTokenizer::open(tokenizer)?;
+        Self::from_parts(
+            text_conditioner,
+            flow_main,
+            flow,
+            decoder,
+            Box::new(tokenizer),
+            flow_state,
+            mimi_state,
+            voice.clone(),
+        )
+    }
+
+    /// Assemble an engine from injected sessions. Production passes
+    /// [`OrtSession`]; coverage tests pass scripted mocks.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(
+        text_conditioner: Box<dyn OnnxSession>,
+        flow_main: Box<dyn OnnxSession>,
+        flow: Box<dyn OnnxSession>,
+        decoder: Box<dyn OnnxSession>,
+        tokenizer: Box<dyn PocketTokenizer>,
+        flow_state: Vec<StateSpec>,
+        mimi_state: Vec<StateSpec>,
+        voice: PathBuf,
+    ) -> Result<Self> {
+        validate_text_contract(text_conditioner.as_ref())?;
         Ok(Self {
             text_conditioner,
             flow_main,
@@ -111,9 +160,8 @@ impl PocketTts {
             decoder,
             flow_state,
             mimi_state,
-            voice: voice.clone(),
-            tokenizer: SentencePieceProcessor::open(tokenizer)
-                .map_err(|err| provider(&format!("could not load tokenizer.model: {err}")))?,
+            voice,
+            tokenizer,
             think: ThinkFilter::default(),
             buffer: String::new(),
             turn: None,
@@ -155,36 +203,29 @@ impl PocketTts {
         cancel: &Cancel,
         on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
     ) -> Result<()> {
-        let ids = self
-            .tokenizer
-            .encode_to_ids(text)
-            .map_err(|err| provider(&format!("could not tokenize Pocket TTS text: {err}")))?
-            .into_iter()
-            .map(|id| id as i64)
-            .collect::<Vec<_>>();
+        let ids = self.tokenizer.encode_to_ids(text)?;
         if ids.is_empty() {
             return Ok(());
         }
         let token_count = ids.len();
-        let outputs = self
+        let ids_tensor = OnnxTensor::i64(vec![1, ids.len() as i64], ids);
+        let mut conditioned = self
             .text_conditioner
-            .run(ort::inputs!["token_ids" => ([1_usize, ids.len()], ids)].map_err(ort_error)?)
-            .map_err(ort_error)?;
-        let embeddings = RawTensor::f32(
+            .run(&[("token_ids", &ids_tensor)], &["embeddings"])?;
+        let embeddings = OnnxTensor::f32(
             vec![1, token_count as i64, 1024],
-            outputs[0]
-                .try_extract_tensor::<f32>()
-                .map_err(ort_error)?
-                .iter()
-                .copied()
-                .collect(),
+            f32_data(
+                &conditioned
+                    .pop()
+                    .ok_or_else(|| provider("text conditioner returned no embeddings"))?,
+            )?
+            .to_vec(),
         );
         let mut flow_state = voice_state(&self.flow_state, &self.voice)?;
         // Feed the complete text into FlowLM before it starts producing audio.
         // The generation loop below then has only a new audio frame and the
         // state that this call returned, matching the exported model's order.
-        let empty_sequence = RawTensor::f32(vec![1, 0, 32], vec![]);
-        let mut main = RawRunner::new(&mut self.flow_main)?;
+        let empty_sequence = OnnxTensor::f32(vec![1, 0, 32], vec![]);
         let mut inputs = vec![
             ("sequence", &empty_sequence),
             ("text_embeddings", &embeddings),
@@ -200,7 +241,7 @@ impl PocketTts {
             .iter()
             .map(|s| s.output_name.as_str())
             .collect::<Vec<_>>();
-        flow_state = main.run(&inputs, &state_names)?;
+        flow_state = self.flow_main.run(&inputs, &state_names)?;
         let mut mimi_state = self
             .mimi_state
             .iter()
@@ -209,7 +250,7 @@ impl PocketTts {
         // The FlowLM uses a NaN sentinel for the first autoregressive input;
         // its learned audio-BOS embedding replaces that sentinel internally.
         // Later iterations feed back the generated latent below.
-        let mut previous = RawTensor::f32(vec![1, 1, 32], vec![f32::NAN; 32]);
+        let mut previous = OnnxTensor::f32(vec![1, 1, 32], vec![f32::NAN; 32]);
         let mut converter = PcmConverter::new(
             PcmFormat {
                 sample_rate_hz: 24_000,
@@ -237,8 +278,7 @@ impl PocketTts {
             if eos_window_exhausted_before_frame(frame, eos_frame, eos_window_frames) {
                 break;
             }
-            let empty_text = RawTensor::f32(vec![1, 0, 1024], vec![]);
-            let mut main = RawRunner::new(&mut self.flow_main)?;
+            let empty_text = OnnxTensor::f32(vec![1, 0, 1024], vec![]);
             let mut inputs = vec![("sequence", &previous), ("text_embeddings", &empty_text)];
             inputs.extend(
                 self.flow_state
@@ -248,10 +288,9 @@ impl PocketTts {
             );
             let mut names = vec!["conditioning", "eos_logit"];
             names.extend(self.flow_state.iter().map(|s| s.output_name.as_str()));
-            let result = main.run(&inputs, &names)?;
+            let result = self.flow_main.run(&inputs, &names)?;
             let conditioning = result[0].clone();
-            let eos = result[1]
-                .f32_data()?
+            let eos = f32_data(&result[1])?
                 .first()
                 .copied()
                 .unwrap_or(f32::NEG_INFINITY);
@@ -266,10 +305,10 @@ impl PocketTts {
             // seed made distinct frames converge on the same fragment.
             let mut latent = standard_normal_tensor(32, FLOW_TEMPERATURE.sqrt())?;
             for step in 0..FLOW_STEPS {
-                let s = RawTensor::f32(vec![1, 1], vec![step as f32 / FLOW_STEPS as f32]);
-                let t = RawTensor::f32(vec![1, 1], vec![(step + 1) as f32 / FLOW_STEPS as f32]);
-                let mut flow = RawRunner::new(&mut self.flow)?;
-                let direction = flow
+                let s = OnnxTensor::f32(vec![1, 1], vec![step as f32 / FLOW_STEPS as f32]);
+                let t = OnnxTensor::f32(vec![1, 1], vec![(step + 1) as f32 / FLOW_STEPS as f32]);
+                let direction = self
+                    .flow
                     .run(
                         &[("c", &conditioning), ("s", &s), ("t", &t), ("x", &latent)],
                         &["flow_dir"],
@@ -278,16 +317,15 @@ impl PocketTts {
                     .next()
                     .ok_or_else(|| provider("flow graph returned no latent"))?;
                 let scale = 1.0 / FLOW_STEPS as f32;
-                let values = latent
-                    .f32_data()?
+                let values = f32_data(&latent)?
                     .iter()
-                    .zip(direction.f32_data()?)
+                    .zip(f32_data(&direction)?)
                     .map(|(current, velocity)| current + velocity * scale)
                     .collect();
-                latent = RawTensor::f32(vec![1, 32], values);
+                latent = OnnxTensor::f32(vec![1, 32], values);
             }
-            previous = RawTensor::f32(vec![1, 1, 32], latent.f32_data()?.to_vec());
-            pending_latents.extend_from_slice(previous.f32_data()?);
+            previous = OnnxTensor::f32(vec![1, 1, 32], f32_data(&latent)?.to_vec());
+            pending_latents.extend_from_slice(f32_data(&previous)?);
 
             // Mimi needs a small amount of following audio to make a stable
             // waveform. Decode its native 12-frame blocks, rather than a
@@ -296,11 +334,10 @@ impl PocketTts {
                 continue;
             }
             let batch_frames = pending_latents.len() / 32;
-            let latent = RawTensor::f32(
+            let latent = OnnxTensor::f32(
                 vec![1, batch_frames as i64, 32],
                 std::mem::take(&mut pending_latents),
             );
-            let mut decoder = RawRunner::new(&mut self.decoder)?;
             let mut decoder_inputs = vec![("latent", &latent)];
             decoder_inputs.extend(
                 self.mimi_state
@@ -310,8 +347,8 @@ impl PocketTts {
             );
             let mut decoder_names = vec!["audio_frame"];
             decoder_names.extend(self.mimi_state.iter().map(|s| s.output_name.as_str()));
-            let decoded = decoder.run(&decoder_inputs, &decoder_names)?;
-            let mut pcm = f32_to_i16(&converter.push(decoded[0].f32_data()?));
+            let decoded = self.decoder.run(&decoder_inputs, &decoder_names)?;
+            let mut pcm = f32_to_i16(&converter.push(f32_data(&decoded[0])?));
             mimi_state = decoded.into_iter().skip(1).collect();
             if is_final_frame {
                 pcm.extend(f32_to_i16(&converter.flush()));
@@ -339,31 +376,25 @@ impl PocketTts {
     /// to be exercised independently of tokenizer behavior.
     pub fn text_fixture(&mut self) -> Result<Vec<f32>> {
         let tokens = vec![10_i64, 20, 30, 40, 50];
-        let outputs = self
+        let ids = OnnxTensor::i64(vec![1, tokens.len() as i64], tokens);
+        let mut outputs = self
             .text_conditioner
-            .run(
-                ort::inputs!["token_ids" => ([1_usize, tokens.len()], tokens)]
-                    .map_err(ort_error)?,
-            )
-            .map_err(ort_error)?;
-        let embeddings = outputs[0]
-            .try_extract_tensor::<f32>()
-            .map_err(ort_error)?
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
+            .run(&[("token_ids", &ids)], &["embeddings"])?;
+        let embeddings = outputs
+            .pop()
+            .ok_or_else(|| provider("text fixture produced no embeddings"))?;
+        let embeddings = f32_data(&embeddings)?.to_vec();
         if embeddings.len() != 5 * 1024 || embeddings.iter().any(|v| !v.is_finite()) {
             return Err(provider("text fixture produced invalid embeddings"));
         }
         Ok(embeddings)
     }
 
-    /// Produce a deterministic decoder frame through ONNX Runtime's C API.
-    /// Its recurrent state is fed directly as OrtValues; this is the required
+    /// Produce a deterministic decoder frame through the injected session.
+    /// Its recurrent state is fed directly as tensors; this is the required
     /// escape hatch for Pocket TTS's dynamic state tensors.
     pub fn c_api_fixture(&mut self) -> Result<Vec<f32>> {
-        let mut runner = RawRunner::new(&mut self.decoder)?;
-        let latent = RawTensor::f32(vec![1, 1, 32], vec![0.0; 32]);
+        let latent = OnnxTensor::f32(vec![1, 1, 32], vec![0.0; 32]);
         let states = self
             .mimi_state
             .iter()
@@ -376,17 +407,16 @@ impl PocketTts {
                 .zip(&states)
                 .map(|(spec, state)| (spec.input_name.as_str(), state)),
         );
-        let outputs = runner.run(&inputs, &["audio_frame"])?;
-        Ok(outputs[0].f32.clone())
+        let outputs = self.decoder.run(&inputs, &["audio_frame"])?;
+        Ok(f32_data(&outputs[0])?.to_vec())
     }
 
     /// Generate one deterministic, text-conditioned latent frame for portable
     /// native inference checks without invoking streaming or duration policy.
     pub fn synthesize_fixture(&mut self) -> Result<Vec<f32>> {
-        let embeddings = RawTensor::f32(vec![1, 5, 1024], self.text_fixture()?);
-        let empty_sequence = RawTensor::f32(vec![1, 0, 32], vec![]);
+        let embeddings = OnnxTensor::f32(vec![1, 5, 1024], self.text_fixture()?);
+        let empty_sequence = OnnxTensor::f32(vec![1, 0, 32], vec![]);
         let mut state = voice_state(&self.flow_state, &self.voice)?;
-        let mut main = RawRunner::new(&mut self.flow_main)?;
         let mut inputs = vec![
             ("sequence", &empty_sequence),
             ("text_embeddings", &embeddings),
@@ -399,11 +429,11 @@ impl PocketTts {
         );
         let mut output_names = vec!["conditioning", "eos_logit"];
         output_names.extend(self.flow_state.iter().map(|spec| spec.output_name.as_str()));
-        let outputs = main.run(&inputs, &output_names)?;
+        let outputs = self.flow_main.run(&inputs, &output_names)?;
         state = outputs.into_iter().skip(2).collect();
 
-        let current = RawTensor::f32(vec![1, 1, 32], vec![f32::NAN; 32]);
-        let empty_text = RawTensor::f32(vec![1, 0, 1024], vec![]);
+        let current = OnnxTensor::f32(vec![1, 1, 32], vec![f32::NAN; 32]);
+        let empty_text = OnnxTensor::f32(vec![1, 0, 1024], vec![]);
         let mut inputs = vec![("sequence", &current), ("text_embeddings", &empty_text)];
         inputs.extend(
             self.flow_state
@@ -411,24 +441,22 @@ impl PocketTts {
                 .zip(&state)
                 .map(|(spec, tensor)| (spec.input_name.as_str(), tensor)),
         );
-        let outputs = main.run(&inputs, &output_names)?;
-        let conditioning = outputs[0].f32_data()?.to_vec();
-        let conditioning = RawTensor::f32(outputs[0].shape.clone(), conditioning);
-        let x = RawTensor::f32(vec![1, 32], vec![0.0; 32]);
-        let s = RawTensor::f32(vec![1, 1], vec![0.0]);
-        let t = RawTensor::f32(vec![1, 1], vec![1.0]);
-        let mut flow = RawRunner::new(&mut self.flow)?;
-        let latent = flow.run(
+        let outputs = self.flow_main.run(&inputs, &output_names)?;
+        let conditioning =
+            OnnxTensor::f32(outputs[0].shape.clone(), f32_data(&outputs[0])?.to_vec());
+        let x = OnnxTensor::f32(vec![1, 32], vec![0.0; 32]);
+        let s = OnnxTensor::f32(vec![1, 1], vec![0.0]);
+        let t = OnnxTensor::f32(vec![1, 1], vec![1.0]);
+        let latent = self.flow.run(
             &[("c", &conditioning), ("s", &s), ("t", &t), ("x", &x)],
             &["flow_dir"],
         )?;
-        let latent = RawTensor::f32(vec![1, 1, 32], latent[0].f32_data()?.to_vec());
+        let latent = OnnxTensor::f32(vec![1, 1, 32], f32_data(&latent[0])?.to_vec());
         let decoder_state = self
             .mimi_state
             .iter()
             .map(StateSpec::initial)
             .collect::<Vec<_>>();
-        let mut decoder = RawRunner::new(&mut self.decoder)?;
         let mut inputs = vec![("latent", &latent)];
         inputs.extend(
             self.mimi_state
@@ -436,8 +464,8 @@ impl PocketTts {
                 .zip(&decoder_state)
                 .map(|(spec, tensor)| (spec.input_name.as_str(), tensor)),
         );
-        let audio = decoder.run(&inputs, &["audio_frame"])?;
-        Ok(audio[0].f32_data()?.to_vec())
+        let audio = self.decoder.run(&inputs, &["audio_frame"])?;
+        Ok(f32_data(&audio[0])?.to_vec())
     }
 }
 
@@ -532,50 +560,8 @@ impl Tts for PocketTts {
     }
 }
 
-#[derive(Clone, Debug)]
-enum RawData {
-    F32(Vec<f32>),
-    I64(Vec<i64>),
-    Bool(Vec<u8>),
-}
-#[derive(Clone, Debug)]
-struct RawTensor {
-    shape: Vec<i64>,
-    data: RawData,
-    f32: Vec<f32>,
-}
-impl RawTensor {
-    fn f32(shape: Vec<i64>, data: Vec<f32>) -> Self {
-        Self {
-            shape,
-            f32: data.clone(),
-            data: RawData::F32(data),
-        }
-    }
-    fn i64(shape: Vec<i64>, data: Vec<i64>) -> Self {
-        Self {
-            shape,
-            f32: vec![],
-            data: RawData::I64(data),
-        }
-    }
-    fn bool(shape: Vec<i64>, data: Vec<u8>) -> Self {
-        Self {
-            shape,
-            f32: vec![],
-            data: RawData::Bool(data),
-        }
-    }
-    fn f32_data(&self) -> Result<&[f32]> {
-        match &self.data {
-            RawData::F32(data) => Ok(data),
-            _ => Err(provider("expected a float32 ONNX output")),
-        }
-    }
-}
-
-#[derive(Clone, Deserialize)]
-struct StateSpec {
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct StateSpec {
     input_name: String,
     output_name: String,
     module: String,
@@ -585,180 +571,19 @@ struct StateSpec {
     shape: Vec<i64>,
 }
 impl StateSpec {
-    fn initial(&self) -> RawTensor {
+    fn initial(&self) -> OnnxTensor {
         let len = self.shape.iter().product::<i64>().max(0) as usize;
         match self.dtype.as_str() {
-            "int64" => RawTensor::i64(self.shape.clone(), vec![0; len]),
-            "bool" => RawTensor::bool(self.shape.clone(), vec![u8::from(self.fill == "ones"); len]),
-            _ => RawTensor::f32(
+            "int64" => OnnxTensor::i64(self.shape.clone(), vec![0; len]),
+            "bool" => {
+                OnnxTensor::bool(self.shape.clone(), vec![u8::from(self.fill == "ones"); len])
+            }
+            _ => OnnxTensor::f32(
                 self.shape.clone(),
                 vec![if self.fill == "nan" { f32::NAN } else { 0.0 }; len],
             ),
         }
     }
-}
-
-struct RawValue(*mut ort_sys::OrtValue);
-impl Drop for RawValue {
-    fn drop(&mut self) {
-        unsafe { ort::ortsys!(ReleaseValue)(self.0) };
-    }
-}
-
-struct RawRunner<'a> {
-    session: &'a mut Session,
-    allocator: *mut ort_sys::OrtAllocator,
-}
-impl<'a> RawRunner<'a> {
-    fn new(session: &'a mut Session) -> Result<Self> {
-        let mut allocator = ptr::null_mut();
-        check(unsafe { ort::ortsys!(GetAllocatorWithDefaultOptions)(&mut allocator) })?;
-        Ok(Self { session, allocator })
-    }
-    fn run(&mut self, inputs: &[(&str, &RawTensor)], outputs: &[&str]) -> Result<Vec<RawTensor>> {
-        let names = inputs
-            .iter()
-            .map(|(n, _)| CString::new(*n).map_err(|_| provider("invalid input name")))
-            .collect::<Result<Vec<_>>>()?;
-        let out_names = outputs
-            .iter()
-            .map(|n| CString::new(*n).map_err(|_| provider("invalid output name")))
-            .collect::<Result<Vec<_>>>()?;
-        let values = inputs
-            .iter()
-            .map(|(_, t)| self.value(t))
-            .collect::<Result<Vec<_>>>()?;
-        let in_names = names
-            .iter()
-            .map(|n| n.as_ptr())
-            .collect::<Vec<*const c_char>>();
-        let in_values = values.iter().map(|v| v.0.cast_const()).collect::<Vec<_>>();
-        let out_ptrs = out_names.iter().map(|n| n.as_ptr()).collect::<Vec<_>>();
-        let mut raw_outputs = vec![ptr::null_mut(); outputs.len()];
-        check(unsafe {
-            ort::ortsys!(Run)(
-                self.session.ptr_mut(),
-                ptr::null(),
-                in_names.as_ptr(),
-                in_values.as_ptr(),
-                in_values.len(),
-                out_ptrs.as_ptr(),
-                out_ptrs.len(),
-                raw_outputs.as_mut_ptr(),
-            )
-        })?;
-        raw_outputs
-            .into_iter()
-            .map(|p| self.read(RawValue(p)))
-            .collect()
-    }
-    fn value(&self, tensor: &RawTensor) -> Result<RawValue> {
-        let (element_type, byte_len, source): (
-            ort_sys::ONNXTensorElementDataType,
-            usize,
-            *const c_void,
-        ) = match &tensor.data {
-            RawData::F32(data) => (
-                ort_sys::ONNXTensorElementDataType::ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
-                data.len() * size_of::<f32>(),
-                data.as_ptr().cast(),
-            ),
-            RawData::I64(data) => (
-                ort_sys::ONNXTensorElementDataType::ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
-                data.len() * size_of::<i64>(),
-                data.as_ptr().cast(),
-            ),
-            RawData::Bool(data) => (
-                ort_sys::ONNXTensorElementDataType::ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL,
-                data.len(),
-                data.as_ptr().cast(),
-            ),
-        };
-        let mut value = ptr::null_mut();
-        check(unsafe {
-            ort::ortsys!(CreateTensorAsOrtValue)(
-                self.allocator,
-                tensor.shape.as_ptr(),
-                tensor.shape.len(),
-                element_type,
-                &mut value,
-            )
-        })?;
-        let value = RawValue(value);
-        if byte_len != 0 {
-            let mut data: *mut c_void = ptr::null_mut();
-            check(unsafe { ort::ortsys!(GetTensorMutableData)(value.0, &mut data) })?;
-            unsafe {
-                ptr::copy_nonoverlapping(source.cast::<u8>(), data.cast::<u8>(), byte_len);
-            }
-        }
-        Ok(value)
-    }
-    fn read(&self, value: RawValue) -> Result<RawTensor> {
-        let mut info = ptr::null_mut();
-        check(unsafe { ort::ortsys!(GetTensorTypeAndShape)(value.0, &mut info) })?;
-        let mut rank = 0;
-        check(unsafe { ort::ortsys!(GetDimensionsCount)(info, &mut rank) })?;
-        let mut element_type =
-            ort_sys::ONNXTensorElementDataType::ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
-        check(unsafe { ort::ortsys!(GetTensorElementType)(info, &mut element_type) })?;
-        let mut shape = vec![0_i64; rank];
-        check(unsafe { ort::ortsys!(GetDimensions)(info, shape.as_mut_ptr(), rank) })?;
-        unsafe { ort::ortsys!(ReleaseTensorTypeAndShapeInfo)(info) };
-        let len = shape
-            .iter()
-            .try_fold(1_usize, |a, d| {
-                usize::try_from(*d).ok().and_then(|d| a.checked_mul(d))
-            })
-            .ok_or_else(|| provider("invalid output shape"))?;
-        let mut data: *mut c_void = ptr::null_mut();
-        if len != 0 {
-            check(unsafe { ort::ortsys!(GetTensorMutableData)(value.0, &mut data) })?;
-        }
-        match element_type {
-            ort_sys::ONNXTensorElementDataType::ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT => {
-                let mut out = vec![0_f32; len];
-                if len != 0 {
-                    unsafe {
-                        ptr::copy_nonoverlapping(data.cast::<f32>(), out.as_mut_ptr(), len);
-                    }
-                }
-                Ok(RawTensor::f32(shape, out))
-            }
-            ort_sys::ONNXTensorElementDataType::ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 => {
-                let mut out = vec![0_i64; len];
-                if len != 0 {
-                    unsafe {
-                        ptr::copy_nonoverlapping(data.cast::<i64>(), out.as_mut_ptr(), len);
-                    }
-                }
-                Ok(RawTensor::i64(shape, out))
-            }
-            ort_sys::ONNXTensorElementDataType::ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL => {
-                let mut out = vec![0_u8; len];
-                if len != 0 {
-                    unsafe {
-                        ptr::copy_nonoverlapping(data.cast::<u8>(), out.as_mut_ptr(), len);
-                    }
-                }
-                Ok(RawTensor::bool(shape, out))
-            }
-            _ => Err(provider("unsupported ONNX output type")),
-        }
-    }
-}
-
-fn check(status: ort_sys::OrtStatusPtr) -> Result<()> {
-    if status.is_null() {
-        return Ok(());
-    }
-    let message = unsafe {
-        CStr::from_ptr(ort::ortsys!(GetErrorMessage)(status))
-            .to_string_lossy()
-            .into_owned()
-    };
-    unsafe { ort::ortsys!(ReleaseStatus)(status) };
-    Err(provider(&format!("ONNX Runtime C API: {message}")))
 }
 
 fn resolve(
@@ -775,24 +600,13 @@ fn resolve(
     cache.resolve(asset, fetcher, progress, cancel)
 }
 
-fn load_graph(path: &Path, label: &str) -> Result<Session> {
-    Session::builder()
-        .map_err(ort_error)?
-        .commit_from_file(path)
-        .map_err(|err| provider(&format!("could not load {label} {}: {err}", path.display())))
+fn load_graph(path: &Path, label: &str) -> Result<Box<dyn OnnxSession>> {
+    OrtSession::load(path, "pocket-tts", label).map(|session| Box::new(session) as _)
 }
 
-fn validate_text_contract(session: &Session) -> Result<()> {
-    let inputs = session
-        .inputs
-        .iter()
-        .map(|input| input.name.as_str())
-        .collect::<Vec<_>>();
-    let outputs = session
-        .outputs
-        .iter()
-        .map(|output| output.name.as_str())
-        .collect::<Vec<_>>();
+fn validate_text_contract(session: &dyn OnnxSession) -> Result<()> {
+    let inputs = session.input_names();
+    let outputs = session.output_names();
     if inputs != ["token_ids"] || outputs != ["embeddings"] {
         return Err(provider(&format!(
             "unexpected text conditioner contract: inputs={} outputs={}",
@@ -801,6 +615,13 @@ fn validate_text_contract(session: &Session) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Borrow float elements or report the provider-level type mismatch.
+fn f32_data(tensor: &OnnxTensor) -> Result<&[f32]> {
+    tensor
+        .f32_data()
+        .ok_or_else(|| provider("expected a float32 ONNX output"))
 }
 
 fn inspect_package(
@@ -858,7 +679,7 @@ struct SafeTensorHeader {
     data_offsets: [usize; 2],
 }
 
-fn voice_state(specs: &[StateSpec], path: &Path) -> Result<Vec<RawTensor>> {
+fn voice_state(specs: &[StateSpec], path: &Path) -> Result<Vec<OnnxTensor>> {
     let bytes = std::fs::read(path)?;
     let header_len = bytes
         .get(..8)
@@ -887,15 +708,14 @@ fn voice_state(specs: &[StateSpec], path: &Path) -> Result<Vec<RawTensor>> {
                 .get(range)
                 .ok_or_else(|| provider("fixed voice tensor exceeds file"))?;
             match (&mut target.data, source.dtype.as_str()) {
-                (RawData::F32(out), "F32") => {
+                (OnnxData::F32(out), "F32") => {
                     let values = data
                         .chunks_exact(4)
                         .map(|value| f32::from_le_bytes(value.try_into().expect("four bytes")))
                         .collect::<Vec<_>>();
                     copy_voice_f32(out, &spec.shape, &values, &source.shape);
-                    target.f32 = out.clone();
                 }
-                (RawData::I64(out), "I64") => {
+                (OnnxData::I64(out), "I64") => {
                     if let Some(value) = data.get(..8) {
                         out[0] = i64::from_le_bytes(value.try_into().expect("eight bytes"));
                     }
@@ -931,7 +751,7 @@ fn copy_voice_f32(
 /// Sample one standard-normal latent using the OS CSPRNG. Pocket TTS is a
 /// flow-matching model, so each generated audio frame needs a new noise seed;
 /// a fixed zero vector is not a valid inference input.
-fn standard_normal_tensor(width: usize, scale: f32) -> Result<RawTensor> {
+fn standard_normal_tensor(width: usize, scale: f32) -> Result<OnnxTensor> {
     if !scale.is_finite() || scale <= 0.0 {
         return Err(provider(
             "Pocket TTS noise scale must be positive and finite",
@@ -958,7 +778,7 @@ fn standard_normal_tensor(width: usize, scale: f32) -> Result<RawTensor> {
         }
     }
     debug_assert_eq!(values.len(), width);
-    Ok(RawTensor::f32(vec![1, width as i64], values))
+    Ok(OnnxTensor::f32(vec![1, width as i64], values))
 }
 
 fn provider(message: &str) -> Error {
@@ -966,10 +786,6 @@ fn provider(message: &str) -> Error {
         provider: "pocket-tts",
         message: message.into(),
     }
-}
-
-fn ort_error(error: ort::Error) -> Error {
-    provider(&format!("ONNX Runtime: {error}"))
 }
 
 #[cfg(test)]
@@ -986,8 +802,9 @@ mod tests {
     fn flow_noise_is_finite_and_has_the_requested_shape() {
         let noise = standard_normal_tensor(31, FLOW_TEMPERATURE.sqrt()).expect("OS randomness");
         assert_eq!(noise.shape, vec![1, 31]);
-        assert!(noise.f32.iter().all(|value| value.is_finite()));
-        assert!(noise.f32.iter().any(|value| *value != 0.0));
+        let values = noise.f32_data().expect("noise is float");
+        assert!(values.iter().all(|value| value.is_finite()));
+        assert!(values.iter().any(|value| *value != 0.0));
     }
 
     #[test]
@@ -1014,3 +831,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "pocket_tts_tests.rs"]
+mod pocket_tts_tests;
