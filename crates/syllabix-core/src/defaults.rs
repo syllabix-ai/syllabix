@@ -2,13 +2,20 @@
 
 use crate::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES};
 
-/// Fixed queue bounds. Stages block on send instead of growing.
+/// Fixed queue bounds. Control stages block on send instead of growing;
+/// the streaming-STT partial channel drops instead of blocking VAD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueCaps {
     /// Mic frames waiting for VAD.
     pub frames: usize,
-    /// Completed utterances waiting for final-only STT.
+    /// Turn-control messages (`Start` / `Finalize`) waiting for STT. VAD is
+    /// the single endpoint authority, so this path stays blocking and ordered.
     pub utterances: usize,
+    /// Provisional per-frame audio waiting for streaming-STT partial decode.
+    /// Full when a partial engine decodes slower than real time; VAD drops
+    /// instead of stalling, and the canonical `Finalize` utterance still
+    /// carries every frame.
+    pub stt_partials: usize,
     /// Transcripts waiting for the LLM.
     pub transcripts: usize,
     /// Streamed tokens waiting for TTS.
@@ -23,6 +30,7 @@ impl QueueCaps {
         Self {
             frames: 32,
             utterances: 4,
+            stt_partials: 16,
             transcripts: 4,
             tokens: 32,
             audio: 16,

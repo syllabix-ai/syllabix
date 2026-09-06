@@ -249,8 +249,10 @@ impl<T> BoundedReceiver<T> {
 pub struct QueueReport {
     /// Capture frames into VAD.
     pub frames: Occupancy,
-    /// VAD utterances into STT.
+    /// VAD turn-control messages into STT.
     pub utterances: Occupancy,
+    /// VAD partial frames into streaming STT (lossy by design).
+    pub stt_partials: Occupancy,
     /// Transcripts into LLM.
     pub transcripts: Occupancy,
     /// LLM tokens into TTS.
@@ -264,16 +266,18 @@ impl QueueReport {
     pub fn within_capacity(&self) -> bool {
         self.frames.within_capacity()
             && self.utterances.within_capacity()
+            && self.stt_partials.within_capacity()
             && self.transcripts.within_capacity()
             && self.tokens.within_capacity()
             && self.audio.within_capacity()
     }
 
     /// Occupancy snapshots in stable order for assertions.
-    pub fn all(&self) -> [Occupancy; 5] {
+    pub fn all(&self) -> [Occupancy; 6] {
         [
             self.frames,
             self.utterances,
+            self.stt_partials,
             self.transcripts,
             self.tokens,
             self.audio,

@@ -96,14 +96,25 @@ pub enum LoopEvent {
     Playback { playing: bool },
 }
 
-/// Ordered work sent from VAD to STT. Keeping this in one queue means frames
-/// and the final utterance cannot overtake each other, while VAD remains the
-/// only endpoint authority.
+/// Turn-control messages sent from VAD to STT on the ordered blocking queue.
+/// VAD remains the only endpoint authority: `Start` opens the engine's
+/// provisional state and `Finalize` carries the canonical utterance with
+/// every preroll/hangover frame, so endpoint timing never depends on
+/// partial-decode progress.
 #[derive(Clone)]
-enum SttWork {
+enum SttControl {
     Start(TurnId),
-    Frame { turn: TurnId, frame: AudioFrame },
     Finalize(Utterance),
+}
+
+/// One provisional frame sent from VAD to streaming STT on a separate lossy
+/// channel. Partial text is advisory only — the `Finalize` utterance stays
+/// canonical — so when a partial engine decodes slower than real time these
+/// are dropped (`try_send`) instead of stalling VAD, capture, and the mic.
+#[derive(Clone)]
+struct SttPartial {
+    turn: TurnId,
+    frame: AudioFrame,
 }
 
 /// Result of polling idle auto-timeout thresholds.
@@ -368,6 +379,10 @@ pub struct LoopReport {
     pub turns: Vec<CompletedTurn>,
     /// Queue occupancy. High-water must stay within caps.
     pub queues: QueueReport,
+    /// Provisional partial frames dropped because streaming STT decoded
+    /// slower than real time. Dropping (not stalling VAD) is the design; a
+    /// nonzero count explains sparse live partials, never endpoint timing.
+    pub dropped_stt_partials: usize,
     /// Worker threads that exited (producer + five stages). Always 6 after a clean join.
     pub tasks_exited: usize,
     /// Live worker counter after joins; must be 0.
@@ -399,6 +414,8 @@ struct Shared {
     fail: Mutex<Option<Error>>,
     completed: AtomicUsize,
     skipped: AtomicUsize,
+    /// Provisional STT partial frames dropped under backpressure.
+    dropped_partials: AtomicUsize,
     events: Option<Sender<LoopEvent>>,
     turn_debug: Option<TurnDebug>,
     controls: RuntimeControls,
@@ -428,6 +445,7 @@ impl Shared {
             fail: Mutex::new(None),
             completed: AtomicUsize::new(0),
             skipped: AtomicUsize::new(0),
+            dropped_partials: AtomicUsize::new(0),
             events,
             turn_debug,
             controls,
@@ -445,6 +463,12 @@ impl Shared {
         if let Some(tx) = &self.events {
             let _ = tx.send(event);
         }
+    }
+
+    /// Count one provisional partial frame shed under backpressure. VAD
+    /// stays unblocked; the canonical `Finalize` utterance is unaffected.
+    fn note_partial_drop(&self) {
+        self.dropped_partials.fetch_add(1, Ordering::SeqCst);
     }
 
     fn note_skip(&self, turn: TurnId, cancel: &Cancel) {
@@ -821,9 +845,13 @@ where
     let tts_model = tts.model_id().map(str::to_string);
     let caps: QueueCaps = config.defaults.queues;
     let (frame_tx, frame_rx, frame_stats) = bounded("frames", caps.frames);
-    // The command stream is bounded like the pre-existing utterance stage:
-    // backpressure pauses VAD rather than dropping active-turn audio.
+    // Turn control stays blocking and ordered so VAD remains the single
+    // endpoint authority. Provisional partial frames ride a separate lossy
+    // channel: a streaming engine that decodes slower than real time (e.g.
+    // Moonshine's full-utterance re-decode every ~512ms) must degrade live
+    // partial text, never stall VAD and drop mic audio.
     let (utt_tx, utt_rx, utt_stats) = bounded("utterances", caps.utterances);
+    let (partial_tx, partial_rx, partial_stats) = bounded("stt_partials", caps.stt_partials);
     let (tr_tx, tr_rx, tr_stats) = bounded("transcripts", caps.transcripts);
     let (tok_tx, tok_rx, tok_stats) = bounded("tokens", caps.tokens);
     let (aud_tx, aud_rx, aud_stats) = bounded("audio", caps.audio);
@@ -854,11 +882,13 @@ where
         let shared = Arc::clone(&shared);
         let live = Arc::clone(&shared.live_tasks);
         let utt_tx = utt_tx.clone();
+        let partial_tx = partial_tx.clone();
         joins.push(spawn("syllabix-vad", live, move || {
-            vad_loop(vad, frame_rx, utt_tx, &cancel, &shared)
+            vad_loop(vad, frame_rx, utt_tx, partial_tx, &cancel, &shared)
         }));
     }
     drop(utt_tx);
+    drop(partial_tx);
 
     // STT
     {
@@ -867,7 +897,7 @@ where
         let live = Arc::clone(&shared.live_tasks);
         let tr_tx = tr_tx.clone();
         joins.push(spawn("syllabix-stt", live, move || {
-            stt_loop(stt, utt_rx, tr_tx, &cancel, &shared)
+            stt_loop(stt, utt_rx, partial_rx, tr_tx, &cancel, &shared)
         }));
     }
     drop(tr_tx);
@@ -935,10 +965,12 @@ where
         queues: QueueReport {
             frames: frame_stats.snapshot(),
             utterances: utt_stats.snapshot(),
+            stt_partials: partial_stats.snapshot(),
             transcripts: tr_stats.snapshot(),
             tokens: tok_stats.snapshot(),
             audio: aud_stats.snapshot(),
         },
+        dropped_stt_partials: shared.dropped_partials.load(Ordering::SeqCst),
         tasks_exited: task_count,
         tasks_still_running,
         cancelled: cancel.is_shutdown(),
@@ -1008,13 +1040,15 @@ fn capture_loop<C: AudioCapture>(
 fn vad_loop<V: Vad>(
     mut vad: V,
     rx: crate::queue::BoundedReceiver<AudioFrame>,
-    tx: BoundedSender<SttWork>,
+    control: BoundedSender<SttControl>,
+    partials: BoundedSender<SttPartial>,
     cancel: &Cancel,
     shared: &Shared,
 ) {
     let mut active: Option<TurnId> = None;
     let emit = |events: Vec<VadEvent>,
-                tx: &BoundedSender<SttWork>,
+                control: &BoundedSender<SttControl>,
+                partials: &BoundedSender<SttPartial>,
                 cancel: &Cancel,
                 active: &mut Option<TurnId>,
                 frame: Option<&AudioFrame>|
@@ -1028,7 +1062,7 @@ fn vad_loop<V: Vad>(
                     debug.start_turn(*turn);
                     debug.note_anchor(*turn, TimelineAnchor::SpeechStart, Instant::now());
                 }
-                tx.send_cancellable(SttWork::Start(*turn), cancel)?;
+                control.send_cancellable(SttControl::Start(*turn), cancel)?;
             }
         }
         if let (Some(debug), Some(frame), Some(turn)) = (&shared.turn_debug, frame, *active) {
@@ -1036,15 +1070,19 @@ fn vad_loop<V: Vad>(
         }
         // Stream only frames belonging to an active VAD turn. The canonical
         // final Utterance below still contains preroll/hangover frames.
+        // Partial text is advisory: when the streaming engine decodes slower
+        // than real time the channel fills and the frame is counted as
+        // dropped instead of stalling VAD, capture, and the microphone.
         if let (Some(turn), Some(frame)) = (*active, frame) {
-            let _ = turn; // turn order is carried by the single STT queue.
-            tx.send_cancellable(
-                SttWork::Frame {
+            if partials
+                .try_send(SttPartial {
                     turn,
                     frame: frame.clone(),
-                },
-                cancel,
-            )?;
+                })
+                .is_err()
+            {
+                shared.note_partial_drop();
+            }
         }
         for event in events {
             if let VadEvent::SpeechEnd { utterance } = event {
@@ -1054,7 +1092,7 @@ fn vad_loop<V: Vad>(
                 }
                 shared.mark_assistant(utterance.turn);
                 *active = None;
-                tx.send_cancellable(SttWork::Finalize(utterance), cancel)?;
+                control.send_cancellable(SttControl::Finalize(utterance), cancel)?;
             }
         }
         Ok(())
@@ -1093,10 +1131,20 @@ fn vad_loop<V: Vad>(
         let frame = rx.recv_timeout(POLL);
         match frame {
             Ok(frame) => {
-                let tap = shared.turn_debug.as_ref().map(|_| frame.clone());
+                // The STT streaming copy must not depend on diagnostics: the
+                // old `turn_debug`-gated tap silently disabled live partials
+                // whenever diagnostics were off.
+                let streamed = frame.clone();
                 match vad.push_frame(frame) {
                     Ok(events) => ignore_cancel(
-                        emit(events, &tx, cancel, &mut active, tap.as_ref()),
+                        emit(
+                            events,
+                            &control,
+                            &partials,
+                            cancel,
+                            &mut active,
+                            Some(&streamed),
+                        ),
                         shared,
                         cancel,
                     ),
@@ -1110,9 +1158,11 @@ fn vad_loop<V: Vad>(
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => {
                 match vad.flush() {
-                    Ok(events) => {
-                        ignore_cancel(emit(events, &tx, cancel, &mut active, None), shared, cancel)
-                    }
+                    Ok(events) => ignore_cancel(
+                        emit(events, &control, &partials, cancel, &mut active, None),
+                        shared,
+                        cancel,
+                    ),
                     Err(Error::Cancelled) => {}
                     Err(err) => shared.fail(err, cancel),
                 }
@@ -1124,113 +1174,187 @@ fn vad_loop<V: Vad>(
 
 fn stt_loop<S: Stt>(
     mut stt: S,
-    rx: crate::queue::BoundedReceiver<SttWork>,
+    control: crate::queue::BoundedReceiver<SttControl>,
+    partials: crate::queue::BoundedReceiver<SttPartial>,
     tx: BoundedSender<Transcript>,
     cancel: &Cancel,
     shared: &Shared,
 ) {
+    // Turn currently owned by the engine. Partials for any other turn are
+    // stale (dropped overflow or a turn boundary) and never decoded.
+    let mut active: Option<TurnId> = None;
     loop {
-        match rx.recv_cancellable(cancel) {
-            Ok(Some(work)) => match work {
-                SttWork::Start(turn) => {
-                    if let Err(err) = stt.start_turn(turn, cancel) {
-                        if !matches!(err, Error::Cancelled) {
-                            shared.fail(err, cancel);
-                        }
-                        return;
+        if cancel.is_shutdown() {
+            return;
+        }
+        match control.recv_timeout(POLL) {
+            Ok(SttControl::Start(turn)) => {
+                drain_partials(&partials);
+                active = Some(turn);
+                if let Err(err) = stt.start_turn(turn, cancel) {
+                    if !matches!(err, Error::Cancelled) {
+                        shared.fail(err, cancel);
                     }
-                    continue;
+                    return;
                 }
-                SttWork::Frame { turn, frame } => {
-                    if !stt.supports_partials() {
-                        continue;
-                    }
-                    match stt.push_frame(&frame, cancel) {
-                        Ok(Some(text)) if !is_blank_stt(&text) => {
-                            let at = Instant::now();
-                            if let Some(debug) = &shared.turn_debug {
-                                debug.note_anchor(turn, TimelineAnchor::SttPartial, at);
-                            }
-                            shared.emit(LoopEvent::Partial { turn, text });
-                        }
-                        Ok(_) => {}
-                        Err(Error::Cancelled) => return,
-                        Err(err) => {
-                            shared.fail(err, cancel);
+            }
+            Ok(SttControl::Finalize(utterance)) => {
+                // A fast turn can finalize before any control poll observes
+                // an idle window: decode the latest pending partial first so
+                // provisional text still precedes the final transcript.
+                if active == Some(utterance.turn)
+                    && !shared.is_interrupted(utterance.turn)
+                    && stt.supports_partials()
+                {
+                    if let Some(latest) = drain_to_latest(&partials, utterance.turn) {
+                        if !decode_partial(&mut stt, cancel, shared, latest.turn, &latest.frame) {
                             return;
                         }
                     }
+                } else {
+                    drain_partials(&partials);
+                }
+                active = None;
+                if shared.is_interrupted(utterance.turn) {
+                    stt.cancel_turn(utterance.turn);
                     continue;
                 }
-                SttWork::Finalize(utterance) => {
-                    if shared.is_interrupted(utterance.turn) {
-                        stt.cancel_turn(utterance.turn);
-                        continue;
-                    }
-                    let queued_at = Instant::now();
-                    shared.mark_utterance(utterance.turn, queued_at);
-                    if let Some(debug) = &shared.turn_debug {
-                        debug.note_anchor(utterance.turn, TimelineAnchor::SttQueued, queued_at);
-                    }
-                    match stt.transcribe(&utterance, cancel) {
-                        Ok(transcript) => {
-                            let done_at = Instant::now();
+                let queued_at = Instant::now();
+                shared.mark_utterance(utterance.turn, queued_at);
+                if let Some(debug) = &shared.turn_debug {
+                    debug.note_anchor(utterance.turn, TimelineAnchor::SttQueued, queued_at);
+                }
+                match stt.transcribe(&utterance, cancel) {
+                    Ok(transcript) => {
+                        let done_at = Instant::now();
+                        if let Some(debug) = &shared.turn_debug {
+                            debug.note_anchor(transcript.turn, TimelineAnchor::SttDone, done_at);
+                        }
+                        if is_blank_stt(&transcript.text) {
                             if let Some(debug) = &shared.turn_debug {
-                                debug.note_anchor(
+                                debug.note_stt(
                                     transcript.turn,
-                                    TimelineAnchor::SttDone,
-                                    done_at,
+                                    &transcript.text,
+                                    &transcript.language,
                                 );
                             }
-                            if is_blank_stt(&transcript.text) {
-                                if let Some(debug) = &shared.turn_debug {
-                                    debug.note_stt(
-                                        transcript.turn,
-                                        &transcript.text,
-                                        &transcript.language,
-                                    );
-                                }
+                            shared.note_skip(transcript.turn, cancel);
+                        } else {
+                            let language = transcript.language.clone();
+                            shared.note_user(
+                                transcript.turn,
+                                transcript.text.clone(),
+                                &language,
+                                done_at,
+                            );
+                            if shared.controls.agent_muted() {
                                 shared.note_skip(transcript.turn, cancel);
                             } else {
-                                let language = transcript.language.clone();
-                                shared.note_user(
-                                    transcript.turn,
-                                    transcript.text.clone(),
-                                    &language,
-                                    done_at,
+                                ignore_cancel(
+                                    tx.send_cancellable(transcript, cancel),
+                                    shared,
+                                    cancel,
                                 );
-                                if shared.controls.agent_muted() {
-                                    shared.note_skip(transcript.turn, cancel);
-                                } else {
-                                    ignore_cancel(
-                                        tx.send_cancellable(transcript, cancel),
-                                        shared,
-                                        cancel,
-                                    );
-                                }
                             }
                         }
-                        Err(Error::Cancelled) => {
-                            if cancel.is_shutdown() {
-                                return;
-                            }
-                        }
-                        Err(err) if err.is_turn_recoverable() => {
-                            shared.note_skip(utterance.turn, cancel);
-                        }
-                        Err(err) => {
-                            shared.fail(err, cancel);
+                    }
+                    Err(Error::Cancelled) => {
+                        if cancel.is_shutdown() {
                             return;
                         }
                     }
+                    Err(err) if err.is_turn_recoverable() => {
+                        shared.note_skip(utterance.turn, cancel);
+                    }
+                    Err(err) => {
+                        shared.fail(err, cancel);
+                        return;
+                    }
                 }
-            },
-            Ok(None) => return,
-            Err(Error::Cancelled) => return,
-            Err(err) => {
-                shared.fail(err, cancel);
-                return;
             }
+            Err(RecvTimeoutError::Timeout) => {
+                // Control idle: at most one provisional decode per poll, and
+                // only the latest queued frame — older ones are stale by
+                // definition. A `Finalize` that lands during the decode is
+                // handled on the next poll; the canonical utterance carries
+                // the same audio, so no endpoint timing is lost.
+                let Some(latest) = drain_to_latest_for_active(&partials, active) else {
+                    continue;
+                };
+                if !stt.supports_partials() {
+                    continue;
+                }
+                if shared.is_interrupted(latest.turn) {
+                    continue;
+                }
+                if !decode_partial(&mut stt, cancel, shared, latest.turn, &latest.frame) {
+                    return;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+/// Drop every queued provisional frame (turn boundary or unsupported engine).
+fn drain_partials(rx: &crate::queue::BoundedReceiver<SttPartial>) {
+    while rx.try_recv().is_ok() {}
+}
+
+/// Drain the partial channel and return the latest frame for `turn`, if any.
+/// Frames for other turns are stale and dropped; partial text is advisory, so
+/// losing them never affects the canonical `Finalize` utterance.
+fn drain_to_latest(
+    rx: &crate::queue::BoundedReceiver<SttPartial>,
+    turn: TurnId,
+) -> Option<SttPartial> {
+    let mut latest = None;
+    while let Ok(partial) = rx.try_recv() {
+        if partial.turn == turn {
+            latest = Some(partial);
+        }
+    }
+    latest
+}
+
+/// Drain the partial channel and return the latest frame when it belongs to
+/// the engine's active turn. Anything else (overflow from a previous turn, or
+/// frames for a turn whose `Start` has not been processed yet) is dropped so
+/// provisional state can never accumulate across turn boundaries.
+fn drain_to_latest_for_active(
+    rx: &crate::queue::BoundedReceiver<SttPartial>,
+    active: Option<TurnId>,
+) -> Option<SttPartial> {
+    let Some(active) = active else {
+        drain_partials(rx);
+        return None;
+    };
+    drain_to_latest(rx, active)
+}
+
+/// Run one provisional decode and emit non-blank text. Returns false when the
+/// worker must exit (cancellation or provider failure).
+fn decode_partial<S: Stt>(
+    stt: &mut S,
+    cancel: &Cancel,
+    shared: &Shared,
+    turn: TurnId,
+    frame: &AudioFrame,
+) -> bool {
+    match stt.push_frame(frame, cancel) {
+        Ok(Some(text)) if !is_blank_stt(&text) => {
+            let at = Instant::now();
+            if let Some(debug) = &shared.turn_debug {
+                debug.note_anchor(turn, TimelineAnchor::SttPartial, at);
+            }
+            shared.emit(LoopEvent::Partial { turn, text });
+            true
+        }
+        Ok(_) => true,
+        Err(Error::Cancelled) => false,
+        Err(err) => {
+            shared.fail(err, cancel);
+            false
         }
     }
 }
@@ -1810,6 +1934,106 @@ mod tests {
             .iter()
             .any(|(anchor, _)| *anchor == TimelineAnchor::SttPartial));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Streaming STT that decodes slower than real time. The first
+    /// `push_frame` stalls long enough for VAD to emit the whole turn, which
+    /// models Moonshine's full-utterance re-decode falling behind: the
+    /// engine, not the test, is the bottleneck.
+    struct SlowPartialStt {
+        turn: Option<TurnId>,
+        push_calls: Arc<AtomicUsize>,
+        transcribed_frames: Arc<Mutex<Option<usize>>>,
+        stalled: AtomicBool,
+        first_delay: Duration,
+    }
+
+    impl Stt for SlowPartialStt {
+        fn name(&self) -> &'static str {
+            "slow-partial-fixture"
+        }
+
+        fn transcribe(&mut self, utterance: &Utterance, _cancel: &Cancel) -> Result<Transcript> {
+            *self.transcribed_frames.lock().expect("transcribed frames") =
+                Some(utterance.frames.len());
+            Ok(Transcript {
+                turn: utterance.turn,
+                text: "slow final".into(),
+                language: "en".into(),
+            })
+        }
+
+        fn supports_partials(&self) -> bool {
+            true
+        }
+
+        fn start_turn(&mut self, turn: TurnId, _cancel: &Cancel) -> Result<()> {
+            self.turn = Some(turn);
+            Ok(())
+        }
+
+        fn push_frame(&mut self, _frame: &AudioFrame, _cancel: &Cancel) -> Result<Option<String>> {
+            self.push_calls.fetch_add(1, Ordering::SeqCst);
+            if !self.stalled.swap(true, Ordering::SeqCst) {
+                thread::sleep(self.first_delay);
+            }
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn slow_partial_stt_drops_partials_instead_of_stalling_vad() {
+        // One turn of 40 speech frames (~1s of fixture capture). The first
+        // partial decode stalls 3s, so all 40 frames land in the cap-16
+        // partial channel while the engine is stuck: the old blocking VAD→STT
+        // queue stalled VAD here and, on a live mic, dropped capture audio
+        // until VAD endpointed mid-speech regardless of `end_silence_ms`.
+        let push_calls = Arc::new(AtomicUsize::new(0));
+        let transcribed_frames = Arc::new(Mutex::new(None));
+        let report = run_loop(
+            LoopConfig {
+                mode: LoopMode::StopAfterTurns(1),
+                ..LoopConfig::default()
+            },
+            PipelineStages {
+                vad: FakeVad::new(),
+                stt: SlowPartialStt {
+                    turn: None,
+                    push_calls: Arc::clone(&push_calls),
+                    transcribed_frames: Arc::clone(&transcribed_frames),
+                    stalled: AtomicBool::new(false),
+                    first_delay: Duration::from_secs(3),
+                },
+                llm: FakeLlm::new(),
+                tts: FakeTts,
+                sink: CollectingSink::default(),
+            },
+            scripted_frames(1, 40, 2),
+            Cancel::new(),
+        )
+        .expect("loop");
+        assert_eq!(report.turns.len(), 1);
+        assert_eq!(report.turns[0].user_text, "slow final");
+        // Endpoint integrity: FakeVad closes on the first silence frame, so
+        // the canonical utterance must hold every speech frame even though
+        // most provisional frames were shed under load.
+        assert_eq!(
+            *transcribed_frames.lock().expect("transcribed frames"),
+            Some(40)
+        );
+        // Load shedding, not stalling: VAD dropped (not blocked on) the
+        // frames the slow engine could not consume, and decoded only a
+        // fraction of the 40 partial frames.
+        assert!(
+            report.dropped_stt_partials > 0,
+            "slow engine must shed partial frames"
+        );
+        let calls = push_calls.load(Ordering::SeqCst);
+        assert!(
+            calls < 40,
+            "slow engine must shed load, decoded {calls}/40 partials"
+        );
+        assert!(report.queues.within_capacity());
     }
 
     #[test]

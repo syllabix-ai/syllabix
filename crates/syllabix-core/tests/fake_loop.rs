@@ -103,6 +103,7 @@ fn thirty_turns_preserve_order_and_queue_bounds() {
     let caps = QueueCaps::v0();
     assert_eq!(report.queues.frames.capacity, caps.frames);
     assert_eq!(report.queues.utterances.capacity, caps.utterances);
+    assert_eq!(report.queues.stt_partials.capacity, caps.stt_partials);
     assert_eq!(report.queues.transcripts.capacity, caps.transcripts);
     assert_eq!(report.queues.tokens.capacity, caps.tokens);
     assert_eq!(report.queues.audio.capacity, caps.audio);
