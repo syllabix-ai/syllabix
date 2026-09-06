@@ -137,8 +137,10 @@ The developer harness uses a generic shell through the host sandbox providers:
 macOS Seatbelt and Linux Bubblewrap, with Landlock fallback. The model may
 request less filesystem authority per call, but the session ceiling is fixed
 when the process starts and cannot be widened in-session. The shell always
-uses a scrubbed environment, bounded timeout/output, and a workspace-contained
-working directory.
+uses a scrubbed environment, bounded output, cancellation, and a
+workspace-contained working directory. It has no wall-clock deadline, so
+long-running developer commands may finish normally; cancellation still stops
+the active command.
 
 ```yaml
 pipeline:

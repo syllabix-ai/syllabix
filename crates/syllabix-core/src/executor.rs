@@ -21,8 +21,6 @@ use crate::types::ToolCall;
 pub const MAX_COMMAND_BYTES: usize = 16 * 1024;
 /// Captured stdout and stderr are independently bounded.
 pub const MAX_OUTPUT_BYTES: usize = 8 * 1024;
-/// A foreground executor call is never allowed to own the voice turn indefinitely.
-pub const SHELL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Fetch response body limit before content reaches the model. Sized so the
 /// article body of large pages (e.g. Wikipedia puts `bodyContent` past
 /// 100 KiB of head/nav chrome) survives chrome-stripping; the model still
@@ -181,7 +179,7 @@ fn validate_shell(call: &ToolCall, workspace: &Path) -> Result<ShellRequest, Str
     }
     let cwd = object
         .get("workdir")
-        .map(|value| value.as_str().ok_or("shell cwd must be a string"))
+        .map(|value| value.as_str().ok_or("shell workdir must be a string"))
         .transpose()?;
     let cwd = resolve_workspace_path(workspace, cwd.unwrap_or("."))?;
     let permission = match object.get("permission") {
@@ -279,17 +277,11 @@ fn execute_shell(
     let stderr = child.stderr.take().ok_or("shell stderr unavailable")?;
     let stdout = thread::spawn(move || read_bounded(stdout));
     let stderr = thread::spawn(move || read_bounded(stderr));
-    let deadline = Instant::now() + SHELL_TIMEOUT;
     let status = loop {
         if cancel.is_stale(generation) {
             let _ = child.kill();
             let _ = child.wait();
             return Err("shell command cancelled".into());
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("shell command timed out".into());
         }
         if let Some(status) = child
             .try_wait()
@@ -1106,14 +1098,14 @@ fn resolve_workspace_path(workspace: &Path, requested: &str) -> Result<PathBuf, 
             .components()
             .any(|part| matches!(part, Component::ParentDir))
     {
-        return Err("shell cwd must stay inside the workspace".into());
+        return Err("shell workdir must stay inside the workspace".into());
     }
     let resolved = root
         .join(requested)
         .canonicalize()
-        .map_err(|_| "shell cwd does not exist")?;
+        .map_err(|_| "shell workdir does not exist")?;
     if !resolved.starts_with(&root) {
-        return Err("shell cwd must stay inside the workspace".into());
+        return Err("shell workdir must stay inside the workspace".into());
     }
     Ok(resolved)
 }
@@ -1217,6 +1209,28 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn shell_permission_cannot_widen_the_session_before_spawn() {
+        let workspace = std::env::current_dir().unwrap();
+        let result = execute_with_permissions(
+            &call(
+                "shell",
+                serde_json::json!({
+                    "command": "touch should-not-run",
+                    "permission": "workspace-write"
+                }),
+            ),
+            &workspace,
+            &DeveloperPermissions::default_session(),
+            &Cancel::new(),
+        );
+        assert!(!result.ok);
+        assert_eq!(
+            result.content,
+            "workspace-write required; configured filesystem mode is read-only"
+        );
     }
 
     #[test]

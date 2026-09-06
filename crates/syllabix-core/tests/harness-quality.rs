@@ -166,13 +166,17 @@ fn valid_call_ratio(events: &[ToolTurnEvent]) -> (usize, usize) {
     (valid, total)
 }
 
-/// argv[0] of a `shell` call event, parsed from its serialized arguments.
+/// The first command word of a `shell` call event. Keep the argv fallback for
+/// old evidence recorded before the generic-shell schema shipped.
 fn shell_argv0(event: &ToolTurnEvent) -> Option<String> {
     if event.kind != "call" || event.name != "shell" {
         return None;
     }
-    serde_json::from_str::<serde_json::Value>(&event.arguments)
-        .ok()?
+    let arguments = serde_json::from_str::<serde_json::Value>(&event.arguments).ok()?;
+    if let Some(command) = arguments.get("command").and_then(|value| value.as_str()) {
+        return first_shell_word(command);
+    }
+    arguments
         .get("argv")?
         .as_array()?
         .first()?
@@ -180,8 +184,49 @@ fn shell_argv0(event: &ToolTurnEvent) -> Option<String> {
         .map(str::to_string)
 }
 
+fn first_shell_word(command: &str) -> Option<String> {
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut started = false;
+    for character in command.chars() {
+        if escaped {
+            word.push(character);
+            escaped = false;
+            started = true;
+            continue;
+        }
+        if character == '\\' && quote != Some('\'') {
+            escaped = true;
+            started = true;
+            continue;
+        }
+        if let Some(current_quote) = quote {
+            if character == current_quote {
+                quote = None;
+            } else {
+                word.push(character);
+            }
+            started = true;
+            continue;
+        }
+        if matches!(character, '\'' | '"') {
+            quote = Some(character);
+            started = true;
+        } else if character.is_whitespace() {
+            if started {
+                break;
+            }
+        } else {
+            word.push(character);
+            started = true;
+        }
+    }
+    (!word.is_empty()).then_some(word)
+}
+
 /// True when the turn invoked the expected tool: a `web_fetch`/`web_search`
-/// call, or a `shell` call with the expected `argv[0]`.
+/// call, or a `shell` call with the expected first command word.
 fn called_tool(events: &[ToolTurnEvent], argv0: &str) -> bool {
     events.iter().any(|event| {
         if event.kind != "call" {
@@ -648,12 +693,12 @@ fn retry_runs_only_for_dead_turns_with_tries_left() {
 }
 
 #[test]
-fn tool_check_finds_the_right_argv0() {
+fn tool_check_finds_the_right_command_word() {
     let df_call = ToolTurnEvent {
         kind: "call".into(),
         name: "shell".into(),
         call_id: "1".into(),
-        arguments: r#"{"argv":["df","-h","."]}"#.into(),
+        arguments: r#"{"command":"df -h ."}"#.into(),
         content: "".into(),
     };
     let fetch_call = ToolTurnEvent {
