@@ -45,7 +45,7 @@ pub struct AgentConfig {
     pub language: String,
     /// LLM provider.
     pub llm: LlmProvider,
-    /// LLM model id (`lfm2.5-2.6b`, `llama-3.2-1b`, `qwen3.5-0.8b`, or `qwen3.5-2b`).
+    /// LLM model id (`lfm2.5-2.6b`, `lfm2.5-350m`, `lfm2.5-230m`, `llama-3.2-1b`, `qwen3.5-0.8b`, or `qwen3.5-2b`).
     pub llm_model: String,
     /// Qwen thinking. Default false; yaml `thinking: true` enables it on
     /// `qwen3.5-2b` only and is rejected for every other model.
@@ -364,7 +364,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     let llm_base_url = resolve_llm_base_url(llm, llm_provider)?;
     let llm_developer_harness = optional_bool(llm, "pipeline.llm", "developer_harness", false)?;
     let local_lfm_harness =
-        llm_provider == LlmProvider::Local && llm_model == crate::llm::LFM25_26B_ASSET;
+        llm_provider == LlmProvider::Local && llm_model == crate::llm::LFM25_2_6B_ASSET;
     if llm_developer_harness && llm_provider != LlmProvider::Online && !local_lfm_harness {
         return Err(Error::Config {
             field: "pipeline.llm.developer_harness".into(),
@@ -734,11 +734,13 @@ fn parse_llm_model(provider: LlmProvider, value: &str) -> Result<String> {
             crate::llm::QWEN35_08B_ASSET
             | crate::llm::QWEN35_2B_ASSET
             | crate::llm::LLAMA_32_1B_ASSET
-            | crate::llm::LFM25_26B_ASSET => Ok(value.to_string()),
+            | crate::llm::LFM25_2_6B_ASSET
+            | crate::llm::LFM25_350M_ASSET
+            | crate::llm::LFM25_230M_ASSET => Ok(value.to_string()),
             other => Err(unsupported(
                 "pipeline.llm.model",
                 other,
-                "lfm2.5-2.6b, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b",
+                "lfm2.5-2.6b, lfm2.5-350m, lfm2.5-230m, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b",
             )),
         },
         LlmProvider::Online => {
@@ -917,6 +919,23 @@ pipeline:
         )
         .expect_err("non-admitted local harness is rejected");
         assert!(err.to_string().contains("developer_harness"));
+        for model in ["lfm2.5-350m", "lfm2.5-230m"] {
+            let err = AgentConfig::parse_yaml(&format!(
+                r#"
+name: harness
+pipeline:
+  vad: {{ provider: silero }}
+  stt: {{ provider: local, model: whisper-small, language: en }}
+  llm: {{ provider: local, model: {model}, developer_harness: true }}
+  tts: {{ provider: local, model: kokoro }}
+"#,
+            ))
+            .expect_err("small LFM harness stays gated to 2.6b");
+            assert!(
+                err.to_string().contains("developer_harness"),
+                "{model}: {err}"
+            );
+        }
     }
 
     #[test]
@@ -1141,11 +1160,25 @@ pipeline:
         let lfm_default = AgentConfig::v0();
         assert_eq!(lfm_default.llm_model, "lfm2.5-2.6b");
         assert!(!lfm_default.thinking);
+        for model in ["lfm2.5-350m", "lfm2.5-230m"] {
+            let yaml = AgentConfig::v0()
+                .to_yaml()
+                .replace("model: lfm2.5-2.6b", &format!("model: {model}"));
+            let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+            assert_eq!(cfg.llm_model, model);
+            assert!(!cfg.thinking);
+        }
     }
 
     #[test]
     fn thinking_true_is_rejected_except_on_the_2b_model() {
-        for model in ["lfm2.5-2.6b", "llama-3.2-1b", "qwen3.5-0.8b"] {
+        for model in [
+            "lfm2.5-2.6b",
+            "lfm2.5-350m",
+            "lfm2.5-230m",
+            "llama-3.2-1b",
+            "qwen3.5-0.8b",
+        ] {
             let yaml = AgentConfig::v0()
                 .to_yaml()
                 .replace("model: lfm2.5-2.6b", &format!("model: {model}"))

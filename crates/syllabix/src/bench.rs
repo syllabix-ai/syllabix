@@ -1012,7 +1012,7 @@ mod tests {
         assert!(SttModel::ALL.contains(&SttModel::Small));
         assert_eq!(SttModel::ALL.len(), 7);
         assert_eq!(V0_LLM_MODELS[0], "lfm2.5-2.6b");
-        assert_eq!(V0_LLM_MODELS.len(), 4);
+        assert_eq!(V0_LLM_MODELS.len(), 6);
         assert!(TtsModel::ALL.contains(&TtsModel::PocketTts));
         assert_eq!(TtsModel::ALL.len(), 4);
         let stt_cases = scenarios()
@@ -1034,7 +1034,7 @@ mod tests {
             SttModel::ALL.len() * stt_cases
                 + V0_LLM_MODELS.len() * llm_cases
                 + TtsModel::ALL.len() * tts_cases,
-            7 * 4 + 4 * 5 + 4 * 3
+            7 * 4 + 6 * 5 + 4 * 3
         );
     }
 }
