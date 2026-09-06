@@ -55,7 +55,7 @@ You do not need Rust, CMake, or a microphone to contribute a component benchmark
 ./scripts/contribute-performance.sh
 ```
 
-The script uses an in-tree release binary or `syllabix` on your `PATH`; otherwise it downloads and checksum-verifies the matching GitHub Release. It fills only the currently selected benchmark models, runs the isolated STT / local-LLM / TTS fixtures, and writes one immutable `docs/eval/runs/<fingerprint>.jsonl` submission. It does not run the voice loop, open a device, measure AEC or barge-in, or make a live-latency claim.
+The script uses an in-tree release binary or `syllabix` on your `PATH`; otherwise it downloads and checksum-verifies the matching GitHub Release. It fills the cache for every supported local STT, LLM, and TTS id (one axis at a time — no STT×LLM×TTS cross-product), runs the isolated fixtures for each, and writes one immutable `docs/eval/runs/<fingerprint>.jsonl` submission. It does not run the voice loop, open a device, measure AEC or barge-in, or make a live-latency claim.
 
 If `gh` is authenticated, the script creates a branch, commits only that JSONL file, and opens a PR. Without it, the JSONL remains in place and the script prints the exact commands to finish. Developers changing the harness can instead use the explicit toolchain fallback:
 

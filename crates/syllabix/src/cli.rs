@@ -57,6 +57,9 @@ pub enum Commands {
         /// Temporary JSONL file written for the parent `bench` process.
         #[arg(long, value_name = "FILE")]
         out: PathBuf,
+        /// Yaml STT model id measured in this child process.
+        #[arg(long, value_name = "ID")]
+        model: String,
     },
     /// Private worker used to isolate one TTS model's host-memory measurement.
     #[command(hide = true)]
@@ -64,6 +67,9 @@ pub enum Commands {
         /// Temporary JSONL file written for the parent `bench` process.
         #[arg(long, value_name = "FILE")]
         out: PathBuf,
+        /// Yaml TTS model id measured in this child process.
+        #[arg(long, value_name = "ID")]
+        model: String,
     },
     /// Private worker used to isolate one local LLM's host-memory measurement.
     #[command(hide = true)]
@@ -71,6 +77,9 @@ pub enum Commands {
         /// Temporary JSONL file written for the parent `bench` process.
         #[arg(long, value_name = "FILE")]
         out: PathBuf,
+        /// Yaml local LLM model id measured in this child process.
+        #[arg(long, value_name = "ID")]
+        model: String,
     },
 }
 
@@ -82,11 +91,11 @@ pub fn execute(cli: Cli) -> Result<()> {
         #[cfg(not(coverage))]
         Commands::Bench { out } => crate::bench::run(out),
         #[cfg(not(coverage))]
-        Commands::BenchAsrWorker { out } => crate::bench::run_asr_worker(out),
+        Commands::BenchAsrWorker { out, model } => crate::bench::run_asr_worker(out, model),
         #[cfg(not(coverage))]
-        Commands::BenchTtsWorker { out } => crate::bench::run_tts_worker(out),
+        Commands::BenchTtsWorker { out, model } => crate::bench::run_tts_worker(out, model),
         #[cfg(not(coverage))]
-        Commands::BenchLlmWorker { out } => crate::bench::run_llm_worker(out),
+        Commands::BenchLlmWorker { out, model } => crate::bench::run_llm_worker(out, model),
         // Bench is contributor-only native work. Coverage must neither load
         // benchmark models nor execute its corpus/writer tests.
         #[cfg(coverage)]
@@ -218,30 +227,60 @@ mod tests {
 
     #[test]
     fn parses_private_asr_benchmark_worker() {
-        let cli = Cli::try_parse_from(["syllabix", "bench-asr-worker", "--out", "worker.jsonl"])
-            .expect("parse worker");
+        let cli = Cli::try_parse_from([
+            "syllabix",
+            "bench-asr-worker",
+            "--out",
+            "worker.jsonl",
+            "--model",
+            "whisper-small",
+        ])
+        .expect("parse worker");
         match cli.command {
-            Commands::BenchAsrWorker { out } => assert_eq!(out, PathBuf::from("worker.jsonl")),
+            Commands::BenchAsrWorker { out, model } => {
+                assert_eq!(out, PathBuf::from("worker.jsonl"));
+                assert_eq!(model, "whisper-small");
+            }
             _ => panic!("expected ASR worker"),
         }
     }
 
     #[test]
     fn parses_private_tts_benchmark_worker() {
-        let cli = Cli::try_parse_from(["syllabix", "bench-tts-worker", "--out", "worker.jsonl"])
-            .expect("parse worker");
+        let cli = Cli::try_parse_from([
+            "syllabix",
+            "bench-tts-worker",
+            "--out",
+            "worker.jsonl",
+            "--model",
+            "pocket-tts",
+        ])
+        .expect("parse worker");
         match cli.command {
-            Commands::BenchTtsWorker { out } => assert_eq!(out, PathBuf::from("worker.jsonl")),
+            Commands::BenchTtsWorker { out, model } => {
+                assert_eq!(out, PathBuf::from("worker.jsonl"));
+                assert_eq!(model, "pocket-tts");
+            }
             _ => panic!("expected TTS worker"),
         }
     }
 
     #[test]
     fn parses_private_llm_benchmark_worker() {
-        let cli = Cli::try_parse_from(["syllabix", "bench-llm-worker", "--out", "worker.jsonl"])
-            .expect("parse worker");
+        let cli = Cli::try_parse_from([
+            "syllabix",
+            "bench-llm-worker",
+            "--out",
+            "worker.jsonl",
+            "--model",
+            "lfm2.5-2.6b",
+        ])
+        .expect("parse worker");
         match cli.command {
-            Commands::BenchLlmWorker { out } => assert_eq!(out, PathBuf::from("worker.jsonl")),
+            Commands::BenchLlmWorker { out, model } => {
+                assert_eq!(out, PathBuf::from("worker.jsonl"));
+                assert_eq!(model, "lfm2.5-2.6b");
+            }
             _ => panic!("expected LLM worker"),
         }
     }

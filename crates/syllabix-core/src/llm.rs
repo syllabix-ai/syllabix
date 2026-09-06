@@ -106,12 +106,17 @@ pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// tool-result contexts, so 4 s truncated real answers into silent empties.
 pub const LLAMA_TOKEN_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Every yaml-selectable local GGUF id, default first.
+pub const V0_LLM_MODELS: [&str; 4] = [
+    LFM25_26B_ASSET,
+    LLAMA_32_1B_ASSET,
+    QWEN35_08B_ASSET,
+    QWEN35_2B_ASSET,
+];
+
 /// Return whether `id` names a supported local llama.cpp model.
 pub fn is_v0_llm_model(id: &str) -> bool {
-    id == QWEN35_08B_ASSET
-        || id == QWEN35_2B_ASSET
-        || id == LLAMA_32_1B_ASSET
-        || id == LFM25_26B_ASSET
+    V0_LLM_MODELS.contains(&id)
 }
 
 /// In-process llama.cpp adapter for supported GGUF models.
@@ -1739,6 +1744,15 @@ mod tests {
         assert_eq!(QWEN35_08B_ASSET, "qwen3.5-0.8b");
         assert_eq!(QWEN35_2B_ASSET, "qwen3.5-2b");
         assert_eq!(LLAMA_32_1B_ASSET, "llama-3.2-1b");
+        assert_eq!(
+            V0_LLM_MODELS,
+            [
+                LFM25_26B_ASSET,
+                LLAMA_32_1B_ASSET,
+                QWEN35_08B_ASSET,
+                QWEN35_2B_ASSET
+            ]
+        );
         assert!(is_v0_llm_model(QWEN35_08B_ASSET));
         assert!(is_v0_llm_model(QWEN35_2B_ASSET));
         assert!(is_v0_llm_model(LLAMA_32_1B_ASSET));
