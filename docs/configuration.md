@@ -134,7 +134,10 @@ tool-free.
 `developer_permissions` is an optional, session-fixed capability ceiling. It
 is valid only when `developer_harness` is true; unknown keys fail at load.
 Current executor behavior remains the existing allowlist while the sandboxed
-generic-shell provider is delivered in later phases.
+generic-shell provider is delivered in later phases. Host sandbox backends
+already exist for macOS (Seatbelt) and Linux (Bubblewrap, with Landlock
+fallback); the allowlist path uses a fixed read-only / network-none ceiling
+until the generic-shell phase threads `developer_permissions`.
 
 ```yaml
 pipeline:

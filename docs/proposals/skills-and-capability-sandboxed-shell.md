@@ -351,6 +351,14 @@ disabled user namespaces are a common Bubblewrap failure case. Report the
 Landlock ABI's enforcement capability accurately and fail closed when it
 cannot meet the requested promise.
 
+**Phase 3 status:** shipped in-tree. `LinuxSandboxProvider` selects Bubblewrap
+when `bwrap` probes cleanly (`--ro-bind / /`, private PID, optional
+`--unshare-net`, workspace/temp binds for `workspace-write`), otherwise the
+Landlock path applies rules via `pre_exec` before exec (single-binary launcher).
+ABI ≥3 can report `Enforcement::Full` for filesystem-only requests; older ABIs
+and any `network: none` Landlock path report `Partial`. There is no silent
+unconfined fallback.
+
 ### Windows
 
 Use a restricted token plus NTFS ACL-based write grants: `workspace-write`
