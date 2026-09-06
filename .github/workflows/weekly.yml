@@ -37,8 +37,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.91.0
         with:
           components: llvm-tools-preview
-      - name: Install ALSA headers and CMake
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+      - name: Install ALSA headers, CMake, and bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake bubblewrap
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
@@ -93,9 +93,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.91.0
         with:
           targets: ${{ matrix.target }}${{ matrix.extra_target != '' && format(',{0}', matrix.extra_target) || '' }}
-      - name: Install ALSA headers and CMake
+      - name: Install ALSA headers, CMake, and bubblewrap
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake bubblewrap
       - name: Install CMake
         if: runner.os == 'macOS'
         run: brew install cmake
