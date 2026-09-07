@@ -99,7 +99,7 @@ pub use pocket_tts::{
     POCKET_TTS_FLOW_MAIN_ASSET, POCKET_TTS_MIMI_DECODER_ASSET, POCKET_TTS_TEXT_CONDITIONER_ASSET,
     POCKET_TTS_TOKENIZER_ASSET, POCKET_TTS_VOICE_ASSET,
 };
-pub use policy::{Enforcement, ExecutionPlan, Provenance};
+pub use policy::{resolve_effective, Enforcement, ExecutionPlan, PolicyDeny, Provenance};
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
 pub use real::{build_llm, build_stt, build_tts, load_real_providers, LiveLlm, LiveStt, LiveTts};

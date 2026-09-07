@@ -7,6 +7,7 @@
 //! short fallback instead of hanging; there is no auto-retry.
 
 use std::io::{BufRead, BufReader, Read};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -181,6 +182,7 @@ pub struct OpenAiLlm {
     api_key: Zeroizing<String>,
     agent: Agent,
     timeouts: OpenAiTimeouts,
+    workspace: PathBuf,
     last_request_id: Mutex<Option<String>>,
     tool_events: Mutex<Vec<ToolTurnEvent>>,
 }
@@ -202,6 +204,7 @@ impl OpenAiLlm {
             api_key,
             agent: build_agent(timeouts),
             timeouts,
+            workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             last_request_id: Mutex::new(None),
             tool_events: Mutex::new(Vec::new()),
         }
@@ -210,6 +213,14 @@ impl OpenAiLlm {
     /// Endpoint used by this run.
     pub fn settings(&self) -> &OpenAiSettings {
         &self.settings
+    }
+
+    /// Set the host-owned workspace used by developer-harness shell calls.
+    /// The normal runtime leaves this at the process working directory; tests
+    /// and admission fixtures can use an isolated fixture workspace.
+    pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
+        self.workspace = workspace.into();
+        self
     }
 }
 
@@ -470,13 +481,9 @@ impl OpenAiLlm {
                     &call.arguments.to_string(),
                     "",
                 );
-                let workspace = std::env::current_dir().map_err(|err| Error::Provider {
-                    provider: PROVIDER_NAME,
-                    message: format!("developer workspace is unavailable: {err}"),
-                })?;
                 let result = executor::execute_with_permissions(
                     &call,
-                    &workspace,
+                    &self.workspace,
                     &self.settings.developer_permissions,
                     cancel,
                 );

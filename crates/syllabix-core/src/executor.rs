@@ -1802,18 +1802,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn shell_scrubs_ambient_environment_secrets() {
         let workspace = std::env::current_dir().unwrap();
-        // git log or git status runs under scrubbed env
+        // The child must not inherit the launcher's LLM credential.
         let result = execute(
-            &call("shell", serde_json::json!({"command":"git status --short"})),
+            &call("shell", serde_json::json!({"command":"env"})),
             &workspace,
             &Cancel::new(),
         );
         if result.ok {
             assert!(result.content.contains("exit: 0"), "{}", result.content);
+            assert!(
+                !result.content.contains("SYLLABIX_LLM_API_KEY"),
+                "shell environment leaked the LLM key name: {}",
+                result.content
+            );
         } else {
             assert!(
                 result.content.starts_with("SANDBOX_UNAVAILABLE:"),
