@@ -113,6 +113,7 @@ pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// for a model stall. Sized for slow first tokens, not just stalled ones:
 /// the local harness measured 4.6-5.0 s to first token on long Markdown
 /// tool-result contexts, so 4 s truncated real answers into silent empties.
+#[cfg_attr(coverage, allow(dead_code))]
 pub const LLAMA_TOKEN_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Every yaml-selectable local GGUF id, default first.
@@ -1657,7 +1658,9 @@ mod tests {
     use crate::types::TurnId;
     use std::collections::VecDeque;
     use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    #[cfg(not(coverage))]
+    use std::time::Instant;
 
     struct ScriptedEngine {
         pieces: Vec<String>,

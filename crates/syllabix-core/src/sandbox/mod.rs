@@ -64,6 +64,7 @@ impl SandboxError {
         }
     }
 
+    #[cfg_attr(coverage, allow(dead_code))]
     pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self {
             code: "SANDBOX_INVALID_REQUEST",
@@ -141,6 +142,7 @@ pub use linux::{
     BubblewrapSandboxProvider, LandlockSandboxProvider, LinuxSandboxProvider, LinuxSandboxRunner,
 };
 
+#[cfg_attr(coverage, allow(dead_code))]
 pub(crate) fn validate_request(request: &SandboxRequest) -> Result<(), SandboxError> {
     if !request.workspace.is_absolute() || !request.temp_dir.is_absolute() {
         return Err(SandboxError::invalid(
@@ -173,6 +175,7 @@ pub(crate) fn validate_request(request: &SandboxRequest) -> Result<(), SandboxEr
 }
 
 /// Host path used to prove outside-workspace writes are denied.
+#[cfg_attr(coverage, allow(dead_code))]
 pub(crate) fn outside_probe_path(request: &SandboxRequest) -> Result<PathBuf, SandboxError> {
     // Prefer a sibling of the workspace when that parent is not shadowed by a
     // sandbox remount (for example bwrap `--tmpfs /tmp`). `/var/tmp` stays on
@@ -199,6 +202,7 @@ pub(crate) fn outside_probe_path(request: &SandboxRequest) -> Result<PathBuf, Sa
     }
 }
 
+#[cfg_attr(coverage, allow(dead_code))]
 pub(crate) fn shell_quote_single(path: &Path) -> String {
     path.to_string_lossy().replace('\'', "'\\''")
 }
