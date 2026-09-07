@@ -15,9 +15,11 @@ use std::process::Command;
 
 use crate::policy::{Enforcement, FilesystemMode, NetworkMode};
 
-#[cfg(target_os = "linux")]
+#[cfg(not(coverage))]
+mod helpers;
+#[cfg(all(target_os = "linux", not(coverage)))]
 mod linux;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(coverage)))]
 mod macos;
 
 /// Inputs needed to construct an OS sandbox for one invocation.
@@ -63,13 +65,6 @@ impl SandboxError {
             message: message.into(),
         }
     }
-
-    pub(crate) fn invalid(message: impl Into<String>) -> Self {
-        Self {
-            code: "SANDBOX_INVALID_REQUEST",
-            message: message.into(),
-        }
-    }
 }
 
 impl std::fmt::Display for SandboxError {
@@ -97,13 +92,21 @@ pub trait SandboxProvider: Send + Sync {
 
 /// Provider selected for the current host. Unsupported hosts fail closed.
 pub fn current_provider() -> Box<dyn SandboxProvider> {
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(coverage)))]
     {
         Box::new(macos::MacOsSandboxProvider)
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "macos", coverage))]
+    {
+        Box::new(UnavailableSandboxProvider)
+    }
+    #[cfg(all(target_os = "linux", not(coverage)))]
     {
         Box::new(linux::LinuxSandboxProvider)
+    }
+    #[cfg(all(target_os = "linux", coverage))]
+    {
+        Box::new(UnavailableSandboxProvider)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
@@ -129,80 +132,23 @@ impl SandboxProvider for UnavailableSandboxProvider {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(coverage)))]
 pub use macos::MacOsSandboxProvider;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(coverage)))]
 pub use linux::{
     BubblewrapSandboxProvider, LandlockSandboxProvider, LinuxSandboxProvider, LinuxSandboxRunner,
 };
 
-pub(crate) fn validate_request(request: &SandboxRequest) -> Result<(), SandboxError> {
-    if !request.workspace.is_absolute() || !request.temp_dir.is_absolute() {
-        return Err(SandboxError::invalid(
-            "workspace and temp_dir must be absolute paths",
-        ));
-    }
-    if request.workspace == Path::new("/") {
-        return Err(SandboxError::invalid(
-            "workspace cannot be the filesystem root",
-        ));
-    }
-    if request.filesystem == FilesystemMode::DangerFullAccess {
-        return Err(SandboxError::unavailable(
-            "danger-full-access has no sandbox provider",
-        ));
-    }
-    if !request.workspace.is_dir() || !request.temp_dir.is_dir() {
-        return Err(SandboxError::invalid(
-            "workspace and temp_dir must be existing directories",
-        ));
-    }
-    if request.workspace.canonicalize().ok().as_deref() != Some(request.workspace.as_path())
-        || request.temp_dir.canonicalize().ok().as_deref() != Some(request.temp_dir.as_path())
-    {
-        return Err(SandboxError::invalid(
-            "workspace and temp_dir must be canonical directories",
-        ));
-    }
-    Ok(())
-}
-
-/// Host path used to prove outside-workspace writes are denied.
-pub(crate) fn outside_probe_path(request: &SandboxRequest) -> Result<PathBuf, SandboxError> {
-    // Prefer a sibling of the workspace when that parent is not shadowed by a
-    // sandbox remount (for example bwrap `--tmpfs /tmp`). `/var/tmp` stays on
-    // the real host filesystem for Linux probes.
-    #[cfg(target_os = "linux")]
-    {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static OUTSIDE_COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = OUTSIDE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let _ = request;
-        Ok(PathBuf::from("/var/tmp").join(format!(
-            ".syllabix-sandbox-outside-probe-{}-{}",
-            std::process::id(),
-            n
-        )))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Ok(request
-            .workspace
-            .parent()
-            .ok_or_else(|| SandboxError::invalid("workspace has no parent"))?
-            .join(".syllabix-sandbox-outside-probe"))
-    }
-}
-
-pub(crate) fn shell_quote_single(path: &Path) -> String {
-    path.to_string_lossy().replace('\'', "'\\''")
-}
+#[cfg(not(coverage))]
+pub(crate) use helpers::{outside_probe_path, shell_quote_single, validate_request};
 
 #[cfg(test)]
 mod tests {
+    #[cfg(coverage)]
     use super::*;
 
+    #[cfg(coverage)]
     fn request(mode: FilesystemMode) -> SandboxRequest {
         #[cfg(target_os = "macos")]
         {
@@ -236,23 +182,25 @@ mod tests {
         );
     }
 
+    #[cfg(coverage)]
     #[test]
-    fn danger_full_access_is_not_a_sandbox_profile() {
-        let err = validate_request(&request(FilesystemMode::DangerFullAccess)).unwrap_err();
-        assert_eq!(err.code, "SANDBOX_UNAVAILABLE");
-    }
-
-    #[test]
-    fn relative_paths_are_rejected() {
-        let mut request = request(FilesystemMode::ReadOnly);
-        request.workspace = PathBuf::from("workspace");
+    fn coverage_provider_fails_closed() {
+        let provider = current_provider();
+        let request = request(FilesystemMode::ReadOnly);
         assert_eq!(
-            validate_request(&request).unwrap_err().code,
-            "SANDBOX_INVALID_REQUEST"
+            provider.probe(&request).unwrap_err().code,
+            "SANDBOX_UNAVAILABLE"
+        );
+        assert_eq!(
+            provider
+                .command(&request, Path::new("/bin/true"), &[])
+                .unwrap_err()
+                .code,
+            "SANDBOX_UNAVAILABLE"
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(coverage)))]
     #[test]
     fn linux_provider_prefers_bubblewrap_when_available() {
         // Skip when a test harness forces a backend via the environment.

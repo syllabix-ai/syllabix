@@ -135,11 +135,21 @@ mod tests {
     #[test]
     fn stt_defaults_keep_utterance_final_path() {
         let mut stt = StubStt;
+        let cancel = Cancel::new();
         assert_eq!(stt.name(), "stub-stt");
         assert!(!stt.supports_partials());
-        let cancel = Cancel::new();
         stt.start_turn(TurnId(1), &cancel).expect("start_turn");
         assert_eq!(stt.push_frame(&frame(), &cancel).expect("push"), None);
+        let transcript = stt
+            .transcribe(
+                &Utterance {
+                    turn: TurnId(1),
+                    frames: vec![frame()],
+                },
+                &cancel,
+            )
+            .expect("transcribe");
+        assert_eq!(transcript.text, "hello");
         stt.cancel_turn(TurnId(1));
     }
 
@@ -150,6 +160,17 @@ mod tests {
         assert!(llm.debug_meta().is_none());
         let mut llm = llm;
         assert!(llm.take_tool_events().is_empty());
+        llm.generate(
+            &[],
+            &Transcript {
+                turn: TurnId(1),
+                text: String::from("hello"),
+                language: String::from("en"),
+            },
+            &Cancel::new(),
+            &mut |_| Ok(()),
+        )
+        .expect("generate");
 
         let tts = StubTts;
         assert_eq!(tts.name(), "stub-tts");
@@ -174,9 +195,20 @@ mod tests {
     fn sink_defaults_finish_and_interrupt_silently() {
         let mut sink = StubSink { played: 0 };
         let cancel = Cancel::new();
+        sink.play(
+            SynthesizedAudio {
+                turn: TurnId(7),
+                generation: GenerationId(1),
+                index: 0,
+                samples: vec![0],
+                is_last: true,
+            },
+            &cancel,
+        )
+        .expect("play");
         sink.finish_turn(TurnId(7), &cancel).expect("finish");
         sink.interrupt();
-        assert_eq!(sink.played, 0);
+        assert_eq!(sink.played, 1);
     }
 }
 

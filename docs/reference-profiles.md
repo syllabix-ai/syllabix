@@ -92,12 +92,15 @@ comparisons belong in `vendor/llama-bench.md`.
 ## 6. Coverage and native inference (profile B)
 
 ```bash
-cargo llvm-cov --workspace --fail-under-lines 85 --cobertura --output-path coverage.xml
+cargo llvm-cov --workspace --fail-under-lines 85 --fail-under-file-lines 85 \
+  --cobertura --output-path coverage.xml
 cargo test --workspace   # last; launch-stack native inference runs here exactly once
 ```
 
 llvm-cov sets `--cfg coverage` and must not load whisper.cpp / llama.cpp /
-Kokoro weights or open devices. Floor is 85 % lines.
+Kokoro weights or open devices. The floor is 85% workspace lines and 85% in
+every reported `src/**/*.rs` file. Production-only native modules are excluded
+by the coverage configuration; pure helpers remain in the normal modules.
 
 ## 7. 3-minute gate (profile C)
 

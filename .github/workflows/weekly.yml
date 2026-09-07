@@ -46,7 +46,7 @@ jobs:
       # Keep cargo-llvm-cov aligned with DEVELOPMENT.md and local verification.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-llvm-cov@0.6.21
+          tool: cargo-llvm-cov@0.8.7
       - uses: Swatinem/rust-cache@v2
       # Do not merge coverage profiles left by an earlier retry on a reused
       # runner; build artifacts remain cached.
@@ -58,7 +58,7 @@ jobs:
       - name: Run unit tests with coverage
         # Native inference is an opt-in integration suite, not part of this
         # unit-coverage gate or the OS matrix below.
-        run: cargo llvm-cov --workspace --fail-under-lines 85 --cobertura --output-path coverage.xml
+        run: cargo llvm-cov --workspace --fail-under-lines 85 --fail-under-file-lines 85 --cobertura --output-path coverage.xml
       - name: Store coverage report
         uses: actions/upload-artifact@v4
         with:

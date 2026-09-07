@@ -13,14 +13,7 @@ pub fn process_rss_bytes() -> Option<usize> {
     #[cfg(target_os = "linux")]
     {
         let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        for line in status.lines() {
-            let Some(rest) = line.strip_prefix("VmRSS:") else {
-                continue;
-            };
-            let kb: usize = rest.split_whitespace().next()?.parse().ok()?;
-            return Some(kb.saturating_mul(1024));
-        }
-        None
+        parse_linux_rss(&status)
     }
     #[cfg(target_os = "macos")]
     {
@@ -28,15 +21,7 @@ pub fn process_rss_bytes() -> Option<usize> {
             .args(["-o", "rss=", "-p", &std::process::id().to_string()])
             .output()
             .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        String::from_utf8(output.stdout)
-            .ok()?
-            .trim()
-            .parse::<usize>()
-            .ok()
-            .map(|kib| kib.saturating_mul(1024))
+        parse_macos_rss(output.status.success(), &output.stdout)
     }
     #[cfg(target_os = "windows")]
     {
@@ -60,6 +45,31 @@ pub fn process_rss_bytes() -> Option<usize> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn parse_linux_rss(status: &str) -> Option<usize> {
+    for line in status.lines() {
+        let Some(rest) = line.strip_prefix("VmRSS:") else {
+            continue;
+        };
+        let kb: usize = rest.split_whitespace().next()?.parse().ok()?;
+        return Some(kb.saturating_mul(1024));
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_rss(success: bool, stdout: &[u8]) -> Option<usize> {
+    if !success {
+        return None;
+    }
+    String::from_utf8(stdout.to_vec())
+        .ok()?
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .map(|kib| kib.saturating_mul(1024))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,10 +83,36 @@ mod tests {
         assert!(rss > 0);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_rss_parser_handles_missing_and_malformed_status() {
+        assert_eq!(parse_linux_rss("Name: test\n"), None);
+        assert_eq!(parse_linux_rss("VmRSS: not-a-number kB\n"), None);
+        assert_eq!(
+            parse_linux_rss("Name: test\nVmRSS: 42 kB\n"),
+            Some(42 * 1024)
+        );
+    }
+
+    #[cfg(all(target_os = "macos", not(coverage)))]
     #[test]
     fn macos_rss_is_nonzero() {
         let rss = process_rss_bytes().expect("ps rss");
         assert!(rss > 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_rss_parser_handles_process_output_variants() {
+        assert_eq!(parse_macos_rss(false, b"123"), None);
+        assert_eq!(parse_macos_rss(true, &[0xff]), None);
+        assert_eq!(parse_macos_rss(true, b"not-a-number\n"), None);
+        assert_eq!(parse_macos_rss(true, b"42\n"), Some(42 * 1024));
+    }
+
+    #[cfg(all(target_os = "macos", coverage))]
+    #[test]
+    fn macos_rss_probe_is_callable_under_coverage() {
+        let _ = process_rss_bytes();
     }
 }

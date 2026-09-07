@@ -25,10 +25,24 @@ chmod +x scripts/check-one-ggml.sh
 scripts/check-one-ggml.sh target/release/syllabix
 
 if command -v cargo-llvm-cov >/dev/null 2>&1 || cargo llvm-cov --version >/dev/null 2>&1; then
+  llvm_cov_version="$(cargo llvm-cov --version 2>/dev/null | awk '{print $2}')"
+  if ! awk -F. -v actual="${llvm_cov_version}" -v minimum="0.8.5" '
+    BEGIN {
+      split(actual, a); split(minimum, m)
+      for (i = 1; i <= 3; i++) {
+        if ((a[i] + 0) > (m[i] + 0)) exit 0
+        if ((a[i] + 0) < (m[i] + 0)) exit 1
+      }
+      exit 0
+    }
+  '; then
+    echo "cargo-llvm-cov ${llvm_cov_version:-unknown} is too old; install cargo-llvm-cov 0.8.7"
+    exit 1
+  fi
   echo "== coverage (no whisper.cpp / llama.cpp / Kokoro weights) =="
-  cargo llvm-cov --workspace --fail-under-lines 85 --cobertura --output-path coverage.xml
+  cargo llvm-cov --workspace --fail-under-lines 85 --fail-under-file-lines 85 --cobertura --output-path coverage.xml
 else
-  echo "cargo-llvm-cov not installed; skip coverage (CI used cargo-llvm-cov@0.6.21)"
+  echo "cargo-llvm-cov not installed; skip coverage (CI uses cargo-llvm-cov@0.8.7)"
 fi
 
 echo "== test =="
