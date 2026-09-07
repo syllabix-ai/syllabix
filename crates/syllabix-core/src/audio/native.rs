@@ -5,7 +5,7 @@
 
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
-#[cfg(any(not(coverage), test))]
+#[cfg(not(coverage))]
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -34,7 +34,7 @@ use crate::types::{AudioFrame, GenerationId, SynthesizedAudio, TurnId};
 /// ring. It is deliberately separate from diagnostics: default `run` needs
 /// the same drain boundary even when timeline recording is off.
 #[derive(Clone)]
-struct PlaybackDrain {
+pub(crate) struct PlaybackDrain {
     inner: Arc<(Mutex<PlaybackDrainState>, Condvar)>,
 }
 
@@ -48,9 +48,9 @@ struct PlaybackDrainState {
     drained_turn: Option<TurnId>,
 }
 
+#[cfg_attr(coverage, allow(dead_code))]
 impl PlaybackDrain {
-    #[cfg(any(not(coverage), test))]
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new((Mutex::new(PlaybackDrainState::default()), Condvar::new())),
         }
@@ -76,8 +76,7 @@ impl PlaybackDrain {
         }
     }
 
-    #[cfg(any(not(coverage), test))]
-    fn on_callback(&self, rendered: usize) {
+    pub(crate) fn on_callback(&self, rendered: usize) {
         let mut state = self.inner.0.lock().expect("playback drain");
         state.callback_count += 1;
         if rendered == 0
@@ -979,6 +978,7 @@ pub fn probe_device_names() -> Result<(DeviceChoice, DeviceChoice)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
 
     fn idle_worker() -> StreamWorker {
         StreamWorker {

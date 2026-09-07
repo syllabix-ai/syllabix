@@ -1,6 +1,5 @@
 //! Inline transcript and status renderer for `syllabix run`.
 
-#[cfg(any(not(coverage), test))]
 use syllabix_core::{LoopEvent, ThinkFilter, TurnId};
 
 /// Subtle, theme-aware TUI colors.
@@ -11,13 +10,11 @@ use syllabix_core::{LoopEvent, ThinkFilter, TurnId};
 /// Disabled under `NO_COLOR` or `TERM=dumb`. Presentation-only:
 /// [`TranscriptUi`] stays plain for tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(any(not(coverage), test))]
-pub(crate) struct TuiTheme {
+pub struct TuiTheme {
     pub dark: bool,
     pub enabled: bool,
 }
 
-#[cfg(any(not(coverage), test))]
 impl TuiTheme {
     pub fn detect() -> Self {
         if std::env::var_os("NO_COLOR").is_some() {
@@ -125,7 +122,6 @@ impl TuiTheme {
 
 /// Rolling transcript shown in the TUI.
 #[derive(Debug, Default)]
-#[cfg(any(not(coverage), test))]
 pub struct TranscriptUi {
     lines: Vec<String>,
     partial_user: Option<(TurnId, String)>,
@@ -140,7 +136,6 @@ pub struct TranscriptUi {
     aec_restart_required: bool,
 }
 
-#[cfg(any(not(coverage), test))]
 impl TranscriptUi {
     /// Apply one pipeline event.
     pub fn apply(&mut self, event: LoopEvent) {
@@ -244,6 +239,7 @@ impl TranscriptUi {
         self.current_agent.clone()
     }
 
+    #[cfg_attr(coverage, allow(dead_code))]
     fn aec_pill(&self) -> &'static str {
         if self.aec_active {
             "AEC ● on"

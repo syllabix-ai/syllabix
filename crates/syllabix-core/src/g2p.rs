@@ -16,8 +16,8 @@ const APOSTROPHES: &[char] = &[
 ];
 
 /// Kokoro pad id. Wrapped around every `input_ids` sequence.
-#[cfg(any(not(coverage), test))]
-pub const KOKORO_PAD_ID: i64 = 0;
+#[cfg_attr(coverage, allow(dead_code))]
+pub(crate) const KOKORO_PAD_ID: i64 = 0;
 
 /// Phoneme tokens excluding the two pad ids. Model context is 512.
 pub const KOKORO_MAX_PHONEME_TOKENS: usize = 510;
@@ -334,8 +334,8 @@ fn ipa_to_ids(ipa: &str) -> Vec<i64> {
 }
 
 /// Wrap phoneme ids with pad tokens for the ONNX graph.
-#[cfg(any(not(coverage), test))]
-pub fn pad_input_ids(ids: &[i64]) -> Vec<i64> {
+#[cfg_attr(coverage, allow(dead_code))]
+pub(crate) fn pad_input_ids(ids: &[i64]) -> Vec<i64> {
     let mut out = Vec::with_capacity(ids.len() + 2);
     out.push(KOKORO_PAD_ID);
     out.extend_from_slice(ids);

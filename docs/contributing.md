@@ -12,7 +12,18 @@ cargo test --workspace   # launch-stack native inference (small / lfm2.5-2.6b / 
 ./scripts/check-repro.sh # two dist builds; run when the dist profile or packaging script changes
 ```
 
-`cargo llvm-cov --workspace --fail-under-lines 85` skips native inference (`cfg(coverage)`).
+The coverage gate requires `cargo-llvm-cov` 0.8.7 and enforces both workspace
+and per-file line floors:
+
+```bash
+cargo llvm-cov --workspace --fail-under-lines 85 --fail-under-file-lines 85 \
+  --cobertura --output-path coverage.xml
+```
+
+It skips native inference (`cfg(coverage)`): production-only device and weight
+loads live in non-coverage modules, while pure helpers stay in the normal
+modules. Large mock suites use sibling `*_tests.rs` modules, which
+`cargo-llvm-cov` ignores as test harness code.
 
 Exclusive extra native suites (not the default `cargo test --workspace` bar):
 
@@ -164,4 +175,7 @@ Linux contributors who hit a missing ALSA link need `libasound2-dev`.
 
 ## CI
 
-Per-PR CI is fmt, clippy, and llvm-cov ≥85% without loading native weights. Weekly CI runs `cargo test --workspace` on Linux / Windows / macOS, including launch-stack native inference.
+Per-PR CI is fmt, clippy, and llvm-cov ≥85% workspace lines and ≥85% lines in
+every reported `src/**/*.rs` file, without loading native weights. Weekly CI
+repeats that file-level gate on Linux and runs `cargo test --workspace` on
+Linux / Windows / macOS, including launch-stack native inference.

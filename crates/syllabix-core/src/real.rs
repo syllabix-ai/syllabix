@@ -34,7 +34,6 @@ mod production {
         Cloud(OpenAiLlm),
     }
 
-    #[cfg(not(coverage))]
     impl Llm for LiveLlm {
         fn name(&self) -> &'static str {
             match self {
@@ -81,7 +80,6 @@ mod production {
         Pocket(Box<PocketTts>),
     }
 
-    #[cfg(not(coverage))]
     impl crate::providers::Tts for LiveTts {
         fn name(&self) -> &'static str {
             match self {
@@ -133,7 +131,6 @@ mod production {
         Moonshine(Box<MoonshineStt>),
     }
 
-    #[cfg(not(coverage))]
     impl crate::providers::Stt for LiveStt {
         fn name(&self) -> &'static str {
             match self {
@@ -177,116 +174,6 @@ mod production {
                 Self::Moonshine(stt) => stt.cancel_turn(turn),
             }
         }
-    }
-
-    #[cfg(coverage)]
-    fn coverage_provider_error(provider: &'static str) -> Error {
-        Error::Provider {
-            provider,
-            message: "provider inference is not loaded in coverage tests".into(),
-        }
-    }
-
-    #[cfg(coverage)]
-    impl Llm for LiveLlm {
-        fn name(&self) -> &'static str {
-            match self {
-                Self::Local(_) => "local",
-                Self::Cloud(_) => "online",
-            }
-        }
-
-        fn debug_meta(&self) -> Option<LlmDebugMeta> {
-            match self {
-                Self::Local(_) => None,
-                Self::Cloud(llm) => llm.debug_meta(),
-            }
-        }
-
-        fn take_tool_events(&mut self) -> Vec<crate::types::ToolTurnEvent> {
-            match self {
-                Self::Local(_) => Vec::new(),
-                Self::Cloud(llm) => llm.take_tool_events(),
-            }
-        }
-
-        fn generate(
-            &mut self,
-            _history: &[HistoryTurn],
-            _user: &Transcript,
-            _cancel: &Cancel,
-            _on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
-        ) -> Result<()> {
-            Err(coverage_provider_error("llama"))
-        }
-    }
-
-    #[cfg(coverage)]
-    impl crate::providers::Tts for LiveTts {
-        fn name(&self) -> &'static str {
-            match self {
-                Self::Kokoro(_) => "local",
-                Self::Qwen(_) => "local",
-                Self::Pocket(_) => "pocket-tts",
-            }
-        }
-
-        fn model_id(&self) -> Option<&str> {
-            match self {
-                Self::Kokoro(tts) => tts.model_id(),
-                Self::Qwen(tts) => tts.model_id(),
-                Self::Pocket(tts) => tts.model_id(),
-            }
-        }
-
-        fn synthesize_chunk(
-            &mut self,
-            _token: &TokenChunk,
-            _cancel: &Cancel,
-        ) -> Result<Vec<crate::types::SynthesizedAudio>> {
-            Err(coverage_provider_error("tts"))
-        }
-
-        fn synthesize_chunk_into(
-            &mut self,
-            _token: &TokenChunk,
-            _cancel: &Cancel,
-            _on_audio: &mut dyn FnMut(crate::types::SynthesizedAudio) -> Result<()>,
-        ) -> Result<()> {
-            Err(coverage_provider_error("tts"))
-        }
-    }
-
-    #[cfg(coverage)]
-    impl crate::providers::Stt for LiveStt {
-        fn name(&self) -> &'static str {
-            match self {
-                Self::Whisper(_) => "whisper",
-                Self::Moonshine(_) => "moonshine",
-            }
-        }
-
-        fn transcribe(&mut self, _utterance: &Utterance, _cancel: &Cancel) -> Result<Transcript> {
-            Err(coverage_provider_error("stt"))
-        }
-
-        fn supports_partials(&self) -> bool {
-            matches!(self, Self::Moonshine(_))
-        }
-
-        fn start_turn(&mut self, _turn: crate::TurnId, _cancel: &Cancel) -> Result<()> {
-            Err(coverage_provider_error("stt"))
-        }
-
-        fn push_frame(
-            &mut self,
-            _frame: &crate::AudioFrame,
-            _cancel: &Cancel,
-        ) -> Result<Option<String>> {
-            Err(coverage_provider_error("stt"))
-        }
-
-        fn cancel_turn(&mut self, _turn: crate::TurnId) {}
     }
 
     impl LiveStt {

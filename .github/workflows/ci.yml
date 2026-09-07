@@ -69,7 +69,7 @@ jobs:
       # `--cfg coverage` skips whisper.cpp / llama.cpp / Kokoro weight loads.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-llvm-cov@0.6.21
+          tool: cargo-llvm-cov@0.8.7
       # Coverage now runs on macOS (self-hosted) instead of hosted Linux; the
       # Linux baseline is re-checked weekly in weekly.yml (coverage-linux).
       # Cache only when dispatched to the hosted pool. The self-hosted runner
@@ -91,7 +91,7 @@ jobs:
       - name: Run unit tests with coverage
         # Native inference is an opt-in integration suite. Keep it out of this
         # unit-coverage gate: it is neither a model run nor unit-test coverage.
-        run: cargo llvm-cov --workspace --fail-under-lines 85 --cobertura --output-path coverage.xml
+        run: cargo llvm-cov --workspace --fail-under-lines 85 --fail-under-file-lines 85 --cobertura --output-path coverage.xml
       - name: Store coverage report
         # Best-effort evidence: the >=85% gate is enforced by the run step
         # above, so a stalled artifact upload must not fail a green run.

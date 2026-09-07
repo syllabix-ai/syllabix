@@ -1,7 +1,7 @@
 #[cfg(not(coverage))]
 mod bench;
 mod cli;
-mod tui;
+pub mod tui;
 
 use clap::Parser;
 use syllabix_core::Error;
