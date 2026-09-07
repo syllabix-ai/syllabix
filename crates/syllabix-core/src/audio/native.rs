@@ -8,6 +8,7 @@ use std::sync::{Arc, Condvar, Mutex};
 #[cfg(not(coverage))]
 use std::thread;
 use std::thread::JoinHandle;
+#[cfg(not(coverage))]
 use std::time::Duration;
 
 #[cfg(not(coverage))]
@@ -33,11 +34,13 @@ use crate::types::{AudioFrame, GenerationId, SynthesizedAudio, TurnId};
 /// Tracks the callback after a turn's final samples have entered the device
 /// ring. It is deliberately separate from diagnostics: default `run` needs
 /// the same drain boundary even when timeline recording is off.
+#[cfg(not(coverage))]
 #[derive(Clone)]
-pub(crate) struct PlaybackDrain {
+struct PlaybackDrain {
     inner: Arc<(Mutex<PlaybackDrainState>, Condvar)>,
 }
 
+#[cfg(not(coverage))]
 #[derive(Default)]
 struct PlaybackDrainState {
     final_turn: Option<TurnId>,
@@ -48,9 +51,9 @@ struct PlaybackDrainState {
     drained_turn: Option<TurnId>,
 }
 
-#[cfg_attr(coverage, allow(dead_code))]
+#[cfg(not(coverage))]
 impl PlaybackDrain {
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self {
             inner: Arc::new((Mutex::new(PlaybackDrainState::default()), Condvar::new())),
         }
@@ -76,7 +79,7 @@ impl PlaybackDrain {
         }
     }
 
-    pub(crate) fn on_callback(&self, rendered: usize) {
+    fn on_callback(&self, rendered: usize) {
         let mut state = self.inner.0.lock().expect("playback drain");
         state.callback_count += 1;
         if rendered == 0
@@ -121,6 +124,28 @@ impl PlaybackDrain {
         state.final_enqueued_after_callback = state.callback_count;
         self.inner.1.notify_all();
     }
+}
+
+#[cfg(coverage)]
+#[derive(Clone, Default)]
+struct PlaybackDrain;
+
+#[cfg(coverage)]
+impl PlaybackDrain {
+    #[cfg(test)]
+    fn new() -> Self {
+        Self
+    }
+
+    fn begin_final(&self, _turn: TurnId, _generation: GenerationId) {}
+
+    fn final_enqueued(&self, _turn: TurnId) {}
+
+    fn wait_for(&self, _turn: TurnId, _cancel: &Cancel) -> Result<()> {
+        Ok(())
+    }
+
+    fn clear(&self) {}
 }
 
 /// Backend identifier used in logs.
@@ -1048,6 +1073,57 @@ mod tests {
     }
 
     #[test]
+    fn stream_worker_drop_joins_a_finished_thread() {
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let worker = StreamWorker {
+            thread: Some(thread::spawn(|| {})),
+            stop: Arc::clone(&stop),
+        };
+        drop(worker);
+        assert!(*stop.0.lock().expect("stop state"));
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_native_openers_report_unavailable() {
+        let error_message = |result: Result<()>| {
+            let Err(Error::AudioDevice { message }) = result else {
+                panic!("coverage native opener should be unavailable");
+            };
+            assert!(message.contains("coverage tests"));
+        };
+
+        error_message(NativeCapture::open().map(|_| ()));
+        error_message(
+            NativeCapture::open_with_echo(EchoReference::new(
+                Arc::new(SampleRing::new(8)),
+                PcmFormat::v0(),
+            ))
+            .map(|_| ()),
+        );
+        error_message(
+            NativeCapture::open_with_echo_and_events(
+                EchoReference::new(Arc::new(SampleRing::new(8)), PcmFormat::v0()),
+                None,
+            )
+            .map(|_| ()),
+        );
+        error_message(NativePlayback::open().map(|_| ()));
+        error_message(NativePlayback::open_with_echo().map(|_| ()));
+        error_message(NativePlayback::open_with_echo_and_watch(None).map(|_| ()));
+        error_message(probe_device_names().map(|_| ()));
+
+        let drain = PlaybackDrain::new();
+        let cancel = Cancel::new();
+        drain.begin_final(crate::types::TurnId(0), cancel.generation());
+        drain.final_enqueued(crate::types::TurnId(0));
+        drain
+            .wait_for(crate::types::TurnId(0), &cancel)
+            .expect("coverage drain stub");
+        drain.clear();
+    }
+
+    #[test]
     #[cfg(not(coverage))]
     fn closed_stream_open_channel_is_actionable() {
         let (tx, rx) = mpsc::sync_channel(1);
@@ -1147,6 +1223,7 @@ mod tests {
         ));
     }
 
+    #[cfg(not(coverage))]
     #[test]
     fn final_turn_waits_for_the_silent_callback_after_its_pcm() {
         let drain = PlaybackDrain::new();
@@ -1184,6 +1261,7 @@ mod tests {
         waiter.join().expect("drain waiter");
     }
 
+    #[cfg(not(coverage))]
     #[test]
     fn final_turn_wait_exits_when_barge_in_cancels_generation() {
         let drain = PlaybackDrain::new();

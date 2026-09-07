@@ -15,14 +15,10 @@ const APOSTROPHES: &[char] = &[
     '\u{2018}', '\u{2019}', '\u{02BC}', '\u{02B9}', '\u{00B4}', '`',
 ];
 
-/// Kokoro pad id. Wrapped around every `input_ids` sequence.
-#[cfg_attr(coverage, allow(dead_code))]
-pub(crate) const KOKORO_PAD_ID: i64 = 0;
-
 /// Phoneme tokens excluding the two pad ids. Model context is 512.
 pub const KOKORO_MAX_PHONEME_TOKENS: usize = 510;
 
-/// hexgrad/Kokoro-82M `vocab` (Apache-2.0). `$` pad is [`KOKORO_PAD_ID`].
+/// hexgrad/Kokoro-82M `vocab` (Apache-2.0).
 const KOKORO_VOCAB: &[(char, u16)] = &[
     (';', 1),
     (':', 2),
@@ -333,28 +329,9 @@ fn ipa_to_ids(ipa: &str) -> Vec<i64> {
         .collect()
 }
 
-/// Wrap phoneme ids with pad tokens for the ONNX graph.
-#[cfg_attr(coverage, allow(dead_code))]
-pub(crate) fn pad_input_ids(ids: &[i64]) -> Vec<i64> {
-    let mut out = Vec::with_capacity(ids.len() + 2);
-    out.push(KOKORO_PAD_ID);
-    out.extend_from_slice(ids);
-    out.push(KOKORO_PAD_ID);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pad_input_ids_wraps_ids_with_kokoro_pad() {
-        assert_eq!(
-            pad_input_ids(&[24, 43, 4]),
-            vec![KOKORO_PAD_ID, 24, 43, 4, KOKORO_PAD_ID]
-        );
-        assert_eq!(pad_input_ids(&[]), vec![KOKORO_PAD_ID, KOKORO_PAD_ID]);
-    }
 
     #[test]
     fn hello_world_maps_to_vocab_ids() {
@@ -367,9 +344,7 @@ mod tests {
         let ids = english_to_kokoro_ids("Hello world.").unwrap();
         assert!(!ids.is_empty());
         assert!(ids.len() <= KOKORO_MAX_PHONEME_TOKENS);
-        let padded = pad_input_ids(&ids);
-        assert_eq!(padded.first().copied(), Some(0));
-        assert_eq!(padded.last().copied(), Some(0));
+        assert!(!ids.is_empty());
     }
 
     #[test]

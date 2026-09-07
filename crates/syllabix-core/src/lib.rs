@@ -108,7 +108,7 @@ pub use sandbox::MacOsSandboxProvider;
 pub use sandbox::{
     current_provider, SandboxError, SandboxProvider, SandboxRequest, UnavailableSandboxProvider,
 };
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(coverage)))]
 pub use sandbox::{
     BubblewrapSandboxProvider, LandlockSandboxProvider, LinuxSandboxProvider, LinuxSandboxRunner,
 };

@@ -94,7 +94,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(coverage)))]
     #[test]
     fn macos_rss_is_nonzero() {
         let rss = process_rss_bytes().expect("ps rss");

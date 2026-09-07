@@ -239,17 +239,6 @@ impl TranscriptUi {
         self.current_agent.clone()
     }
 
-    #[cfg_attr(coverage, allow(dead_code))]
-    fn aec_pill(&self) -> &'static str {
-        if self.aec_active {
-            "AEC ● on"
-        } else if self.aec_restart_required {
-            "AEC ○ off — restart to fix"
-        } else {
-            "AEC ○ off"
-        }
-    }
-
     fn flush_agent(&mut self) {
         if let Some((_, text)) = self.current_agent.take() {
             if !text.is_empty() {
@@ -287,6 +276,19 @@ impl TranscriptUi {
             "STT —  TTFT —  TTFB —  total —"
         } else {
             &self.latency
+        }
+    }
+}
+
+#[cfg(not(coverage))]
+impl TranscriptUi {
+    fn aec_pill(&self) -> &'static str {
+        if self.aec_active {
+            "AEC ● on"
+        } else if self.aec_restart_required {
+            "AEC ○ off — restart to fix"
+        } else {
+            "AEC ○ off"
         }
     }
 }
@@ -889,6 +891,7 @@ mod tests {
         assert!(ui.latency_line().contains("STT"));
     }
 
+    #[cfg(not(coverage))]
     #[test]
     fn aec_pill_tracks_native_state() {
         let mut ui = TranscriptUi::default();

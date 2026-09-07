@@ -4,7 +4,9 @@
 //! sentence boundary, the think filter runs first, and each completed
 //! sentence becomes one [`SynthesizedAudio`] through a [`WaveformEngine`].
 
+#[cfg(not(coverage))]
 use std::fs;
+#[cfg(not(coverage))]
 use std::path::Path;
 #[cfg(not(coverage))]
 use std::path::PathBuf;
@@ -15,16 +17,17 @@ use ort::session::Session;
 #[cfg(not(coverage))]
 use syllabix_native::{QwenTtsContext, QwenTtsError};
 
+#[cfg(not(coverage))]
 use crate::audio::{f32_to_i16, PcmConverter, PcmFormat};
 use crate::cancel::Cancel;
 use crate::defaults::{BuiltinDefaults, TtsModel};
 use crate::error::{Error, Result};
 #[cfg(not(coverage))]
-use crate::g2p::pad_input_ids;
 use crate::g2p::{english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
 use crate::models::{Fetcher, ModelCache, Progress};
 use crate::providers::Tts;
 use crate::speech_text::{speak_text_for_tts, take_sentences, ThinkFilter};
+#[cfg(not(coverage))]
 use crate::types::DEFAULT_SAMPLE_RATE_HZ;
 use crate::types::{GenerationId, SynthesizedAudio, TokenChunk, TurnId};
 
@@ -55,13 +58,6 @@ pub const QWEN_TTS_MMPROJ_ASSET: &str = "qwen3-tts-mmproj";
 
 /// Text → TTS → Whisper round-trip: at least 80% of reference words, in order.
 pub const TTS_ASR_MIN_WORD_MATCH: f64 = 0.8;
-
-#[cfg_attr(coverage, allow(dead_code))]
-pub(crate) const VOICE_ROWS: usize = 510;
-#[cfg_attr(coverage, allow(dead_code))]
-pub(crate) const STYLE_DIM: usize = 256;
-#[cfg_attr(coverage, allow(dead_code))]
-pub(crate) const VOICE_BYTES: usize = VOICE_ROWS * STYLE_DIM * 4;
 
 /// Per-generation sentence buffering shared by both providers.
 #[derive(Default)]
@@ -167,7 +163,10 @@ impl KokoroTts {
     #[cfg(not(coverage))]
     pub fn from_paths(model: impl AsRef<Path>, voice: impl AsRef<Path>) -> Result<Self> {
         let engine = OrtKokoro::load(model.as_ref(), voice.as_ref())?;
-        Ok(Self::from_engine(Box::new(engine)))
+        Ok(Self {
+            core: ChunkState::default(),
+            engine: Arc::new(Mutex::new(Box::new(engine))),
+        })
     }
 
     /// Resolve Kokoro assets from the manifest cache, then load them.
@@ -196,17 +195,12 @@ impl KokoroTts {
         Self::from_paths(model_path, voice_path)
     }
 
-    #[cfg_attr(coverage, allow(dead_code))]
-    fn from_engine(engine: Box<dyn WaveformEngine>) -> Self {
+    #[cfg(test)]
+    fn with_engine(engine: Box<dyn WaveformEngine>) -> Self {
         Self {
             core: ChunkState::default(),
             engine: Arc::new(Mutex::new(engine)),
         }
-    }
-
-    #[cfg(test)]
-    fn with_engine(engine: Box<dyn WaveformEngine>) -> Self {
-        Self::from_engine(engine)
     }
 }
 
@@ -291,7 +285,11 @@ impl QwenTts {
         seed: u32,
     ) -> Result<Self> {
         let engine = NativeQwen::load_with_seed(model.as_ref(), mmproj.as_ref(), language, seed)?;
-        Ok(Self::from_engine(Box::new(engine), selected))
+        Ok(Self {
+            core: ChunkState::default(),
+            engine: Arc::new(Mutex::new(Box::new(engine))),
+            model: selected,
+        })
     }
 
     /// Resolve the selected Qwen3-TTS backbone plus its matching mmproj from
@@ -327,18 +325,13 @@ impl QwenTts {
         Self::from_paths(model_path, mmproj_path, language, selected)
     }
 
-    #[cfg_attr(coverage, allow(dead_code))]
-    fn from_engine(engine: Box<dyn WaveformEngine>, model: TtsModel) -> Self {
+    #[cfg(test)]
+    fn with_engine(engine: Box<dyn WaveformEngine>, model: TtsModel) -> Self {
         Self {
             core: ChunkState::default(),
             engine: Arc::new(Mutex::new(engine)),
             model,
         }
-    }
-
-    #[cfg(test)]
-    fn with_engine(engine: Box<dyn WaveformEngine>, model: TtsModel) -> Self {
-        Self::from_engine(engine, model)
     }
 
     /// Whether the native self-voice anchor engaged at load. `false` means
@@ -698,112 +691,122 @@ mod native {
         // Safety: `user_data` is `&Cancel` for the duration of the synthesis.
         unsafe { (*(user_data as *const Cancel)).is_shutdown() }
     }
-}
 
-/// Convert an engine's native-rate mono PCM to the 16 kHz pipeline format.
-#[cfg_attr(coverage, allow(dead_code))]
-pub(crate) fn resample_i16_to_v0(samples: &[i16], rate_hz: i32) -> Vec<i16> {
-    let f32_pcm: Vec<f32> = samples.iter().map(|s| f32::from(*s) / 32_767.0).collect();
-    let mut conv = PcmConverter::new(
-        PcmFormat {
-            sample_rate_hz: rate_hz.max(1) as u32,
-            channels: 1,
-        },
-        PcmFormat {
-            sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
-            channels: 1,
-        },
-    )
-    .expect("engine rates are valid conversions");
-    let mut out_f32 = conv.push(&f32_pcm);
-    out_f32.extend(conv.flush());
-    let mut pcm = f32_to_i16(&out_f32);
-    if pcm.is_empty() {
-        pcm.push(0);
+    pub(super) const VOICE_ROWS: usize = 510;
+    pub(super) const STYLE_DIM: usize = 256;
+    pub(super) const VOICE_BYTES: usize = VOICE_ROWS * STYLE_DIM * 4;
+
+    const KOKORO_PAD_ID: i64 = 0;
+
+    fn pad_input_ids(ids: &[i64]) -> Vec<i64> {
+        let mut out = Vec::with_capacity(ids.len() + 2);
+        out.push(KOKORO_PAD_ID);
+        out.extend_from_slice(ids);
+        out.push(KOKORO_PAD_ID);
+        out
     }
-    pcm
-}
 
-#[cfg_attr(coverage, allow(dead_code))]
-pub(crate) fn phoneme_windows(sentence: &str) -> Result<Vec<Vec<i64>>> {
-    match english_to_kokoro_ids(sentence) {
-        Ok(ids) => Ok(vec![ids]),
-        Err(_) => {
-            let mut windows = Vec::new();
-            let mut acc = String::new();
-            for word in sentence.split_whitespace() {
-                let trial = if acc.is_empty() {
-                    word.to_string()
-                } else {
-                    format!("{acc} {word}")
-                };
-                match english_to_kokoro_ids(&trial) {
-                    Ok(_) => acc = trial,
-                    Err(_) => {
-                        if !acc.is_empty() {
-                            windows.push(english_to_kokoro_ids(&acc)?);
-                        }
-                        acc = word.to_string();
-                        if english_to_kokoro_ids(&acc)
-                            .map(|ids| ids.len())
-                            .unwrap_or(usize::MAX)
-                            > KOKORO_MAX_PHONEME_TOKENS
-                        {
-                            return Err(Error::Provider {
-                                provider: "kokoro",
-                                message: "word exceeds Kokoro phoneme context".into(),
-                            });
+    /// Convert an engine's native-rate mono PCM to the 16 kHz pipeline format.
+    pub(super) fn resample_i16_to_v0(samples: &[i16], rate_hz: i32) -> Vec<i16> {
+        let f32_pcm: Vec<f32> = samples.iter().map(|s| f32::from(*s) / 32_767.0).collect();
+        let mut conv = PcmConverter::new(
+            PcmFormat {
+                sample_rate_hz: rate_hz.max(1) as u32,
+                channels: 1,
+            },
+            PcmFormat {
+                sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
+                channels: 1,
+            },
+        )
+        .expect("engine rates are valid conversions");
+        let mut out_f32 = conv.push(&f32_pcm);
+        out_f32.extend(conv.flush());
+        let mut pcm = f32_to_i16(&out_f32);
+        if pcm.is_empty() {
+            pcm.push(0);
+        }
+        pcm
+    }
+
+    pub(super) fn phoneme_windows(sentence: &str) -> Result<Vec<Vec<i64>>> {
+        match english_to_kokoro_ids(sentence) {
+            Ok(ids) => Ok(vec![ids]),
+            Err(_) => {
+                let mut windows = Vec::new();
+                let mut acc = String::new();
+                for word in sentence.split_whitespace() {
+                    let trial = if acc.is_empty() {
+                        word.to_string()
+                    } else {
+                        format!("{acc} {word}")
+                    };
+                    match english_to_kokoro_ids(&trial) {
+                        Ok(_) => acc = trial,
+                        Err(_) => {
+                            if !acc.is_empty() {
+                                windows.push(english_to_kokoro_ids(&acc)?);
+                            }
+                            acc = word.to_string();
+                            if english_to_kokoro_ids(&acc)
+                                .map(|ids| ids.len())
+                                .unwrap_or(usize::MAX)
+                                > KOKORO_MAX_PHONEME_TOKENS
+                            {
+                                return Err(Error::Provider {
+                                    provider: "kokoro",
+                                    message: "word exceeds Kokoro phoneme context".into(),
+                                });
+                            }
                         }
                     }
                 }
+                if !acc.is_empty() {
+                    windows.push(english_to_kokoro_ids(&acc)?);
+                }
+                Ok(windows)
             }
-            if !acc.is_empty() {
-                windows.push(english_to_kokoro_ids(&acc)?);
-            }
-            Ok(windows)
         }
     }
-}
 
-#[cfg_attr(coverage, allow(dead_code))]
-pub(crate) fn resample_to_v0(native: &[f32]) -> Vec<i16> {
-    let mut conv = PcmConverter::new(
-        PcmFormat {
-            sample_rate_hz: KOKORO_NATIVE_RATE_HZ,
-            channels: 1,
-        },
-        PcmFormat {
-            sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
-            channels: 1,
-        },
-    )
-    .expect("24 kHz to 16 kHz is a valid conversion");
-    let mut f32_pcm = conv.push(native);
-    f32_pcm.extend(conv.flush());
-    f32_to_i16(&f32_pcm)
-}
-
-#[cfg_attr(coverage, allow(dead_code))]
-pub(crate) fn load_voice(path: &Path) -> Result<Vec<Vec<f32>>> {
-    let bytes = fs::read(path)?;
-    if bytes.len() != VOICE_BYTES {
-        return Err(Error::Provider {
-            provider: "kokoro",
-            message: format!(
-                "af_heart.bin must be {VOICE_BYTES} bytes; got {}",
-                bytes.len()
-            ),
-        });
+    pub(super) fn resample_to_v0(native: &[f32]) -> Vec<i16> {
+        let mut conv = PcmConverter::new(
+            PcmFormat {
+                sample_rate_hz: KOKORO_NATIVE_RATE_HZ,
+                channels: 1,
+            },
+            PcmFormat {
+                sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
+                channels: 1,
+            },
+        )
+        .expect("24 kHz to 16 kHz is a valid conversion");
+        let mut f32_pcm = conv.push(native);
+        f32_pcm.extend(conv.flush());
+        f32_to_i16(&f32_pcm)
     }
-    let mut rows = Vec::with_capacity(VOICE_ROWS);
-    for chunk in bytes.chunks_exact(STYLE_DIM * 4) {
-        let mut style = vec![0.0_f32; STYLE_DIM];
-        for (slot, fbytes) in style.iter_mut().zip(chunk.chunks_exact(4)) {
-            *slot = f32::from_le_bytes(fbytes.try_into().expect("4-byte float"));
+
+    pub(super) fn load_voice(path: &Path) -> Result<Vec<Vec<f32>>> {
+        let bytes = fs::read(path)?;
+        if bytes.len() != VOICE_BYTES {
+            return Err(Error::Provider {
+                provider: "kokoro",
+                message: format!(
+                    "af_heart.bin must be {VOICE_BYTES} bytes; got {}",
+                    bytes.len()
+                ),
+            });
         }
-        rows.push(style);
+        let mut rows = Vec::with_capacity(VOICE_ROWS);
+        for chunk in bytes.chunks_exact(STYLE_DIM * 4) {
+            let mut style = vec![0.0_f32; STYLE_DIM];
+            for (slot, fbytes) in style.iter_mut().zip(chunk.chunks_exact(4)) {
+                *slot = f32::from_le_bytes(fbytes.try_into().expect("4-byte float"));
+            }
+            rows.push(style);
+        }
+        Ok(rows)
     }
-    Ok(rows)
 }
 
 #[cfg(not(coverage))]
@@ -816,8 +819,13 @@ fn ort_error(error: ort::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(coverage))]
+    use super::native::{
+        load_voice, phoneme_windows, resample_i16_to_v0, resample_to_v0, STYLE_DIM, VOICE_BYTES,
+        VOICE_ROWS,
+    };
     use super::*;
-    use crate::types::DEFAULT_CHANNELS;
+    use crate::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ};
     use std::sync::{Arc, Mutex};
 
     struct ScriptedEngine {
@@ -1070,6 +1078,7 @@ mod tests {
         assert!(err.to_string().contains("qwen3-tts-06b"));
     }
 
+    #[cfg(not(coverage))]
     #[test]
     fn resample_i16_native_rates_reach_16k() {
         let rate = 24_000_i32;
@@ -1097,6 +1106,7 @@ mod tests {
         ));
     }
 
+    #[cfg(not(coverage))]
     #[test]
     fn load_voice_rejects_wrong_size() {
         let dir = std::env::temp_dir().join(format!(
@@ -1122,6 +1132,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(not(coverage))]
     #[test]
     fn load_voice_reads_fixed_style_table() {
         let dir = std::env::temp_dir().join(format!(
@@ -1141,6 +1152,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(not(coverage))]
     #[test]
     fn phoneme_windows_split_overlong_sentences() {
         let windows = phoneme_windows(&"hello ".repeat(400)).unwrap();
@@ -1151,6 +1163,7 @@ mod tests {
         assert!(windows.iter().all(|w| !w.is_empty()));
     }
 
+    #[cfg(not(coverage))]
     #[test]
     fn resample_24k_to_16k_keeps_energy() {
         let native: Vec<f32> = (0..240).map(|i| (i as f32 / 24.0).sin()).collect();

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+#[cfg(not(coverage))]
 use std::time::Duration;
 
 use syllabix_native::ChatMessage;
@@ -17,9 +18,6 @@ use crate::providers::Llm;
 use crate::types::{
     HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript,
 };
-
-#[cfg(all(not(coverage), test))]
-use native::{abort_on_stall, GenerationAbort};
 
 /// Manifest id for the default Qwen3.5 0.8B instruct GGUF.
 pub const QWEN35_08B_ASSET: &str = "qwen3.5-0.8b";
@@ -106,15 +104,6 @@ pub const LLAMA_MAX_HISTORY_TURNS: usize = 8;
 /// Native cancel must surface as [`Error::Cancelled`] within this window.
 /// Full GGUF `n_ctx` makes one `llama_decode` heavier than the old 2048-slot cap.
 pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// End a stalled local generation promptly, rather than leaving the TUI on an
-/// unfinished turn. Each emitted token resets this timer, re-armed after the
-/// downstream consumer returns so slow TTS backpressure is never mistaken
-/// for a model stall. Sized for slow first tokens, not just stalled ones:
-/// the local harness measured 4.6-5.0 s to first token on long Markdown
-/// tool-result contexts, so 4 s truncated real answers into silent empties.
-#[cfg_attr(coverage, allow(dead_code))]
-pub const LLAMA_TOKEN_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Every yaml-selectable local GGUF id, default first.
 pub const V0_LLM_MODELS: [&str; 6] = [
@@ -946,6 +935,11 @@ mod native {
 
     use syllabix_native::{LlamaContext, LlamaError, LlamaGenerate};
 
+    /// End a stalled local generation promptly, rather than leaving the TUI
+    /// on an unfinished turn. This belongs with the native callback that
+    /// consumes it; coverage never compiles that FFI boundary.
+    pub(super) const LLAMA_TOKEN_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+
     pub(super) struct LlamaEngine {
         ctx: LlamaContext,
     }
@@ -1185,6 +1179,23 @@ mod native {
         std::thread::available_parallelism()
             .map(|n| n.get().min(4) as i32)
             .unwrap_or(1)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::time::Instant;
+
+        #[test]
+        fn stalled_abort_is_reported() {
+            let cancel = Cancel::new();
+            let state = GenerationAbort::new(&cancel);
+            *state.last_token.lock().unwrap() = Instant::now() - LLAMA_TOKEN_STALL_TIMEOUT;
+            assert!(unsafe {
+                abort_on_stall((&state as *const GenerationAbort).cast_mut().cast())
+            });
+            assert!(state.timed_out());
+        }
     }
 }
 
@@ -1659,8 +1670,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::thread;
     use std::time::Duration;
-    #[cfg(not(coverage))]
-    use std::time::Instant;
 
     struct ScriptedEngine {
         pieces: Vec<String>,
@@ -2610,16 +2619,6 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "rejected");
         assert!(events[0].content.contains("thinking bound"));
-    }
-
-    #[test]
-    #[cfg(not(coverage))]
-    fn stalled_abort_is_reported() {
-        let cancel = Cancel::new();
-        let state = GenerationAbort::new(&cancel);
-        *state.last_token.lock().unwrap() = Instant::now() - LLAMA_TOKEN_STALL_TIMEOUT;
-        assert!(unsafe { abort_on_stall((&state as *const GenerationAbort).cast_mut().cast()) });
-        assert!(state.timed_out());
     }
 
     #[test]
