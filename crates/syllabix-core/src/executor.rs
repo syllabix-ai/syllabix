@@ -1756,7 +1756,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(coverage)))]
     #[test]
     fn seatbelt_blocks_writes_and_network() {
         let provider = current_provider();

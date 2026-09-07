@@ -17,7 +17,7 @@ use crate::policy::{Enforcement, FilesystemMode, NetworkMode};
 
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(coverage)))]
 mod macos;
 
 /// Inputs needed to construct an OS sandbox for one invocation.
@@ -97,9 +97,13 @@ pub trait SandboxProvider: Send + Sync {
 
 /// Provider selected for the current host. Unsupported hosts fail closed.
 pub fn current_provider() -> Box<dyn SandboxProvider> {
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(coverage)))]
     {
         Box::new(macos::MacOsSandboxProvider)
+    }
+    #[cfg(all(target_os = "macos", coverage))]
+    {
+        Box::new(UnavailableSandboxProvider)
     }
     #[cfg(target_os = "linux")]
     {
@@ -129,7 +133,7 @@ impl SandboxProvider for UnavailableSandboxProvider {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(coverage)))]
 pub use macos::MacOsSandboxProvider;
 
 #[cfg(target_os = "linux")]
@@ -250,6 +254,75 @@ mod tests {
             validate_request(&request).unwrap_err().code,
             "SANDBOX_INVALID_REQUEST"
         );
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_provider_fails_closed() {
+        let provider = current_provider();
+        let request = request(FilesystemMode::ReadOnly);
+        assert_eq!(
+            provider.probe(&request).unwrap_err().code,
+            "SANDBOX_UNAVAILABLE"
+        );
+        assert_eq!(
+            provider
+                .command(&request, Path::new("/bin/true"), &[])
+                .unwrap_err()
+                .code,
+            "SANDBOX_UNAVAILABLE"
+        );
+    }
+
+    #[test]
+    fn validation_and_path_helpers_cover_normal_requests() {
+        let root = std::env::temp_dir().join(format!(
+            "syllabix-sandbox-validation-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        let temp = root.join("temp");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&temp).unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        let temp = temp.canonicalize().unwrap();
+        let request = SandboxRequest::new(
+            &workspace,
+            &temp,
+            FilesystemMode::ReadOnly,
+            NetworkMode::None,
+        );
+
+        assert!(validate_request(&request).is_ok());
+        assert!(outside_probe_path(&request).is_ok());
+        assert_eq!(shell_quote_single(Path::new("/tmp/a'b")), "/tmp/a'\\''b");
+        assert_eq!(
+            SandboxError::invalid("bad").to_string(),
+            "SANDBOX_INVALID_REQUEST: bad"
+        );
+
+        let mut root_request = request.clone();
+        root_request.workspace = PathBuf::from("/");
+        assert_eq!(
+            validate_request(&root_request).unwrap_err().code,
+            "SANDBOX_INVALID_REQUEST"
+        );
+
+        let mut missing_request = request.clone();
+        missing_request.workspace = root.join("missing");
+        assert_eq!(
+            validate_request(&missing_request).unwrap_err().code,
+            "SANDBOX_INVALID_REQUEST"
+        );
+
+        let mut noncanonical_request = request.clone();
+        noncanonical_request.workspace = root.join("workspace/../workspace");
+        assert_eq!(
+            validate_request(&noncanonical_request).unwrap_err().code,
+            "SANDBOX_INVALID_REQUEST"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(target_os = "linux")]

@@ -103,7 +103,7 @@ pub use policy::{Enforcement, ExecutionPlan, Provenance};
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
 pub use real::{build_llm, build_stt, build_tts, load_real_providers, LiveLlm, LiveStt, LiveTts};
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(coverage)))]
 pub use sandbox::MacOsSandboxProvider;
 pub use sandbox::{
     current_provider, SandboxError, SandboxProvider, SandboxRequest, UnavailableSandboxProvider,

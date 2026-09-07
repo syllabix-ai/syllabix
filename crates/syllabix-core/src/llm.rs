@@ -1,12 +1,10 @@
 //! In-process llama.cpp GGUF language model.
 
-use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use syllabix_native::{ChatMessage, LlamaContext, LlamaError, LlamaGenerate};
+use syllabix_native::ChatMessage;
 
 use crate::cancel::Cancel;
 use crate::defaults::BuiltinDefaults;
@@ -19,6 +17,9 @@ use crate::providers::Llm;
 use crate::types::{
     HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript,
 };
+
+#[cfg(all(not(coverage), test))]
+use native::{abort_on_stall, GenerationAbort};
 
 /// Manifest id for the default Qwen3.5 0.8B instruct GGUF.
 pub const QWEN35_08B_ASSET: &str = "qwen3.5-0.8b";
@@ -160,8 +161,9 @@ impl Clone for LlamaLlm {
 
 impl LlamaLlm {
     /// Load a GGUF from disk.
+    #[cfg(not(coverage))]
     pub fn from_model_path(path: impl AsRef<Path>) -> Result<Self> {
-        let engine = LlamaEngine::load(path.as_ref())?;
+        let engine = native::LlamaEngine::load(path.as_ref())?;
         Ok(Self {
             engine: Arc::new(Mutex::new(Box::new(engine))),
             calls: Arc::new(Mutex::new(Vec::new())),
@@ -176,6 +178,17 @@ impl LlamaLlm {
             developer_harness: false,
             developer_permissions: DeveloperPermissions::default_session(),
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        })
+    }
+
+    /// Coverage never loads native GGUF weights; keep the constructor as a
+    /// callable seam for tests that validate cache and provider errors.
+    #[cfg(coverage)]
+    pub fn from_model_path(path: impl AsRef<Path>) -> Result<Self> {
+        let _ = path;
+        Err(Error::Provider {
+            provider: BuiltinDefaults::v0().llm.as_str(),
+            message: "llama.cpp inference is not loaded in coverage tests".into(),
         })
     }
 
@@ -923,244 +936,255 @@ trait Engine: Send {
     }
 }
 
-struct LlamaEngine {
-    ctx: LlamaContext,
-}
+#[cfg(not(coverage))]
+mod native {
+    use super::*;
+    use std::os::raw::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
 
-impl LlamaEngine {
-    fn load(path: &Path) -> Result<Self> {
-        let ctx = LlamaContext::load(path, thread_count()).map_err(|message| Error::Provider {
-            provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
-            message,
-        })?;
-        Ok(Self { ctx })
-    }
-}
+    use syllabix_native::{LlamaContext, LlamaError, LlamaGenerate};
 
-impl Engine for LlamaEngine {
-    fn prompt_token_count(
-        &mut self,
-        messages: &[ChatMessage],
-        append_thinking_off_suffix: bool,
-    ) -> Result<usize> {
-        self.ctx
-            .prompt_token_count(messages, append_thinking_off_suffix)
-            .map_err(|err| Error::Provider {
-                provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
-                message: format!("{err:?}"),
-            })
+    pub(super) struct LlamaEngine {
+        ctx: LlamaContext,
     }
 
-    fn generate(
-        &mut self,
-        messages: &[ChatMessage],
-        append_thinking_off_suffix: bool,
-        cancel: &Cancel,
-        on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
-    ) -> Result<()> {
-        if cancel.is_shutdown() {
-            return Err(Error::Cancelled);
+    impl LlamaEngine {
+        pub(super) fn load(path: &Path) -> Result<Self> {
+            let ctx =
+                LlamaContext::load(path, thread_count()).map_err(|message| Error::Provider {
+                    provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
+                    message,
+                })?;
+            Ok(Self { ctx })
         }
-        let abort = GenerationAbort::new(cancel);
-        let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
-        let outcome = unsafe {
-            self.ctx.generate(
-                messages,
-                LlamaGenerate {
-                    append_thinking_off_suffix,
-                    n_threads: thread_count(),
-                },
-                Some(abort_on_stall),
-                abort_user,
-                &mut |text, is_last| {
-                    abort.note_token();
-                    match on_piece(text, is_last) {
-                        Ok(()) => {
-                            // Re-arm after the downstream consumer returns:
-                            // a slow token queue / TTS worker is backpressure,
-                            // not a model stall.
-                            abort.note_token();
-                            Ok(())
-                        }
-                        Err(Error::Cancelled) => Err(LlamaError::Cancelled),
-                        Err(err) => Err(LlamaError::Failed(err.to_string())),
-                    }
-                },
-            )
-        };
-        finish_native(outcome, &abort, cancel, on_piece)
     }
 
-    fn generate_with_tools(
-        &mut self,
-        messages: &[ChatMessage],
-        tools_json: &str,
-        append_thinking_off_suffix: bool,
-        cancel: &Cancel,
-        on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
-    ) -> Result<()> {
-        if cancel.is_shutdown() {
-            return Err(Error::Cancelled);
+    impl Engine for LlamaEngine {
+        fn prompt_token_count(
+            &mut self,
+            messages: &[ChatMessage],
+            append_thinking_off_suffix: bool,
+        ) -> Result<usize> {
+            self.ctx
+                .prompt_token_count(messages, append_thinking_off_suffix)
+                .map_err(|err| Error::Provider {
+                    provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
+                    message: format!("{err:?}"),
+                })
         }
-        let abort = GenerationAbort::new(cancel);
-        let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
-        let c_tools = tools_json.to_string();
-        let outcome = unsafe {
-            self.ctx.generate_with_tools(
-                messages,
-                &c_tools,
-                LlamaGenerate {
-                    append_thinking_off_suffix,
-                    n_threads: thread_count(),
-                },
-                Some(abort_on_stall),
-                abort_user,
-                &mut |text, is_last| {
-                    abort.note_token();
-                    match on_piece(text, is_last) {
-                        Ok(()) => {
-                            // Re-arm after the downstream consumer returns:
-                            // a slow token queue / TTS worker is backpressure,
-                            // not a model stall.
-                            abort.note_token();
-                            Ok(())
-                        }
-                        Err(Error::Cancelled) => Err(LlamaError::Cancelled),
-                        Err(err) => Err(LlamaError::Failed(err.to_string())),
-                    }
-                },
-            )
-        };
-        finish_native(outcome, &abort, cancel, on_piece)
-    }
 
-    fn generate_with_lfm_tools(
-        &mut self,
-        messages: &[ChatMessage],
-        tools_json: &str,
-        cancel: &Cancel,
-        on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
-    ) -> Result<()> {
-        if cancel.is_shutdown() {
-            return Err(Error::Cancelled);
-        }
-        let abort = GenerationAbort::new(cancel);
-        let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
-        let c_tools = tools_json.to_string();
-        let outcome = unsafe {
-            self.ctx.generate_with_lfm_tools(
-                messages,
-                &c_tools,
-                LlamaGenerate {
-                    append_thinking_off_suffix: false,
-                    n_threads: thread_count(),
-                },
-                Some(abort_on_stall),
-                abort_user,
-                &mut |text, is_last| {
-                    abort.note_token();
-                    match on_piece(text, is_last) {
-                        Ok(()) => {
-                            // Re-arm after the downstream consumer returns:
-                            // a slow token queue / TTS worker is backpressure,
-                            // not a model stall.
-                            abort.note_token();
-                            Ok(())
-                        }
-                        Err(Error::Cancelled) => Err(LlamaError::Cancelled),
-                        Err(err) => Err(LlamaError::Failed(err.to_string())),
-                    }
-                },
-            )
-        };
-        finish_native(outcome, &abort, cancel, on_piece)
-    }
-
-    fn context_window(&self) -> Option<(i32, i32)> {
-        Some((self.ctx.n_ctx(), self.ctx.n_ctx_train()))
-    }
-}
-
-fn finish_native(
-    outcome: std::result::Result<(), LlamaError>,
-    abort: &GenerationAbort<'_>,
-    cancel: &Cancel,
-    on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
-) -> Result<()> {
-    match outcome {
-        Ok(()) => {
+        fn generate(
+            &mut self,
+            messages: &[ChatMessage],
+            append_thinking_off_suffix: bool,
+            cancel: &Cancel,
+            on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
+        ) -> Result<()> {
             if cancel.is_shutdown() {
-                Err(Error::Cancelled)
-            } else {
-                Ok(())
+                return Err(Error::Cancelled);
+            }
+            let abort = GenerationAbort::new(cancel);
+            let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
+            let outcome = unsafe {
+                self.ctx.generate(
+                    messages,
+                    LlamaGenerate {
+                        append_thinking_off_suffix,
+                        n_threads: thread_count(),
+                    },
+                    Some(abort_on_stall),
+                    abort_user,
+                    &mut |text, is_last| {
+                        abort.note_token();
+                        match on_piece(text, is_last) {
+                            Ok(()) => {
+                                // Re-arm after the downstream consumer returns:
+                                // a slow token queue / TTS worker is backpressure,
+                                // not a model stall.
+                                abort.note_token();
+                                Ok(())
+                            }
+                            Err(Error::Cancelled) => Err(LlamaError::Cancelled),
+                            Err(err) => Err(LlamaError::Failed(err.to_string())),
+                        }
+                    },
+                )
+            };
+            finish_native(outcome, &abort, cancel, on_piece)
+        }
+
+        fn generate_with_tools(
+            &mut self,
+            messages: &[ChatMessage],
+            tools_json: &str,
+            append_thinking_off_suffix: bool,
+            cancel: &Cancel,
+            on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
+        ) -> Result<()> {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            let abort = GenerationAbort::new(cancel);
+            let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
+            let c_tools = tools_json.to_string();
+            let outcome = unsafe {
+                self.ctx.generate_with_tools(
+                    messages,
+                    &c_tools,
+                    LlamaGenerate {
+                        append_thinking_off_suffix,
+                        n_threads: thread_count(),
+                    },
+                    Some(abort_on_stall),
+                    abort_user,
+                    &mut |text, is_last| {
+                        abort.note_token();
+                        match on_piece(text, is_last) {
+                            Ok(()) => {
+                                // Re-arm after the downstream consumer returns:
+                                // a slow token queue / TTS worker is backpressure,
+                                // not a model stall.
+                                abort.note_token();
+                                Ok(())
+                            }
+                            Err(Error::Cancelled) => Err(LlamaError::Cancelled),
+                            Err(err) => Err(LlamaError::Failed(err.to_string())),
+                        }
+                    },
+                )
+            };
+            finish_native(outcome, &abort, cancel, on_piece)
+        }
+
+        fn generate_with_lfm_tools(
+            &mut self,
+            messages: &[ChatMessage],
+            tools_json: &str,
+            cancel: &Cancel,
+            on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
+        ) -> Result<()> {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            let abort = GenerationAbort::new(cancel);
+            let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
+            let c_tools = tools_json.to_string();
+            let outcome = unsafe {
+                self.ctx.generate_with_lfm_tools(
+                    messages,
+                    &c_tools,
+                    LlamaGenerate {
+                        append_thinking_off_suffix: false,
+                        n_threads: thread_count(),
+                    },
+                    Some(abort_on_stall),
+                    abort_user,
+                    &mut |text, is_last| {
+                        abort.note_token();
+                        match on_piece(text, is_last) {
+                            Ok(()) => {
+                                // Re-arm after the downstream consumer returns:
+                                // a slow token queue / TTS worker is backpressure,
+                                // not a model stall.
+                                abort.note_token();
+                                Ok(())
+                            }
+                            Err(Error::Cancelled) => Err(LlamaError::Cancelled),
+                            Err(err) => Err(LlamaError::Failed(err.to_string())),
+                        }
+                    },
+                )
+            };
+            finish_native(outcome, &abort, cancel, on_piece)
+        }
+
+        fn context_window(&self) -> Option<(i32, i32)> {
+            Some((self.ctx.n_ctx(), self.ctx.n_ctx_train()))
+        }
+    }
+
+    fn finish_native(
+        outcome: std::result::Result<(), LlamaError>,
+        abort: &GenerationAbort<'_>,
+        cancel: &Cancel,
+        on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
+    ) -> Result<()> {
+        match outcome {
+            Ok(()) => {
+                if cancel.is_shutdown() {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            }
+            Err(LlamaError::Cancelled) if abort.timed_out() => {
+                // A terminal empty chunk lets TTS emit its tiny completion
+                // chunk, so the pipeline records timings and returns to
+                // listening instead of leaving the TUI mid-turn.
+                on_piece("", true)
+            }
+            Err(LlamaError::Cancelled) => Err(Error::Cancelled),
+            Err(LlamaError::Failed(_)) if cancel.is_shutdown() => Err(Error::Cancelled),
+            Err(LlamaError::Failed(message)) => Err(Error::Provider {
+                provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
+                message,
+            }),
+        }
+    }
+
+    pub(super) struct GenerationAbort<'a> {
+        pub(super) cancel: &'a Cancel,
+        pub(super) last_token: Mutex<Instant>,
+        pub(super) timed_out: AtomicBool,
+    }
+
+    impl<'a> GenerationAbort<'a> {
+        pub(super) fn new(cancel: &'a Cancel) -> Self {
+            Self {
+                cancel,
+                last_token: Mutex::new(Instant::now()),
+                timed_out: AtomicBool::new(false),
             }
         }
-        Err(LlamaError::Cancelled) if abort.timed_out() => {
-            // A terminal empty chunk lets TTS emit its tiny completion
-            // chunk, so the pipeline records timings and returns to
-            // listening instead of leaving the TUI mid-turn.
-            on_piece("", true)
+
+        pub(super) fn note_token(&self) {
+            *self.last_token.lock().expect("llama token timer") = Instant::now();
         }
-        Err(LlamaError::Cancelled) => Err(Error::Cancelled),
-        Err(LlamaError::Failed(_)) if cancel.is_shutdown() => Err(Error::Cancelled),
-        Err(LlamaError::Failed(message)) => Err(Error::Provider {
-            provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
-            message,
-        }),
-    }
-}
 
-struct GenerationAbort<'a> {
-    cancel: &'a Cancel,
-    last_token: Mutex<Instant>,
-    timed_out: AtomicBool,
-}
-
-impl<'a> GenerationAbort<'a> {
-    fn new(cancel: &'a Cancel) -> Self {
-        Self {
-            cancel,
-            last_token: Mutex::new(Instant::now()),
-            timed_out: AtomicBool::new(false),
+        pub(super) fn timed_out(&self) -> bool {
+            self.timed_out.load(Ordering::SeqCst)
         }
     }
 
-    fn note_token(&self) {
-        *self.last_token.lock().expect("llama token timer") = Instant::now();
+    pub(super) unsafe extern "C" fn abort_on_stall(user_data: *mut c_void) -> bool {
+        if user_data.is_null() {
+            return false;
+        }
+        // Safety: `user_data` is a `GenerationAbort` for the duration of this
+        // llama.cpp call.
+        let state = unsafe { &*(user_data as *const GenerationAbort<'_>) };
+        if state.cancel.is_shutdown() {
+            return true;
+        }
+        if state
+            .last_token
+            .lock()
+            .expect("llama token timer")
+            .elapsed()
+            >= LLAMA_TOKEN_STALL_TIMEOUT
+        {
+            state.timed_out.store(true, Ordering::SeqCst);
+            return true;
+        }
+        false
     }
 
-    fn timed_out(&self) -> bool {
-        self.timed_out.load(Ordering::SeqCst)
+    fn thread_count() -> i32 {
+        std::thread::available_parallelism()
+            .map(|n| n.get().min(4) as i32)
+            .unwrap_or(1)
     }
-}
-
-unsafe extern "C" fn abort_on_stall(user_data: *mut c_void) -> bool {
-    if user_data.is_null() {
-        return false;
-    }
-    // Safety: `user_data` is a `GenerationAbort` for the duration of this
-    // llama.cpp call.
-    let state = unsafe { &*(user_data as *const GenerationAbort<'_>) };
-    if state.cancel.is_shutdown() {
-        return true;
-    }
-    if state
-        .last_token
-        .lock()
-        .expect("llama token timer")
-        .elapsed()
-        >= LLAMA_TOKEN_STALL_TIMEOUT
-    {
-        state.timed_out.store(true, Ordering::SeqCst);
-        return true;
-    }
-    false
-}
-
-fn thread_count() -> i32 {
-    std::thread::available_parallelism()
-        .map(|n| n.get().min(4) as i32)
-        .unwrap_or(1)
 }
 
 fn is_thinking_tag_supported_model(model_id: &str) -> bool {
@@ -1633,7 +1657,7 @@ mod tests {
     use crate::types::TurnId;
     use std::collections::VecDeque;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     struct ScriptedEngine {
         pieces: Vec<String>,
@@ -2586,6 +2610,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(coverage))]
     fn stalled_abort_is_reported() {
         let cancel = Cancel::new();
         let state = GenerationAbort::new(&cancel);
