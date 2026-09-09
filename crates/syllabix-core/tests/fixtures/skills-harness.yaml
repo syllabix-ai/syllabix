@@ -6,5 +6,5 @@ pipeline:
   tts: { provider: local, model: kokoro }
 skills:
   roots:
-    - path: .syllabix/skills
+    - path: .skills
       source: repository

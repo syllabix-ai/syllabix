@@ -61,6 +61,9 @@ pub use dist::{
     SHA256SUMS_FILE_NAME,
 };
 pub use error::{Error, Result};
+pub use executor::{
+    execute_skill, execute_with_permissions_and_skills, ShellRequest, SkillRequest, ValidatedCall,
+};
 pub use fake::{
     scripted_frames, CollectingSink, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt,
     FakeTts, FakeVad, LlmCall, ScriptedStt,
@@ -115,8 +118,10 @@ pub use sandbox::{
     BubblewrapSandboxProvider, LandlockSandboxProvider, LinuxSandboxProvider, LinuxSandboxRunner,
 };
 pub use skills::{
-    builtin_root, DiscoveredSkill, SkillDiagnostic, SkillDiscovery, SkillInput, SkillManifest,
-    SkillRoot, SkillSource, SkillsConfig, MAX_SKILL_DESCRIPTION_BYTES, MAX_SKILL_FILE_BYTES,
+    resolve_entrypoint_argv, validate_inputs, DiscoveredSkill, SkillDiagnostic, SkillDiscovery,
+    SkillEntrypoint, SkillInput, SkillManifest, SkillPermissions, SkillPin, SkillRoot, SkillSource,
+    SkillsConfig, DEFAULT_SKILL_TIMEOUT, MAX_SKILL_ARGV_VALUES, MAX_SKILL_ARGV_VALUE_BYTES,
+    MAX_SKILL_DESCRIPTION_BYTES, MAX_SKILL_FILE_BYTES, MAX_SKILL_TIMEOUT_SECONDS,
 };
 pub use speech_text::{
     speak_text_for_tts, strip_markdown_for_speech, strip_think_for_speech, take_sentences,

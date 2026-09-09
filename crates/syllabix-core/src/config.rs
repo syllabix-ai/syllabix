@@ -12,7 +12,7 @@ use crate::defaults::{
 use crate::error::{Error, Result};
 use crate::language::is_supported as is_supported_language;
 pub use crate::policy::{DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy};
-use crate::skills::{SkillRoot, SkillSource, SkillsConfig};
+use crate::skills::{SkillPin, SkillRoot, SkillSource, SkillsConfig};
 use crate::turn_debug::DEFAULT_TURN_DEBUG_DIR;
 use crate::vad::{VadSettings, END_SILENCE, MIN_SPEECH, SPEECH_THRESHOLD, WHISPER_PREROLL};
 
@@ -67,8 +67,7 @@ pub struct AgentConfig {
     /// (`pipeline.llm.developer_permissions`). Defaults to read-only /
     /// network none / secrets none. Rejected unless the harness is enabled.
     pub llm_developer_permissions: DeveloperPermissions,
-    /// Explicit repository/global skill roots.
-    /// The built-in read-only root is added by skill discovery.
+    /// Explicit user repository/global skill roots and optional content pins.
     pub skills: SkillsConfig,
     /// TTS provider (`local`; `online` is reserved and rejected).
     pub tts: TtsProvider,
@@ -135,14 +134,10 @@ impl AgentConfig {
         self.diagnostics_timestamps || self.diagnostics_audio
     }
 
-    /// Discover the built-in root and configured local skills for this
-    /// developer-harness workspace. The default spoken path does not call this.
+    /// Discover configured user skills for this developer-harness workspace.
+    /// The default spoken path does not call this.
     pub fn discover_skills(&self, workspace: &Path) -> crate::skills::SkillDiscovery {
-        crate::skills::SkillDiscovery::discover(
-            &crate::skills::builtin_root(),
-            workspace,
-            &self.skills,
-        )
+        crate::skills::SkillDiscovery::discover(workspace, &self.skills)
     }
 
     /// Parse and validate a yaml document.
@@ -263,17 +258,29 @@ pipeline:
         if self.skills == SkillsConfig::default() {
             return String::new();
         }
-        let mut output = String::from("skills:\n  roots:\n");
-        for root in &self.skills.roots {
-            output.push_str(&format!(
-                "    - path: {}\n      source: {}\n",
-                yaml_double_quoted(&root.path.display().to_string()),
-                match root.source {
-                    SkillSource::Global => "global",
-                    SkillSource::Repository => "repository",
-                    SkillSource::Builtin => "built-in",
-                }
-            ));
+        let mut output = String::from("skills:\n");
+        if !self.skills.roots.is_empty() {
+            output.push_str("  roots:\n");
+            for root in &self.skills.roots {
+                output.push_str(&format!(
+                    "    - path: {}\n      source: {}\n",
+                    yaml_double_quoted(&root.path.display().to_string()),
+                    match root.source {
+                        SkillSource::Global => "global",
+                        SkillSource::Repository => "repository",
+                    }
+                ));
+            }
+        }
+        if !self.skills.pins.is_empty() {
+            output.push_str("  pins:\n");
+            for binding in &self.skills.pins {
+                output.push_str(&format!(
+                    "    - path: {}\n      sha256: {}\n",
+                    yaml_double_quoted(&binding.path.display().to_string()),
+                    binding.sha256,
+                ));
+            }
         }
         output
     }
@@ -538,7 +545,7 @@ fn parse_skills(root: &serde_yaml::Mapping) -> Result<SkillsConfig> {
         return Ok(SkillsConfig::default());
     };
     let block = mapping(value, "skills")?;
-    deny_unknown(block, "skills", &["roots"])?;
+    deny_unknown(block, "skills", &["roots", "pins"])?;
 
     let mut roots = Vec::new();
     if let Some(value) = block.get("roots") {
@@ -583,7 +590,31 @@ fn parse_skills(root: &serde_yaml::Mapping) -> Result<SkillsConfig> {
             });
         }
     }
-    Ok(SkillsConfig { roots })
+    let mut pins = Vec::new();
+    if let Some(value) = block.get("pins") {
+        let sequence = value.as_sequence().ok_or_else(|| Error::Config {
+            field: "skills.pins".into(),
+            message: "must be a sequence".into(),
+        })?;
+        for (index, value) in sequence.iter().enumerate() {
+            let field = format!("skills.pins[{index}]");
+            let binding = mapping(value, &field)?;
+            deny_unknown(binding, &field, &["path", "sha256"])?;
+            let path = required_string(binding, &format!("{field}.path"), "path")?;
+            let sha256 = required_string(binding, &format!("{field}.sha256"), "sha256")?;
+            if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(Error::Config {
+                    field: format!("{field}.sha256"),
+                    message: "must be exactly 64 hexadecimal characters".into(),
+                });
+            }
+            pins.push(SkillPin {
+                path: PathBuf::from(path),
+                sha256: sha256.to_ascii_lowercase(),
+            });
+        }
+    }
+    Ok(SkillsConfig { roots, pins })
 }
 
 /// `diagnostics: {timestamps, audio, directory}` — all optional, all default
@@ -1095,15 +1126,19 @@ pipeline:
   tts: { provider: local, model: kokoro }
 skills:
   roots:
-    - path: .syllabix/skills
+    - path: .skills
       source: repository
     - path: /tmp/syllabix-skills
       source: global
+  pins:
+    - path: .skills/release-check/SKILL.md
+      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 "#;
         let config = AgentConfig::parse_yaml(yaml).expect("skills config");
         assert_eq!(config.skills.roots.len(), 2);
         assert_eq!(config.skills.roots[0].source, SkillSource::Repository);
         assert_eq!(config.skills.roots[1].source, SkillSource::Global);
+        assert_eq!(config.skills.pins.len(), 1);
         let rendered = config.to_yaml();
         let reparsed = AgentConfig::parse_yaml(&rendered).expect("rendered skills config");
         assert_eq!(reparsed.skills, config.skills);
@@ -1128,9 +1163,9 @@ pipeline:
         assert!(error
             .to_string()
             .contains("global skill roots must be absolute"));
-        let trust = format!("{base}skills: {{trust: []}}\n");
-        let error = AgentConfig::parse_yaml(&trust).expect_err("Phase 6 has no trust pins");
-        assert!(error.to_string().contains("skills.trust"));
+        let pins = format!("{base}skills: {{pins: [{{path: skill.md, sha256: nope}}]}}\n");
+        let error = AgentConfig::parse_yaml(&pins).expect_err("invalid skill pin hash");
+        assert!(error.to_string().contains("skills.pins[0].sha256"));
     }
 
     #[test]
@@ -1160,7 +1195,7 @@ pipeline:
   tts: { provider: local, model: kokoro }
 skills:
   roots:
-    - path: .syllabix/skills
+    - path: .skills
       source: repository
 "#,
         )

@@ -13,8 +13,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::cancel::Cancel;
-use crate::policy::{resolve_effective, DeveloperPermissions, FilesystemMode};
-use crate::sandbox::{current_provider, SandboxRequest};
+use crate::policy::{
+    resolve_effective, DeveloperPermissions, ExecutionPlan, FilesystemMode, Provenance,
+};
+use crate::sandbox::{current_provider, SandboxProvider, SandboxRequest};
+use crate::skills::{
+    resolve_entrypoint_argv, DiscoveredSkill, SkillDiscovery, DEFAULT_SKILL_TIMEOUT,
+};
 use crate::types::ToolCall;
 
 /// Maximum bytes in a generic shell command.
@@ -61,6 +66,15 @@ pub enum ValidatedCall {
     Shell(ShellRequest),
     WebFetch { url: String },
     WebSearch { query: String, count: usize },
+    Skill(SkillRequest),
+}
+
+/// A validated skill invocation. The skill itself comes from host discovery;
+/// the model supplies only its id and declarative input object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillRequest {
+    pub name: String,
+    pub inputs: serde_json::Value,
 }
 
 /// Execute one model call with its host-owned authority. A failed validation
@@ -82,10 +96,31 @@ pub fn execute_with_permissions(
     session: &DeveloperPermissions,
     cancel: &Cancel,
 ) -> crate::types::ToolResult {
+    execute_with_permissions_and_skills(
+        call,
+        workspace,
+        session,
+        &SkillDiscovery::default(),
+        cancel,
+    )
+}
+
+/// Execute one call with the discovered skill catalog available. Shell and
+/// skill entrypoints converge on the same execution-plan/process path.
+pub fn execute_with_permissions_and_skills(
+    call: &ToolCall,
+    workspace: &Path,
+    session: &DeveloperPermissions,
+    skills: &SkillDiscovery,
+    cancel: &Cancel,
+) -> crate::types::ToolResult {
     let result = match validate_call(call, workspace) {
         Ok(ValidatedCall::Shell(request)) => execute_shell(request, workspace, session, cancel),
         Ok(ValidatedCall::WebFetch { url }) => execute_fetch(&url, cancel),
         Ok(ValidatedCall::WebSearch { query, count }) => execute_search(&query, count, cancel),
+        Ok(ValidatedCall::Skill(request)) => {
+            execute_skill_request(request, skills, workspace, session, cancel)
+        }
         Err(message) => Err(message),
     };
     crate::types::ToolResult {
@@ -103,8 +138,37 @@ pub fn validate_call(call: &ToolCall, workspace: &Path) -> Result<ValidatedCall,
         "web_search" => {
             validate_search(call).map(|(query, count)| ValidatedCall::WebSearch { query, count })
         }
+        "skill" => validate_skill_call(call).map(ValidatedCall::Skill),
         _ => Err("tool is not available".into()),
     }
+}
+
+fn validate_skill_call(call: &ToolCall) -> Result<SkillRequest, String> {
+    let object = call
+        .arguments
+        .as_object()
+        .ok_or("skill arguments must be an object")?;
+    if object.keys().any(|key| key != "name" && key != "inputs") {
+        return Err("skill accepts only name and inputs".into());
+    }
+    let name = object
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("skill name must be a string")?;
+    if name.is_empty() || name.len() > 64 {
+        return Err("skill name has an invalid length".into());
+    }
+    let inputs = object
+        .get("inputs")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !inputs.is_object() {
+        return Err("skill inputs must be an object".into());
+    }
+    Ok(SkillRequest {
+        name: name.to_string(),
+        inputs,
+    })
 }
 
 fn validate_fetch(call: &ToolCall) -> Result<String, String> {
@@ -217,49 +281,213 @@ fn execute_shell(
     });
     let effective =
         resolve_effective(session, requested.as_ref()).map_err(|error| error.to_string())?;
-    let program = "/bin/bash";
+    let plan = ExecutionPlan {
+        program: PathBuf::from("/bin/bash"),
+        argv: vec![
+            "--noprofile".into(),
+            "--norc".into(),
+            "-c".into(),
+            request.command.into(),
+        ],
+        cwd: request.cwd,
+        filesystem: effective.filesystem,
+        network: effective.network,
+        secrets: effective.secrets,
+        timeout: Duration::ZERO,
+        max_output_bytes: MAX_OUTPUT_BYTES,
+        provenance: Provenance::Shell,
+    };
+    execute_plan(plan, workspace, cancel)
+}
+
+fn execute_skill_request(
+    request: SkillRequest,
+    skills: &SkillDiscovery,
+    workspace: &Path,
+    session: &DeveloperPermissions,
+    cancel: &Cancel,
+) -> Result<String, String> {
+    let skill = skills
+        .get(&request.name)
+        .ok_or_else(|| "skill is not available".to_string())?;
+    execute_skill(skill, &request.inputs, workspace, session, cancel)
+}
+
+/// Execute one discovered declarative skill entrypoint. The entrypoint is
+/// resolved to direct argv, then sent through the same plan/sandbox/cancel
+/// seam as the generic shell.
+pub fn execute_skill(
+    skill: &DiscoveredSkill,
+    inputs: &serde_json::Value,
+    workspace: &Path,
+    session: &DeveloperPermissions,
+    cancel: &Cancel,
+) -> Result<String, String> {
+    let sandbox = current_provider();
+    execute_skill_with_provider(skill, inputs, workspace, session, cancel, sandbox.as_ref())
+}
+
+fn execute_skill_with_provider(
+    skill: &DiscoveredSkill,
+    inputs: &serde_json::Value,
+    workspace: &Path,
+    session: &DeveloperPermissions,
+    cancel: &Cancel,
+    sandbox: &dyn SandboxProvider,
+) -> Result<String, String> {
+    if !skill.entrypoint_available {
+        return Err(
+            "skill entrypoint is unavailable because its configured SHA-256 pin does not match"
+                .into(),
+        );
+    }
+    skill
+        .manifest
+        .entrypoint
+        .as_ref()
+        .ok_or_else(|| "skill has no entrypoint".to_string())?;
+    let effective_request = skill_permissions(&skill.manifest.permissions, session);
+    let effective = resolve_effective(session, effective_request.as_ref())
+        .map_err(|error| error.to_string())?;
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|_| "workspace is unavailable")?;
+    let skill_dir = skill
+        .path
+        .parent()
+        .ok_or_else(|| "skill directory is unavailable".to_string())?
+        .canonicalize()
+        .map_err(|_| "skill directory is unavailable")?;
     let invocation = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp_dir = std::env::temp_dir().join(format!(
         "syllabix-executor-{}-{}-{}",
         std::process::id(),
-        generation.0,
+        cancel.generation().0,
         invocation,
     ));
     std::fs::create_dir_all(&temp_dir).map_err(|_| "sandbox temp directory unavailable")?;
     let _temp_dir_guard = TempDirGuard(temp_dir.clone());
-    let workspace = workspace
-        .canonicalize()
-        .map_err(|_| "workspace is unavailable")?;
     let temp_dir = temp_dir
         .canonicalize()
         .map_err(|_| "sandbox temp directory unavailable")?;
-    let sandbox = current_provider();
-    let sandbox_request = SandboxRequest::new(
+    let argv = resolve_entrypoint_argv(
+        &skill.manifest,
+        Some(inputs),
+        &skill_dir,
         &workspace,
         &temp_dir,
-        effective.filesystem,
-        effective.network,
-    );
-    if let Err(error) = sandbox.probe(&sandbox_request) {
-        return Err(error.to_string());
-    }
-    let mut command = match sandbox.command(
-        &sandbox_request,
-        Path::new(program),
-        &[
-            "--noprofile".into(),
-            "--norc".into(),
-            "-c".into(),
-            request.command,
-        ],
-    ) {
-        Ok(command) => command,
-        Err(error) => {
-            return Err(error.to_string());
-        }
+    )?;
+    let program_value = argv
+        .first()
+        .ok_or_else(|| "entrypoint.argv must not be empty".to_string())?;
+    let (program, mut args) = resolve_skill_program(program_value, &skill_dir)?;
+    args.extend(argv.into_iter().skip(1));
+    let plan = ExecutionPlan {
+        program,
+        argv: args.into_iter().map(Into::into).collect(),
+        cwd: skill_dir,
+        filesystem: effective.filesystem,
+        network: effective.network,
+        secrets: effective.secrets,
+        timeout: skill.manifest.timeout.unwrap_or(DEFAULT_SKILL_TIMEOUT),
+        max_output_bytes: MAX_OUTPUT_BYTES,
+        provenance: Provenance::Skill {
+            id: skill.manifest.name.clone(),
+        },
     };
+    execute_plan_with_provider(plan, &workspace, &temp_dir, cancel, sandbox)
+}
+
+fn skill_permissions(
+    permissions: &crate::skills::SkillPermissions,
+    session: &DeveloperPermissions,
+) -> Option<DeveloperPermissions> {
+    if permissions.filesystem.is_none()
+        && permissions.network.is_none()
+        && permissions.secrets.is_none()
+    {
+        return None;
+    }
+    Some(DeveloperPermissions {
+        filesystem: permissions.filesystem.unwrap_or(session.filesystem),
+        network: permissions.network.unwrap_or(session.network),
+        secrets: permissions.secrets.unwrap_or(session.secrets),
+    })
+}
+
+fn resolve_skill_program(
+    program: &str,
+    skill_dir: &Path,
+) -> Result<(PathBuf, Vec<String>), String> {
+    let path = Path::new(program);
+    if !program.contains('/') && !program.contains('\\') {
+        return Ok((PathBuf::from(program), Vec::new()));
+    }
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        skill_dir.join(path)
+    };
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|_| "skill entrypoint program is unavailable")?;
+    if !canonical.starts_with(skill_dir) || !canonical.is_file() {
+        return Err("skill entrypoint program must stay inside the skill directory".into());
+    }
+    Ok((canonical, Vec::new()))
+}
+
+fn execute_plan(plan: ExecutionPlan, workspace: &Path, cancel: &Cancel) -> Result<String, String> {
+    let invocation = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_dir = std::env::temp_dir().join(format!(
+        "syllabix-executor-{}-{}-{}",
+        std::process::id(),
+        cancel.generation().0,
+        invocation,
+    ));
+    std::fs::create_dir_all(&temp_dir).map_err(|_| "sandbox temp directory unavailable")?;
+    let _temp_dir_guard = TempDirGuard(temp_dir.clone());
+    let temp_dir = temp_dir
+        .canonicalize()
+        .map_err(|_| "sandbox temp directory unavailable")?;
+    execute_plan_with_temp(plan, workspace, &temp_dir, cancel)
+}
+
+fn execute_plan_with_temp(
+    plan: ExecutionPlan,
+    workspace: &Path,
+    temp_dir: &Path,
+    cancel: &Cancel,
+) -> Result<String, String> {
+    let sandbox = current_provider();
+    execute_plan_with_provider(plan, workspace, temp_dir, cancel, sandbox.as_ref())
+}
+
+fn execute_plan_with_provider(
+    plan: ExecutionPlan,
+    workspace: &Path,
+    temp_dir: &Path,
+    cancel: &Cancel,
+    sandbox: &dyn SandboxProvider,
+) -> Result<String, String> {
+    let generation = cancel.generation();
+    if cancel.is_stale(generation) {
+        return Err("execution cancelled".into());
+    }
+    let sandbox_request = SandboxRequest::new(workspace, temp_dir, plan.filesystem, plan.network);
+    sandbox
+        .probe(&sandbox_request)
+        .map_err(|error| error.to_string())?;
+    let args = plan
+        .argv
+        .iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let mut command = sandbox
+        .command(&sandbox_request, &plan.program, &args)
+        .map_err(|error| error.to_string())?;
     command
-        .current_dir(&request.cwd)
+        .current_dir(&plan.cwd)
         .env_clear()
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -272,29 +500,39 @@ fn execute_shell(
         .stderr(Stdio::piped());
     let mut child = command
         .spawn()
-        .map_err(|_| "shell command could not start")?;
-    let stdout = child.stdout.take().ok_or("shell stdout unavailable")?;
-    let stderr = child.stderr.take().ok_or("shell stderr unavailable")?;
+        .map_err(|_| "skill command could not start")?;
+    let stdout = child.stdout.take().ok_or("child stdout unavailable")?;
+    let stderr = child.stderr.take().ok_or("child stderr unavailable")?;
     let stdout = thread::spawn(move || read_bounded(stdout));
     let stderr = thread::spawn(move || read_bounded(stderr));
+    let started = Instant::now();
     let status = loop {
         if cancel.is_stale(generation) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("shell command cancelled".into());
+            return Err("execution cancelled".into());
+        }
+        if plan.timeout != Duration::ZERO && started.elapsed() >= plan.timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("skill entrypoint timed out".into());
         }
         if let Some(status) = child
             .try_wait()
-            .map_err(|_| "shell command could not be observed")?
+            .map_err(|_| "child could not be observed")?
         {
             break status;
         }
         thread::sleep(Duration::from_millis(20));
     };
-    let stdout = stdout.join().map_err(|_| "shell stdout reader failed")?;
-    let stderr = stderr.join().map_err(|_| "shell stderr reader failed")?;
-    let output = format_output(status.code(), &stdout, &stderr);
-    Ok(output)
+    let stdout = stdout.join().map_err(|_| "child stdout reader failed")?;
+    let stderr = stderr.join().map_err(|_| "child stderr reader failed")?;
+    Ok(format_output_with_cap(
+        status.code(),
+        &stdout,
+        &stderr,
+        plan.max_output_bytes,
+    ))
 }
 
 fn execute_fetch(url: &str, cancel: &Cancel) -> Result<String, String> {
@@ -1088,6 +1326,23 @@ fn format_output(status: Option<i32>, stdout: &[u8], stderr: &[u8]) -> String {
     )
 }
 
+fn format_output_with_cap(
+    status: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+    max_bytes: usize,
+) -> String {
+    let output = format_output(status, stdout, stderr);
+    if output.len() <= max_bytes {
+        return output;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &output[..end])
+}
+
 fn resolve_workspace_path(workspace: &Path, requested: &str) -> Result<PathBuf, String> {
     let root = workspace
         .canonicalize()
@@ -1113,7 +1368,47 @@ fn resolve_workspace_path(workspace: &Path, requested: &str) -> Result<PathBuf, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::{Enforcement, NetworkMode, SecretPolicy};
+    use crate::sandbox::{SandboxError, SandboxProvider};
     use crate::types::ToolCall;
+    use std::process::Command;
+
+    struct TestSandbox {
+        fail_probe: bool,
+        fail_command: bool,
+    }
+
+    impl TestSandbox {
+        fn available() -> Self {
+            Self {
+                fail_probe: false,
+                fail_command: false,
+            }
+        }
+    }
+
+    impl SandboxProvider for TestSandbox {
+        fn probe(&self, _: &SandboxRequest) -> Result<Enforcement, SandboxError> {
+            if self.fail_probe {
+                return Err(SandboxError::unavailable("test probe failure"));
+            }
+            Ok(Enforcement::Full)
+        }
+
+        fn command(
+            &self,
+            _: &SandboxRequest,
+            program: &Path,
+            argv: &[String],
+        ) -> Result<Command, SandboxError> {
+            if self.fail_command {
+                return Err(SandboxError::unavailable("test command failure"));
+            }
+            let mut command = Command::new(program);
+            command.args(argv);
+            Ok(command)
+        }
+    }
 
     fn call(name: &str, arguments: serde_json::Value) -> ToolCall {
         ToolCall {
@@ -1200,6 +1495,31 @@ mod tests {
     }
 
     #[test]
+    fn validates_skill_calls_without_accepting_model_authority() {
+        let workspace = std::env::current_dir().unwrap();
+        for arguments in [
+            serde_json::Value::Null,
+            serde_json::json!({"name": "demo", "extra": true}),
+            serde_json::json!({"inputs": {}}),
+            serde_json::json!({"name": 42}),
+            serde_json::json!({"name": ""}),
+            serde_json::json!({"name": "demo", "inputs": []}),
+        ] {
+            assert!(validate_call(&call("skill", arguments), &workspace).is_err());
+        }
+        assert!(validate_call(
+            &call("skill", serde_json::json!({"name": "demo"})),
+            &workspace
+        )
+        .is_ok());
+        assert!(validate_call(
+            &call("skill", serde_json::json!({"name": "x".repeat(65)})),
+            &workspace
+        )
+        .is_err());
+    }
+
+    #[test]
     fn shell_cwd_cannot_escape_workspace() {
         let workspace = std::env::current_dir().unwrap();
         for cwd in ["..", "/tmp", "missing", "../..", "/"] {
@@ -1231,6 +1551,320 @@ mod tests {
             result.content,
             "workspace-write required; configured filesystem mode is read-only"
         );
+    }
+
+    #[test]
+    fn skill_calls_require_a_discovered_entrypoint() {
+        let workspace = std::env::current_dir().unwrap();
+        let result = execute_with_permissions_and_skills(
+            &call(
+                "skill",
+                serde_json::json!({"name": "missing", "inputs": {}}),
+            ),
+            &workspace,
+            &DeveloperPermissions::default_session(),
+            &SkillDiscovery::default(),
+            &Cancel::new(),
+        );
+        assert!(!result.ok);
+        assert_eq!(result.content, "skill is not available");
+    }
+
+    #[test]
+    fn skill_permissions_cannot_widen_the_session_before_spawn() {
+        let root =
+            std::env::temp_dir().join(format!("syllabix-skill-executor-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("demo")).unwrap();
+        let skill_path = root.join("demo").join("SKILL.md");
+        std::fs::write(&skill_path, "body\n").unwrap();
+        let skill = DiscoveredSkill {
+            manifest: crate::skills::SkillManifest {
+                name: "demo".into(),
+                description: "Demo".into(),
+                inputs: std::collections::BTreeMap::new(),
+                entrypoint: Some(crate::skills::SkillEntrypoint {
+                    argv: vec!["printf".into(), "ok".into()],
+                }),
+                permissions: crate::skills::SkillPermissions {
+                    filesystem: Some(FilesystemMode::WorkspaceWrite),
+                    ..Default::default()
+                },
+                timeout: None,
+            },
+            body: "body".into(),
+            path: skill_path.canonicalize().unwrap(),
+            source: crate::skills::SkillSource::Repository,
+            entrypoint_available: true,
+        };
+        let result = execute_skill(
+            &skill,
+            &serde_json::json!({}),
+            &root,
+            &DeveloperPermissions::default_session(),
+            &Cancel::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            result,
+            "workspace-write required; configured filesystem mode is read-only"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn skill_entrypoint_runs_through_the_shared_execution_plan() {
+        let root = std::env::temp_dir().join(format!(
+            "syllabix-skill-executor-success-{}",
+            std::process::id()
+        ));
+        let skill_dir = root.join("demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let skill_path = skill_dir.join("SKILL.md");
+        std::fs::write(&skill_path, "body\n").unwrap();
+        let skill = DiscoveredSkill {
+            manifest: crate::skills::SkillManifest {
+                name: "demo".into(),
+                description: "Demo".into(),
+                inputs: std::collections::BTreeMap::new(),
+                entrypoint: Some(crate::skills::SkillEntrypoint {
+                    argv: vec!["echo".into(), "hello".into(), "{{workspace}}".into()],
+                }),
+                permissions: crate::skills::SkillPermissions::default(),
+                timeout: Some(Duration::from_secs(2)),
+            },
+            body: "body".into(),
+            path: skill_path.canonicalize().unwrap(),
+            source: crate::skills::SkillSource::Repository,
+            entrypoint_available: true,
+        };
+        let workspace = root.canonicalize().unwrap();
+        let result = execute_skill_with_provider(
+            &skill,
+            &serde_json::json!({}),
+            &workspace,
+            &DeveloperPermissions::default_session(),
+            &Cancel::new(),
+            &TestSandbox::available(),
+        )
+        .unwrap();
+        assert!(result.contains("exit: 0"), "{result}");
+        assert!(result.contains("hello"), "{result}");
+        assert!(
+            result.contains(workspace.to_string_lossy().as_ref()),
+            "{result}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn skill_entrypoint_failures_stay_bounded_and_fail_closed() {
+        let root = std::env::temp_dir().join(format!(
+            "syllabix-skill-executor-failures-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("demo")).unwrap();
+        let skill_path = root.join("demo").join("SKILL.md");
+        std::fs::write(&skill_path, "body\n").unwrap();
+        let base = DiscoveredSkill {
+            manifest: crate::skills::SkillManifest {
+                name: "demo".into(),
+                description: "Demo".into(),
+                inputs: std::collections::BTreeMap::new(),
+                entrypoint: Some(crate::skills::SkillEntrypoint {
+                    argv: vec!["echo".into(), "ok".into()],
+                }),
+                permissions: crate::skills::SkillPermissions::default(),
+                timeout: None,
+            },
+            body: "body".into(),
+            path: skill_path.canonicalize().unwrap(),
+            source: crate::skills::SkillSource::Repository,
+            entrypoint_available: true,
+        };
+        let workspace = root.canonicalize().unwrap();
+
+        let mut pinned_mismatch = base.clone();
+        pinned_mismatch.entrypoint_available = false;
+        assert_eq!(
+            execute_skill_with_provider(
+                &pinned_mismatch,
+                &serde_json::json!({}),
+                &workspace,
+                &DeveloperPermissions::default_session(),
+                &Cancel::new(),
+                &TestSandbox::available(),
+            )
+            .unwrap_err(),
+            "skill entrypoint is unavailable because its configured SHA-256 pin does not match"
+        );
+
+        let mut no_entrypoint = base.clone();
+        no_entrypoint.manifest.entrypoint = None;
+        assert_eq!(
+            execute_skill_with_provider(
+                &no_entrypoint,
+                &serde_json::json!({}),
+                &workspace,
+                &DeveloperPermissions::default_session(),
+                &Cancel::new(),
+                &TestSandbox::available(),
+            )
+            .unwrap_err(),
+            "skill has no entrypoint"
+        );
+
+        let mut empty = base.clone();
+        empty.manifest.entrypoint = Some(crate::skills::SkillEntrypoint { argv: vec![] });
+        assert_eq!(
+            execute_skill_with_provider(
+                &empty,
+                &serde_json::json!({}),
+                &workspace,
+                &DeveloperPermissions::default_session(),
+                &Cancel::new(),
+                &TestSandbox::available(),
+            )
+            .unwrap_err(),
+            "entrypoint.argv must not be empty"
+        );
+
+        let mut missing_program = base.clone();
+        missing_program.manifest.entrypoint = Some(crate::skills::SkillEntrypoint {
+            argv: vec!["scripts/missing.sh".into()],
+        });
+        assert_eq!(
+            execute_skill_with_provider(
+                &missing_program,
+                &serde_json::json!({}),
+                &workspace,
+                &DeveloperPermissions::default_session(),
+                &Cancel::new(),
+                &TestSandbox::available(),
+            )
+            .unwrap_err(),
+            "skill entrypoint program is unavailable"
+        );
+
+        let mut invalid_workspace = base.clone();
+        let absent = root.join("absent");
+        assert_eq!(
+            execute_skill_with_provider(
+                &invalid_workspace,
+                &serde_json::json!({}),
+                &absent,
+                &DeveloperPermissions::default_session(),
+                &Cancel::new(),
+                &TestSandbox::available(),
+            )
+            .unwrap_err(),
+            "workspace is unavailable"
+        );
+        invalid_workspace.path = root.join("missing").join("SKILL.md");
+        assert_eq!(
+            execute_skill_with_provider(
+                &invalid_workspace,
+                &serde_json::json!({}),
+                &workspace,
+                &DeveloperPermissions::default_session(),
+                &Cancel::new(),
+                &TestSandbox::available(),
+            )
+            .unwrap_err(),
+            "skill directory is unavailable"
+        );
+
+        let mut probe_error = ExecutionPlan {
+            program: PathBuf::from("/bin/true"),
+            argv: Vec::new(),
+            cwd: workspace.clone(),
+            filesystem: FilesystemMode::ReadOnly,
+            network: NetworkMode::None,
+            secrets: SecretPolicy::None,
+            timeout: Duration::ZERO,
+            max_output_bytes: MAX_OUTPUT_BYTES,
+            provenance: Provenance::Skill { id: "demo".into() },
+        };
+        assert_eq!(
+            execute_plan_with_provider(
+                probe_error.clone(),
+                &workspace,
+                &workspace,
+                &Cancel::new(),
+                &TestSandbox {
+                    fail_probe: true,
+                    fail_command: false,
+                },
+            )
+            .unwrap_err(),
+            "SANDBOX_UNAVAILABLE: test probe failure"
+        );
+        assert_eq!(
+            execute_plan_with_provider(
+                probe_error.clone(),
+                &workspace,
+                &workspace,
+                &Cancel::new(),
+                &TestSandbox {
+                    fail_probe: false,
+                    fail_command: true,
+                },
+            )
+            .unwrap_err(),
+            "SANDBOX_UNAVAILABLE: test command failure"
+        );
+        let cancelled = Cancel::new();
+        cancelled.shutdown();
+        assert_eq!(
+            execute_plan_with_provider(
+                probe_error.clone(),
+                &workspace,
+                &workspace,
+                &cancelled,
+                &TestSandbox::available(),
+            )
+            .unwrap_err(),
+            "execution cancelled"
+        );
+        probe_error.program = PathBuf::from("/definitely/missing/program");
+        assert_eq!(
+            execute_plan_with_provider(
+                probe_error,
+                &workspace,
+                &workspace,
+                &Cancel::new(),
+                &TestSandbox::available(),
+            )
+            .unwrap_err(),
+            "skill command could not start"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn skill_program_resolution_stays_inside_the_skill_directory() {
+        let root =
+            std::env::temp_dir().join(format!("syllabix-skill-program-{}", std::process::id()));
+        let skill_dir = root.join("skill");
+        std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        std::fs::write(skill_dir.join("scripts/check.sh"), "#!/bin/sh\n").unwrap();
+        let skill_dir = skill_dir.canonicalize().unwrap();
+        assert_eq!(
+            resolve_skill_program("echo", &skill_dir).unwrap(),
+            (PathBuf::from("echo"), Vec::new())
+        );
+        assert!(resolve_skill_program("scripts/check.sh", &skill_dir)
+            .unwrap()
+            .0
+            .starts_with(&skill_dir));
+        assert_eq!(
+            resolve_skill_program("scripts/missing.sh", &skill_dir).unwrap_err(),
+            "skill entrypoint program is unavailable"
+        );
+        assert_eq!(
+            resolve_skill_program("/bin/sh", &skill_dir).unwrap_err(),
+            "skill entrypoint program must stay inside the skill directory"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

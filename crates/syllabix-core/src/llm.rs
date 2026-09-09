@@ -15,6 +15,7 @@ use crate::fake::LlmCall;
 use crate::models::{Fetcher, ModelCache, Progress};
 use crate::policy::DeveloperPermissions;
 use crate::providers::Llm;
+use crate::skills::SkillDiscovery;
 use crate::types::{
     HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript,
 };
@@ -143,6 +144,7 @@ pub struct LlamaLlm {
     model_id: String,
     system_prompt: String,
     skill_context: String,
+    skills: SkillDiscovery,
     tool_events: Arc<Mutex<Vec<ToolTurnEvent>>>,
     developer_harness: bool,
     developer_permissions: DeveloperPermissions,
@@ -158,6 +160,7 @@ impl Clone for LlamaLlm {
             model_id: self.model_id.clone(),
             system_prompt: self.system_prompt.clone(),
             skill_context: self.skill_context.clone(),
+            skills: self.skills.clone(),
             tool_events: Arc::clone(&self.tool_events),
             developer_harness: self.developer_harness,
             developer_permissions: self.developer_permissions.clone(),
@@ -182,6 +185,7 @@ impl LlamaLlm {
                 .unwrap_or_default(),
             system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             skill_context: String::new(),
+            skills: SkillDiscovery::default(),
             tool_events: Arc::new(Mutex::new(Vec::new())),
             developer_harness: false,
             developer_permissions: DeveloperPermissions::default_session(),
@@ -266,6 +270,12 @@ impl LlamaLlm {
     /// Set the host-discovered skill catalog for the opt-in harness only.
     pub fn with_skill_context(mut self, skill_context: impl Into<String>) -> Self {
         self.skill_context = skill_context.into();
+        self
+    }
+
+    /// Set the host-discovered skills available to the opt-in harness.
+    pub fn with_skills(mut self, skills: SkillDiscovery) -> Self {
+        self.skills = skills;
         self
     }
 
@@ -354,6 +364,7 @@ impl LlamaLlm {
             model_id: BuiltinDefaults::v0().llm_model.to_string(),
             system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             skill_context: String::new(),
+            skills: SkillDiscovery::default(),
             tool_events: Arc::new(Mutex::new(Vec::new())),
             developer_harness: false,
             developer_permissions: DeveloperPermissions::default_session(),
@@ -468,7 +479,7 @@ impl LlamaLlm {
             });
         }
         let messages = self.tool_messages(history, user, &[]);
-        let tools = local_tool_definitions_json();
+        let tools = local_tool_definitions_json_for_skills(&self.skills);
         let append_thinking_off_suffix =
             !self.thinking && is_thinking_tag_supported_model(&self.model_id);
         let mut text = String::new();
@@ -564,7 +575,7 @@ impl LlamaLlm {
             });
         }
         let messages = self.tool_messages(history, user, &[]);
-        let tools = local_tool_definitions_json();
+        let tools = local_tool_definitions_json_for_skills(&self.skills);
         let mut text = String::new();
         let mut over_budget = false;
         let outcome = self
@@ -761,10 +772,11 @@ impl LlamaLlm {
                     &call.arguments.to_string(),
                     "",
                 );
-                let result = executor::execute_with_permissions(
+                let result = executor::execute_with_permissions_and_skills(
                     &call,
                     &self.workspace,
                     &self.developer_permissions,
+                    &self.skills,
                     cancel,
                 );
                 if cancel.is_shutdown() || cancel.is_stale(generation) {
@@ -1245,7 +1257,12 @@ fn is_thinking_tag_supported_model(model_id: &str) -> bool {
 /// template consumes. One shared representation, translated at each adapter
 /// boundary.
 pub fn local_tool_definitions_json() -> String {
-    serde_json::json!([
+    local_tool_definitions_json_for_skills(&SkillDiscovery::default())
+}
+
+/// Render local tool definitions with only executable discovered skills.
+pub fn local_tool_definitions_json_for_skills(skills: &SkillDiscovery) -> String {
+    let mut definitions = serde_json::json!([
         {
             "type": "function",
             "function": {
@@ -1313,8 +1330,42 @@ pub fn local_tool_definitions_json() -> String {
                 }
             }
         }
-    ])
-    .to_string()
+    ]);
+    append_skill_tool_definition(&mut definitions, skills);
+    definitions.to_string()
+}
+
+fn append_skill_tool_definition(definitions: &mut serde_json::Value, skills: &SkillDiscovery) {
+    let catalog = skills.tool_catalog();
+    if catalog.is_empty() {
+        return;
+    }
+    definitions
+        .as_array_mut()
+        .expect("local tool definitions array")
+        .push(serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "skill",
+                "description": "Run one discovered declarative skill entrypoint. The host validates its inputs and executes it under the immutable session sandbox policy; a skill cannot grant permissions or access secrets.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name"],
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "enum": catalog.iter().filter_map(|skill| skill.get("name").cloned()).collect::<Vec<_>>(),
+                        },
+                        "inputs": {
+                            "type": "object",
+                            "description": "Declared skill inputs only.",
+                            "additionalProperties": true,
+                        }
+                    }
+                }
+            }
+        }));
 }
 
 /// One parsed Qwen `<tool_call>` block: function name plus its parameters.
@@ -1417,7 +1468,10 @@ pub fn normalize_local_tool_call(
     index: usize,
     mut parsed: ParsedLocalToolCall,
 ) -> std::result::Result<ToolCall, String> {
-    if !matches!(parsed.name.as_str(), "web_fetch" | "web_search" | "shell") {
+    if !matches!(
+        parsed.name.as_str(),
+        "web_fetch" | "web_search" | "shell" | "skill"
+    ) {
         return Err("tool call has an unknown name".to_string());
     }
     if !parsed.arguments.is_object() {
@@ -1461,6 +1515,15 @@ pub fn normalize_local_tool_call(
                         );
                     }
                 }
+            }
+        }
+    }
+    if parsed.name == "skill" {
+        if let Some(inputs) = parsed.arguments.get("inputs").cloned() {
+            if let Some(text) = inputs.as_str() {
+                let parsed_inputs = serde_json::from_str(text.trim())
+                    .map_err(|_| "skill inputs must be a JSON object".to_string())?;
+                parsed.arguments["inputs"] = parsed_inputs;
             }
         }
     }

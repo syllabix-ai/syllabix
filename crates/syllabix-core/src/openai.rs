@@ -23,6 +23,7 @@ use crate::executor;
 use crate::llm::LLAMA_MAX_HISTORY_TURNS;
 use crate::policy::DeveloperPermissions;
 use crate::providers::Llm;
+use crate::skills::SkillDiscovery;
 use crate::types::{
     HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript,
 };
@@ -188,6 +189,7 @@ pub struct OpenAiLlm {
     workspace: PathBuf,
     last_request_id: Mutex<Option<String>>,
     tool_events: Mutex<Vec<ToolTurnEvent>>,
+    skills: SkillDiscovery,
 }
 
 impl OpenAiLlm {
@@ -210,6 +212,7 @@ impl OpenAiLlm {
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             last_request_id: Mutex::new(None),
             tool_events: Mutex::new(Vec::new()),
+            skills: SkillDiscovery::default(),
         }
     }
 
@@ -221,6 +224,12 @@ impl OpenAiLlm {
     /// Set the host-discovered skill catalog for the opt-in harness only.
     pub fn with_skill_context(mut self, skill_context: impl Into<String>) -> Self {
         self.settings.skill_context = skill_context.into();
+        self
+    }
+
+    /// Set the host-discovered skills available to the opt-in harness.
+    pub fn with_skills(mut self, skills: SkillDiscovery) -> Self {
+        self.skills = skills;
         self
     }
 
@@ -435,7 +444,7 @@ impl OpenAiLlm {
             &self.settings.system_prompt,
             &self.settings.skill_context,
         );
-        body["tools"] = tool_definitions();
+        body["tools"] = tool_definitions_with_skills(&self.skills);
         let mut call_count = 0usize;
 
         loop {
@@ -491,10 +500,11 @@ impl OpenAiLlm {
                     &call.arguments.to_string(),
                     "",
                 );
-                let result = executor::execute_with_permissions(
+                let result = executor::execute_with_permissions_and_skills(
                     &call,
                     &self.workspace,
                     &self.settings.developer_permissions,
+                    &self.skills,
                     cancel,
                 );
                 if cancel.is_shutdown() || cancel.is_stale(generation) {
@@ -617,8 +627,13 @@ impl OpenAiLlm {
     }
 }
 
+#[cfg(test)]
 fn tool_definitions() -> serde_json::Value {
-    serde_json::json!([
+    tool_definitions_with_skills(&SkillDiscovery::default())
+}
+
+fn tool_definitions_with_skills(skills: &SkillDiscovery) -> serde_json::Value {
+    let mut definitions = serde_json::json!([
         {
             "type": "function",
             "function": {
@@ -686,7 +701,37 @@ fn tool_definitions() -> serde_json::Value {
                 }
             }
         }
-    ])
+    ]);
+    let catalog = skills.tool_catalog();
+    if !catalog.is_empty() {
+        definitions
+            .as_array_mut()
+            .expect("tool definitions array")
+            .push(serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "skill",
+                    "description": "Run one discovered declarative skill entrypoint under the immutable host sandbox policy. Skill permissions never widen the session and child secrets are scrubbed.",
+                    "parameters": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["name"],
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "enum": catalog.iter().filter_map(|skill| skill.get("name").cloned()).collect::<Vec<_>>(),
+                            },
+                            "inputs": {
+                                "type": "object",
+                                "description": "Declared skill inputs only.",
+                                "additionalProperties": true,
+                            }
+                        }
+                    }
+                }
+            }));
+    }
+    definitions
 }
 
 fn normalize_tool_call(raw: RawToolCall) -> std::result::Result<ToolCall, String> {
@@ -696,7 +741,12 @@ fn normalize_tool_call(raw: RawToolCall) -> std::result::Result<ToolCall, String
         .ok_or_else(|| "tool call is missing id".to_string())?;
     let name = raw
         .name
-        .filter(|value| matches!(value.as_str(), "web_fetch" | "web_search" | "shell"))
+        .filter(|value| {
+            matches!(
+                value.as_str(),
+                "web_fetch" | "web_search" | "shell" | "skill"
+            )
+        })
         .ok_or_else(|| "tool call has an unknown name".to_string())?;
     let mut arguments: serde_json::Value = serde_json::from_str(&raw.arguments)
         .map_err(|_| "tool call arguments are not valid JSON".to_string())?;

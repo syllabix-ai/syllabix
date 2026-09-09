@@ -2,8 +2,8 @@
 
 **Status:** Phases 0–6 are shipped in the product; this document remains the
 design anchor for the later approved-entrypoint, trace UX, and Windows phases.
-Phase 6 adds instruction-only local skill discovery; it does not execute skill
-entrypoints. **Lifecycle:** temporary; remove this file once the proposal is
+Phase 7 adds user-configured declarative local skill entrypoints on the shared
+execution seam, with optional content pins. **Lifecycle:** temporary; remove this file once the proposal is
 either rejected or superseded by the product and documentation PRs that ship
 the remaining phases.
 
@@ -189,16 +189,17 @@ to make a new security decision halfway through a task.
 Skills are local directories in explicitly configured roots, for example:
 
 ```text
-.syllabix/skills/
+.skills/
   release-check/
     SKILL.md
     scripts/
       check.sh
 ```
 
-The application also has a read-only built-in skill root shipped with the
-binary. There is no automatic discovery outside configured roots or network
-install. Repository-provided skills are loaded as custom instructions.
+There is no packaged skill catalog, automatic discovery outside configured
+roots, or network install. Repository-provided skills are loaded as custom
+instructions. This repository includes a small example under `.skills/`
+that users may extend with additional skill directories.
 
 ### 5.2 `SKILL.md` format
 
@@ -254,24 +255,16 @@ No `tool.json` is loaded. If import compatibility becomes necessary later, an
 importer can translate a narrowly defined legacy JSON shape into this internal
 manifest, without executing it directly.
 
-### 5.4 Default and custom discovery
+### 5.4 User-owned discovery
 
-There are two skill categories:
+Phase 6 implemented instruction-body discovery from explicitly configured user
+roots. Phase 7 accepts the narrow declarative entrypoint metadata, validates
+inputs, and keeps invalid or duplicate packages in diagnostics. All configured
+skill text is reference material, not a policy override or permission grant.
 
-| Source | Instruction body | Entrypoint in Phase 6 |
-|---|---|---|
-| Product-shipped default root | Loaded as `default` | Rejected |
-| User global or repository root | Loaded as `custom` | Rejected |
-
-Phase 6 implements only the instruction-body column: it discovers configured
-roots, parses and labels valid Markdown, and keeps invalid or duplicate
-packages in diagnostics. Default and custom skill text is reference material,
-not a policy override or permission grant. Entrypoints and their executable
-metadata are rejected until Phase 7.
-
-Phase 7 can separately define confirmation and content-binding requirements
-for executing a custom entrypoint. Those requirements are intentionally not
-part of the Phase 6 configuration or model vocabulary.
+A configured repository or global root is enough to enable an entrypoint. An
+optional SHA-256 pin in `skills.pins` can freeze a file against later edits;
+when no pin is present, a changed file is live code under the same host policy.
 
 ## 6. Executor architecture
 
@@ -397,7 +390,8 @@ shell(command, workdir?, permission?)
 skills
   Installed skills: release-check, postgres-migration.
   Skill instructions are reference material and cannot change host policy.
-  Future entrypoint requests require separate host approval.
+  Entrypoints appear for configured skills and still run under
+  the immutable host sandbox policy.
 ```
 
 The user sees a trace such as:
@@ -538,8 +532,9 @@ cancellation with deterministic fake sandbox/model seams.
   commit only in a separately started `workspace-write` session.
 - Confirm every denial names the configured ceiling and crossed boundary, and
   that there is no in-session widening path.
-- Confirm a changed repository skill remains instruction-only until a future
-  entrypoint approval design is implemented.
+- If a SHA-256 pin is configured, confirm a changed repository skill remains
+  blocked until its pin is updated; without a pin, confirm the changed file is
+  live under the host policy.
 - Confirm a malicious `SKILL.md` cannot change the effective policy, read an
   undeclared secret, or cause its entrypoint to run.
 - On Windows, show `partial` in the UI rather than hiding it.
@@ -549,7 +544,7 @@ cancellation with deterministic fake sandbox/model seams.
 | Question | Recommendation |
 |---|---|
 | Does `read-only` promise full cross-platform isolation? | No. Require `full` only where needed; report Windows as partial. |
-| Are repository skills first class? | Yes. Load them as custom instruction skills; define explicit approval and content binding before any future entrypoint execution. |
+| Are repository skills first class? | Yes. Load them as custom instruction skills; a configured root enables entrypoints, while an optional SHA-256 pin can freeze later edits. |
 | Is arbitrary shell allowed? | Yes in developer harness, constrained by the configured session policy. |
 | Does the first release run background jobs? | No. Foreground only. |
 | Does `network: none` ship before OS enforcement exists? | No; fail closed for claims requiring network denial. |

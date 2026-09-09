@@ -77,13 +77,13 @@ pub enum Enforcement {
     Partial,
 }
 
-/// Why this plan was built: generic shell tool or a trusted skill entrypoint.
+/// Why this plan was built: generic shell tool or a configured skill entrypoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)] // consumed when generic-shell and skill adapters land
 pub enum Provenance {
     /// Model-facing generic shell tool.
     Shell,
-    /// Trusted skill entrypoint (`id` is the skill name).
+    /// Configured skill entrypoint (`id` is the skill name).
     #[allow(dead_code)] // skill adapter lands after the generic shell
     Skill { id: String },
 }
@@ -119,7 +119,7 @@ impl Default for DeveloperPermissions {
 /// Host-owned plan for one sandboxed child. The generic shell currently builds
 /// the equivalent provider request directly; skills will reuse this shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // reused by the trusted skill entrypoint phase
+#[allow(dead_code)] // reused by the skill entrypoint phase
 pub struct ExecutionPlan {
     /// Absolute or PATH-resolved program.
     pub program: PathBuf,

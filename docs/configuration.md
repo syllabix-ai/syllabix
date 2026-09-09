@@ -154,31 +154,54 @@ pipeline:
 
 Omitting `developer_permissions` uses `read-only`, `none`, and `none`.
 
-### Local instruction skills (Phase 6)
+### Local skills and declarative entrypoints (Phase 7)
 
-The opt-in harness can load local, instruction-only skill packages from
-explicitly configured roots. The product-shipped root beside the executable
-contains default skills. Repository and global roots contain custom skills and
-are first-class sources of local instructions.
+The opt-in harness can load user-provided local `SKILL.md` skill packages from
+explicitly configured repository or global roots. Syllabix does not ship a
+default skill catalog beside the binary. This repository includes a small
+repository-owned example at `.skills/repository-guide/SKILL.md`; users may add
+their own skill directories under `.skills/`.
 
 \`\`\`yaml
 skills:
   roots:
-    - path: .syllabix/skills
+    - path: .skills
       source: repository
     - path: /Users/me/.config/syllabix/skills
       source: global
 \`\`\`
 
-Each root contains one directory per skill with a UTF-8 SKILL.md. Its front
-matter currently accepts only name, description, and harmless declarative
-inputs; the Markdown body is shown to the harness as labelled `default` or
-`custom` reference text.
+Each root contains one directory per skill with a UTF-8 SKILL.md. Configured
+skills are shown to the harness as `source: custom` reference text.
+An optional `entrypoint.argv` is a direct-argv list (never a shell string).
+Placeholders such as `{{inputs.ref}}`, `{{skill_dir}}`, `{{workspace}}`, and
+`{{temp_dir}}` must occupy a complete argv value, so spaces and shell syntax in
+input values remain data. `inputs` supports only string, integer, number, and
+boolean values plus `enum`, `required`, and `default`.
+
+SHA-256 pins are optional. A configured root is enough for an entrypoint to be
+offered to the model's `skill` tool. If a pin is configured for a file, edits
+that change its hash block that entrypoint until the pin is updated. For
+example:
+
+```yaml
+skills:
+  roots:
+    - path: .skills
+      source: repository
+  pins:
+    - path: .skills/release-check/SKILL.md
+      sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+The manifest may also request `permissions` (`filesystem`, `network`, and
+`secrets`) and `timeout_seconds`. These are maximum requests for that skill,
+never grants: the immutable session `developer_permissions` ceiling wins, and
+the child still uses the shared sandbox, cancellation, scrubbed environment,
+and bounded-output path.
 Unknown metadata, invalid skills, and duplicate names are retained only as
-diagnostics and are never shown to the model. Phase 6 rejects entrypoints and
-executes no skill code. Skill text never grants filesystem, network, or secret
-access; approval and content binding for a future entrypoint phase are separate
-work.
+diagnostics and are never shown to the model. Skill text and requested
+permissions never grant filesystem, network, or secret access.
 
 ## TTS
 

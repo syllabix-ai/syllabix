@@ -14,13 +14,14 @@
 //!   cargo test -p syllabix-core --test harness-quality -- --ignored --nocapture
 //! ```
 
-use std::time::Instant;
+use std::{path::PathBuf, time::Instant};
 
 use syllabix_core::{
-    current_provider, join_endpoint, resolve_api_key, resolve_effective, speak_text_for_tts,
-    validate_base_url, BlockedFetcher, Cancel, DeveloperPermissions, Enforcement, FilesystemMode,
-    LlamaLlm, Llm, ModelCache, NetworkMode, NoProgress, OpenAiLlm, OpenAiSettings, SandboxRequest,
-    SecretPolicy, ToolCall, ToolResult, ToolTurnEvent, Transcript, TurnId, CLOUD_FALLBACK_TEXT,
+    current_provider, join_endpoint, render_system_prompt_with_skills, resolve_api_key,
+    resolve_effective, speak_text_for_tts, validate_base_url, AgentConfig, BlockedFetcher, Cancel,
+    DeveloperPermissions, Enforcement, FilesystemMode, LlamaLlm, Llm, ModelCache, NetworkMode,
+    NoProgress, OpenAiLlm, OpenAiSettings, SandboxRequest, SecretPolicy, SkillDiscovery,
+    SkillSource, ToolCall, ToolResult, ToolTurnEvent, Transcript, TurnId, CLOUD_FALLBACK_TEXT,
     LFM25_2_6B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, TOOL_LIMIT_TEXT, VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
 
@@ -656,6 +657,19 @@ fn live_config() -> (String, String) {
     (base_url, model.expect("checked"))
 }
 
+fn repository_guide_discovery() -> (PathBuf, SkillDiscovery) {
+    let config = AgentConfig::parse_yaml(include_str!("fixtures/skills-harness.yaml"))
+        .expect("repository skill harness fixture");
+    assert!(config.llm_developer_harness);
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("repository root");
+    let discovery = config.discover_skills(&repository_root);
+    assert_eq!(discovery.skills.len(), 1, "{:#?}", discovery.diagnostics);
+    (repository_root, discovery)
+}
+
 fn drive_turn<L: Llm>(llm: &mut L, text: &str) -> (String, Vec<ToolTurnEvent>) {
     let user = Transcript {
         turn: TurnId(0),
@@ -873,6 +887,55 @@ fn harness_quality_live_admission() {
     );
 }
 
+/// Manual-only behavioral check that a hosted harness agent follows the
+/// repository-guide instructions supplied through configured skill discovery.
+#[test]
+#[ignore]
+fn harness_quality_live_repository_guide_skill_use() {
+    let (base_url, model) = live_config();
+    let api_key = resolve_api_key(|key| std::env::var(key).ok()).expect("key checked above");
+    let (repository_root, discovery) = repository_guide_discovery();
+    let mut reply = String::new();
+    let mut events = Vec::new();
+    let mut attempts = 0usize;
+    while attempts < MAX_LIVE_ATTEMPTS {
+        attempts += 1;
+        let mut llm = OpenAiLlm::new(
+            OpenAiSettings {
+                endpoint: join_endpoint(&base_url),
+                model: model.clone(),
+                system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
+                skill_context: discovery.model_context(),
+                developer_harness: true,
+                developer_permissions: DeveloperPermissions::default_session(),
+            },
+            api_key.clone(),
+        )
+        .with_workspace(repository_root.clone());
+        (reply, events) = drive_turn(
+            &mut llm,
+            "You are about to make a product change. According to the local repository guidance, which file must you read first? Answer with the filename.",
+        );
+        if !should_retry(&reply, &events, attempts) {
+            break;
+        }
+        std::thread::sleep(RETRY_DELAY);
+    }
+    assert!(
+        !is_transport_failure(&reply, &events),
+        "repository-guide live turn was unreachable after {attempts} tries"
+    );
+    assert!(
+        is_task_answer(&reply),
+        "live skill reply was not clean: {reply:?}"
+    );
+    assert!(
+        reply.to_ascii_lowercase().contains("readme.md"),
+        "agent did not follow repository-guide: {reply:?}"
+    );
+    assert_eq!(policy_escapes(&events), 0);
+}
+
 #[test]
 fn scoring_counts_only_allowed_calls_as_valid() {
     let events = vec![
@@ -1059,6 +1122,23 @@ fn capability_fixtures_cover_the_phase5_contract() {
         assert!(ids.contains(&required), "fixture {required} is fixed");
     }
     assert_eq!(ids.len(), 6, "the Phase-5 fixture set is versioned");
+}
+
+#[test]
+fn repository_guide_skill_reaches_the_harness_agent_prompt() {
+    let (_, discovery) = repository_guide_discovery();
+    let skill = &discovery.skills[0];
+    assert_eq!(skill.manifest.name, "repository-guide");
+    assert_eq!(skill.source, SkillSource::Repository);
+    assert!(skill.body.contains("Read `README.md`"));
+    assert!(discovery.model_context().contains("source: custom"));
+    let prompt = render_system_prompt_with_skills(
+        VOICE_SYSTEM_PROMPT_TEMPLATE,
+        "en",
+        &discovery.model_context(),
+    );
+    assert!(prompt.contains("repository-guide"));
+    assert!(prompt.contains("Read `README.md`"));
 }
 
 #[test]

@@ -282,7 +282,7 @@ mod production {
         config: &AgentConfig,
         llm_api_key: Option<&Zeroizing<String>>,
     ) -> Result<LiveLlm> {
-        let skill_context = if config.llm_developer_harness {
+        let (skill_context, skills) = if config.llm_developer_harness {
             let discovery =
                 config.discover_skills(&std::env::current_dir().unwrap_or_else(|_| ".".into()));
             for diagnostic in &discovery.diagnostics {
@@ -298,9 +298,9 @@ mod production {
                     "local skill ignored"
                 );
             }
-            discovery.model_context()
+            (discovery.model_context(), discovery)
         } else {
-            String::new()
+            (String::new(), crate::SkillDiscovery::default())
         };
         match config.llm {
             crate::LlmProvider::Local => Ok(LiveLlm::Local(
@@ -314,6 +314,7 @@ mod production {
                 )?
                 .with_system_prompt(config.system_prompt.clone())
                 .with_skill_context(skill_context.clone())
+                .with_skills(skills.clone())
                 .with_developer_harness(config.llm_developer_harness)
                 .with_developer_permissions(config.llm_developer_permissions.clone()),
             )),
@@ -324,7 +325,8 @@ mod production {
                 })?;
                 Ok(LiveLlm::Cloud(
                     OpenAiLlm::new(OpenAiSettings::from_config(config), key.clone())
-                        .with_skill_context(skill_context),
+                        .with_skill_context(skill_context)
+                        .with_skills(skills),
                 ))
             }
         }
