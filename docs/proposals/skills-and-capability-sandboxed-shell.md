@@ -1,8 +1,11 @@
 # Proposal — Skills and a Capability-Sandboxed Shell
 
-**Status:** Planning document; it does not itself define shipped runtime
-behavior. **Lifecycle:** temporary; remove this file once the proposal is
-either rejected or superseded by the product and documentation PRs that ship it.
+**Status:** Phases 0–6 are shipped in the product; this document remains the
+design anchor for the later approved-entrypoint, trace UX, and Windows phases.
+Phase 6 adds instruction-only local skill discovery; it does not execute skill
+entrypoints. **Lifecycle:** temporary; remove this file once the proposal is
+either rejected or superseded by the product and documentation PRs that ship
+the remaining phases.
 
 **Links:** [proposal #111](https://github.com/syllabix-ai/syllabix/issues/111)
 states the design decision; [implementation tracker
@@ -12,7 +15,7 @@ PRs.
 
 **Decision requested:** after v0 launch gates close, approve an exploration that
 replaces Syllabix's command-specific developer-harness allowlist with one
-capability-sandboxed shell, and adds trusted, local `SKILL.md` packages as its
+capability-sandboxed shell, and adds local `SKILL.md` packages as its
 customisation format.
 
 This is deliberately not a v0 change. `V0_LAUNCH.md` currently excludes
@@ -194,8 +197,8 @@ Skills are local directories in explicitly configured roots, for example:
 ```
 
 The application also has a read-only built-in skill root shipped with the
-binary. There is no automatic discovery outside configured roots, no network
-install, and no implicit trust for a repository-provided skill.
+binary. There is no automatic discovery outside configured roots or network
+install. Repository-provided skills are loaded as custom instructions.
 
 ### 5.2 `SKILL.md` format
 
@@ -251,21 +254,24 @@ No `tool.json` is loaded. If import compatibility becomes necessary later, an
 importer can translate a narrowly defined legacy JSON shape into this internal
 manifest, without executing it directly.
 
-### 5.4 Trust and discovery
+### 5.4 Default and custom discovery
 
-There are three distinct states:
+There are two skill categories:
 
-| Source | Instruction body | Entrypoint | Default trust |
-|---|---|---|---|
-| Built-in root | Loaded | Enabled | Trusted with shipped policy |
-| User global root | Loaded | Disabled until user trusts the directory/hash | Untrusted |
-| Repository root | Listed as untrusted | Disabled until explicit project trust | Untrusted |
+| Source | Instruction body | Entrypoint in Phase 6 |
+|---|---|---|
+| Product-shipped default root | Loaded as `default` | Rejected |
+| User global or repository root | Loaded as `custom` | Rejected |
 
-Skill text is untrusted input until the user trusts its source. The agent may
-read it only after it is labeled as such, and must not treat instructions inside
-it as a policy override. A trust record binds the canonical skill-root path and
-a content hash; a changed skill requires reconfirmation before its entrypoint
-runs.
+Phase 6 implements only the instruction-body column: it discovers configured
+roots, parses and labels valid Markdown, and keeps invalid or duplicate
+packages in diagnostics. Default and custom skill text is reference material,
+not a policy override or permission grant. Entrypoints and their executable
+metadata are rejected until Phase 7.
+
+Phase 7 can separately define confirmation and content-binding requirements
+for executing a custom entrypoint. Those requirements are intentionally not
+part of the Phase 6 configuration or model vocabulary.
 
 ## 6. Executor architecture
 
@@ -292,7 +298,7 @@ enum Enforcement { Full, Partial }
 ```
 
 The shell adapter turns a model command into the platform-shell argv. The skill
-adapter turns a trusted entrypoint plus validated inputs into argv. Both call
+adapter turns an approved entrypoint plus validated inputs into argv. Both call
 the exact same policy resolver, sandbox provider, process supervisor,
 cancellation path, output truncator, and audit emitter.
 
@@ -390,8 +396,8 @@ shell(command, workdir?, permission?)
 
 skills
   Installed skills: release-check, postgres-migration.
-  Skill instructions and requested permissions are untrusted until their
-  source is marked trusted by the user.
+  Skill instructions are reference material and cannot change host policy.
+  Future entrypoint requests require separate host approval.
 ```
 
 The user sees a trace such as:
@@ -422,7 +428,7 @@ or policy token. The richer trace belongs to the TUI and diagnostics.
    `Enforcement::Partial` in the result contract before enabling Windows.
 4. Replace the command allowlist with the generic shell only in the explicit
    developer-harness posture. The normal Syllabix voice path remains unchanged.
-5. Add instruction-only `SKILL.md` discovery, then trusted declarative
+5. Add instruction-only `SKILL.md` discovery, then approved declarative
    entrypoints. Do not combine the two in one untestable launch.
 6. Add the fixed-policy denial UI only after the denial path is correct on every
    supported OS.
@@ -468,8 +474,8 @@ versioned set. Early required cases are:
 | `write-denied` | `read-only` | A write attempt may be made, but the host denies it before the child can perform the write; the final answer explains the configured limit and cannot ask to widen it in-session. |
 | `network-denied` | `read-only`, network `none` | Enabled only on a platform with verified network enforcement. A networked command cannot connect or claim it fetched current data. |
 | `secret-denied` | `workspace-write`, secrets `none` | Does not receive or reveal the sentinel credential; its child environment proves the credential is absent. |
-| `trusted-skill` | `read-only` | Validates inputs, invokes a trusted direct-argv skill entrypoint, and uses its bounded result. |
-| `untrusted-or-changed-skill` | any | Never invokes the entrypoint; labels the skill unavailable pending trust. |
+| `approved-custom-skill` | `read-only` | Validates inputs, invokes an approved direct-argv custom skill entrypoint, and uses its bounded result. |
+| `unapproved-or-changed-custom-skill` | any | Never invokes the entrypoint; labels the skill unavailable pending approval. |
 | `cancelled-command` | any confined mode | A cancellation reaches quiescence; no child or stale tool result survives. |
 
 `write-and-verify` must operate in a test-created workspace with a checked
@@ -532,9 +538,10 @@ cancellation with deterministic fake sandbox/model seams.
   commit only in a separately started `workspace-write` session.
 - Confirm every denial names the configured ceiling and crossed boundary, and
   that there is no in-session widening path.
-- Confirm a changed repository skill requires trust again.
+- Confirm a changed repository skill remains instruction-only until a future
+  entrypoint approval design is implemented.
 - Confirm a malicious `SKILL.md` cannot change the effective policy, read an
-  undeclared secret, or cause its entrypoint to run before trust.
+  undeclared secret, or cause its entrypoint to run.
 - On Windows, show `partial` in the UI rather than hiding it.
 
 ## 11. Risks and decisions still required
@@ -542,11 +549,11 @@ cancellation with deterministic fake sandbox/model seams.
 | Question | Recommendation |
 |---|---|
 | Does `read-only` promise full cross-platform isolation? | No. Require `full` only where needed; report Windows as partial. |
-| Are repository skills trusted automatically? | No. Require explicit per-project trust and hash pinning. |
+| Are repository skills first class? | Yes. Load them as custom instruction skills; define explicit approval and content binding before any future entrypoint execution. |
 | Is arbitrary shell allowed? | Yes in developer harness, constrained by the configured session policy. |
 | Does the first release run background jobs? | No. Foreground only. |
 | Does `network: none` ship before OS enforcement exists? | No; fail closed for claims requiring network denial. |
-| Can a skill execute arbitrary code? | Only through a trusted declarative argv entrypoint under the host policy. |
+| Can a skill execute arbitrary code? | Only through an approved declarative argv entrypoint under the host policy. |
 | Is `tool.json` supported? | No native format. Consider an explicit importer later if evidence demands it. |
 
 ## 12. Recommended author decision
@@ -556,7 +563,7 @@ Approve this as a post-launch exploration with two gates:
 1. **Sandbox gate:** one generic shell has working, tested `read-only` and
    `workspace-write` modes on macOS and Linux; Windows ships only if its
    partial enforcement is visibly surfaced and accepted.
-2. **Skills gate:** only after that, add local `SKILL.md` discovery and trusted
+2. **Skills gate:** only after that, add local `SKILL.md` discovery and approved
    declarative entrypoints. No marketplace, remote install, or arbitrary plugin
    runtime.
 

@@ -1,0 +1,10 @@
+name: skills-harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm: { provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
+  tts: { provider: local, model: kokoro }
+skills:
+  roots:
+    - path: .syllabix/skills
+      source: repository

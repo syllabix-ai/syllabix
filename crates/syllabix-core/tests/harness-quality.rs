@@ -784,6 +784,7 @@ fn harness_quality_live_admission() {
                     endpoint: join_endpoint(&base_url),
                     model: model.clone(),
                     system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
+                    skill_context: String::new(),
                     developer_harness: true,
                     developer_permissions: DeveloperPermissions {
                         filesystem: fixture.filesystem,
@@ -814,6 +815,7 @@ fn harness_quality_live_admission() {
                         endpoint: join_endpoint(&base_url),
                         model: model.clone(),
                         system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
+                        skill_context: String::new(),
                         developer_harness: true,
                         developer_permissions: DeveloperPermissions {
                             filesystem: fixture.filesystem,

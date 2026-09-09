@@ -91,7 +91,7 @@ jobs:
       - name: Run unit tests with coverage
         # Native inference is an opt-in integration suite. Keep it out of this
         # unit-coverage gate: it is neither a model run nor unit-test coverage.
-        run: cargo llvm-cov --workspace --fail-under-lines 85 --fail-under-file-lines 85 --cobertura --output-path coverage.xml
+        run: cargo llvm-cov --no-clean --workspace --fail-under-lines 85 --fail-under-file-lines 85 --cobertura --output-path coverage.xml
       - name: Store coverage report
         # Best-effort evidence: the >=85% gate is enforced by the run step
         # above, so a stalled artifact upload must not fail a green run.

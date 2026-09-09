@@ -154,6 +154,32 @@ pipeline:
 
 Omitting `developer_permissions` uses `read-only`, `none`, and `none`.
 
+### Local instruction skills (Phase 6)
+
+The opt-in harness can load local, instruction-only skill packages from
+explicitly configured roots. The product-shipped root beside the executable
+contains default skills. Repository and global roots contain custom skills and
+are first-class sources of local instructions.
+
+\`\`\`yaml
+skills:
+  roots:
+    - path: .syllabix/skills
+      source: repository
+    - path: /Users/me/.config/syllabix/skills
+      source: global
+\`\`\`
+
+Each root contains one directory per skill with a UTF-8 SKILL.md. Its front
+matter currently accepts only name, description, and harmless declarative
+inputs; the Markdown body is shown to the harness as labelled `default` or
+`custom` reference text.
+Unknown metadata, invalid skills, and duplicate names are retained only as
+diagnostics and are never shown to the model. Phase 6 rejects entrypoints and
+executes no skill code. Skill text never grants filesystem, network, or secret
+access; approval and content binding for a future entrypoint phase are separate
+work.
+
 ## TTS
 
 `pipeline.tts.provider` is `local` (in-process) or `online` (reserved; fails fast).

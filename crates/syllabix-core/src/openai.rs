@@ -126,6 +126,8 @@ pub struct OpenAiSettings {
     /// System prompt template (`pipeline.llm.system_prompt`). `{language}` is
     /// replaced at generate time, same as the local engine.
     pub system_prompt: String,
+    /// Labelled instruction-only local skill catalog for the harness.
+    pub skill_context: String,
     /// Whether this explicit developer-only run advertises the two developer
     /// harness schemas. Default runs omit the API `tools` member entirely.
     pub developer_harness: bool,
@@ -144,6 +146,7 @@ impl OpenAiSettings {
             endpoint: join_endpoint(&base),
             model: config.llm_model.clone(),
             system_prompt: config.system_prompt.clone(),
+            skill_context: String::new(),
             developer_harness: config.llm_developer_harness,
             developer_permissions: config.llm_developer_permissions.clone(),
         }
@@ -213,6 +216,12 @@ impl OpenAiLlm {
     /// Endpoint used by this run.
     pub fn settings(&self) -> &OpenAiSettings {
         &self.settings
+    }
+
+    /// Set the host-discovered skill catalog for the opt-in harness only.
+    pub fn with_skill_context(mut self, skill_context: impl Into<String>) -> Self {
+        self.settings.skill_context = skill_context.into();
+        self
     }
 
     /// Set the host-owned workspace used by developer-harness shell calls.
@@ -419,11 +428,12 @@ impl OpenAiLlm {
         on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
     ) -> Result<()> {
         let generation = cancel.generation();
-        let mut body = request_body(
+        let mut body = request_body_with_skills(
             &self.settings.model,
             history,
             user,
             &self.settings.system_prompt,
+            &self.settings.skill_context,
         );
         body["tools"] = tool_definitions();
         let mut call_count = 0usize;
@@ -958,6 +968,16 @@ fn request_body(
     user: &Transcript,
     system_prompt: &str,
 ) -> serde_json::Value {
+    request_body_with_skills(model, history, user, system_prompt, "")
+}
+
+fn request_body_with_skills(
+    model: &str,
+    history: &[HistoryTurn],
+    user: &Transcript,
+    system_prompt: &str,
+    skill_context: &str,
+) -> serde_json::Value {
     let kept = if history.len() > LLAMA_MAX_HISTORY_TURNS {
         &history[history.len() - LLAMA_MAX_HISTORY_TURNS..]
     } else {
@@ -966,7 +986,11 @@ fn request_body(
     let mut messages = Vec::with_capacity(2 + kept.len() * 2);
     messages.push(serde_json::json!({
         "role": "system",
-        "content": crate::llm::render_system_prompt(system_prompt, &user.language),
+        "content": crate::llm::render_system_prompt_with_skills(
+            system_prompt,
+            &user.language,
+            skill_context,
+        ),
     }));
     for turn in kept {
         messages.push(serde_json::json!({"role": "user", "content": turn.user.text}));
@@ -1023,6 +1047,7 @@ mod tests {
                 endpoint,
                 model: "gpt-test".into(),
                 system_prompt: crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
+                skill_context: String::new(),
                 developer_harness: false,
                 developer_permissions: crate::policy::DeveloperPermissions::default_session(),
             },

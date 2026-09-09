@@ -282,6 +282,26 @@ mod production {
         config: &AgentConfig,
         llm_api_key: Option<&Zeroizing<String>>,
     ) -> Result<LiveLlm> {
+        let skill_context = if config.llm_developer_harness {
+            let discovery =
+                config.discover_skills(&std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            for diagnostic in &discovery.diagnostics {
+                tracing::warn!(
+                    code = %diagnostic.code,
+                    path = diagnostic
+                        .path
+                        .as_deref()
+                        .map(std::path::Path::display)
+                        .map(|path| path.to_string())
+                        .unwrap_or_else(|| "<skills-root>".into()),
+                    message = %diagnostic.message,
+                    "local skill ignored"
+                );
+            }
+            discovery.model_context()
+        } else {
+            String::new()
+        };
         match config.llm {
             crate::LlmProvider::Local => Ok(LiveLlm::Local(
                 LlamaLlm::from_cached_model(
@@ -293,6 +313,7 @@ mod production {
                     config.thinking,
                 )?
                 .with_system_prompt(config.system_prompt.clone())
+                .with_skill_context(skill_context.clone())
                 .with_developer_harness(config.llm_developer_harness)
                 .with_developer_permissions(config.llm_developer_permissions.clone()),
             )),
@@ -301,10 +322,10 @@ mod production {
                     field: API_KEY_ENV.into(),
                     message: format!("is required when pipeline.llm.provider is {PROVIDER_NAME}"),
                 })?;
-                Ok(LiveLlm::Cloud(OpenAiLlm::new(
-                    OpenAiSettings::from_config(config),
-                    key.clone(),
-                )))
+                Ok(LiveLlm::Cloud(
+                    OpenAiLlm::new(OpenAiSettings::from_config(config), key.clone())
+                        .with_skill_context(skill_context),
+                ))
             }
         }
     }

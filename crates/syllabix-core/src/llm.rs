@@ -93,6 +93,21 @@ pub fn render_system_prompt(template: &str, language: &str) -> String {
     }
 }
 
+/// Append the labelled, read-only local skill catalog to a developer-harness
+/// system prompt. An empty catalog preserves the existing prompt byte-for-byte.
+pub fn render_system_prompt_with_skills(
+    template: &str,
+    language: &str,
+    skill_context: &str,
+) -> String {
+    let prompt = render_system_prompt(template, language);
+    if skill_context.trim().is_empty() {
+        prompt
+    } else {
+        format!("{prompt}\n\n{skill_context}")
+    }
+}
+
 /// Render the built-in system prompt for the turn's STT language.
 pub fn system_prompt_for(language: &str) -> String {
     render_system_prompt(VOICE_SYSTEM_PROMPT_TEMPLATE, language)
@@ -127,6 +142,7 @@ pub struct LlamaLlm {
     thinking: bool,
     model_id: String,
     system_prompt: String,
+    skill_context: String,
     tool_events: Arc<Mutex<Vec<ToolTurnEvent>>>,
     developer_harness: bool,
     developer_permissions: DeveloperPermissions,
@@ -141,6 +157,7 @@ impl Clone for LlamaLlm {
             thinking: self.thinking,
             model_id: self.model_id.clone(),
             system_prompt: self.system_prompt.clone(),
+            skill_context: self.skill_context.clone(),
             tool_events: Arc::clone(&self.tool_events),
             developer_harness: self.developer_harness,
             developer_permissions: self.developer_permissions.clone(),
@@ -164,6 +181,7 @@ impl LlamaLlm {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
+            skill_context: String::new(),
             tool_events: Arc::new(Mutex::new(Vec::new())),
             developer_harness: false,
             developer_permissions: DeveloperPermissions::default_session(),
@@ -245,6 +263,12 @@ impl LlamaLlm {
         self
     }
 
+    /// Set the host-discovered skill catalog for the opt-in harness only.
+    pub fn with_skill_context(mut self, skill_context: impl Into<String>) -> Self {
+        self.skill_context = skill_context.into();
+        self
+    }
+
     /// Enable the bounded local harness for manual LFM evaluation only.
     /// Production configuration deliberately never invokes this until the
     /// harness-quality admission gate passes; retaining the model check here
@@ -298,7 +322,11 @@ impl LlamaLlm {
         let mut messages = Vec::with_capacity(2 + kept.len() * 2);
         messages.push(ChatMessage {
             role: "system".into(),
-            content: render_system_prompt(&self.system_prompt, &user.language),
+            content: render_system_prompt_with_skills(
+                &self.system_prompt,
+                &user.language,
+                &self.skill_context,
+            ),
         });
         for turn in kept {
             messages.push(ChatMessage {
@@ -325,6 +353,7 @@ impl LlamaLlm {
             thinking: false,
             model_id: BuiltinDefaults::v0().llm_model.to_string(),
             system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
+            skill_context: String::new(),
             tool_events: Arc::new(Mutex::new(Vec::new())),
             developer_harness: false,
             developer_permissions: DeveloperPermissions::default_session(),
@@ -1794,6 +1823,19 @@ mod tests {
         assert!(!system_prompt_for("fr").contains("**"));
         assert!(!VOICE_SYSTEM_PROMPT.contains(LANGUAGE_PLACEHOLDER));
         assert!(VOICE_SYSTEM_PROMPT_TEMPLATE.contains(LANGUAGE_PLACEHOLDER));
+    }
+
+    #[test]
+    fn skill_context_is_labelled_and_empty_context_preserves_prompt() {
+        let context = "--- skill release-check | source: custom ---\nRead the release notes.\n";
+        let rendered = render_system_prompt_with_skills("Speak plainly.", "en", context);
+        assert!(rendered.contains("source: custom"));
+        assert!(!rendered.contains("trust:"));
+        assert!(rendered.contains("Read the release notes."));
+        assert_eq!(
+            render_system_prompt_with_skills("Speak plainly.", "en", ""),
+            "Speak plainly."
+        );
     }
 
     #[test]
