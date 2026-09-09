@@ -3,7 +3,8 @@ name: PR template check
 # The PR template is only a default body: `gh pr create --body`, the API,
 # or the UI template-chooser bypass it silently. This check parses the PR
 # body and fails until it follows `.github/pull_request_template.md`
-# (non-empty What changed, How verified with checked boxes).
+# (non-empty What changed, How verified with checked boxes, AI attribution
+# with filled AI-Agent / AI-Model lines).
 # It also enforces the single-commit rule: squash the PR
 # branch to one commit before pushing (re-squash after fixes).
 # The harness checkbox is excluded: harness-quality-evidence.yml enforces
@@ -24,9 +25,12 @@ on:
           - '["self-hosted", "macOS"]'
           - '["ubuntu-latest"]'
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# No workflow-level concurrency: each job below has its own group so the
+# two jobs never cancel each other. The check runs on pushes and body
+# edits (checked just before merge), not after every review.
+#
+# Note: resolving a thread fires no webhook event, so the threads job does
+# NOT re-run on resolve. After resolving, edit the PR body to re-run it.
 
 permissions:
   contents: read
@@ -34,13 +38,17 @@ permissions:
 jobs:
   pr-template-check:
     name: pr template check
+    concurrency:
+      group: pr-template-body-${{ github.ref }}
+      cancel-in-progress: true
+    # The body only changes on PR events.
+    if: (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && github.event.pull_request.draft == false
     # Single runner, like coverage/clippy: self-hosted macOS (0 billed
     # minutes); workflow_dispatch may override to hosted Ubuntu. The job
     # reads the PR body, needs no devices, weights, or network beyond the
     # GitHub API.
     runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
     timeout-minutes: 5
-    if: github.event.pull_request.draft == false
     permissions:
       contents: read
       pull-requests: write
@@ -96,6 +104,15 @@ jobs:
               for label in ("cargo fmt", "cargo clippy"):
                   if not re.search(r"-\s*\[[xX]\].*" + re.escape(label), verified):
                       missing.append(f"unchecked box `{label}`")
+
+          attribution = section("AI attribution")
+          if attribution is None:
+              missing.append("`## AI attribution` section")
+          else:
+              for label in ("AI-Agent", "AI-Model"):
+                  m = re.search(r"^" + re.escape(label) + r"\s*:\s*(.+?)\s*$", attribution, re.MULTILINE)
+                  if not m or not m.group(1).strip() or "<" in m.group(1):
+                      missing.append(f"`{label}:` missing or unfilled in `## AI attribution`")
 
           # The harness checkbox is owned by harness-quality-evidence.yml,
           # which enforces it based on the files changed — not here.
@@ -156,4 +173,53 @@ jobs:
               await github.rest.issues.updateComment({ owner, repo, comment_id: prior.id, body });
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+  no-unresolved-threads:
+    name: no unresolved threads
+    # Runs only after the body check passes. Own concurrency group so the
+    # two jobs never cancel each other.
+    needs: pr-template-check
+    concurrency:
+      group: pr-threads-${{ github.ref }}
+      cancel-in-progress: true
+    # Same runner deal as pr-template-check above. Only reads review
+    # threads via the GitHub API.
+    runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
+    timeout-minutes: 5
+    if: github.event.pull_request.draft == false
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Fail if any review thread is unresolved
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const number = context.payload.pull_request.number;
+            let open = 0, total = 0, after = null;
+            for (;;) {
+              const data = await github.graphql(
+                `query($owner:String!, $repo:String!, $pr:Int!, $after:String) {
+                  repository(owner:$owner, name:$repo) {
+                    pullRequest(number:$pr) {
+                      reviewThreads(first:100, after:$after) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes { isResolved }
+                      }
+                    }
+                  }
+                }`,
+                { owner, repo, pr: number, after },
+              );
+              const threads = data.repository.pullRequest.reviewThreads;
+              total += threads.nodes.length;
+              open += threads.nodes.filter((t) => !t.isResolved).length;
+              if (!threads.pageInfo.hasNextPage) break;
+              after = threads.pageInfo.endCursor;
+            }
+            if (open > 0) {
+              core.setFailed(`${open} of ${total} review thread(s) unresolved. Reply to every thread and resolve it once addressed, then edit the PR body to re-run.`);
+            } else {
+              core.info(`All ${total} review threads resolved.`);
             }
