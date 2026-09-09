@@ -10,3 +10,8 @@
 ## Harness-quality evidence
 
 - [ ] Harness quality check run manually (needed only if related files are touched, see `docs/contributing.md`).
+
+## AI attribution
+
+AI-Agent: <harness / none>
+AI-Model: <exact model identifier / N/A>
