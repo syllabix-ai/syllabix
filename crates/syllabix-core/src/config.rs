@@ -12,6 +12,7 @@ use crate::defaults::{
 use crate::error::{Error, Result};
 use crate::language::is_supported as is_supported_language;
 pub use crate::policy::{DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy};
+use crate::skills::{SkillRoot, SkillSource, SkillsConfig};
 use crate::turn_debug::DEFAULT_TURN_DEBUG_DIR;
 use crate::vad::{VadSettings, END_SILENCE, MIN_SPEECH, SPEECH_THRESHOLD, WHISPER_PREROLL};
 
@@ -66,6 +67,9 @@ pub struct AgentConfig {
     /// (`pipeline.llm.developer_permissions`). Defaults to read-only /
     /// network none / secrets none. Rejected unless the harness is enabled.
     pub llm_developer_permissions: DeveloperPermissions,
+    /// Explicit repository/global skill roots.
+    /// The built-in read-only root is added by skill discovery.
+    pub skills: SkillsConfig,
     /// TTS provider (`local`; `online` is reserved and rejected).
     pub tts: TtsProvider,
     /// TTS model id (`kokoro`, `qwen3-0.6`, `qwen3-1.7`, or `pocket-tts`).
@@ -114,6 +118,7 @@ impl AgentConfig {
             llm_base_url: None,
             llm_developer_harness: false,
             llm_developer_permissions: DeveloperPermissions::default_session(),
+            skills: SkillsConfig::default(),
             tts: defaults.tts,
             tts_model: defaults.tts_model,
             tts_language: "en".to_string(),
@@ -128,6 +133,16 @@ impl AgentConfig {
     /// Diagnostics recording is on (sidecars and/or turn WAVs).
     pub fn diagnostics_enabled(&self) -> bool {
         self.diagnostics_timestamps || self.diagnostics_audio
+    }
+
+    /// Discover the built-in root and configured local skills for this
+    /// developer-harness workspace. The default spoken path does not call this.
+    pub fn discover_skills(&self, workspace: &Path) -> crate::skills::SkillDiscovery {
+        crate::skills::SkillDiscovery::discover(
+            &crate::skills::builtin_root(),
+            workspace,
+            &self.skills,
+        )
     }
 
     /// Parse and validate a yaml document.
@@ -167,6 +182,13 @@ impl AgentConfig {
     /// `base_url` is omitted for the zero-config local LLM.
     pub fn to_yaml(&self) -> String {
         let diagnostics_block = self.render_diagnostics_block();
+        let skills_block = self.render_skills_block();
+        let developer_harness_line = if self.llm_developer_harness {
+            "    developer_harness: true\n"
+        } else {
+            ""
+        };
+        let developer_permissions_block = self.render_developer_permissions_block();
         format!(
             "\
 name: {name}
@@ -186,11 +208,11 @@ pipeline:
     model: {llm_model}
     thinking: {thinking}
     system_prompt: {system_prompt}
-{base_url_line}  tts:
+{base_url_line}{developer_harness_line}{developer_permissions_block}  tts:
     provider: {tts}
     model: {tts_model}
     language: {tts_language}
-{diagnostics_block}",
+{diagnostics_block}{skills_block}",
             name = self.name,
             vad = self.vad.as_str(),
             vad_threshold = self.vad_threshold,
@@ -209,10 +231,13 @@ pipeline:
                 .as_deref()
                 .map(|url| format!("    base_url: {url}\n"))
                 .unwrap_or_default(),
+            developer_harness_line = developer_harness_line,
+            developer_permissions_block = developer_permissions_block,
             tts = self.tts.as_str(),
             tts_model = self.tts_model.as_str(),
             tts_language = self.tts_language,
             diagnostics_block = diagnostics_block,
+            skills_block = skills_block,
         )
     }
 
@@ -230,6 +255,40 @@ pipeline:
         format!(
             "diagnostics:\n  timestamps: {}\n  audio: {}\n{}",
             self.diagnostics_timestamps, self.diagnostics_audio, directory_line
+        )
+    }
+
+    /// Optional skills configuration. It is omitted from zero-config init.
+    fn render_skills_block(&self) -> String {
+        if self.skills == SkillsConfig::default() {
+            return String::new();
+        }
+        let mut output = String::from("skills:\n  roots:\n");
+        for root in &self.skills.roots {
+            output.push_str(&format!(
+                "    - path: {}\n      source: {}\n",
+                yaml_double_quoted(&root.path.display().to_string()),
+                match root.source {
+                    SkillSource::Global => "global",
+                    SkillSource::Repository => "repository",
+                    SkillSource::Builtin => "built-in",
+                }
+            ));
+        }
+        output
+    }
+
+    fn render_developer_permissions_block(&self) -> String {
+        if !self.llm_developer_harness
+            || self.llm_developer_permissions == DeveloperPermissions::default_session()
+        {
+            return String::new();
+        }
+        format!(
+            "    developer_permissions:\n      filesystem: {}\n      network: {}\n      secrets: {}\n",
+            self.llm_developer_permissions.filesystem.as_str(),
+            self.llm_developer_permissions.network.as_str(),
+            self.llm_developer_permissions.secrets.as_str(),
         )
     }
 
@@ -269,7 +328,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     deny_unknown(
         root,
         ".",
-        &["name", "pipeline", "diagnostics", "auto-timeout"],
+        &["name", "pipeline", "diagnostics", "auto-timeout", "skills"],
     )?;
     let name = required_string(root, "name", "name")?;
     let pipeline = mapping(
@@ -403,6 +462,13 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     let (diagnostics_timestamps, diagnostics_audio, diagnostics_directory) =
         parse_diagnostics(root)?;
     let (auto_timeout_mic_mute_ms, auto_timeout_exit_ms) = parse_auto_timeout(root)?;
+    let skills = parse_skills(root)?;
+    if skills != SkillsConfig::default() && !llm_developer_harness {
+        return Err(Error::Config {
+            field: "skills".into(),
+            message: "requires pipeline.llm.developer_harness: true".into(),
+        });
+    }
 
     Ok(AgentConfig {
         name: name.to_string(),
@@ -421,6 +487,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         llm_base_url,
         llm_developer_harness,
         llm_developer_permissions,
+        skills,
         tts: tts_provider,
         tts_model,
         tts_language,
@@ -463,6 +530,60 @@ fn parse_auto_timeout(root: &serde_yaml::Mapping) -> Result<(u32, u32)> {
         });
     }
     Ok((mic_mute_ms, exit_ms))
+}
+
+/// Parse explicit repository/global skill roots.
+fn parse_skills(root: &serde_yaml::Mapping) -> Result<SkillsConfig> {
+    let Some(value) = root.get("skills") else {
+        return Ok(SkillsConfig::default());
+    };
+    let block = mapping(value, "skills")?;
+    deny_unknown(block, "skills", &["roots"])?;
+
+    let mut roots = Vec::new();
+    if let Some(value) = block.get("roots") {
+        let sequence = value.as_sequence().ok_or_else(|| Error::Config {
+            field: "skills.roots".into(),
+            message: "must be a sequence".into(),
+        })?;
+        for (index, value) in sequence.iter().enumerate() {
+            let field = format!("skills.roots[{index}]");
+            let root = mapping(value, &field)?;
+            deny_unknown(root, &field, &["path", "source"])?;
+            let path = required_string(root, &format!("{field}.path"), "path")?;
+            if path.trim().is_empty() {
+                return Err(Error::Config {
+                    field: format!("{field}.path"),
+                    message: "must be a non-empty string".into(),
+                });
+            }
+            let source = match required_string(root, &format!("{field}.source"), "source")? {
+                "repository" => SkillSource::Repository,
+                "global" => {
+                    if !Path::new(path).is_absolute() {
+                        return Err(Error::Config {
+                            field: format!("{field}.path"),
+                            message: "global skill roots must be absolute".into(),
+                        });
+                    }
+                    SkillSource::Global
+                }
+                other => {
+                    return Err(Error::Config {
+                        field: format!("{field}.source"),
+                        message: format!(
+                            "unsupported value {other:?} (allowed: \"repository\", \"global\")"
+                        ),
+                    });
+                }
+            };
+            roots.push(SkillRoot {
+                path: PathBuf::from(path),
+                source,
+            });
+        }
+    }
+    Ok(SkillsConfig { roots })
 }
 
 /// `diagnostics: {timestamps, audio, directory}` — all optional, all default
@@ -961,6 +1082,91 @@ mod tests {
         assert!(yaml.contains("end_silence_ms: 350"));
         assert!(yaml.contains("preroll_ms: 200"));
         assert_eq!(AgentConfig::parse_yaml(&yaml).unwrap(), AgentConfig::v0());
+    }
+
+    #[test]
+    fn skills_roots_parse_and_round_trip() {
+        let yaml = r#"
+name: skills
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm: { provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
+  tts: { provider: local, model: kokoro }
+skills:
+  roots:
+    - path: .syllabix/skills
+      source: repository
+    - path: /tmp/syllabix-skills
+      source: global
+"#;
+        let config = AgentConfig::parse_yaml(yaml).expect("skills config");
+        assert_eq!(config.skills.roots.len(), 2);
+        assert_eq!(config.skills.roots[0].source, SkillSource::Repository);
+        assert_eq!(config.skills.roots[1].source, SkillSource::Global);
+        let rendered = config.to_yaml();
+        let reparsed = AgentConfig::parse_yaml(&rendered).expect("rendered skills config");
+        assert_eq!(reparsed.skills, config.skills);
+    }
+
+    #[test]
+    fn skills_config_rejects_unknown_keys_and_relative_global_roots() {
+        let base = r#"
+name: skills
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm: { provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
+  tts: { provider: local, model: kokoro }
+"#;
+        let unknown = format!("{base}skills: {{extra: true}}\n");
+        let error = AgentConfig::parse_yaml(&unknown).expect_err("unknown skills key");
+        assert!(error.to_string().contains("skills.extra"));
+        let relative =
+            format!("{base}skills:\n  roots:\n    - path: user-skills\n      source: global\n");
+        let error = AgentConfig::parse_yaml(&relative).expect_err("relative global root");
+        assert!(error
+            .to_string()
+            .contains("global skill roots must be absolute"));
+        let trust = format!("{base}skills: {{trust: []}}\n");
+        let error = AgentConfig::parse_yaml(&trust).expect_err("Phase 6 has no trust pins");
+        assert!(error.to_string().contains("skills.trust"));
+    }
+
+    #[test]
+    fn custom_repository_skill_fixture_loads_only_in_harness() {
+        let config = AgentConfig::parse_yaml(include_str!("../tests/fixtures/skills-harness.yaml"))
+            .expect("harness skills fixture");
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root");
+        let discovery = config.discover_skills(&repository_root);
+        assert_eq!(discovery.skills.len(), 1, "{:#?}", discovery.diagnostics);
+        assert_eq!(discovery.skills[0].manifest.name, "repository-guide");
+        assert_eq!(discovery.skills[0].source, SkillSource::Repository);
+        assert!(discovery.model_context().contains("source: custom"));
+    }
+
+    #[test]
+    fn skills_config_requires_the_developer_harness() {
+        let error = AgentConfig::parse_yaml(
+            r#"
+name: skills
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm: { provider: online, model: gpt-test, base_url: https://example.test/v1 }
+  tts: { provider: local, model: kokoro }
+skills:
+  roots:
+    - path: .syllabix/skills
+      source: repository
+"#,
+        )
+        .expect_err("skills must require the developer harness");
+        assert!(error.to_string().contains("skills"));
+        assert!(error.to_string().contains("developer_harness: true"));
     }
 
     #[test]

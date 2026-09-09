@@ -58,7 +58,7 @@ jobs:
       - name: Run unit tests with coverage
         # Native inference is an opt-in integration suite, not part of this
         # unit-coverage gate or the OS matrix below.
-        run: cargo llvm-cov --workspace --fail-under-lines 85 --fail-under-file-lines 85 --cobertura --output-path coverage.xml
+        run: cargo llvm-cov --no-clean --workspace --fail-under-lines 85 --fail-under-file-lines 85 --cobertura --output-path coverage.xml
       - name: Store coverage report
         uses: actions/upload-artifact@v4
         with:
