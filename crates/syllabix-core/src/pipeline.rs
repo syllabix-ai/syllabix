@@ -193,8 +193,6 @@ pub struct RuntimeControls(Arc<RuntimeControlsInner>);
 #[derive(Debug)]
 struct RuntimeControlsInner {
     barge_in: AtomicBool,
-    speaker_muted: AtomicBool,
-    agent_muted: AtomicBool,
     mic_muted: AtomicBool,
     /// `Duration::ZERO` disables.
     mic_mute_after: Duration,
@@ -231,8 +229,6 @@ impl RuntimeControls {
     ) -> Self {
         Self(Arc::new(RuntimeControlsInner {
             barge_in: AtomicBool::new(barge_in),
-            speaker_muted: AtomicBool::new(false),
-            agent_muted: AtomicBool::new(false),
             mic_muted: AtomicBool::new(false),
             mic_mute_after: Duration::from_millis(u64::from(mic_mute_ms)),
             exit_after: Duration::from_millis(u64::from(exit_ms)),
@@ -249,29 +245,34 @@ impl RuntimeControls {
     pub fn barge_in(&self) -> bool {
         self.0.barge_in.load(Ordering::SeqCst)
     }
-    pub fn speaker_muted(&self) -> bool {
-        self.0.speaker_muted.load(Ordering::SeqCst)
-    }
-    pub fn agent_muted(&self) -> bool {
-        self.0.agent_muted.load(Ordering::SeqCst)
-    }
     pub fn mic_muted(&self) -> bool {
         self.0.mic_muted.load(Ordering::SeqCst)
     }
     pub fn toggle_barge_in(&self) -> bool {
         !self.0.barge_in.fetch_xor(true, Ordering::SeqCst)
     }
-    pub fn toggle_speaker_muted(&self) -> bool {
-        !self.0.speaker_muted.fetch_xor(true, Ordering::SeqCst)
-    }
-    pub fn toggle_agent_muted(&self) -> bool {
-        !self.0.agent_muted.fetch_xor(true, Ordering::SeqCst)
-    }
 
     /// Clear mic mute and restart the idle clock (listening restored).
     pub fn unmute_mic(&self) {
         self.0.mic_muted.store(false, Ordering::SeqCst);
         self.arm_idle();
+    }
+
+    /// Set mic mute and keep the idle clock armed so the exit timer still fires.
+    pub fn mute_mic(&self) {
+        self.0.mic_muted.store(true, Ordering::SeqCst);
+        self.arm_idle();
+    }
+
+    /// Toggle manual mic mute. Returns the new muted state.
+    pub fn toggle_mic_muted(&self) -> bool {
+        if self.mic_muted() {
+            self.unmute_mic();
+            false
+        } else {
+            self.mute_mic();
+            true
+        }
     }
 
     /// Start or restart the idle clock from now (listening / post-TTS / keypress).
@@ -301,7 +302,8 @@ impl RuntimeControls {
         }
     }
 
-    /// Check idle thresholds. Mic-mute is sticky until [`unmute_mic`].
+    /// Check idle thresholds. Mic-mute is sticky until [`unmute_mic`]
+    /// or [`toggle_mic_muted`].
     pub fn poll_auto_timeout(&self) -> AutoTimeoutAction {
         let since = match *self.0.idle_since_ms.lock().expect("idle_since_ms") {
             Some(since) => since,
@@ -1247,15 +1249,7 @@ fn stt_loop<S: Stt>(
                                 &language,
                                 done_at,
                             );
-                            if shared.controls.agent_muted() {
-                                shared.note_skip(transcript.turn, cancel);
-                            } else {
-                                ignore_cancel(
-                                    tx.send_cancellable(transcript, cancel),
-                                    shared,
-                                    cancel,
-                                );
-                            }
+                            ignore_cancel(tx.send_cancellable(transcript, cancel), shared, cancel);
                         }
                     }
                     Err(Error::Cancelled) => {
@@ -1493,16 +1487,13 @@ fn sink_loop<K: AudioSink>(
     cancel: &Cancel,
     shared: &Shared,
 ) {
-    let mut speaker_was_muted = false;
     loop {
         if cancel.is_shutdown() {
             return;
         }
-        let speaker_muted = shared.controls.speaker_muted();
-        if (speaker_muted && !speaker_was_muted) || shared.take_flush() {
+        if shared.take_flush() {
             sink.interrupt();
         }
-        speaker_was_muted = speaker_muted;
         match rx.recv_timeout(POLL) {
             Ok(audio) => {
                 if shared.take_flush() {
@@ -1514,14 +1505,6 @@ fn sink_loop<K: AudioSink>(
                 let is_last = audio.is_last;
                 let turn = audio.turn;
                 let generation = audio.generation;
-                if shared.controls.speaker_muted() {
-                    let completed = shared.note_audio(&audio, Instant::now(), cancel);
-                    if is_last {
-                        shared.release_assistant(turn);
-                        maybe_stop_after(mode, completed, cancel);
-                    }
-                    continue;
-                }
                 // Enter speaking before a sink can block on the first audio
                 // chunk. With --barge-in this re-opens VAD so a new
                 // SpeechStart can cancel the blocked playback.
@@ -1628,15 +1611,13 @@ mod tests {
     fn runtime_controls_toggle_independently() {
         let controls = RuntimeControls::new(false);
         assert!(!controls.barge_in());
-        assert!(!controls.speaker_muted());
-        assert!(!controls.agent_muted());
         assert!(!controls.mic_muted());
         assert!(controls.toggle_barge_in());
-        assert!(controls.toggle_speaker_muted());
-        assert!(controls.toggle_agent_muted());
+        assert!(controls.toggle_mic_muted());
         assert!(controls.barge_in());
-        assert!(controls.speaker_muted());
-        assert!(controls.agent_muted());
+        assert!(controls.mic_muted());
+        assert!(!controls.toggle_mic_muted());
+        assert!(!controls.mic_muted());
     }
 
     fn controls_with_clock(mic_mute_ms: u32, exit_ms: u32) -> RuntimeControls {

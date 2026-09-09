@@ -429,25 +429,26 @@ mod live_terminal {
         }
 
         fn footer(&self, controls: &RuntimeControls) -> (String, String) {
-            let (mic, agent_pill) = if controls.mic_muted() {
-                ("mic ◌ muted", "agent ○ idle (press u to listen)")
-            } else if controls.agent_muted() {
-                ("mic ● live", "agent ○ idle (agent muted)")
-            } else if controls.speaker_muted() {
-                ("mic ● live", "agent ○ idle")
-            } else if self.ui.is_using_tools() {
-                ("mic ◌ muted", "agent ⚙ using tools")
-            } else if self.ui.is_thinking() {
-                ("mic ◌ muted", "agent … thinking")
-            } else if self.playing && controls.barge_in() {
-                ("mic ● live", "agent 🔊 speaking — talk to interrupt")
-            } else if self.playing {
-                ("mic ◌ muted", "agent 🔊 speaking — press b for barge-in")
+            // Mic state drives only the mic pill; the agent pill always
+            // reflects what the agent is doing.
+            let mic = if controls.mic_muted() {
+                "mic ◌ muted (press m to turn on)"
             } else {
-                ("mic ● live", "agent ○ idle")
+                "mic ● live"
+            };
+            let agent_pill = if self.ui.is_using_tools() {
+                "agent ⚙ using tools"
+            } else if self.ui.is_thinking() {
+                "agent … thinking"
+            } else if self.playing && controls.barge_in() {
+                "agent 🔊 speaking — talk to interrupt"
+            } else if self.playing {
+                "agent 🔊 speaking — press b for barge-in"
+            } else {
+                "agent ○ idle"
             };
             let status = format!("{mic}  ·  {agent_pill}  ·  {}", self.ui.aec_pill());
-            let speaker = if controls.speaker_muted() {
+            let mic_action = if controls.mic_muted() {
                 "unmute"
             } else {
                 "mute"
@@ -457,7 +458,7 @@ mod live_terminal {
             } else {
                 "enable interruption"
             };
-            (status, format!("q:quit  m:{speaker}  b:{barge}"))
+            (status, format!("q:quit  m:{mic_action}  b:{barge}"))
         }
 
         fn draw_footer_at_cursor(
@@ -589,7 +590,7 @@ mod live_terminal {
     fn apply_footer_control(
         key: KeyCode,
         controls: &RuntimeControls,
-        renderer: &mut InlineRenderer,
+        _renderer: &mut InlineRenderer,
     ) -> bool {
         match key {
             KeyCode::Char('b') => {
@@ -597,8 +598,7 @@ mod live_terminal {
                 true
             }
             KeyCode::Char('m') => {
-                controls.toggle_speaker_muted();
-                renderer.playing = false;
+                controls.toggle_mic_muted();
                 true
             }
             _ => false,
@@ -635,7 +635,7 @@ mod live_terminal {
 
     #[cfg(test)]
     #[test]
-    fn footer_controls_toggle_speaker_and_interruption_only() {
+    fn footer_controls_toggle_mic_and_interruption() {
         let mut renderer = InlineRenderer::new();
         renderer.playing = true;
         let controls = RuntimeControls::new(false);
@@ -648,8 +648,8 @@ mod live_terminal {
             &controls,
             &mut renderer
         ));
-        assert!(controls.speaker_muted());
-        assert!(!renderer.playing);
+        assert!(controls.mic_muted());
+        assert!(renderer.playing);
 
         assert!(apply_footer_control(
             KeyCode::Char('b'),
@@ -670,7 +670,68 @@ mod live_terminal {
             &controls,
             &mut renderer
         ));
-        assert!(!controls.agent_muted());
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn footer_decouples_mic_and_agent_pills() {
+        let mut renderer = InlineRenderer::new();
+        renderer.playing = true;
+        let controls = RuntimeControls::new(true);
+
+        // Mic muted mid-speech: mic pill carries the hint, agent pill
+        // still reports speaking.
+        controls.mute_mic();
+        let (status, _) = renderer.footer(&controls);
+        assert!(
+            status.contains("mic ◌ muted (press m to turn on)"),
+            "got: {status}"
+        );
+        assert!(
+            status.contains("agent 🔊 speaking — talk to interrupt"),
+            "got: {status}"
+        );
+
+        // Mic live, nothing playing: plain pills.
+        controls.unmute_mic();
+        renderer.playing = false;
+        let (status, _) = renderer.footer(&controls);
+        assert!(status.contains("mic ● live"), "got: {status}");
+        assert!(status.contains("agent ○ idle"), "got: {status}");
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn footer_control_m_clears_auto_mic_mute() {
+        use std::time::Duration;
+
+        let mut renderer = InlineRenderer::new();
+        let clock = syllabix_core::IdleClock::manual(0);
+        let controls =
+            syllabix_core::RuntimeControls::with_auto_timeout_clock(false, 30, 60, clock.clone());
+        controls.arm_idle();
+        clock.advance(Duration::from_millis(30));
+        assert_eq!(
+            controls.poll_auto_timeout(),
+            syllabix_core::AutoTimeoutAction::MicMute
+        );
+        assert!(controls.mic_muted());
+
+        assert!(apply_footer_control(
+            KeyCode::Char('m'),
+            &controls,
+            &mut renderer
+        ));
+        assert!(!controls.mic_muted());
+        assert!(controls.idle_armed());
+
+        // Manual toggle the other way: live mic -> m -> muted.
+        assert!(apply_footer_control(
+            KeyCode::Char('m'),
+            &controls,
+            &mut renderer
+        ));
+        assert!(controls.mic_muted());
     }
 
     pub fn run_conversation_tui(config: AgentConfig, cancel: Cancel, barge_in: bool) -> Result<()> {

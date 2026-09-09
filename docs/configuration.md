@@ -204,7 +204,7 @@ auto-timeout:
   exit_ms: 600000       # 10 minutes; 0 disables idle exit
 ```
 
-The idle clock runs while the agent is listening. It stops on user speech start and restarts after TTS playback finishes (and after skipped turns that never speak). Any keypress resets an armed clock. Auto mic-mute drops capture frames until you press `u` to listen again. When both timers are positive, `exit_ms` must be greater than `mic_mute_ms`.
+The idle clock runs while the agent is listening. It stops on user speech start and restarts after TTS playback finishes (and after skipped turns that never speak). Any keypress resets an armed clock. Mic mute (manual or auto) drops capture frames until you press `m` to turn the mic back on. When both timers are positive, `exit_ms` must be greater than `mic_mute_ms`.
 
 ## Diagnostics
 
