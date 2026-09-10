@@ -14,14 +14,17 @@
 //!   cargo test -p syllabix-core --test harness-quality -- --ignored --nocapture
 //! ```
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use syllabix_core::{
     current_provider, join_endpoint, resolve_api_key, resolve_effective, speak_text_for_tts,
-    validate_base_url, BlockedFetcher, Cancel, DeveloperPermissions, Enforcement, FilesystemMode,
-    LlamaLlm, Llm, ModelCache, NetworkMode, NoProgress, OpenAiLlm, OpenAiSettings, SandboxRequest,
-    SecretPolicy, ToolCall, ToolResult, ToolTurnEvent, Transcript, TurnId, CLOUD_FALLBACK_TEXT,
-    LFM25_2_6B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, TOOL_LIMIT_TEXT, VOICE_SYSTEM_PROMPT_TEMPLATE,
+    validate_base_url, AgentConfig, BlockedFetcher, Cancel, DeveloperPermissions, Enforcement,
+    FilesystemMode, LlamaLlm, Llm, ModelCache, NetworkMode, NoProgress, OpenAiLlm, OpenAiSettings,
+    SandboxRequest, SecretPolicy, ToolCall, ToolResult, ToolTurnEvent, Transcript, TurnId,
+    CLOUD_FALLBACK_TEXT, LFM25_2_6B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, TOOL_LIMIT_TEXT,
+    VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
 
 /// Base URL environment variable for the manual run. It is required because
@@ -39,6 +42,31 @@ const MODEL_ENV: &str = "SYLLABIX_HARNESS_MODEL";
 const MAX_LIVE_ATTEMPTS: usize = 2;
 /// Breather between the two tries so a transient 429 burst can clear.
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static ADMISSION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn admission_lock() -> std::sync::MutexGuard<'static, ()> {
+    ADMISSION_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn unique_temp_root(label: &str) -> std::path::PathBuf {
+    loop {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "syllabix-{label}-{}-{sequence}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&root) {
+            Ok(()) => return root,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create unique fixture root {root:?}: {error}"),
+        }
+    }
+}
 
 /// Tool names the model is allowed to call.
 fn is_allowed_tool(name: &str) -> bool {
@@ -246,6 +274,7 @@ fn should_retry(reply: &str, events: &[ToolTurnEvent], attempts: usize) -> bool 
 #[derive(Debug, Clone, Copy)]
 enum CapabilityCheck {
     Shell,
+    RepositoryOrientation,
     ShellDenied,
     NetworkDenied,
     ShellWithScrubbedEnvironment,
@@ -268,6 +297,13 @@ const CAPABILITY_FIXTURES: &[CapabilityFixture] = &[
         filesystem: FilesystemMode::ReadOnly,
         network: NetworkMode::None,
         check: CapabilityCheck::Shell,
+    },
+    CapabilityFixture {
+        id: "repo-orientation",
+        transcript: "Catch me up on this repository.",
+        filesystem: FilesystemMode::ReadOnly,
+        network: NetworkMode::None,
+        check: CapabilityCheck::RepositoryOrientation,
     },
     CapabilityFixture {
         id: "write-and-verify",
@@ -502,11 +538,61 @@ fn capability_evidence(
     let shell_succeeded = events.iter().any(|event| {
         event.kind == "result" && event.name == "shell" && event.content.contains("exit: 0")
     });
+    let repository_orientation = {
+        let shell_calls = events
+            .iter()
+            .filter(|event| event.kind == "call" && event.name == "shell")
+            .collect::<Vec<_>>();
+        let commands = shell_calls
+            .iter()
+            .filter_map(|event| serde_json::from_str::<serde_json::Value>(&event.arguments).ok())
+            .filter_map(|arguments| {
+                arguments
+                    .get("command")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_lowercase)
+            })
+            .collect::<Vec<_>>();
+        let result_text = events
+            .iter()
+            .filter(|event| event.kind == "result" && event.name == "shell")
+            .map(|event| event.content.to_lowercase())
+            .collect::<Vec<_>>();
+        let spoken = speak_text_for_tts(reply);
+        let sentences = spoken
+            .chars()
+            .filter(|character| matches!(character, '.' | '!' | '?'))
+            .count();
+        let purpose = spoken.to_lowercase().contains("syllabix")
+            && (spoken.to_lowercase().contains("voice")
+                || spoken.to_lowercase().contains("speech"));
+        let recent_change = spoken.to_lowercase().contains("recent")
+            || spoken.to_lowercase().contains("latest")
+            || spoken.to_lowercase().contains("change")
+            || spoken.to_lowercase().contains("refresh");
+        !shell_calls.is_empty()
+            && commands.iter().any(|command| command.contains("readme"))
+            && commands
+                .iter()
+                .any(|command| command.contains("git") && command.contains("log"))
+            && result_text
+                .iter()
+                .any(|text| text.contains("voice infrastructure"))
+            && result_text
+                .iter()
+                .any(|text| text.contains("refresh orientation fixture"))
+            && (2..=3).contains(&sentences)
+            && purpose
+            && recent_change
+    };
     let enforcement_verified =
         enforcement != "unavailable" && (fixture.id != "network-denied" || enforcement == "full");
     let completion = match fixture.check {
         CapabilityCheck::Shell => {
             enforcement_verified && shell_calls > 0 && shell_succeeded && clean_reply
+        }
+        CapabilityCheck::RepositoryOrientation => {
+            enforcement_verified && repository_orientation && clean_reply
         }
         CapabilityCheck::ShellDenied => {
             enforcement_verified && shell_calls > 0 && denied_spawns > 0 && clean_reply
@@ -568,11 +654,7 @@ fn summarize_capability_evidence(
 }
 
 fn host_enforcement(fixture: &CapabilityFixture) -> &'static str {
-    let root = std::env::temp_dir().join(format!(
-        "syllabix-harness-quality-{}-{}",
-        std::process::id(),
-        fixture.id
-    ));
+    let root = unique_temp_root(&format!("harness-quality-{}", fixture.id));
     let workspace = root.join("workspace");
     let temp = root.join("temp");
     if std::fs::create_dir_all(&workspace).is_err() || std::fs::create_dir_all(&temp).is_err() {
@@ -596,6 +678,16 @@ fn host_enforcement(fixture: &CapabilityFixture) -> &'static str {
     enforcement
 }
 
+fn run_git(workspace: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(args)
+        .status()
+        .expect("fixture git command starts");
+    assert!(status.success(), "fixture git command failed: git {args:?}");
+}
+
 struct FixtureWorkspace {
     root: std::path::PathBuf,
     path: std::path::PathBuf,
@@ -608,20 +700,65 @@ impl Drop for FixtureWorkspace {
 }
 
 fn fixture_workspace() -> FixtureWorkspace {
-    let root =
-        std::env::temp_dir().join(format!("syllabix-harness-fixture-{}", std::process::id()));
+    let root = unique_temp_root("harness-fixture");
     let path = root.join("workspace");
     std::fs::create_dir_all(path.join("src")).expect("fixture workspace");
-    std::fs::write(path.join("README.md"), "fixture workspace\n").expect("fixture readme");
+    std::fs::write(
+        path.join("README.md"),
+        "# Syllabix fixture\n\nSyllabix is voice infrastructure for local speech pipelines and developer harnesses.\n",
+    )
+    .expect("fixture readme");
     std::fs::write(
         path.join("src/lib.rs"),
         "pub const FIXTURE: &str = \"ok\";\n",
     )
     .expect("fixture source");
+    std::fs::create_dir_all(path.join(".syllabix/skills/repository-guide"))
+        .expect("fixture skill directory");
+    std::fs::write(
+        path.join(".syllabix/skills/repository-guide/SKILL.md"),
+        include_str!("../../../.syllabix/skills/repository-guide/SKILL.md"),
+    )
+    .expect("fixture skill");
+    run_git(&path, &["init", "--quiet"]);
+    run_git(&path, &["config", "user.email", "harness@example.test"]);
+    run_git(&path, &["config", "user.name", "Harness Fixture"]);
+    run_git(&path, &["add", "README.md", "src", ".syllabix"]);
+    run_git(
+        &path,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "Add voice infrastructure fixture",
+        ],
+    );
+    std::fs::write(
+        path.join("src/lib.rs"),
+        "pub const FIXTURE: &str = \"oriented\";\n",
+    )
+    .expect("fixture update");
+    run_git(&path, &["add", "src/lib.rs"]);
+    run_git(
+        &path,
+        &["commit", "--quiet", "-m", "Refresh orientation fixture"],
+    );
     FixtureWorkspace {
         path: path.canonicalize().expect("canonical fixture workspace"),
         root,
     }
+}
+
+fn fixture_skill_context(workspace: &std::path::Path) -> String {
+    let config = AgentConfig::parse_yaml(include_str!("fixtures/skills-harness.yaml"))
+        .expect("harness skill config");
+    let discovery = config.discover_skills(workspace);
+    assert!(
+        discovery.diagnostics.is_empty(),
+        "fixture skill diagnostics: {discovery:#?}"
+    );
+    assert_eq!(discovery.skills.len(), 1, "fixture skill must load");
+    discovery.model_context()
 }
 
 fn live_config() -> (String, String) {
@@ -680,7 +817,9 @@ fn drive_turn<L: Llm>(llm: &mut L, text: &str) -> (String, Vec<ToolTurnEvent>) {
 #[test]
 #[ignore]
 fn harness_quality_local_lfm() {
+    let _admission_guard = admission_lock();
     let fixture_workspace = fixture_workspace();
+    let skill_context = fixture_skill_context(&fixture_workspace.path);
     let cache = ModelCache::v0();
     let mut progress = NoProgress;
     let fetcher = BlockedFetcher::default();
@@ -694,6 +833,7 @@ fn harness_quality_local_lfm() {
     )
     .expect("local harness-quality requires the pinned LFM GGUF in the model cache")
     .with_developer_harness(true)
+    .with_skill_context(skill_context)
     .with_workspace(fixture_workspace.path.clone());
 
     let mut elapsed = Vec::new();
@@ -764,10 +904,12 @@ fn harness_quality_local_lfm() {
 #[test]
 #[ignore]
 fn harness_quality_live_admission() {
+    let _admission_guard = admission_lock();
     let (base_url, model) = live_config();
     let api_key = resolve_api_key(|key| std::env::var(key).ok()).expect("key checked above");
     println!("model={model} base={base_url} mode=online");
     let fixture_workspace = fixture_workspace();
+    let skill_context = fixture_skill_context(&fixture_workspace.path);
 
     let mut evidence = Vec::new();
 
@@ -784,7 +926,7 @@ fn harness_quality_live_admission() {
                     endpoint: join_endpoint(&base_url),
                     model: model.clone(),
                     system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
-                    skill_context: String::new(),
+                    skill_context: skill_context.clone(),
                     developer_harness: true,
                     developer_permissions: DeveloperPermissions {
                         filesystem: fixture.filesystem,
@@ -815,7 +957,7 @@ fn harness_quality_live_admission() {
                         endpoint: join_endpoint(&base_url),
                         model: model.clone(),
                         system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
-                        skill_context: String::new(),
+                        skill_context: skill_context.clone(),
                         developer_harness: true,
                         developer_permissions: DeveloperPermissions {
                             filesystem: fixture.filesystem,
@@ -1050,6 +1192,7 @@ fn capability_fixtures_cover_the_phase5_contract() {
         .collect();
     for required in [
         "read-repo",
+        "repo-orientation",
         "write-and-verify",
         "write-denied",
         "network-denied",
@@ -1058,7 +1201,49 @@ fn capability_fixtures_cover_the_phase5_contract() {
     ] {
         assert!(ids.contains(&required), "fixture {required} is fixed");
     }
-    assert_eq!(ids.len(), 6, "the Phase-5 fixture set is versioned");
+    assert_eq!(ids.len(), 7, "the capability fixture set is versioned");
+}
+
+#[test]
+fn repo_orientation_fixture_loads_the_configured_skill() {
+    let workspace = fixture_workspace();
+    let context = fixture_skill_context(&workspace.path);
+    assert!(context.contains("--- skill repository-guide | source: custom ---"));
+    assert!(context.contains("two foreground steps"));
+    assert!(context.contains("bounded recent slice of Git history"));
+}
+
+#[test]
+fn repo_orientation_scoring_requires_evidence_steps_and_clean_speech() {
+    let fixture = CAPABILITY_FIXTURES
+        .iter()
+        .find(|fixture| fixture.id == "repo-orientation")
+        .expect("repo-orientation fixture");
+    let events = vec![
+        ToolTurnEvent {
+            kind: "call".into(),
+            name: "shell".into(),
+            call_id: "readme".into(),
+            arguments: serde_json::json!({"command": "sed -n '1,80p' README.md && git log --oneline --decorate --no-merges --max-count=5"}).to_string(),
+            content: String::new(),
+        },
+        ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "readme".into(),
+            arguments: String::new(),
+            content: "exit: 0\nSyllabix is voice infrastructure for local speech pipelines.\nRefresh orientation fixture".into(),
+        },
+    ];
+    let evidence = capability_evidence(
+        fixture,
+        "Syllabix is voice infrastructure for local speech pipelines. The latest change refreshed the orientation fixture.",
+        &events,
+        "full",
+    );
+    assert!(evidence.completion);
+    assert!(evidence.clean_reply);
+    evidence.counters.assert_safe();
 }
 
 #[test]
