@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::executor;
 use crate::fake::LlmCall;
 use crate::models::{Fetcher, ModelCache, Progress};
-use crate::policy::DeveloperPermissions;
+use crate::policy::{DeveloperPermissions, NetworkMode};
 use crate::providers::Llm;
 use crate::types::{
     HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript,
@@ -468,7 +468,7 @@ impl LlamaLlm {
             });
         }
         let messages = self.tool_messages(history, user, &[]);
-        let tools = local_tool_definitions_json();
+        let tools = local_tool_definitions_json(self.developer_permissions.network);
         let append_thinking_off_suffix =
             !self.thinking && is_thinking_tag_supported_model(&self.model_id);
         let mut text = String::new();
@@ -564,7 +564,7 @@ impl LlamaLlm {
             });
         }
         let messages = self.tool_messages(history, user, &[]);
-        let tools = local_tool_definitions_json();
+        let tools = local_tool_definitions_json(self.developer_permissions.network);
         let mut text = String::new();
         let mut over_budget = false;
         let outcome = self
@@ -645,8 +645,6 @@ impl LlamaLlm {
         cancel: &Cancel,
         on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
     ) -> Result<()> {
-        use crate::openai::{MAX_TOOL_CALLS_PER_TURN, TOOL_LIMIT_TEXT};
-
         let generation = cancel.generation();
         self.calls.lock().expect("llm call log").push(LlmCall {
             history_len: history.len(),
@@ -662,7 +660,7 @@ impl LlamaLlm {
             let mut text = String::new();
             let mut over_budget = false;
             let messages = self.lfm_harness_messages(history, user, &exchanges);
-            let tools = local_tool_definitions_json();
+            let tools = local_tool_definitions_json(self.developer_permissions.network);
             let outcome = self
                 .engine
                 .lock()
@@ -740,16 +738,6 @@ impl LlamaLlm {
                     );
                 }
             };
-            if call_count.saturating_add(calls.len()) > MAX_TOOL_CALLS_PER_TURN {
-                self.note_tool_event("limit", "", "", "", TOOL_LIMIT_TEXT);
-                return emit_local_harness_reply(
-                    user.turn,
-                    generation,
-                    TOOL_LIMIT_TEXT,
-                    cancel,
-                    on_token,
-                );
-            }
             call_count += calls.len();
             let call_message = render_lfm_tool_call_message(&calls);
             let mut results = Vec::with_capacity(calls.len());
@@ -1239,12 +1227,41 @@ fn is_thinking_tag_supported_model(model_id: &str) -> bool {
     matches!(model_id, QWEN35_2B_ASSET)
 }
 
-/// Tool schemas for the local tools-aware prompt. The same
-/// three host-owned primitives the online adapter sends (`web_fetch`,
-/// `web_search`, `shell`); serialized as the `<tools>` JSON array the Qwen
-/// template consumes. One shared representation, translated at each adapter
-/// boundary.
-pub fn local_tool_definitions_json() -> String {
+/// Tool schemas for the local tools-aware prompt. The same host-owned
+/// primitives the online adapter sends (`shell`, and optionally `web_fetch` /
+/// `web_search` when the session network ceiling is `allow`); serialized as
+/// the `<tools>` JSON array the Qwen / LFM templates consume.
+pub fn local_tool_definitions_json(network: NetworkMode) -> String {
+    let shell = serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "shell",
+            "description": "Run a developer command in the workspace through a bounded, capability-sandboxed shell. Shell syntax is allowed; the host controls cwd, environment, timeout, output, network, and the configured filesystem ceiling. Request less filesystem authority with permission; it can never widen the session ceiling.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["command"],
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to run."
+                    },
+                    "workdir": {
+                        "type": "string",
+                        "description": "Optional relative path within the workspace. Defaults to the workspace root; absolute paths are rejected."
+                    },
+                    "permission": {
+                        "type": "string",
+                        "enum": ["read-only", "workspace-write", "danger-full-access"],
+                        "description": "Optional filesystem permission request; the host denies requests above the configured session ceiling."
+                    }
+                }
+            }
+        }
+    });
+    if network == NetworkMode::None {
+        return serde_json::json!([shell]).to_string();
+    }
     serde_json::json!([
         {
             "type": "function",
@@ -1286,33 +1303,7 @@ pub fn local_tool_definitions_json() -> String {
                 }
             }
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "shell",
-                "description": "Run a developer command in the workspace through a bounded, capability-sandboxed shell. Shell syntax is allowed; the host controls cwd, environment, timeout, output, network, and the configured filesystem ceiling. Request less filesystem authority with permission; it can never widen the session ceiling.",
-                "parameters": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["command"],
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Shell command to run."
-                        },
-                        "workdir": {
-                            "type": "string",
-                            "description": "Optional relative path within the workspace. Defaults to the workspace root; absolute paths are rejected."
-                        },
-                        "permission": {
-                            "type": "string",
-                            "enum": ["read-only", "workspace-write", "danger-full-access"],
-                            "description": "Optional filesystem permission request; the host denies requests above the configured session ceiling."
-                        }
-                    }
-                }
-            }
-        }
+        shell
     ])
     .to_string()
 }
@@ -2187,7 +2178,8 @@ mod tests {
     #[test]
     fn local_tool_definitions_cover_the_shared_contract() {
         let value: serde_json::Value =
-            serde_json::from_str(&local_tool_definitions_json()).expect("valid tools JSON");
+            serde_json::from_str(&local_tool_definitions_json(NetworkMode::Allow))
+                .expect("valid tools JSON");
         let names: Vec<&str> = value
             .as_array()
             .expect("tools array")
@@ -2217,6 +2209,21 @@ mod tests {
             .as_str()
             .expect("workdir description")
             .contains("workspace root"));
+        let shell_only: serde_json::Value =
+            serde_json::from_str(&local_tool_definitions_json(NetworkMode::None))
+                .expect("shell-only tools JSON");
+        let shell_names: Vec<&str> = shell_only
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .expect("function name")
+            })
+            .collect();
+        assert_eq!(shell_names, vec!["shell"]);
     }
 
     #[test]

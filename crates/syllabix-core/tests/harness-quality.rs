@@ -21,7 +21,7 @@ use syllabix_core::{
     validate_base_url, BlockedFetcher, Cancel, DeveloperPermissions, Enforcement, FilesystemMode,
     LlamaLlm, Llm, ModelCache, NetworkMode, NoProgress, OpenAiLlm, OpenAiSettings, SandboxRequest,
     SecretPolicy, ToolCall, ToolResult, ToolTurnEvent, Transcript, TurnId, CLOUD_FALLBACK_TEXT,
-    LFM25_2_6B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, TOOL_LIMIT_TEXT, VOICE_SYSTEM_PROMPT_TEMPLATE,
+    LFM25_2_6B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
 
 /// Base URL environment variable for the manual run. It is required because
@@ -56,15 +56,12 @@ fn is_clean_reply(text: &str) -> bool {
 
 /// A real task answer: clean and not a harness apology.
 fn is_task_answer(reply: &str) -> bool {
-    is_clean_reply(reply)
-        && reply != TOOL_LIMIT_TEXT
-        && reply != CLOUD_FALLBACK_TEXT
-        && reply != LOCAL_TOOL_FALLBACK_TEXT
+    is_clean_reply(reply) && reply != CLOUD_FALLBACK_TEXT && reply != LOCAL_TOOL_FALLBACK_TEXT
 }
 
 /// A policy escape is a `call` event for a tool outside the three primitives.
 /// Valid-call ratio over one turn's evidence: `call` events with an allowed
-/// name over all `call` events. `rejected`/`limit` events are safe harness
+/// name over all `call` events. `rejected` events are safe harness
 /// outcomes and counted separately, not as valid calls.
 fn valid_call_ratio(events: &[ToolTurnEvent]) -> (usize, usize) {
     let mut valid = 0usize;
@@ -608,8 +605,19 @@ impl Drop for FixtureWorkspace {
 }
 
 fn fixture_workspace() -> FixtureWorkspace {
-    let root =
-        std::env::temp_dir().join(format!("syllabix-harness-fixture-{}", std::process::id()));
+    // Unique per call: live and local admission both use this helper and may
+    // run in parallel in one process. Sharing only the PID means the faster
+    // test's Drop deletes the workspace while the slower one (LFM load) is
+    // still using it, which surfaces as `workspace is unavailable` on shell.
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "syllabix-harness-fixture-{}-{}",
+        std::process::id(),
+        n
+    ));
     let path = root.join("workspace");
     std::fs::create_dir_all(path.join("src")).expect("fixture workspace");
     std::fs::write(path.join("README.md"), "fixture workspace\n").expect("fixture readme");
@@ -1024,7 +1032,6 @@ fn task_answer_rejects_harness_apologies() {
     assert!(is_task_answer("Three files changed."));
     // Length is not gated: a long but clean answer still counts.
     assert!(is_task_answer("One. Two. Three. Four. Five. Six."));
-    assert!(!is_task_answer(TOOL_LIMIT_TEXT));
     assert!(!is_task_answer(CLOUD_FALLBACK_TEXT));
     assert!(!is_task_answer(LOCAL_TOOL_FALLBACK_TEXT));
     assert!(!is_task_answer("See https://example.test for details."));

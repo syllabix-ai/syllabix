@@ -153,6 +153,9 @@ pipeline:
 ```
 
 Omitting `developer_permissions` uses `read-only`, `none`, and `none`.
+With `network: none` (the default), `web_fetch` and `web_search` are not
+advertised and are rejected if the model invents them; only `shell` remains.
+Set `network: allow` to enable the web tools.
 
 ### Local instruction skills (Phase 6)
 

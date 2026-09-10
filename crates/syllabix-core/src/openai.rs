@@ -21,14 +21,12 @@ use crate::config::AgentConfig;
 use crate::error::{Error, Result};
 use crate::executor;
 use crate::llm::LLAMA_MAX_HISTORY_TURNS;
-use crate::policy::DeveloperPermissions;
+use crate::policy::{DeveloperPermissions, NetworkMode};
 use crate::providers::Llm;
 use crate::types::{
     HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript,
 };
 
-/// The exploration is deliberately bounded before any executor exists.
-pub const MAX_TOOL_CALLS_PER_TURN: usize = 5;
 /// Tool result text is bounded before it can re-enter a model context.
 pub const MAX_TOOL_RESULT_BYTES: usize = 8 * 1024;
 
@@ -60,7 +58,6 @@ const POLL_TICK: Duration = Duration::from_millis(100);
 
 /// Spoken when a cloud turn fails. Short, plain, no Markdown.
 pub const CLOUD_FALLBACK_TEXT: &str = "Sorry, I could not reach the language model.";
-pub const TOOL_LIMIT_TEXT: &str = "Sorry, I reached the tool-call limit for this turn.";
 
 /// Reject or accept a `pipeline.llm.base_url` value.
 ///
@@ -435,8 +432,7 @@ impl OpenAiLlm {
             &self.settings.system_prompt,
             &self.settings.skill_context,
         );
-        body["tools"] = tool_definitions();
-        let mut call_count = 0usize;
+        body["tools"] = tool_definitions(self.settings.developer_permissions.network);
 
         loop {
             if cancel.is_shutdown() || cancel.is_stale(generation) {
@@ -471,17 +467,6 @@ impl OpenAiLlm {
                     return speak_fallback(user.turn, generation, cancel, on_token);
                 }
             };
-            if call_count.saturating_add(calls.len()) > MAX_TOOL_CALLS_PER_TURN {
-                self.note_tool_event("limit", "", "", "", TOOL_LIMIT_TEXT);
-                return on_token(TokenChunk {
-                    turn: user.turn,
-                    generation,
-                    index: 0,
-                    text: TOOL_LIMIT_TEXT.into(),
-                    is_last: true,
-                });
-            }
-            call_count += calls.len();
             append_tool_call_message(&mut body, &calls);
             for call in calls {
                 self.note_tool_event(
@@ -617,7 +602,37 @@ impl OpenAiLlm {
     }
 }
 
-fn tool_definitions() -> serde_json::Value {
+fn tool_definitions(network: NetworkMode) -> serde_json::Value {
+    let shell = serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "shell",
+            "description": "Run a developer command in the workspace through a bounded, capability-sandboxed shell. Shell syntax is allowed; the host controls cwd, environment, timeout, output, network, and the configured filesystem ceiling. Request less filesystem authority with permission; it can never widen the session ceiling.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["command"],
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to run, for example `rg -n TODO src` or `cargo test`."
+                    },
+                    "workdir": {
+                        "type": "string",
+                        "description": "Optional relative path within the workspace."
+                    },
+                    "permission": {
+                        "type": "string",
+                        "enum": ["read-only", "workspace-write", "danger-full-access"],
+                        "description": "Optional filesystem permission request; the host denies requests above the configured session ceiling."
+                    }
+                }
+            }
+        }
+    });
+    if network == NetworkMode::None {
+        return serde_json::json!([shell]);
+    }
     serde_json::json!([
         {
             "type": "function",
@@ -659,33 +674,7 @@ fn tool_definitions() -> serde_json::Value {
                 }
             }
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "shell",
-                "description": "Run a developer command in the workspace through a bounded, capability-sandboxed shell. Shell syntax is allowed; the host controls cwd, environment, timeout, output, network, and the configured filesystem ceiling. Request less filesystem authority with permission; it can never widen the session ceiling.",
-                "parameters": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["command"],
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Shell command to run, for example `rg -n TODO src` or `cargo test`."
-                        },
-                        "workdir": {
-                            "type": "string",
-                            "description": "Optional relative path within the workspace."
-                        },
-                        "permission": {
-                            "type": "string",
-                            "enum": ["read-only", "workspace-write", "danger-full-access"],
-                            "description": "Optional filesystem permission request; the host denies requests above the configured session ceiling."
-                        }
-                    }
-                }
-            }
-        }
+        shell
     ])
 }
 
@@ -1341,7 +1330,11 @@ mod tests {
         assert_eq!(events[1].kind, "result");
         let requests = server.join().expect("mock server");
         assert!(requests[0].contains("\"tools\""), "{}", requests[0]);
-        assert!(requests[0].contains("web_fetch"), "{}", requests[0]);
+        assert!(
+            !requests[0].contains("web_fetch"),
+            "default session network is none: {}",
+            requests[0]
+        );
         assert!(requests[0].contains("shell"), "{}", requests[0]);
         assert!(requests[1].contains("\"role\":\"tool\""), "{}", requests[1]);
         assert!(requests[1].contains("call-1"), "{}", requests[1]);
@@ -1374,27 +1367,44 @@ mod tests {
     }
 
     #[test]
-    fn harness_stops_after_five_calls() {
+    fn harness_continues_after_many_parallel_calls() {
+        // Six calls in one model step used to hit a fixed per-turn cap. The
+        // loop now executes the batch and continues for a spoken reply.
         let calls: Vec<_> = (0..6)
-            .map(|index| serde_json::json!({"index":index,"id":format!("call-{index}"),"function":{"name":"shell","arguments":"{\"argv\":[\"pwd\"]}"}}))
+            .map(|index| serde_json::json!({"index":index,"id":format!("call-{index}"),"function":{"name":"shell","arguments":"{\"command\":\"pwd\"}"}}))
             .collect();
-        let event = serde_json::json!({"choices":[{"delta":{"tool_calls":calls}}]}).to_string();
-        let (endpoint, server) = serve_one(move |stream, _| {
+        let first = serde_json::json!({"choices":[{"delta":{"tool_calls":calls}}]}).to_string();
+        let final_reply = r#"{"choices":[{"delta":{"content":"Done checking."}}]}"#;
+        let (endpoint, server) = serve_two(move |index, stream, _request| {
+            let first_events = [first.as_str()];
+            let final_events = [final_reply];
+            let events: &[&str] = if index == 0 {
+                &first_events
+            } else {
+                &final_events
+            };
             write_response(
                 stream,
                 "HTTP/1.1 200 OK",
                 &[("Content-Type", "text/event-stream")],
-                &sse_body(&[&event], true),
+                &sse_body(events, true),
             )
             .unwrap();
         });
         let mut llm = test_llm(endpoint);
         llm.settings.developer_harness = true;
         let (tokens, result) = collect(&mut llm, &Cancel::new());
-        result.expect("limit is a completed answer");
-        assert_eq!(tokens, [TOOL_LIMIT_TEXT]);
-        assert_eq!(Llm::take_tool_events(&mut llm)[0].kind, "limit");
-        server.join().unwrap();
+        result.expect("many-call continuation completes");
+        assert_eq!(tokens, ["Done checking."]);
+        let events = Llm::take_tool_events(&mut llm);
+        assert_eq!(events.len(), 12, "six call/result pairs: {events:?}");
+        assert!(events
+            .iter()
+            .all(|event| event.kind == "call" || event.kind == "result"));
+        assert!(events.iter().all(|event| event.kind != "limit"));
+        let requests = server.join().expect("mock server");
+        assert!(requests[1].contains("\"role\":\"tool\""), "{}", requests[1]);
+        assert!(requests[1].contains("call-5"), "{}", requests[1]);
     }
 
     #[test]
@@ -1760,7 +1770,7 @@ mod tests {
     }
 
     #[test]
-    fn default_request_has_no_tool_schemas_but_harness_defines_only_two() {
+    fn default_request_has_no_tool_schemas_and_harness_tools_respect_network() {
         let default = request_body(
             "gpt-test",
             &[],
@@ -1768,7 +1778,7 @@ mod tests {
             crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE,
         );
         assert!(default.get("tools").is_none());
-        let tools = tool_definitions();
+        let tools = tool_definitions(NetworkMode::Allow);
         let names: Vec<_> = tools
             .as_array()
             .unwrap()
@@ -1776,6 +1786,14 @@ mod tests {
             .map(|tool| tool["function"]["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, ["web_fetch", "web_search", "shell"]);
+        let shell_only = tool_definitions(NetworkMode::None);
+        let shell_names: Vec<_> = shell_only
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(shell_names, ["shell"]);
     }
 
     #[test]
@@ -1840,11 +1858,6 @@ mod tests {
         assert!(
             truncate_bytes(&oversized, MAX_TOOL_RESULT_BYTES).len() <= MAX_TOOL_RESULT_BYTES + 3
         );
-    }
-
-    #[test]
-    fn tool_call_limit_is_fixed() {
-        assert_eq!(MAX_TOOL_CALLS_PER_TURN, 5);
     }
 
     #[test]

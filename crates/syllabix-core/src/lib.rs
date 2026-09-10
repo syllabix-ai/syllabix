@@ -90,7 +90,7 @@ pub use moonshine::{
 };
 pub use openai::{
     join_endpoint, resolve_api_key, validate_base_url, OpenAiLlm, OpenAiSettings, API_KEY_ENV,
-    CLOUD_FALLBACK_TEXT, DEFAULT_LLM_BASE_URL, MAX_TOOL_CALLS_PER_TURN, TOOL_LIMIT_TEXT,
+    CLOUD_FALLBACK_TEXT, DEFAULT_LLM_BASE_URL,
 };
 pub use pipeline::{
     is_blank_stt, run_loop, run_loop_captured, AutoTimeoutAction, IdleClock, LoopConfig, LoopEvent,

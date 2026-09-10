@@ -145,7 +145,6 @@ pub(crate) use helpers::{outside_probe_path, shell_quote_single, validate_reques
 
 #[cfg(test)]
 mod tests {
-    #[cfg(coverage)]
     use super::*;
 
     #[cfg(coverage)]

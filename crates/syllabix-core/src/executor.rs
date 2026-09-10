@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::cancel::Cancel;
-use crate::policy::{resolve_effective, DeveloperPermissions, FilesystemMode};
+use crate::policy::{resolve_effective, DeveloperPermissions, FilesystemMode, NetworkMode};
 use crate::sandbox::{current_provider, SandboxRequest};
 use crate::types::ToolCall;
 
@@ -84,8 +84,20 @@ pub fn execute_with_permissions(
 ) -> crate::types::ToolResult {
     let result = match validate_call(call, workspace) {
         Ok(ValidatedCall::Shell(request)) => execute_shell(request, workspace, session, cancel),
-        Ok(ValidatedCall::WebFetch { url }) => execute_fetch(&url, cancel),
-        Ok(ValidatedCall::WebSearch { query, count }) => execute_search(&query, count, cancel),
+        Ok(ValidatedCall::WebFetch { url }) => {
+            if session.network == NetworkMode::None {
+                Err("network access required; configured network mode is none".into())
+            } else {
+                execute_fetch(&url, cancel)
+            }
+        }
+        Ok(ValidatedCall::WebSearch { query, count }) => {
+            if session.network == NetworkMode::None {
+                Err("network access required; configured network mode is none".into())
+            } else {
+                execute_search(&query, count, cancel)
+            }
+        }
         Err(message) => Err(message),
     };
     crate::types::ToolResult {
@@ -1234,6 +1246,31 @@ mod tests {
     }
 
     #[test]
+    fn web_tools_require_session_network_allow() {
+        let workspace = std::env::current_dir().unwrap();
+        let session = DeveloperPermissions::default_session();
+        assert_eq!(session.network, NetworkMode::None);
+        for name in ["web_fetch", "web_search"] {
+            let arguments = if name == "web_fetch" {
+                serde_json::json!({"url": "https://example.com/"})
+            } else {
+                serde_json::json!({"query": "example"})
+            };
+            let result = execute_with_permissions(
+                &call(name, arguments),
+                &workspace,
+                &session,
+                &Cancel::new(),
+            );
+            assert!(!result.ok, "{name} must be denied");
+            assert_eq!(
+                result.content,
+                "network access required; configured network mode is none"
+            );
+        }
+    }
+
+    #[test]
     fn fetch_requires_credential_free_http_url() {
         let workspace = std::env::current_dir().unwrap();
         assert!(validate_call(
@@ -1689,9 +1726,15 @@ mod tests {
         let workspace = std::env::current_dir().unwrap();
         let cancel = Cancel::new();
         cancel.shutdown();
-        let search = execute(
+        let network_allow = DeveloperPermissions {
+            filesystem: FilesystemMode::ReadOnly,
+            network: NetworkMode::Allow,
+            secrets: crate::policy::SecretPolicy::None,
+        };
+        let search = execute_with_permissions(
             &call("web_search", serde_json::json!({"query":"rust"})),
             &workspace,
+            &network_allow,
             &cancel,
         );
         assert!(!search.ok);
@@ -1722,9 +1765,14 @@ mod tests {
         assert!(!result.ok);
         assert_eq!(result.content, "shell command cancelled");
 
-        let fetch_result = execute(
+        let fetch_result = execute_with_permissions(
             &call("web_fetch", serde_json::json!({"url":"https://1.1.1.1"})),
             &workspace,
+            &DeveloperPermissions {
+                filesystem: FilesystemMode::ReadOnly,
+                network: NetworkMode::Allow,
+                secrets: crate::policy::SecretPolicy::None,
+            },
             &cancel,
         );
         assert!(!fetch_result.ok);
