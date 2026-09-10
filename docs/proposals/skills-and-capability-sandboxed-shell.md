@@ -1,9 +1,11 @@
 # Proposal — Skills and a Capability-Sandboxed Shell
 
-**Status:** Phases 0–6 are shipped in the product; this document remains the
-design anchor for the later approved-entrypoint, trace UX, and Windows phases.
-Phase 6 adds instruction-only local skill discovery; it does not execute skill
-entrypoints. **Lifecycle:** temporary; remove this file once the proposal is
+**Status:** Phases 0–6 are shipped in the product. **Phase 7 (declarative
+skill entrypoints) is deferred** — Syllabix is voice infra, not a packaged
+product; instruction-only skills (Phase 6) plus the generic shell (Phase 4)
+are sufficient. This document remains the design anchor for trace UX and
+Windows phases. Phase 6 adds instruction-only local skill discovery; it does
+not execute skill entrypoints. **Lifecycle:** temporary; remove this file once the proposal is
 either rejected or superseded by the product and documentation PRs that ship
 the remaining phases.
 
@@ -272,6 +274,18 @@ metadata are rejected until Phase 7.
 Phase 7 can separately define confirmation and content-binding requirements
 for executing a custom entrypoint. Those requirements are intentionally not
 part of the Phase 6 configuration or model vocabulary.
+
+> **Phase 7 — deferred (2026-09-10).** [#137](https://github.com/syllabix-ai/syllabix/pull/137)
+> was closed unmerged as too complicated for the current product shape.
+> Rationale: Syllabix is voice infra; a `SKILL.md` that instructs the model
+> how to use the generic `shell` tool (e.g. `psql` / `mongosh` / `rg` / tests)
+> is good enough. Declarative `entrypoint.argv` adds manifest, pin, program-
+> confinement, and input-schema complexity without a new capability — the same
+> commands already run through the session ceiling, sandbox probe, scrubbed
+> env, and bounded output. Revisit entrypoints only on concrete repeatability
+> demand (fixed argv button vs improvised shell). Next is Phase 8 trace UX,
+> preceded by a pre-Phase-8 shell-skill usability test on a majority-useful
+> task (under debate in [#125](https://github.com/syllabix-ai/syllabix/issues/125)).
 
 ## 6. Executor architecture
 
@@ -553,7 +567,7 @@ cancellation with deterministic fake sandbox/model seams.
 | Is arbitrary shell allowed? | Yes in developer harness, constrained by the configured session policy. |
 | Does the first release run background jobs? | No. Foreground only. |
 | Does `network: none` ship before OS enforcement exists? | No; fail closed for claims requiring network denial. |
-| Can a skill execute arbitrary code? | Only through an approved declarative argv entrypoint under the host policy. |
+| Can a skill execute arbitrary code? | No. Phase 7 entrypoints are deferred; skills are instruction-only and the agent uses the generic shell under host policy. |
 | Is `tool.json` supported? | No native format. Consider an explicit importer later if evidence demands it. |
 
 ## 12. Recommended author decision
@@ -563,9 +577,10 @@ Approve this as a post-launch exploration with two gates:
 1. **Sandbox gate:** one generic shell has working, tested `read-only` and
    `workspace-write` modes on macOS and Linux; Windows ships only if its
    partial enforcement is visibly surfaced and accepted.
-2. **Skills gate:** only after that, add local `SKILL.md` discovery and approved
-   declarative entrypoints. No marketplace, remote install, or arbitrary plugin
-   runtime.
+2. **Skills gate:** only after that, add local `SKILL.md` instruction-only
+   discovery (shipped, Phase 6). Declarative entrypoints (Phase 7) are
+   deferred — see the note in §5.4. No marketplace, remote install, or
+   arbitrary plugin runtime.
 
 The success criterion is not an abstract plugin system. It is that a developer
 agent can use normal repository commands naturally, while every command still
