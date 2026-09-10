@@ -63,6 +63,7 @@ jobs:
           marker = "<!-- syllabix-harness-quality -->"
           fixtures = [
               "read-repo",
+              "repo-orientation",
               "write-and-verify",
               "write-denied",
               "network-denied",
@@ -96,7 +97,7 @@ jobs:
             const marker = '<!-- syllabix-harness-quality-help -->';
             const body = `${marker}\n` +
               `This PR touches the tool-harness boundary but its body has no pasted \`--test harness-quality\` report yet.\n\n` +
-              `Run the live admission test with your own key (CI never calls the model, no secrets are stored) and paste the capability verdict block — marker \`<!-- syllabix-harness-quality -->\`, the six fixture lines (\`[read-repo]\`, \`[write-and-verify]\`, \`[write-denied]\`, \`[network-denied]\`, \`[secret-denied]\`, \`[cancelled-command]\`), and the \`summary: completion=X/Y ratio=… policy_violations=0 secret_exposures=0 stale_results=0\` line — into the PR body:\n\n` +
+              `Run the live admission test with your own key (CI never calls the model, no secrets are stored) and paste the capability verdict block — marker \`<!-- syllabix-harness-quality -->\`, the seven fixture lines (\`[read-repo]\`, \`[repo-orientation]\`, \`[write-and-verify]\`, \`[write-denied]\`, \`[network-denied]\`, \`[secret-denied]\`, \`[cancelled-command]\`), and the \`summary: completion=X/Y ratio=… policy_violations=0 secret_exposures=0 stale_results=0\` line — into the PR body:\n\n` +
               "```bash\n" +
               "SYLLABIX_LLM_API_KEY=… \\\n" +
               "SYLLABIX_HARNESS_BASE_URL=https://api.openai.com/v1 \\\n" +
