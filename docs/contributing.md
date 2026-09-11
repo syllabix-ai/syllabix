@@ -37,7 +37,8 @@ Design docs for work that is not yet product behavior live under
 [`docs/proposals/`](proposals/). The planning anchor for the capability-
 sandboxed shell and local `SKILL.md` track is [the proposal](proposals/skills-and-capability-sandboxed-shell.md), with [#111](https://github.com/syllabix-ai/syllabix/issues/111)
 as the design decision and [#125](https://github.com/syllabix-ai/syllabix/issues/125)
-as the implementation tracker.
+as the implementation tracker. Post-launch Python embed (`import syllabix`
+against the native runtime) is [the attach proposal](proposals/python-attach-runtime.md).
 
 ## Models
 
