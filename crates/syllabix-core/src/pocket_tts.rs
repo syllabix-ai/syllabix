@@ -525,27 +525,46 @@ impl Tts for PocketTts {
         self.buffer
             .push_str(&self.think.push(&token.text, token.is_last));
         let sentences = take_sentences(&mut self.buffer, token.is_last);
-        let last = sentences.len().saturating_sub(1);
-        let mut emitted = false;
-        for (i, sentence) in sentences.into_iter().enumerate() {
+        // Clean before choosing the terminal sentence. A trailing markup-only
+        // fragment (e.g. `**` in `Hello. **`) extracts as a sentence but
+        // cleans to empty; picking `last` before cleanup would mark `Hello.`
+        // non-final, skip the fragment, and never emit `is_last`.
+        let spoken: Vec<String> = sentences
+            .into_iter()
+            .map(|sentence| speak_text_for_tts(&sentence))
+            .filter(|cleaned| !cleaned.is_empty())
+            .collect();
+        let last = spoken.len().saturating_sub(1);
+        let mut emitted_terminal = false;
+        for (i, sentence) in spoken.into_iter().enumerate() {
             if cancel.is_stale(token.generation) || cancel.is_shutdown() {
                 self.reset_turn();
                 return Err(Error::Cancelled);
             }
-            let spoken = speak_text_for_tts(&sentence);
-            if spoken.is_empty() {
-                continue;
-            }
+            let is_last_sentence = token.is_last && i == last;
+            let mut on_audio = |audio: SynthesizedAudio| {
+                if audio.is_last {
+                    emitted_terminal = true;
+                }
+                on_audio(audio)
+            };
             self.synthesize_sentence_into(
-                &spoken,
+                &sentence,
                 token,
-                token.is_last && i == last,
+                is_last_sentence,
                 cancel,
-                on_audio,
+                &mut on_audio,
             )?;
-            emitted = true;
         }
-        if token.is_last && !emitted {
+        // Successful finalization must release the turn with exactly one
+        // terminal marker. Synthesis can emit zero chunks (empty tokenizer
+        // output) or zero terminal chunks (empty final PCM), so fall back to
+        // a single silence chunk when no terminal was observed.
+        if token.is_last && !emitted_terminal {
+            if cancel.is_stale(token.generation) || cancel.is_shutdown() {
+                self.reset_turn();
+                return Err(Error::Cancelled);
+            }
             let index = self.next_index;
             self.next_index += 1;
             on_audio(SynthesizedAudio {
