@@ -333,12 +333,57 @@ fn buffered_text_waits_for_the_sentence_end() {
 }
 
 #[test]
-fn empty_tokenizer_output_synthesizes_nothing() {
+fn empty_tokenizer_output_still_emits_one_terminal_marker() {
     let mut tts = engine(MockTokenizer::ids(vec![]), 99, 0);
     let chunks = tts
         .synthesize_chunk(&chunk(1, "Hello world.", true), &Cancel::new())
         .expect("empty ids are not an error");
-    assert!(chunks.is_empty());
+    assert_eq!(chunks.len(), 1, "finalization must release the turn");
+    assert_eq!(chunks[0].samples, vec![0; 16]);
+    assert!(chunks[0].is_last);
+}
+
+#[test]
+fn trailing_markup_only_fragment_keeps_the_terminal_marker() {
+    let mut tts = engine(MockTokenizer::ids(vec![10, 20, 30]), 2, 3);
+    let chunks = tts
+        .synthesize_chunk(&chunk(1, "Hello. **", true), &Cancel::new())
+        .expect("trailing markup must not swallow is_last");
+    assert!(!chunks.is_empty(), "Hello. must reach synthesis");
+    assert_eq!(
+        chunks.iter().filter(|c| c.is_last).count(),
+        1,
+        "exactly one terminal marker, got {chunks:?}"
+    );
+    assert!(
+        chunks.last().unwrap().is_last,
+        "terminal marker releases the assistant turn"
+    );
+}
+
+#[test]
+fn think_only_final_chunk_emits_one_terminal_marker() {
+    let mut tts = engine(MockTokenizer::ids(vec![1]), 99, 1);
+    let chunks = tts
+        .synthesize_chunk(
+            &chunk(1, "<think>hidden plan.</think>", true),
+            &Cancel::new(),
+        )
+        .expect("think-only finalization must close");
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].samples, vec![0; 16]);
+    assert!(chunks[0].is_last);
+}
+
+#[test]
+fn cancelled_final_fallback_does_not_emit_a_terminal_marker() {
+    let mut tts = engine(MockTokenizer::ids(vec![]), 99, 0);
+    let cancel = Cancel::new();
+    cancel.cancel_generation();
+    assert!(matches!(
+        tts.synthesize_chunk(&chunk(1, "Hello world.", true), &cancel),
+        Err(Error::Cancelled)
+    ));
 }
 
 #[test]
