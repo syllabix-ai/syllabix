@@ -37,7 +37,10 @@ Design docs for work that is not yet product behavior live under
 [`docs/proposals/`](proposals/). The planning anchor for the capability-
 sandboxed shell and local `SKILL.md` track is [the proposal](proposals/skills-and-capability-sandboxed-shell.md), with [#111](https://github.com/syllabix-ai/syllabix/issues/111)
 as the design decision and [#125](https://github.com/syllabix-ai/syllabix/issues/125)
-as the implementation tracker.
+as the implementation tracker. The planning anchor for sharing one
+implementation of each existing policy (ONNX/TTS/LLM glue, tool schemas,
+config, diagnostics) is [lightweight and duplication
+cleanup](proposals/lightweight-and-duplication-cleanup.md).
 
 ## Models
 
