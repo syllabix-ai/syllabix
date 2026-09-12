@@ -15,7 +15,6 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 crossterm.workspace = true
-ratatui.workspace = true
 syllabix-core.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
