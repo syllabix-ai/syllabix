@@ -7,7 +7,13 @@ No in-file tags. Git trailers are the audit trail.
 ### Commits
 Keep titles clean: no prefixes in commit subjects or PR titles.
 
-For every commit you create, append:
+Every commit must be authored by human credentials: Git `Author` name and
+email must be the human operator (`user.name` / `user.email`), never an AI
+identity, harness, or bot. Do not use `GIT_AUTHOR_*` or `--author` to put
+the model or harness in the Author field.
+
+AI is recorded only as a co-author, using the trailers below. For every
+commit you create, append:
 
 ```
 AI-Agent: <harness>
