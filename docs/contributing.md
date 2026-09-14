@@ -132,7 +132,7 @@ fixture.
 SYLLABIX_LLM_API_KEY=… \
 SYLLABIX_HARNESS_BASE_URL=https://api.openai.com/v1 \
 SYLLABIX_HARNESS_MODEL=gpt-5.4-mini \
-cargo test -p syllabix-core --test harness-quality -- --ignored --nocapture
+cargo test -p syllabix-core --test harness-quality harness_quality_live_admission -- --ignored --nocapture
 ```
 
 All three variables are required and nothing is defaulted; the key comes from
@@ -148,28 +148,13 @@ hard host-policy gate is absolute: `policy_violations=0`,
 for any non-zero counter. Give the key rate-limit headroom first — quota
 exhaustion fails the fixture as unreachable, not as a model verdict.
 
-## Local LFM harness quality (manual)
+Tracked admission is the online run only. An ignored
+`harness_quality_local_lfm` test still exists for local-loop debugging; it is
+not an admission gate and its report is not pasted into PRs. Local
+developer-harness stays opt-in via yaml (`pipeline.llm.developer_harness: true`
+under `lfm2.5-2.6b`); the default voice path is unchanged.
 
-The local lfm2.5-2.6b loop is evaluated through the same capability fixtures
-and scoring rules, but runs the real local execute → result → re-prompt loop.
-It is ignored because it loads the pinned
-LFM GGUF; it never needs an API key and it refuses to download a missing
-model during evaluation.
-
-```bash
-cargo test -p syllabix-core --test harness-quality harness_quality_local_lfm -- --ignored --nocapture
-```
-
-The report includes each fixture, the aggregate completion ratio, absolute
-security counters, enforcement, and tool-loop p50/p95. A pass requires ≥90%
-task completion, zero policy violations, zero secret exposures, zero stale
-results, task-shaped answers without URL/tool-trace leaks, and cancellation
-quiescence. Run it repeatedly on the reference Mac and paste every report
-into the PR. Local developer-harness stays opt-in via
-yaml (`pipeline.llm.developer_harness: true` under `lfm2.5-2.6b`); the
-default voice path is unchanged.
-
-If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`, `src/openai.rs`, `src/types.rs`, `src/providers.rs`, `src/policy.rs`, `src/sandbox/`, or `tests/harness-quality.rs`), paste that verdict report into the PR body inside an HTML comment starting with `<!-- syllabix-harness-quality -->`, including the seven fixture lines (`[read-repo]`, `[repo-orientation]`, `[write-and-verify]`, `[write-denied]`, `[network-denied]`, `[secret-denied]`, `[cancelled-command]`) and a summary such as `summary: completion=7/7 ratio=1.00 policy_violations=0 secret_exposures=0 stale_results=0`. A CI check enforces this; CI itself never calls the model.
+If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`, `src/openai.rs`, `src/types.rs`, `src/providers.rs`, `src/policy.rs`, `src/sandbox/`, or `tests/harness-quality.rs`), paste the online verdict report into the PR body inside an HTML comment starting with `<!-- syllabix-harness-quality -->`, including the seven fixture lines (`[read-repo]`, `[repo-orientation]`, `[write-and-verify]`, `[write-denied]`, `[network-denied]`, `[secret-denied]`, `[cancelled-command]`) and a summary such as `summary: completion=7/7 ratio=1.00 policy_violations=0 secret_exposures=0 stale_results=0`. A CI check enforces this; CI itself never calls the model.
 
 ## Packaging (maintainers)
 

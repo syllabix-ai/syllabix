@@ -1095,7 +1095,7 @@ pipeline:
   tts: { provider: local, model: kokoro }
 skills:
   roots:
-    - path: .syllabix/skills
+    - path: skills
       source: repository
     - path: /tmp/syllabix-skills
       source: global
@@ -1160,7 +1160,7 @@ pipeline:
   tts: { provider: local, model: kokoro }
 skills:
   roots:
-    - path: .syllabix/skills
+    - path: skills
       source: repository
 "#,
         )

@@ -1,9 +1,10 @@
 name: Harness quality evidence
 
 # Phase-5 evidence gate for #125. Harness-touching PRs must carry a pasted
-# live `--test harness-quality` report. CI never calls the model and holds no
-# secrets; the author runs the keyed test with their own key and pastes the
-# capability verdict block into the PR body.
+# online `--test harness-quality harness_quality_live_admission` report. CI
+# never calls the model and holds no secrets; the author runs the keyed
+# online test with their own key and pastes that verdict block into the PR
+# body. Local LFM reports are not tracked.
 on:
   pull_request:
     # `edited` is required here (ci.yml omits it): pasting the report edits
@@ -97,12 +98,12 @@ jobs:
             const marker = '<!-- syllabix-harness-quality-help -->';
             const body = `${marker}\n` +
               `This PR touches the tool-harness boundary but its body has no pasted \`--test harness-quality\` report yet.\n\n` +
-              `Run the live admission test with your own key (CI never calls the model, no secrets are stored) and paste the capability verdict block — marker \`<!-- syllabix-harness-quality -->\`, the seven fixture lines (\`[read-repo]\`, \`[repo-orientation]\`, \`[write-and-verify]\`, \`[write-denied]\`, \`[network-denied]\`, \`[secret-denied]\`, \`[cancelled-command]\`), and the \`summary: completion=X/Y ratio=… policy_violations=0 secret_exposures=0 stale_results=0\` line — into the PR body:\n\n` +
+              `Run the online admission test with your own key (CI never calls the model, no secrets are stored). Do not paste a local LFM report. Paste the online capability verdict block — marker \`<!-- syllabix-harness-quality -->\`, the seven fixture lines (\`[read-repo]\`, \`[repo-orientation]\`, \`[write-and-verify]\`, \`[write-denied]\`, \`[network-denied]\`, \`[secret-denied]\`, \`[cancelled-command]\`), and the \`summary: completion=X/Y ratio=… policy_violations=0 secret_exposures=0 stale_results=0\` line — into the PR body:\n\n` +
               "```bash\n" +
               "SYLLABIX_LLM_API_KEY=… \\\n" +
               "SYLLABIX_HARNESS_BASE_URL=https://api.openai.com/v1 \\\n" +
               "SYLLABIX_HARNESS_MODEL=<model-id> \\\n" +
-              "cargo test -p syllabix-core --test harness-quality -- --ignored --nocapture\n" +
+              "cargo test -p syllabix-core --test harness-quality harness_quality_live_admission -- --ignored --nocapture\n" +
               "```";
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
