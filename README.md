@@ -53,7 +53,7 @@ There is no `serve` command. Default `run` needs no yaml and no API key. After t
 
 ## Optional config
 
-[`syllabix init`](docs/configuration.md) writes `syllabix.yaml` if you want a different Whisper size or language, English-only Moonshine streaming STT (`moonshine-streaming-small` or `moonshine-streaming-medium`, live partial transcript text), local LLM id, spoken `system_prompt`, Kokoro or Qwen TTS, or a BYO-key online LLM (transcript text only; audio stays on the machine). A minimal example is [`examples/demo-agent.yaml`](examples/demo-agent.yaml).
+[`syllabix init`](docs/syllabix-yaml.md) writes `syllabix.yaml` if you want a different Whisper size or language, English-only Moonshine streaming STT (`moonshine-streaming-small` or `moonshine-streaming-medium`, live partial transcript text), local LLM id, spoken `system_prompt`, Kokoro or Qwen TTS (default remains Pocket TTS), or a BYO-key online LLM (transcript text only; audio stays on the machine). A minimal example is [`examples/demo-agent.yaml`](examples/demo-agent.yaml). Full key guide: [docs/syllabix-yaml.md](docs/syllabix-yaml.md).
 
 Per-turn timelines and WAVs are yaml-only (`diagnostics:`). See [docs/diagnostics.md](docs/diagnostics.md).
 
@@ -62,7 +62,8 @@ Per-turn timelines and WAVs are yaml-only (`diagnostics:`). See [docs/diagnostic
 | Page | For |
 | --- | --- |
 | [Install](docs/install.md) | Checksums, cache, Gatekeeper, SmartScreen |
-| [Configuration](docs/configuration.md) | `syllabix.yaml` keys |
+| [syllabix.yaml](docs/syllabix-yaml.md) | Optional project file — keys and safe edits |
+| [Configuration](docs/configuration.md) | Short index of config-related docs |
 | [Troubleshooting](docs/troubleshooting.md) | Mic, echo, keys, first-run fetch |
 | [Diagnostics](docs/diagnostics.md) | Turn timelines and WAVs |
 | [Contributing](docs/contributing.md) | Build, test, packaging |
