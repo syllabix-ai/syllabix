@@ -1,5 +1,5 @@
 # Minimal example. Copy as syllabix.yaml, or run `syllabix init`.
-# `syllabix run` needs no yaml. Menu of keys: docs/configuration.md
+# `syllabix run` needs no yaml. Key guide: docs/syllabix-yaml.md
 name: demo-agent
 pipeline:
   vad:
