@@ -1,17 +1,17 @@
 //! Phase-5 capability-harness quality checks.
 //!
 //! The normal test path proves host policy and loop mechanics with deterministic
-//! scripted/fake seams. The two ignored tests drive the same capability fixtures
-//! through the real local LFM or online tool loop. Manual runs need no hidden
-//! defaults: online admission requires `SYLLABIX_LLM_API_KEY`,
-//! `SYLLABIX_HARNESS_BASE_URL`, and `SYLLABIX_HARNESS_MODEL`; local admission
+//! scripted/fake seams. Tracked admission is the ignored online tool-loop run.
+//! An ignored local LFM run remains for loop debugging and is not an admission
+//! gate. Manual online admission requires `SYLLABIX_LLM_API_KEY`,
+//! `SYLLABIX_HARNESS_BASE_URL`, and `SYLLABIX_HARNESS_MODEL`. The local run
 //! requires the pinned GGUF already in the cache. Neither normal CI nor these
 //! tests download weights implicitly.
 //!
 //! ```bash
 //! SYLLABIX_LLM_API_KEY=… SYLLABIX_HARNESS_BASE_URL=https://… \
 //!   SYLLABIX_HARNESS_MODEL=gpt-4o-mini \
-//!   cargo test -p syllabix-core --test harness-quality -- --ignored --nocapture
+//!   cargo test -p syllabix-core --test harness-quality harness_quality_live_admission -- --ignored --nocapture
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -713,17 +713,16 @@ fn fixture_workspace() -> FixtureWorkspace {
         "pub const FIXTURE: &str = \"ok\";\n",
     )
     .expect("fixture source");
-    std::fs::create_dir_all(path.join(".syllabix/skills/repository-guide"))
-        .expect("fixture skill directory");
+    std::fs::create_dir_all(path.join("skills/repository-guide")).expect("fixture skill directory");
     std::fs::write(
-        path.join(".syllabix/skills/repository-guide/SKILL.md"),
-        include_str!("../../../.syllabix/skills/repository-guide/SKILL.md"),
+        path.join("skills/repository-guide/SKILL.md"),
+        include_str!("../../../skills/repository-guide/SKILL.md"),
     )
     .expect("fixture skill");
     run_git(&path, &["init", "--quiet"]);
     run_git(&path, &["config", "user.email", "harness@example.test"]);
     run_git(&path, &["config", "user.name", "Harness Fixture"]);
-    run_git(&path, &["add", "README.md", "src", ".syllabix"]);
+    run_git(&path, &["add", "README.md", "src", "skills"]);
     run_git(
         &path,
         &[
@@ -810,10 +809,9 @@ fn drive_turn<L: Llm>(llm: &mut L, text: &str) -> (String, Vec<ToolTurnEvent>) {
     (reply, events)
 }
 
-/// Manual-only Phase-5 evaluation. It drives the capability fixtures through
-/// the admitted local LFM loop rather than an API endpoint. The pinned GGUF
-/// must already be cached; evaluation never silently downloads a model or
-/// uses an API key.
+/// Manual local LFM loop check. Not tracked as harness-quality admission.
+/// The pinned GGUF must already be cached; evaluation never silently
+/// downloads a model or uses an API key.
 #[test]
 #[ignore]
 fn harness_quality_local_lfm() {

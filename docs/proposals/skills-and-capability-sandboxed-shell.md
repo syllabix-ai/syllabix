@@ -191,7 +191,7 @@ to make a new security decision halfway through a task.
 Skills are local directories in explicitly configured roots, for example:
 
 ```text
-.syllabix/skills/
+skills/
   release-check/
     SKILL.md
     scripts/
@@ -476,7 +476,7 @@ The test should become a shared fixture runner with three layers:
 |---|---|---|
 | Policy/security invariants | Normal CI, no model or network | A request above `developer_permissions` never spawns; secret-free environments are scrubbed; sandbox denial, output caps, cancellation, and process-tree cleanup work. These are host properties, never model-score percentages. |
 | Deterministic loop fixtures | Normal CI with scripted model outputs and fake sandbox/provider seams | Tool-call syntax, skill input validation, result continuation, no stale result, and report/scoring mechanics work without weights or a key. |
-| Admission fixtures | Ignored manual online and native-LFM tests | A real model reliably selects commands/skills appropriate to the configured policy and produces a useful spoken answer. |
+| Admission fixtures | Ignored manual online test | A real hosted model reliably selects commands/skills appropriate to the configured policy and produces a useful spoken answer. Native LFM is not a tracked admission gate. |
 
 The admission suite replaces the five fixture semantics with an additive,
 versioned set. Early required cases are:

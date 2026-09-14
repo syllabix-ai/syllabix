@@ -256,7 +256,7 @@ List of `{ path, source }` entries.
 ```yaml
 skills:
   roots:
-    - path: .syllabix/skills
+    - path: skills
       source: repository
     - path: /Users/me/.config/syllabix/skills
       source: global
