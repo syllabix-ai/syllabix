@@ -15,3 +15,5 @@
 | `SYLLABIX_LLM_API_KEY is required…` at `run` start | Yaml selects `pipeline.llm.provider: online`. Supply the key for one run (`SYLLABIX_LLM_API_KEY=sk-… syllabix run`) or export it. Keys are never read from yaml. Switch the provider back to `local` for the on-device LLM. |
 | Every reply is "Sorry, I could not reach the language model." | The cloud turn failed (bad key → HTTP 401, endpoint down, or idle timeout) and spoke its fallback instead of hanging. Check the key, `base_url`, and the endpoint; diagnostics sidecars carry the endpoint and request id. |
 | Linux build fails linking ALSA | Contributors need `libasound2-dev`. Users of the Release binary never compile anything. |
+
+Broader questions (serve/API, RAM, commercial use, deleting the cache): [faq.md](faq.md). Install per OS: [install/macos.md](install/macos.md), [install/windows.md](install/windows.md), [install/linux.md](install/linux.md).

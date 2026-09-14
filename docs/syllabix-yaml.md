@@ -314,8 +314,11 @@ When timestamps or audio is on, each turn writes files under `directory`. What t
 | Page | For |
 | --- | --- |
 | [configuration.md](configuration.md) | Short index of config-related docs |
+| [engines.md](engines.md) | STT / LLM / TTS ids |
+| [api.md](api.md) | Outbound LLM; no inbound speech server |
 | [diagnostics.md](diagnostics.md) | Turn timeline field guide |
 | [install.md](install.md) | Checksums, cache, Gatekeeper, SmartScreen |
 | [troubleshooting.md](troubleshooting.md) | Mic, echo, keys, first-run fetch |
 | [reference-profiles.md](reference-profiles.md) | How we measure conversation quality |
 | [workload_benchmark/workload_benchmark.md](workload_benchmark/workload_benchmark.md) | Per-model STT / LLM / TTS timings |
+| [Docs index](README.md) | Full documentation map |

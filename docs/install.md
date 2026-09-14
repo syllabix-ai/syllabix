@@ -1,5 +1,7 @@
 # Install
 
+Per-OS guides: [macOS](install/macos.md) · [Windows](install/windows.md) · [Linux](install/linux.md). Requirements: [requirements.md](requirements.md). Docs index: [README.md](README.md).
+
 ## Binary
 
 Download a release for your OS, verify it, and run:

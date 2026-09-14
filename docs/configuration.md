@@ -10,5 +10,6 @@ Optional project settings live in **`syllabix.yaml`** in the current working dir
 | [diagnostics.md](diagnostics.md) | Turn timelines and WAVs (`diagnostics:` block) |
 | [install.md](install.md) | Checksums, model cache, Gatekeeper / SmartScreen |
 | [troubleshooting.md](troubleshooting.md) | Mic, echo, keys, first-run fetch |
+| [Docs index](README.md) | Features, compare, engines, architecture, API, FAQ |
 
 Create a starter file with `syllabix init [dir]`, or copy [`examples/demo-agent.yaml`](../examples/demo-agent.yaml).

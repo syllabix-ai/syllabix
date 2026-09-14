@@ -1,5 +1,7 @@
 # Contributing
 
+User-facing documentation map: [README.md](README.md) (install per OS, features, comparison, requirements, engines, architecture, API posture, FAQ).
+
 ## Build
 
 Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share one `ggml` compiled into the binary (Darwin Metal + Accelerate; Linux/Windows portable CPU). Linux also needs ALSA headers (`libasound2-dev`).
