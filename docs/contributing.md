@@ -31,14 +31,6 @@ Exclusive extra native suites (not the default `cargo test --workspace` bar):
 SYLLABIX_NATIVE_MODELS=qwen3-0.6 cargo test -p syllabix-core --test native_inference
 ```
 
-## Proposals
-
-Design docs for work that is not yet product behavior live under
-[`docs/proposals/`](proposals/). The planning anchor for the capability-
-sandboxed shell and local `SKILL.md` track is [the proposal](proposals/skills-and-capability-sandboxed-shell.md), with [#111](https://github.com/syllabix-ai/syllabix/issues/111)
-as the design decision and [#125](https://github.com/syllabix-ai/syllabix/issues/125)
-as the implementation tracker.
-
 ## Models
 
 Weights download on first use of each id: HTTPS from the URL pinned in the binary, SHA-256 check, then reuse from cache. Default `run` fetches only the launch stack. Yaml-selected ids fetch the first time that id is used. `--help` and `init` download nothing.
