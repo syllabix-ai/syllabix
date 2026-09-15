@@ -1,4 +1,4 @@
-/* Qwen3-TTS native path (row 31). Drives the vendored libmtmd audio
+/* Qwen3-TTS native path. Drives the vendored libmtmd audio
  * generation helpers against the same shared ggml as whisper/llama.
  *
  * Flow mirrors upstream tools/tts/tts.cpp at the pinned vendor commit:
@@ -27,7 +27,7 @@
 #define SYLLABIX_QWEN_MAX_FRAMES 512
 #define SYLLABIX_QWEN_N_BATCH 512
 
-/* Row 32 voice anchor. The Base backbones are speaker-unconditioned: every
+/* Voice anchor. The Base backbones are speaker-unconditioned: every
  * cold-start generation samples a new speaker, so per-sentence generation
  * changed voices mid-reply. Fix: at load, synthesize one short clip with
  * this fixed seed, run it through the mmproj speaker encoder, and prepend
@@ -46,6 +46,7 @@ struct syllabix_qwen_tts {
     struct llama_sampler *smpl;
     mtmd_helper_gen_audio *gen;
     mtmd_bitmap *voice; /* self-generated speaker reference; NULL = fallback */
+    int uses_gpu;
 };
 
 static int qwen_generate(
@@ -114,7 +115,8 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
     const char *model_path,
     const char *mmproj_path,
     int n_threads,
-    unsigned int seed) {
+    unsigned int seed,
+    int use_gpu) {
     if (model_path == NULL || mmproj_path == NULL || n_threads < 1) {
         return NULL;
     }
@@ -124,13 +126,11 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
     mtmd_helper_log_set(qwen_debug() ? qwen_debug_log : qwen_silent_log, NULL);
     llama_backend_init();
 
-    /* Row 31 decision: the Qwen3-TTS stack stays on CPU everywhere. Its
-     * gen_code graph wants a ~870 MiB Metal compute buffer per frame batch,
-     * which ggml_backend_sched fails to place once the STT and LLM contexts
-     * are also resident (the normal Syllabix configuration). CPU keeps the
-     * provider correct alongside the rest of the pipeline; revisit Metal
-     * when upstream splits the audio graph smaller. */
-    const int tts_gpu_layers = 0;
+    /* Auto placement is orchestrated by Rust after STT and LLM are resident:
+     * it tries the complete Metal path first, then destroys this context and
+     * reloads on CPU if the warm-up/voice-anchor graph cannot be allocated.
+     * Explicit cpu/metal modes use this same single-attempt entry. */
+    const int tts_gpu_layers = use_gpu ? -1 : 0;
 
     struct llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = tts_gpu_layers;
@@ -159,7 +159,7 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
     }
 
     struct mtmd_context_params mtmd_params = mtmd_context_params_default();
-    mtmd_params.use_gpu = tts_gpu_layers != 0 && syllabix_whisper_use_gpu() != 0;
+    mtmd_params.use_gpu = tts_gpu_layers != 0;
     mtmd_params.print_timings = false;
     mtmd_context *mctx = mtmd_init_from_file(mmproj_path, model, mtmd_params);
     if (mctx == NULL) {
@@ -197,17 +197,18 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
     tts->smpl = qwen_make_sampler(seed);
     tts->gen = gen;
     tts->voice = NULL;
+    tts->uses_gpu = use_gpu != 0;
     if (tts->smpl == NULL) {
         syllabix_qwen_tts_free(tts);
         return NULL;
     }
     QWEN_LOG("loaded; n_ctx=%d n_embd=%d\n", (int)llama_n_ctx(ctx), (int)llama_model_n_embd(model));
 
-    /* Row 32 voice anchor: one unconditioned clip generated on a chain
-     * pinned to SYLLABIX_QWEN_VOICE_SEED becomes the speaker reference
+    /* Voice-anchor and placement probe: one unconditioned clip generated on a
+     * chain pinned to SYLLABIX_QWEN_VOICE_SEED becomes the speaker reference
      * every later sentence is conditioned on, so the voice does not drift
-     * with the runtime sampler seed. Any failure degrades to the row-31
-     * free-sampling behavior; it never fails the load. */
+     * with the runtime sampler seed. A failure rejects this placement so the
+     * auto caller can rebuild the whole engine safely on CPU. */
     {
         int32_t rate = 0;
         int16_t *pcm = NULL;
@@ -237,9 +238,17 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
             syllabix_qwen_tts_pcm_free(pcm);
         }
         QWEN_LOG("voice anchor %s\n",
-                 tts->voice != NULL ? "engaged" : "unavailable (unconditioned fallback)");
+                 tts->voice != NULL ? "engaged" : "unavailable (placement rejected)");
+    }
+    if (tts->voice == NULL) {
+        syllabix_qwen_tts_free(tts);
+        return NULL;
     }
     return tts;
+}
+
+int syllabix_qwen_tts_uses_gpu(const struct syllabix_qwen_tts *tts) {
+    return tts != NULL && tts->uses_gpu != 0 ? 1 : 0;
 }
 
 int syllabix_qwen_tts_has_voice(const struct syllabix_qwen_tts *tts) {

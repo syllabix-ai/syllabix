@@ -7,7 +7,8 @@ use std::time::Duration;
 use serde_yaml::Value;
 
 use crate::defaults::{
-    BuiltinDefaults, LlmProvider, SttModel, SttProvider, TtsModel, TtsProvider, VadProvider,
+    BuiltinDefaults, LlmProvider, SttModel, SttProvider, TtsCompute, TtsModel, TtsProvider,
+    VadProvider,
 };
 use crate::error::{Error, Result};
 use crate::language::is_supported as is_supported_language;
@@ -74,6 +75,8 @@ pub struct AgentConfig {
     pub tts: TtsProvider,
     /// TTS model id (`kokoro`, `qwen3-0.6`, `qwen3-1.7`, or `pocket-tts`).
     pub tts_model: TtsModel,
+    /// Qwen3-TTS compute placement (`auto`, `cpu`, or `metal`).
+    pub tts_compute: TtsCompute,
     /// TTS language code (`en`). Qwen3-TTS speaks this language; Kokoro
     /// ignores it (the ONNX voice is fixed).
     pub tts_language: String,
@@ -121,6 +124,7 @@ impl AgentConfig {
             skills: SkillsConfig::default(),
             tts: defaults.tts,
             tts_model: defaults.tts_model,
+            tts_compute: TtsCompute::Auto,
             tts_language: "en".to_string(),
             diagnostics_timestamps: false,
             diagnostics_audio: false,
@@ -189,6 +193,11 @@ impl AgentConfig {
             ""
         };
         let developer_permissions_block = self.render_developer_permissions_block();
+        let tts_compute_line = if self.tts_compute == TtsCompute::Auto {
+            String::new()
+        } else {
+            format!("    compute: {}\n", self.tts_compute.as_str())
+        };
         format!(
             "\
 name: {name}
@@ -212,7 +221,7 @@ pipeline:
     provider: {tts}
     model: {tts_model}
     language: {tts_language}
-{diagnostics_block}{skills_block}",
+{tts_compute_line}{diagnostics_block}{skills_block}",
             name = self.name,
             vad = self.vad.as_str(),
             vad_threshold = self.vad_threshold,
@@ -236,6 +245,7 @@ pipeline:
             tts = self.tts.as_str(),
             tts_model = self.tts_model.as_str(),
             tts_language = self.tts_language,
+            tts_compute_line = tts_compute_line,
             diagnostics_block = diagnostics_block,
             skills_block = skills_block,
         )
@@ -442,7 +452,11 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     let llm_developer_permissions = parse_developer_permissions(llm, llm_developer_harness)?;
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
-    deny_unknown(tts, "pipeline.tts", &["provider", "model", "language"])?;
+    deny_unknown(
+        tts,
+        "pipeline.tts",
+        &["provider", "model", "language", "compute"],
+    )?;
     // `local` runs weights in-process. `online` is reserved and rejected until
     // an online TTS implementation exists.
     let tts_provider = parse_tts(required_string(tts, "pipeline.tts.provider", "provider")?)?;
@@ -456,6 +470,18 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         Some(value) => parse_tts_language(&value)?,
         None => "en".to_string(),
     };
+    let tts_compute = match optional_string(tts, "pipeline.tts", "compute")? {
+        Some(value) => TtsCompute::parse(&value)
+            .ok_or_else(|| unsupported("pipeline.tts.compute", &value, "auto, cpu, metal"))?,
+        None => TtsCompute::Auto,
+    };
+    if tts_compute != TtsCompute::Auto && !matches!(tts_model, TtsModel::Qwen06 | TtsModel::Qwen17)
+    {
+        return Err(Error::Config {
+            field: "pipeline.tts.compute".into(),
+            message: "is only valid with qwen3-0.6 or qwen3-1.7".into(),
+        });
+    }
 
     // Diagnostics are configured here instead of with a CLI flag. `audio: true`
     // implies `timestamps: true` — WAVs always ship with their sidecar.
@@ -490,6 +516,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         skills,
         tts: tts_provider,
         tts_model,
+        tts_compute,
         tts_language,
         diagnostics_timestamps,
         diagnostics_audio,
@@ -2027,6 +2054,45 @@ pipeline:
     }
 
     #[test]
+    fn qwen_compute_modes_parse_and_default_auto_stays_implicit() {
+        let base = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: pocket-tts", "model: qwen3-0.6");
+        assert_eq!(
+            AgentConfig::parse_yaml(&base).unwrap().tts_compute,
+            TtsCompute::Auto
+        );
+        assert!(!base.contains("compute:"));
+        for compute in TtsCompute::ALL {
+            let yaml = base.replace(
+                "    model: qwen3-0.6\n    language: en\n",
+                &format!(
+                    "    model: qwen3-0.6\n    language: en\n    compute: {}\n",
+                    compute.as_str()
+                ),
+            );
+            assert_eq!(AgentConfig::parse_yaml(&yaml).unwrap().tts_compute, compute);
+        }
+    }
+
+    #[test]
+    fn qwen_compute_rejects_unknown_or_non_qwen_use() {
+        let yaml = AgentConfig::v0().to_yaml().replace(
+            "    model: pocket-tts\n    language: en\n",
+            "    model: pocket-tts\n    language: en\n    compute: cuda\n",
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.tts.compute"), "{err}");
+
+        let yaml = AgentConfig::v0().to_yaml().replace(
+            "    model: pocket-tts\n    language: en\n",
+            "    model: pocket-tts\n    language: en\n    compute: cpu\n",
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("only valid with qwen3"), "{err}");
+    }
+
+    #[test]
     fn online_tts_fails_fast_with_the_posture_hint() {
         let yaml = AgentConfig::v0().to_yaml().replace(
             "  tts:\n    provider: local",
@@ -2045,6 +2111,7 @@ pipeline:
         let cfg = AgentConfig::v0();
         assert_eq!(cfg.tts, TtsProvider::Local);
         assert_eq!(cfg.tts_model, TtsModel::PocketTts);
+        assert_eq!(cfg.tts_compute, TtsCompute::Auto);
     }
 
     #[test]

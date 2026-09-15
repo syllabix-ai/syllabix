@@ -80,6 +80,17 @@ mod production {
         Pocket(Box<PocketTts>),
     }
 
+    impl LiveTts {
+        /// Compute backend selected by Qwen's startup probe. Other TTS engines
+        /// do not have an adaptive placement decision to report.
+        pub fn backend_id(&self) -> Option<&str> {
+            match self {
+                Self::Qwen(tts) => tts.backend_id(),
+                Self::Kokoro(_) | Self::Pocket(_) => None,
+            }
+        }
+    }
+
     impl crate::providers::Tts for LiveTts {
         fn name(&self) -> &'static str {
             match self {
@@ -261,6 +272,7 @@ mod production {
                     cancel,
                     &config.tts_language,
                     qwen,
+                    config.tts_compute,
                 )?)),
             },
             // Config parsing rejects `online`; this arm keeps the builder total

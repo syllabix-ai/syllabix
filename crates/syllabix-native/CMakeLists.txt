@@ -76,7 +76,7 @@ target_compile_definitions(whisper PRIVATE WHISPER_VERSION="1.9.2")
 find_package(Threads REQUIRED)
 target_link_libraries(whisper PUBLIC Threads::Threads)
 
-# Row 31: Qwen3-TTS audio path. Vendored upstream libmtmd slice (pinned at
+# Qwen3-TTS audio path. Vendored upstream libmtmd slice (pinned at
 # ad1de39e0708) built against the SAME ggml as whisper/llama. Video support
 # and its ffmpeg/subprocess dependencies stay off; audio generation only.
 set(LLAMA_VERSION_BASE 0)

@@ -142,8 +142,10 @@ mod ffi {
             mmproj_path: *const c_char,
             n_threads: c_int,
             seed: u32,
+            use_gpu: c_int,
         ) -> *mut QwenTtsHandle;
         pub fn syllabix_qwen_tts_free(tts: *mut QwenTtsHandle);
+        pub fn syllabix_qwen_tts_uses_gpu(tts: *const QwenTtsHandle) -> c_int;
         pub fn syllabix_qwen_tts_has_voice(tts: *const QwenTtsHandle) -> c_int;
         pub fn syllabix_qwen_tts_synthesize(
             tts: *mut QwenTtsHandle,
@@ -446,6 +448,7 @@ mod ffi {
         _mmproj_path: *const c_char,
         _n_threads: c_int,
         _seed: u32,
+        _use_gpu: c_int,
     ) -> *mut QwenTtsHandle {
         if fail(&text(model_path), "fail") {
             std::ptr::null_mut()
@@ -456,6 +459,11 @@ mod ffi {
 
     #[cfg(coverage)]
     pub unsafe fn syllabix_qwen_tts_free(_tts: *mut QwenTtsHandle) {}
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_qwen_tts_uses_gpu(_tts: *const QwenTtsHandle) -> c_int {
+        0
+    }
 
     #[cfg(coverage)]
     pub unsafe fn syllabix_qwen_tts_has_voice(_tts: *const QwenTtsHandle) -> c_int {
@@ -1188,6 +1196,22 @@ pub enum QwenTtsError {
     Failed(String),
 }
 
+/// Compute placement selected for a loaded Qwen3-TTS context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QwenTtsBackend {
+    Cpu,
+    Metal,
+}
+
+impl QwenTtsBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Metal => "metal",
+        }
+    }
+}
+
 type QwenPcmCallback<'a> = dyn FnMut(i32, &[f32], bool) -> Result<(), QwenTtsError> + 'a;
 
 struct QwenPcmStream<'a> {
@@ -1240,6 +1264,7 @@ impl QwenTtsContext {
         mmproj_path: impl AsRef<Path>,
         n_threads: i32,
         seed: u32,
+        backend: QwenTtsBackend,
     ) -> Result<Self, String> {
         hush_logs();
         unsafe { ffi::syllabix_llama_backend_init() };
@@ -1253,7 +1278,13 @@ impl QwenTtsContext {
         let c_mmproj = to_c(mmproj_path.as_ref())?;
         let _ggml = ggml_lock();
         let raw = unsafe {
-            ffi::syllabix_qwen_tts_load(c_model.as_ptr(), c_mmproj.as_ptr(), n_threads, seed)
+            ffi::syllabix_qwen_tts_load(
+                c_model.as_ptr(),
+                c_mmproj.as_ptr(),
+                n_threads,
+                seed,
+                i32::from(backend == QwenTtsBackend::Metal),
+            )
         };
         if raw.is_null() {
             return Err(format!(
@@ -1265,8 +1296,20 @@ impl QwenTtsContext {
         Ok(Self { raw })
     }
 
-    /// 1 when the self-voice anchor engaged at load; 0 means generation fell
-    /// back to unconditioned sampling. Diagnostics and native tests.
+    /// Compute backend confirmed by the native context after its full
+    /// voice-anchor warm-up succeeds.
+    pub fn backend(&self) -> QwenTtsBackend {
+        let _ggml = ggml_lock();
+        if unsafe { ffi::syllabix_qwen_tts_uses_gpu(self.raw) == 1 } {
+            QwenTtsBackend::Metal
+        } else {
+            QwenTtsBackend::Cpu
+        }
+    }
+
+    /// 1 when the self-voice anchor and complete placement warm-up engaged.
+    /// A successfully loaded context always returns 1; exposed for diagnostics
+    /// and native tests.
     pub fn has_voice(&self) -> bool {
         if self.raw.is_null() {
             return false;
@@ -1494,11 +1537,16 @@ mod tests {
     #[test]
     #[cfg(not(coverage))]
     fn missing_qwen_tts_weights_do_not_load() {
-        let err =
-            match QwenTtsContext::load("/no/such/qwen3-tts.gguf", "/no/such/mmproj.gguf", 1, 0) {
-                Err(err) => err,
-                Ok(_) => panic!("missing Qwen3-TTS weights should fail"),
-            };
+        let err = match QwenTtsContext::load(
+            "/no/such/qwen3-tts.gguf",
+            "/no/such/mmproj.gguf",
+            1,
+            0,
+            QwenTtsBackend::Cpu,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("missing Qwen3-TTS weights should fail"),
+        };
         assert!(err.contains("failed to load Qwen3-TTS"));
     }
 
@@ -1825,8 +1873,11 @@ mod tests {
     #[cfg(coverage)]
     #[test]
     fn coverage_exercises_qwen_wrapper_without_weights() {
-        assert!(QwenTtsContext::load("fail-qwen", "fake-mmproj", 1, 0).is_err());
-        let mut ctx = QwenTtsContext::load("fake-qwen", "fake-mmproj", 1, 0).expect("fake context");
+        assert!(
+            QwenTtsContext::load("fail-qwen", "fake-mmproj", 1, 0, QwenTtsBackend::Cpu,).is_err()
+        );
+        let mut ctx = QwenTtsContext::load("fake-qwen", "fake-mmproj", 1, 0, QwenTtsBackend::Cpu)
+            .expect("fake context");
         assert!(ctx.has_voice());
         assert!(unsafe { ctx.synthesize("", "en", None, std::ptr::null_mut()) }.is_err());
         assert!(unsafe { ctx.synthesize("bad\0text", "en", None, std::ptr::null_mut()) }.is_err());

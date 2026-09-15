@@ -15,11 +15,13 @@ use std::sync::{Arc, Mutex};
 #[cfg(not(coverage))]
 use ort::session::Session;
 #[cfg(not(coverage))]
-use syllabix_native::{QwenTtsContext, QwenTtsError};
+use syllabix_native::{QwenTtsBackend, QwenTtsContext, QwenTtsError};
 
 #[cfg(not(coverage))]
 use crate::audio::{f32_to_i16, PcmConverter, PcmFormat};
 use crate::cancel::Cancel;
+#[cfg(not(coverage))]
+use crate::defaults::TtsCompute;
 use crate::defaults::{BuiltinDefaults, TtsModel};
 use crate::error::{Error, Result};
 #[cfg(not(coverage))]
@@ -246,6 +248,7 @@ pub struct QwenTts {
     core: ChunkState,
     engine: Arc<Mutex<Box<dyn WaveformEngine>>>,
     model: TtsModel,
+    backend: Option<&'static str>,
 }
 
 impl Clone for QwenTts {
@@ -254,6 +257,7 @@ impl Clone for QwenTts {
             core: ChunkState::default(),
             engine: Arc::clone(&self.engine),
             model: self.model,
+            backend: self.backend,
         }
     }
 }
@@ -270,7 +274,14 @@ impl QwenTts {
     ) -> Result<Self> {
         // Runtime sampling is randomized (llama.cpp default seed); the voice
         // identity comes from the native engine's pinned self-voice anchor.
-        Self::from_paths_with_seed(model, mmproj, language, selected, u32::MAX)
+        Self::from_paths_with_seed_and_compute(
+            model,
+            mmproj,
+            language,
+            selected,
+            u32::MAX,
+            TtsCompute::Auto,
+        )
     }
 
     /// [`QwenTts::from_paths`] with a pinned sampler seed. The native
@@ -284,11 +295,36 @@ impl QwenTts {
         selected: TtsModel,
         seed: u32,
     ) -> Result<Self> {
-        let engine = NativeQwen::load_with_seed(model.as_ref(), mmproj.as_ref(), language, seed)?;
+        Self::from_paths_with_seed_and_compute(
+            model,
+            mmproj,
+            language,
+            selected,
+            seed,
+            TtsCompute::Auto,
+        )
+    }
+
+    /// Load with explicit compute placement. `Auto` attempts the complete
+    /// Metal warm-up on Apple Silicon and reconstructs the engine on CPU if
+    /// that attempt fails.
+    #[cfg(not(coverage))]
+    pub fn from_paths_with_seed_and_compute(
+        model: impl AsRef<Path>,
+        mmproj: impl AsRef<Path>,
+        language: &str,
+        selected: TtsModel,
+        seed: u32,
+        compute: TtsCompute,
+    ) -> Result<Self> {
+        let engine =
+            NativeQwen::load_with_seed(model.as_ref(), mmproj.as_ref(), language, seed, compute)?;
+        let backend = Some(engine.backend.as_str());
         Ok(Self {
             core: ChunkState::default(),
             engine: Arc::new(Mutex::new(Box::new(engine))),
             model: selected,
+            backend,
         })
     }
 
@@ -302,6 +338,7 @@ impl QwenTts {
         cancel: &Cancel,
         language: &str,
         selected: TtsModel,
+        compute: TtsCompute,
     ) -> Result<Self> {
         let backbone =
             cache
@@ -322,7 +359,14 @@ impl QwenTts {
             })?;
         let model_path = cache.resolve(backbone, fetcher, progress, cancel)?;
         let mmproj_path = cache.resolve(mmproj, fetcher, progress, cancel)?;
-        Self::from_paths(model_path, mmproj_path, language, selected)
+        Self::from_paths_with_seed_and_compute(
+            model_path,
+            mmproj_path,
+            language,
+            selected,
+            u32::MAX,
+            compute,
+        )
     }
 
     #[cfg(test)]
@@ -331,13 +375,19 @@ impl QwenTts {
             core: ChunkState::default(),
             engine: Arc::new(Mutex::new(engine)),
             model,
+            backend: None,
         }
     }
 
-    /// Whether the native self-voice anchor engaged at load. `false` means
-    /// synthesis fell back to unconditioned sampling (voice may drift).
+    /// Whether the native self-voice anchor and complete placement warm-up
+    /// engaged. A successfully loaded engine always returns `true`.
     pub fn voice_anchor_engaged(&self) -> bool {
         self.engine.lock().expect("tts engine").has_voice_anchor()
+    }
+
+    /// Compute backend confirmed by the complete native placement warm-up.
+    pub fn backend_id(&self) -> Option<&str> {
+        self.backend
     }
 }
 
@@ -452,6 +502,38 @@ use native::{NativeQwen, OrtKokoro};
 mod native {
     use super::*;
 
+    pub(super) fn backend_attempts(compute: TtsCompute) -> Result<&'static [QwenTtsBackend]> {
+        const CPU: &[QwenTtsBackend] = &[QwenTtsBackend::Cpu];
+        const METAL: &[QwenTtsBackend] = &[QwenTtsBackend::Metal];
+        const METAL_THEN_CPU: &[QwenTtsBackend] = &[QwenTtsBackend::Metal, QwenTtsBackend::Cpu];
+        match compute {
+            TtsCompute::Cpu => Ok(CPU),
+            TtsCompute::Auto if cfg!(all(target_os = "macos", target_arch = "aarch64")) => {
+                Ok(METAL_THEN_CPU)
+            }
+            TtsCompute::Auto => Ok(CPU),
+            TtsCompute::Metal if cfg!(target_os = "macos") => Ok(METAL),
+            TtsCompute::Metal => Err(Error::Provider {
+                provider: "qwen",
+                message: "Metal compute requires macOS".into(),
+            }),
+        }
+    }
+
+    pub(super) fn load_first_backend<T, E>(
+        attempts: &[QwenTtsBackend],
+        mut load: impl FnMut(QwenTtsBackend) -> std::result::Result<T, E>,
+    ) -> std::result::Result<(T, QwenTtsBackend), E> {
+        let mut last_error = None;
+        for &backend in attempts {
+            match load(backend) {
+                Ok(value) => return Ok((value, backend)),
+                Err(err) => last_error = Some(err),
+            }
+        }
+        Err(last_error.expect("Qwen backend attempt list is never empty"))
+    }
+
     pub(super) struct OrtKokoro {
         session: Session,
         voice: Vec<Vec<f32>>,
@@ -554,6 +636,7 @@ mod native {
         ctx: QwenTtsContext,
         lang: String,
         voice_active: bool,
+        pub(super) backend: QwenTtsBackend,
     }
 
     impl NativeQwen {
@@ -562,21 +645,27 @@ mod native {
             mmproj: &Path,
             language: &str,
             seed: u32,
+            compute: TtsCompute,
         ) -> Result<Self> {
             // Same cap as the LLM/STT engines: portable-CPU friendly.
             let n_threads = std::thread::available_parallelism()
                 .map(|n| n.get().min(4) as i32)
                 .unwrap_or(1);
-            let ctx = QwenTtsContext::load(model, mmproj, n_threads, seed).map_err(|message| {
-                Error::Provider {
-                    provider: "qwen",
-                    message,
-                }
-            })?;
+            let load = |backend| {
+                QwenTtsContext::load(model, mmproj, n_threads, seed, backend).map_err(|message| {
+                    Error::Provider {
+                        provider: "qwen",
+                        message,
+                    }
+                })
+            };
+            let (ctx, _) = load_first_backend(backend_attempts(compute)?, load)?;
+            let backend = ctx.backend();
             Ok(Self {
                 voice_active: ctx.has_voice(),
                 ctx,
                 lang: language.to_string(),
+                backend,
             })
         }
     }
@@ -1001,6 +1090,47 @@ mod tests {
         assert_eq!(tts.model_id(), Some("qwen3-tts-1.7b-base"));
     }
 
+    #[cfg(not(coverage))]
+    #[test]
+    fn qwen_auto_backend_order_and_retry_are_deterministic() {
+        let attempts = native::backend_attempts(TtsCompute::Auto).unwrap();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert_eq!(attempts, [QwenTtsBackend::Metal, QwenTtsBackend::Cpu]);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        assert_eq!(attempts, [QwenTtsBackend::Cpu]);
+
+        let mut seen = Vec::new();
+        let (value, selected) =
+            native::load_first_backend(&[QwenTtsBackend::Metal, QwenTtsBackend::Cpu], |backend| {
+                seen.push(backend);
+                if backend == QwenTtsBackend::Metal {
+                    Err("allocation failed")
+                } else {
+                    Ok(7)
+                }
+            })
+            .unwrap();
+        assert_eq!(value, 7);
+        assert_eq!(selected, QwenTtsBackend::Cpu);
+        assert_eq!(seen, [QwenTtsBackend::Metal, QwenTtsBackend::Cpu]);
+    }
+
+    #[cfg(not(coverage))]
+    #[test]
+    fn qwen_forced_backend_is_a_single_attempt() {
+        assert_eq!(
+            native::backend_attempts(TtsCompute::Cpu).unwrap(),
+            [QwenTtsBackend::Cpu]
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            native::backend_attempts(TtsCompute::Metal).unwrap(),
+            [QwenTtsBackend::Metal]
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert!(native::backend_attempts(TtsCompute::Metal).is_err());
+    }
+
     #[test]
     fn qwen_strips_think_and_markdown_before_synthesis() {
         let engine = ScriptedEngine::new();
@@ -1070,6 +1200,7 @@ mod tests {
             &Cancel::new(),
             "en",
             TtsModel::Qwen06,
+            TtsCompute::Cpu,
         ) {
             Err(err) => err,
             Ok(_) => panic!("empty manifest should fail"),

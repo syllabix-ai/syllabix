@@ -22,4 +22,10 @@ Do not add a second `ggml` copy. Do not use `--allow-multiple-definition` or pos
 
 **Local patch (sequence 33), `tools/mtmd/mtmd-helper-gen.{h,cpp}`:** expose `mtmd_helper_gen_audio_take_output`, which returns only PCM newly produced by an already-completed vocoder window without flushing an incomplete window. The Qwen shim forwards those windows to Rust as generation continues, rather than waiting for `get_output()` to flush and return the entire utterance. Decoder state and the existing window sizes remain upstream-owned. Contribute this narrow helper API upstream; retain the patch only until it merges.
 
+**Local patch (adaptive Qwen placement), `tools/mtmd/clip.cpp`:** propagate
+compute-buffer reservation and graph-allocation failures through
+`clip_encode`. Qwen's Apple Silicon auto mode relies on this recoverable error
+to destroy a failed Metal context and reload on CPU before the first turn.
+Keep the patch until upstream checks both scheduler return values.
+
 CPU vs Metal tok/s for the three v0 GGUFs: [`llama-bench.md`](llama-bench.md).

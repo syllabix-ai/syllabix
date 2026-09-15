@@ -51,8 +51,8 @@ pub use config::{
     DEFAULT_AUTO_TIMEOUT_EXIT_MS, DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS,
 };
 pub use defaults::{
-    BuiltinDefaults, LlmProvider, QueueCaps, SttModel, SttProvider, TtsModel, TtsProvider,
-    VadProvider,
+    BuiltinDefaults, LlmProvider, QueueCaps, SttModel, SttProvider, TtsCompute, TtsModel,
+    TtsProvider, VadProvider,
 };
 pub use dist::{
     artifact_name_for_target, artifact_name_for_uname, format_sha256sums_line,

@@ -152,7 +152,7 @@ int syllabix_llama_count_prompt_tokens_with_lfm_tools(
     int thinking,
     const char *tools_json);
 
-/* Qwen3-TTS (row 31; row 32 voice anchor). Backbone GGUF + mmproj through
+/* Qwen3-TTS. Backbone GGUF + mmproj through
  * the shared ggml. Sampling mirrors upstream tools/tts defaults; `seed`
  * pins the fixture. At load the engine synthesizes one short clip from a
  * fixed seed and reuses it as its own speaker reference, so every sentence
@@ -161,8 +161,12 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
     const char *model_path,
     const char *mmproj_path,
     int n_threads,
-    unsigned int seed);
+    unsigned int seed,
+    int use_gpu);
 void syllabix_qwen_tts_free(struct syllabix_qwen_tts *tts);
+
+/* Selected compute placement: 0 = CPU, 1 = Metal/GPU. */
+int syllabix_qwen_tts_uses_gpu(const struct syllabix_qwen_tts *tts);
 
 /* 1 when the self-voice reference engaged, 0 when generation fell back to
  * unconditioned sampling (anchor failure). Diagnostics and tests. */

@@ -195,6 +195,32 @@ impl TtsProvider {
     }
 }
 
+/// Qwen3-TTS compute placement. `Auto` probes Metal on Apple Silicon after
+/// the selected STT and LLM are resident, then reloads on CPU if the complete
+/// audio warm-up cannot run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TtsCompute {
+    Auto,
+    Cpu,
+    Metal,
+}
+
+impl TtsCompute {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Cpu, Self::Metal];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Cpu => "cpu",
+            Self::Metal => "metal",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.as_str() == value)
+    }
+}
+
 /// TTS model menu under `provider: local`. Pocket TTS is the default;
 /// Kokoro and the Qwen3-TTS backbones are YAML opt-ins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
