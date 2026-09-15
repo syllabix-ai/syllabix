@@ -4,7 +4,8 @@
 //! endpoint the user chose. The API key comes from the `SYLLABIX_LLM_API_KEY`
 //! environment variable **only** — never yaml, never a `.env` file — and is
 //! held in zeroizing memory for the life of the run. A failed turn speaks a
-//! short fallback instead of hanging; there is no auto-retry.
+//! short fallback instead of hanging; normal turns never auto-retry. A
+//! best-effort startup warm-up establishes the first cloud connection.
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -54,6 +55,11 @@ pub const READ_POLL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// No bytes for this long aborts the turn as a provider failure.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Attempts used to establish the initial cloud connection before listening.
+const WARM_UP_ATTEMPTS: usize = 5;
+/// Short pause between failed cold-connection attempts.
+const WARM_UP_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// How often the generate loop wakes to check cancel and idle deadlines.
 const POLL_TICK: Duration = Duration::from_millis(100);
@@ -230,6 +236,119 @@ impl OpenAiLlm {
     pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
         self.workspace = workspace.into();
         self
+    }
+
+    /// Exercise the cold DNS, TCP, TLS, request, and streaming-response path
+    /// before the voice loop starts. Normal turns retain their short read poll
+    /// and never retry. This best-effort probe is intentionally not added to
+    /// conversation history or exposed to the user.
+    pub fn warm_up(&self, cancel: &Cancel) -> Result<()> {
+        let body = serde_json::json!({
+            "model": self.settings.model,
+            "messages": [{"role": "user", "content": "Reply only with OK."}],
+            "stream": true,
+        })
+        .to_string();
+        let mut last_transport = None;
+
+        for attempt in 0..WARM_UP_ATTEMPTS {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            match self
+                .agent
+                .post(&self.settings.endpoint)
+                .set(
+                    "Authorization",
+                    &format!("Bearer {}", self.api_key.as_str()),
+                )
+                .set("Content-Type", "application/json")
+                .set("Accept", "text/event-stream")
+                .send_string(&body)
+            {
+                Ok(response) => {
+                    return drain_warm_up_stream(response, cancel);
+                }
+                Err(ureq::Error::Status(code, response)) => {
+                    let mut text = String::new();
+                    let _ = response
+                        .into_reader()
+                        .take(16_384)
+                        .read_to_string(&mut text);
+                    let hint = if code == 401 || code == 403 {
+                        format!(" check {API_KEY_ENV}")
+                    } else {
+                        String::new()
+                    };
+                    let detail = if text.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", text.trim().chars().take(512).collect::<String>())
+                    };
+                    return Err(Error::Provider {
+                        provider: PROVIDER_NAME,
+                        message: format!("warm-up HTTP {code}{detail}{hint}"),
+                    });
+                }
+                Err(ureq::Error::Transport(err)) => {
+                    last_transport = Some(err);
+                    if attempt + 1 < WARM_UP_ATTEMPTS {
+                        std::thread::sleep(WARM_UP_RETRY_DELAY);
+                    }
+                }
+            }
+        }
+
+        Err(Error::Provider {
+            provider: PROVIDER_NAME,
+            message: format!(
+                "warm-up request failed after {WARM_UP_ATTEMPTS} attempts: {}",
+                last_transport.expect("warm-up attempts always record a transport error")
+            ),
+        })
+    }
+}
+
+/// Consume a successful warm-up stream through `[DONE]` so ureq can return
+/// the connection to its pool for the first real turn.
+fn drain_warm_up_stream(response: ureq::Response, cancel: &Cancel) -> Result<()> {
+    let mut reader = BufReader::new(response.into_reader());
+    let mut line = String::new();
+    let mut idle_since = Instant::now();
+    loop {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                return Err(Error::Provider {
+                    provider: PROVIDER_NAME,
+                    message: "warm-up connection closed before [DONE]".into(),
+                });
+            }
+            Ok(_) => {
+                idle_since = Instant::now();
+                if sse_data_payload(line.trim_end_matches(['\n', '\r']))
+                    .is_some_and(|payload| payload.trim() == "[DONE]")
+                {
+                    return Ok(());
+                }
+            }
+            Err(err) if is_poll_timeout(&err) && idle_since.elapsed() < IDLE_TIMEOUT => {}
+            Err(err) if is_poll_timeout(&err) => {
+                return Err(Error::Provider {
+                    provider: PROVIDER_NAME,
+                    message: format!("warm-up no data for {IDLE_TIMEOUT:?} (idle timeout)"),
+                });
+            }
+            Err(err) => {
+                return Err(Error::Provider {
+                    provider: PROVIDER_NAME,
+                    message: format!("warm-up stream read failed: {err}"),
+                });
+            }
+        }
     }
 }
 
@@ -1845,6 +1964,26 @@ mod tests {
     #[test]
     fn tool_call_limit_is_fixed() {
         assert_eq!(MAX_TOOL_CALLS_PER_TURN, 5);
+    }
+
+    #[test]
+    fn warm_up_exercises_the_streaming_endpoint_without_tools() {
+        let (endpoint, server) = serve_one(|stream, _| {
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: keep-alive\r\n\r\ndata: [DONE]\n\n",
+                )
+                .expect("write warm-up response");
+        });
+        let llm = test_llm(endpoint);
+
+        llm.warm_up(&Cancel::new()).expect("warm-up succeeds");
+
+        let request = server.join().expect("warm-up server joins");
+        assert!(request.contains("POST /v1/chat/completions HTTP/1.1"));
+        assert!(request.contains("\"stream\":true"));
+        assert!(request.contains("Reply only with OK."));
+        assert!(!request.contains("\"tools\""));
     }
 
     #[test]

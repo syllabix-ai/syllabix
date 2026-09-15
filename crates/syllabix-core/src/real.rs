@@ -245,6 +245,18 @@ mod production {
             build_stt(cache, fetcher, progress, cancel, config)?.with_language(&config.language)?;
         let llm = build_llm(cache, fetcher, progress, cancel, config, llm_api_key)?;
         let tts = build_tts(cache, fetcher, progress, cancel, config)?;
+        if let LiveLlm::Cloud(llm) = &llm {
+            match llm.warm_up(cancel) {
+                Ok(()) => eprintln!("cloud: endpoint ready"),
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(err) => {
+                    tracing::warn!(provider = PROVIDER_NAME, error = %err, "cloud warm-up failed");
+                    eprintln!(
+                        "cloud: could not verify endpoint; continuing — the first reply may fail"
+                    );
+                }
+            }
+        }
         Ok((vad, stt, llm, tts))
     }
 
