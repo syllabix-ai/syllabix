@@ -9,6 +9,17 @@ mic → Silero VAD → STT → LLM → TTS → speakers
 
 Download `syllabix`, run it, talk. No Python, pip, or API key on the default path. Building from source is the second path. Audio stays on the machine unless you opt into an online LLM (transcript text only).
 
+| | Default |
+| --- | --- |
+| **What** | Local mic → VAD → STT → LLM → TTS → speakers, with barge-in |
+| **Install** | One native binary (macOS, Linux, Windows). No Python. |
+| **Default models** | Whisper `small` + LFM2.5-2.6B + Pocket TTS (~2.2 GB first fetch) |
+| **License** | Apache-2.0 |
+
+![`syllabix run` terminal UI (illustration)](docs/assets/tui-run.png)
+
+Replace [`docs/assets/tui-run.png`](docs/assets/tui-run.png) with a live capture when you have one. See [`docs/assets/`](docs/assets/README.md).
+
 ## Download
 
 ```bash
@@ -80,10 +91,12 @@ Per-turn timelines and WAVs are yaml-only (`diagnostics:`). See [docs/diagnostic
 | [CLI](docs/cli.md) | `run`, `--barge-in`, `init`, `--help` |
 | [Engines](docs/engines.md) | VAD / STT / LLM / TTS ids and machine needs |
 | [Architecture](docs/architecture.md) | Cascade, AEC, barge-in, what leaves the machine |
+| [Configuration](docs/configuration.md) | Index of yaml, engines, diagnostics |
 | [syllabix.yaml](docs/syllabix-yaml.md) | Optional project file — keys and safe edits |
 | [Troubleshooting](docs/troubleshooting.md) | Mic, echo, keys, first-run fetch |
-| [FAQ](docs/faq.md) | Large first run, barge-in default, keys |
+| [FAQ](docs/faq.md) | Large first run, barge-in, keys |
 | [Contributing](docs/contributing.md) | Tests, packaging, CI |
+| [Security](SECURITY.md) | Private vulnerability reports |
 
 ## License
 

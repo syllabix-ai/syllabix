@@ -1,0 +1,41 @@
+name: Install / first open
+description: Binary will not verify, open, or fetch models
+title: "install: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: Check [docs/install.md](https://github.com/syllabix-ai/syllabix/blob/main/docs/install.md) and [docs/troubleshooting.md](https://github.com/syllabix-ai/syllabix/blob/main/docs/troubleshooting.md) first.
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS Apple Silicon
+        - macOS Intel
+        - Linux x64
+        - Windows x64
+        - other
+    validations:
+      required: true
+  - type: input
+    id: artifact
+    attributes:
+      label: Artifact or how you installed
+      placeholder: syllabix-Darwin-arm64 from a Release, or cargo run
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      placeholder: Checksum mismatch, Gatekeeper, SmartScreen, first-run fetch error…
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command and error
+      render: shell
+    validations:
+      required: true
