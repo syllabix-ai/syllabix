@@ -44,7 +44,7 @@ pipeline:
 # skills:                        # local instruction packages (harness only)
 ```
 
-First `run` fetches only the selected model ids (~2.2 GB for the default stack). The rest of this page walks every key in order.
+First `run` fetches only the selected model ids (~2.2 GB for the default stack). Model catalogue (ids, sources, machine needs): [engines.md](engines.md). The rest of this page walks every key in order.
 
 ## `name`
 
@@ -109,17 +109,7 @@ Only `local` (in-process). Required. Other providers are a placeholder for futur
 
 ### `model`
 
-| Value | Notes |
-| --- | --- |
-| `whisper-small` | Default |
-| `whisper-medium` | Larger Whisper |
-| `whisper-large-v3-turbo` | Largest Whisper menu id |
-| `whisper-medium-q5_0` | Published quantization |
-| `whisper-large-v3-turbo-q5_0` | Published quantization |
-| `moonshine-streaming-small` | English-only streaming ASR; live partials |
-| `moonshine-streaming-medium` | Larger English-only streaming ASR; live partials |
-
-First `run` fetches only the id you pick. Measured latency and memory for each STT id: [workload benchmark](workload_benchmark/workload_benchmark.md#stt).
+Ids and sources: [engines](engines.md#stt). Unknown ids fail at load. First `run` fetches only the id you pick. Measured latency and memory: [workload benchmark](workload_benchmark/workload_benchmark.md#stt).
 
 ### `language`
 
@@ -141,16 +131,7 @@ Moonshine models are English-only: `language` must be `en`; `auto` and other cod
 
 ### `model`
 
-**Local menu** (unknown ids fail at load):
-
-| Value | Notes |
-| --- | --- |
-| `lfm2.5-2.6b` | Default; first-run cache |
-| `lfm2.5-350m` | Fetched when selected |
-| `lfm2.5-230m` | Fetched when selected |
-| `llama-3.2-1b` | Fetched when selected |
-| `qwen3.5-0.8b` | Fetched when selected |
-| `qwen3.5-2b` | Fetched when selected |
+**Local** ids and sources: [engines](engines.md#llm). Unknown local ids fail at load.
 
 **Online:** any id the endpoint serves (`gpt-4o-mini`, …).
 
@@ -225,14 +206,7 @@ Only `local` (in-process). Required. `online` is a placeholder for future suppor
 
 ### `model`
 
-| Value | Notes |
-| --- | --- |
-| `pocket-tts` | **Default** — English Pocket TTS ONNX + fixed Alba voice (~150 MB) |
-| `kokoro` | Kokoro ONNX + default voice (~310 MB) |
-| `qwen3-0.6` | Qwen3-TTS 0.6B + speech tokenizer |
-| `qwen3-1.7` | Qwen3-TTS 1.7B + speech tokenizer |
-
-Non-default ids are fetched on first use. Pocket TTS accepts no user voice data.
+Ids and sources: [engines](engines.md#tts). Unknown ids fail at load. Non-default ids are fetched on first use. Pocket TTS accepts no user voice data.
 
 Measured latency and memory for each TTS id: [workload benchmark](workload_benchmark/workload_benchmark.md#tts).
 
@@ -313,9 +287,12 @@ When timestamps or audio is on, each turn writes files under `directory`. What t
 
 | Page | For |
 | --- | --- |
-| [configuration.md](configuration.md) | Short index of config-related docs |
+| [Docs index](README.md) | User, config, and contributor map |
+| [engines.md](engines.md) | Shipped model ids |
+| [cli.md](cli.md) | `run`, `--barge-in`, `init` |
 | [diagnostics.md](diagnostics.md) | Turn timeline field guide |
-| [install.md](install.md) | Checksums, cache, Gatekeeper, SmartScreen |
+| [install.md](install.md) | Checksums, cache, Gatekeeper, SmartScreen, compile |
 | [troubleshooting.md](troubleshooting.md) | Mic, echo, keys, first-run fetch |
+| [faq.md](faq.md) | Large first run, barge-in default, keys |
 | [reference-profiles.md](reference-profiles.md) | How we measure conversation quality |
 | [workload_benchmark/workload_benchmark.md](workload_benchmark/workload_benchmark.md) | Per-model STT / LLM / TTS timings |
