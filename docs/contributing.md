@@ -41,13 +41,9 @@ as the implementation tracker.
 
 ## Models
 
+Model ids, cache, and sources: [`engines.md`](engines.md).
+
 Weights download on first use of each id: HTTPS from the URL pinned in the binary, SHA-256 check, then reuse from cache. Default `run` fetches only the launch stack. Yaml-selected ids fetch the first time that id is used. `--help` and `init` download nothing.
-
-Cache directory:
-
-- `$SYLLABIX_CACHE_DIR/models/v1` if set
-- otherwise `~/.cache/syllabix/models/v1`
-- Windows: `%LOCALAPPDATA%\syllabix\cache\models\v1`
 
 | When | Files | Source |
 | --- | --- | --- |

@@ -1,8 +1,8 @@
 # Install
 
-## Binary
+Download a release binary first. Compile from source second.
 
-Download a release for your OS, verify it, and run:
+## Download
 
 ```bash
 # macOS / Linux
@@ -40,7 +40,7 @@ The first `run` downloads the selected models over HTTPS (defaults: Silero, Whis
 - otherwise `~/.cache/syllabix/models/v1`
 - Windows: `%LOCALAPPDATA%\syllabix\cache\models\v1`
 
-Later runs reuse the cache offline. `--help` and `init` do not download weights. Other yaml model ids fetch on first use of that id. Sources and sizes: [contributing.md](contributing.md#models).
+Later runs reuse the cache offline. `--help` and `init` do not download weights. Other yaml model ids fetch on first use of that id. Catalogue: [engines.md](engines.md).
 
 ## macOS Gatekeeper
 
@@ -64,7 +64,7 @@ macOS: System Settings → Privacy & Security → Microphone.
 
 Windows: Settings → Privacy → Microphone.
 
-## Build from source
+## Compile
 
 Requires Rust 1.91+, CMake, and a C++ compiler. Linux also needs ALSA headers (`libasound2-dev`).
 

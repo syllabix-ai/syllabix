@@ -7,7 +7,9 @@ mic → Silero VAD → STT → LLM → TTS → speakers
               ↑______________ barge-in (interrupt + flush)
 ```
 
-Download `syllabix`, run it, talk. No Python, pip, or API key on the default path.
+Download `syllabix`, run it, talk. No Python, pip, or API key on the default path. Building from source is the second path. Audio stays on the machine unless you opt into an online LLM (transcript text only).
+
+## Download
 
 ```bash
 # macOS / Linux
@@ -33,11 +35,21 @@ certutil -hashfile syllabix.exe SHA256    # compare against the SHA256SUMS line
 | macOS Intel | `syllabix-Darwin-x86_64` |
 | Windows x64 | `syllabix-Windows-x86_64.exe` |
 
-First `run` fetches Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB) into `~/.cache/syllabix/models/v1` (`%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows; override the cache root with `$SYLLABIX_CACHE_DIR`) and verifies SHA-256. Later runs reuse that cache offline. `--help` and `init` do not need the cache. The default is the best M4 16 GB combination for minimal delight (see `docs/reference-profiles.md`).
+First `run` fetches Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB) into `~/.cache/syllabix/models/v1` (`%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows; override with `$SYLLABIX_CACHE_DIR`) and verifies SHA-256. Later runs reuse that cache offline. `--help` and `init` do not need the cache.
 
 The first-run download is large. Time-to-first-spoken-reply on a typical connection has not been published yet; do not plan on three minutes for a cold cache.
 
-macOS Gatekeeper and Windows SmartScreen steps: [docs/install.md](docs/install.md).
+macOS Gatekeeper and Windows SmartScreen: [docs/install.md](docs/install.md).
+
+## Compile
+
+Requires Rust 1.91+, CMake, and a C++ compiler. Linux also needs ALSA headers (`libasound2-dev`).
+
+```bash
+cargo run -p syllabix -- run
+```
+
+Fmt, clippy, tests, and packaging: [docs/contributing.md](docs/contributing.md).
 
 ## Talk
 
@@ -49,11 +61,13 @@ macOS Gatekeeper and Windows SmartScreen steps: [docs/install.md](docs/install.m
 ./syllabix init             # optional: write syllabix.yaml in a project folder
 ```
 
-There is no `serve` command. Default `run` needs no yaml and no API key. After the cache is full, it needs no network.
+Default `run` needs no yaml and no API key. After the cache is full, it needs no network.
+
+Commands: [docs/cli.md](docs/cli.md).
 
 ## Optional config
 
-[`syllabix init`](docs/syllabix-yaml.md) writes `syllabix.yaml` if you want a different Whisper size or language, English-only Moonshine streaming STT (`moonshine-streaming-small` or `moonshine-streaming-medium`, live partial transcript text), local LLM id, spoken `system_prompt`, Kokoro or Qwen TTS (default remains Pocket TTS), or a BYO-key online LLM (transcript text only; audio stays on the machine). A minimal example is [`examples/demo-agent.yaml`](examples/demo-agent.yaml). Full key guide: [docs/syllabix-yaml.md](docs/syllabix-yaml.md).
+[`syllabix init`](docs/syllabix-yaml.md) writes `syllabix.yaml` if you want a different Whisper size or language, English-only Moonshine streaming STT, local LLM id, spoken `system_prompt`, Kokoro or Qwen TTS (default remains Pocket TTS), or a BYO-key online LLM (transcript text only; audio stays on the machine). A minimal example is [`examples/demo-agent.yaml`](examples/demo-agent.yaml). Model catalogue: [docs/engines.md](docs/engines.md). Full key guide: [docs/syllabix-yaml.md](docs/syllabix-yaml.md).
 
 Per-turn timelines and WAVs are yaml-only (`diagnostics:`). See [docs/diagnostics.md](docs/diagnostics.md).
 
@@ -61,25 +75,15 @@ Per-turn timelines and WAVs are yaml-only (`diagnostics:`). See [docs/diagnostic
 
 | Page | For |
 | --- | --- |
-| [Install](docs/install.md) | Checksums, cache, Gatekeeper, SmartScreen |
+| [Docs index](docs/README.md) | User, config, and contributor map |
+| [Install](docs/install.md) | Checksums, cache, Gatekeeper, SmartScreen, build |
+| [CLI](docs/cli.md) | `run`, `--barge-in`, `init`, `--help` |
+| [Engines](docs/engines.md) | VAD / STT / LLM / TTS ids and machine needs |
+| [Architecture](docs/architecture.md) | Cascade, AEC, barge-in, what leaves the machine |
 | [syllabix.yaml](docs/syllabix-yaml.md) | Optional project file — keys and safe edits |
-| [Configuration](docs/configuration.md) | Short index of config-related docs |
 | [Troubleshooting](docs/troubleshooting.md) | Mic, echo, keys, first-run fetch |
-| [Diagnostics](docs/diagnostics.md) | Turn timelines and WAVs |
-| [Contributing](docs/contributing.md) | Build, test, packaging |
-| [Reference profiles](docs/reference-profiles.md) | How we measure conversation quality |
-
-## Develop
-
-Requires Rust 1.91+, CMake, and a C++ compiler. Linux also needs ALSA headers (`libasound2-dev`).
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-From a checkout with a microphone: `cargo run -p syllabix -- run`. Full contributor path: [docs/contributing.md](docs/contributing.md).
+| [FAQ](docs/faq.md) | Large first run, barge-in default, keys |
+| [Contributing](docs/contributing.md) | Tests, packaging, CI |
 
 ## License
 
