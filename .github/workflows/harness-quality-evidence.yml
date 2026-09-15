@@ -18,7 +18,6 @@ on:
       - crates/syllabix-core/src/policy.rs
       - crates/syllabix-core/src/sandbox/**
       - crates/syllabix-core/tests/harness-quality.rs
-      - docs/proposals/skills-and-capability-sandboxed-shell.md
       - docs/contributing.md
   workflow_dispatch:
     inputs:
