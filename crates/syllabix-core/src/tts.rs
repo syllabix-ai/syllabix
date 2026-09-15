@@ -93,6 +93,13 @@ impl ChunkState {
     }
 }
 
+/// How an engine delivers audio for each completed sentence.
+#[derive(Clone, Copy)]
+enum SynthesisMode {
+    Buffered,
+    Streaming,
+}
+
 /// The one sentence-chunking loop. Tokens buffer until a sentence boundary;
 /// think-strip runs first, then markdown strip, then the engine. An empty
 /// final turn still emits a tiny closing chunk so playback can finish.
@@ -101,7 +108,27 @@ fn synthesize_chunk_shared(
     state: &mut ChunkState,
     token: &TokenChunk,
     cancel: &Cancel,
+    mode: SynthesisMode,
 ) -> Result<Vec<SynthesizedAudio>> {
+    let mut out = Vec::new();
+    synthesize_chunk_shared_into(engine, state, token, cancel, mode, &mut |audio| {
+        out.push(audio);
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// The callback form of [`synthesize_chunk_shared`]. Sentence buffering stays
+/// common across engines; the explicit mode selects buffered audio or Qwen's
+/// per-sentence PCM streaming.
+fn synthesize_chunk_shared_into(
+    engine: &Mutex<Box<dyn WaveformEngine>>,
+    state: &mut ChunkState,
+    token: &TokenChunk,
+    cancel: &Cancel,
+    mode: SynthesisMode,
+    on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+) -> Result<()> {
     if cancel.is_stale(token.generation) {
         state.reset();
         return Err(Error::Cancelled);
@@ -116,33 +143,49 @@ fn synthesize_chunk_shared(
         .buffer
         .push_str(&state.think.push(&token.text, token.is_last));
     let sentences = take_sentences(&mut state.buffer, token.is_last);
-    let mut out = Vec::new();
-    let last_i = sentences.len().saturating_sub(1);
-    for (i, sentence) in sentences.into_iter().enumerate() {
+    let spoken: Vec<String> = sentences
+        .into_iter()
+        .map(|sentence| speak_text_for_tts(&sentence))
+        .filter(|sentence| !sentence.is_empty())
+        .collect();
+    let last_i = spoken.len().saturating_sub(1);
+    let mut emitted_final = false;
+    for (i, sentence) in spoken.into_iter().enumerate() {
         if cancel.is_stale(token.generation) {
             state.reset();
             return Err(Error::Cancelled);
         }
-        let spoken = speak_text_for_tts(&sentence);
-        if spoken.is_empty() {
-            continue;
+        let is_final_sentence = token.is_last && i == last_i;
+        match mode {
+            SynthesisMode::Buffered => {
+                let samples = engine.lock().expect("tts engine").synthesize(
+                    &sentence,
+                    cancel,
+                    token.generation,
+                )?;
+                let is_last = is_final_sentence;
+                emitted_final |= is_last;
+                on_audio(state.emit(samples, token, is_last))?;
+            }
+            SynthesisMode::Streaming => engine.lock().expect("tts engine").synthesize_streaming(
+                &sentence,
+                cancel,
+                token.generation,
+                &mut |samples, sentence_complete| {
+                    if samples.is_empty() && !sentence_complete {
+                        return Ok(());
+                    }
+                    let is_last = is_final_sentence && sentence_complete;
+                    emitted_final |= is_last;
+                    on_audio(state.emit(samples, token, is_last))
+                },
+            )?,
         }
-        let samples =
-            engine
-                .lock()
-                .expect("tts engine")
-                .synthesize(&spoken, cancel, token.generation)?;
-        let is_last = token.is_last && i == last_i;
-        out.push(state.emit(samples, token, is_last));
     }
-    if token.is_last && out.is_empty() {
-        out.push(state.emit(vec![0; 16], token, true));
-    } else if token.is_last {
-        if let Some(last) = out.last_mut() {
-            last.is_last = true;
-        }
+    if token.is_last && !emitted_final {
+        on_audio(state.emit(vec![0; 16], token, true))?;
     }
-    Ok(out)
+    Ok(())
 }
 
 /// In-process Kokoro adapter. Buffers tokens until a sentence boundary.
@@ -237,7 +280,13 @@ impl Tts for KokoroTts {
         token: &TokenChunk,
         cancel: &Cancel,
     ) -> Result<Vec<SynthesizedAudio>> {
-        synthesize_chunk_shared(&self.engine, &mut self.core, token, cancel)
+        synthesize_chunk_shared(
+            &self.engine,
+            &mut self.core,
+            token,
+            cancel,
+            SynthesisMode::Buffered,
+        )
     }
 }
 
@@ -420,49 +469,14 @@ impl Tts for QwenTts {
         cancel: &Cancel,
         on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
     ) -> Result<()> {
-        if cancel.is_stale(token.generation) {
-            self.core.reset();
-            return Err(Error::Cancelled);
-        }
-        if self.core.generation != Some(token.generation) || self.core.turn != Some(token.turn) {
-            self.core.reset();
-            self.core.generation = Some(token.generation);
-            self.core.turn = Some(token.turn);
-        }
-        self.core
-            .buffer
-            .push_str(&self.core.think.push(&token.text, token.is_last));
-        // Qwen owns prosody across punctuation. It receives the whole reply,
-        // not sentence or clause fragments, then streams its vocoder PCM.
-        if !token.is_last {
-            return Ok(());
-        }
-        let spoken = speak_text_for_tts(&self.core.buffer);
-        self.core.buffer.clear();
-        if spoken.is_empty() {
-            on_audio(self.core.emit(vec![0; 16], token, true))?;
-            return Ok(());
-        }
-        let mut emitted = false;
-        self.engine
-            .lock()
-            .expect("tts engine")
-            .synthesize_streaming(
-                &spoken,
-                cancel,
-                token.generation,
-                &mut |samples, is_last| {
-                    if samples.is_empty() && !is_last {
-                        return Ok(());
-                    }
-                    emitted = true;
-                    on_audio(self.core.emit(samples, token, is_last))
-                },
-            )?;
-        if !emitted {
-            on_audio(self.core.emit(vec![0; 16], token, true))?;
-        }
-        Ok(())
+        synthesize_chunk_shared_into(
+            &self.engine,
+            &mut self.core,
+            token,
+            cancel,
+            SynthesisMode::Streaming,
+            on_audio,
+        )
     }
 }
 
@@ -919,6 +933,7 @@ mod tests {
 
     struct ScriptedEngine {
         calls: Arc<Mutex<Vec<String>>>,
+        streaming_calls: Arc<Mutex<usize>>,
         hz: f32,
     }
 
@@ -926,6 +941,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 calls: Arc::new(Mutex::new(Vec::new())),
+                streaming_calls: Arc::new(Mutex::new(0)),
                 hz: 440.0,
             }
         }
@@ -949,6 +965,17 @@ mod tests {
                 std::time::Duration::from_millis(80),
                 0.4,
             ))
+        }
+
+        fn synthesize_streaming(
+            &mut self,
+            sentence: &str,
+            cancel: &Cancel,
+            generation: GenerationId,
+            on_audio: &mut dyn FnMut(Vec<i16>, bool) -> Result<()>,
+        ) -> Result<()> {
+            *self.streaming_calls.lock().expect("streaming calls") += 1;
+            on_audio(self.synthesize(sentence, cancel, generation)?, true)
         }
     }
 
@@ -1059,9 +1086,10 @@ mod tests {
     }
 
     #[test]
-    fn qwen_buffers_full_reply_and_preserves_punctuation_prosody() {
+    fn qwen_emits_completed_sentences_before_the_final_token() {
         let engine = ScriptedEngine::new();
         let log = Arc::clone(&engine.calls);
+        let streaming_calls = Arc::clone(&engine.streaming_calls);
         let mut tts = QwenTts::with_engine(Box::new(engine), TtsModel::Qwen06);
         // The sidecar uses the same local/online provider vocabulary as the LLM.
         assert_eq!(tts.name(), "local");
@@ -1070,17 +1098,20 @@ mod tests {
         let first = tts
             .synthesize_chunk(&token("Hello world. ", 0, false), &Cancel::new())
             .unwrap();
-        assert!(first.is_empty(), "Qwen must not split at a period");
+        assert_eq!(first.len(), 1);
+        assert!(!first[0].is_last);
         let rest = tts
             .synthesize_chunk(&token("More later.", 1, true), &Cancel::new())
             .unwrap();
         assert_eq!(rest.len(), 1);
         assert!(rest[0].is_last);
-        // Think-strip and markdown-strip run before the full Qwen utterance.
+        assert_eq!(first[0].index, 0);
+        assert_eq!(rest[0].index, 1);
         assert_eq!(
             log.lock().expect("calls").as_slice(),
-            ["Hello world. More later."]
+            ["Hello world.", "More later."]
         );
+        assert_eq!(*streaming_calls.lock().expect("streaming calls"), 2);
     }
 
     #[test]
