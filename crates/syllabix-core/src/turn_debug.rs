@@ -137,6 +137,7 @@ struct TurnDump {
     tool_events: Vec<ToolTurnEvent>,
     tts_provider: Option<String>,
     tts_model: Option<String>,
+    tts_backend: Option<String>,
     timings: Option<TurnTimings>,
     timeline: BTreeMap<TimelineAnchor, Instant>,
     written: bool,
@@ -299,7 +300,14 @@ impl TurnDebug {
     /// PCM actually handed to the sink, plus the TTS provider facts for the
     /// sidecar (provider and loaded weight id). Provider facts are recorded
     /// even when WAV capture is off.
-    pub fn note_tts(&self, turn: TurnId, samples: &[i16], provider: &str, model: Option<&str>) {
+    pub fn note_tts(
+        &self,
+        turn: TurnId,
+        samples: &[i16],
+        provider: &str,
+        model: Option<&str>,
+        backend: Option<&str>,
+    ) {
         let mut inner = self.lock();
         let dump = inner.turns.entry(turn.0).or_default();
         if self.collect_audio {
@@ -308,6 +316,7 @@ impl TurnDebug {
         }
         dump.tts_provider = Some(provider.to_string());
         dump.tts_model = model.map(str::to_string);
+        dump.tts_backend = backend.map(str::to_string);
     }
 
     /// Last audio chunk played; write the dump as completed.
@@ -539,7 +548,7 @@ fn render_sidecar(id: u64, outcome: TurnOutcome, dump: &TurnDump) -> String {
     let default_meta = LlmDebugMeta::default();
     let meta = dump.llm_meta.as_ref().unwrap_or(&default_meta);
     format!(
-        "{{\n  \"turn\": {id},\n  \"outcome\": {},\n  \"stt_text\": {},\n  \"stt_language\": {},\n  \"llm_text\": {},\n  \"llm_provider\": {},\n  \"llm_model\": {},\n  \"llm_endpoint\": {},\n  \"llm_request_id\": {},\n  \"tts_provider\": {},\n  \"tts_model\": {},\n  \"tts_speak_text\": {},\n  \"timeline\": {},\n  \"timings\": {{\n    \"stt_ms\": {},\n    \"ttft_ms\": {},\n    \"ttfb_ms\": {},\n    \"total_ms\": {}\n  }},\n  \"capture_samples\": {},\n  \"capture_frames\": {},\n  \"capture_duration_ms\": {},\n  \"clean_samples\": {},\n  \"clean_frames\": {},\n  \"clean_duration_ms\": {},\n  \"utterance_samples\": {},\n  \"utterance_frames\": {},\n  \"utterance_duration_ms\": {},\n  \"tts_samples\": {},\n  \"tts_chunks\": {},\n  \"tts_duration_ms\": {}\n}}\n",
+        "{{\n  \"turn\": {id},\n  \"outcome\": {},\n  \"stt_text\": {},\n  \"stt_language\": {},\n  \"llm_text\": {},\n  \"llm_provider\": {},\n  \"llm_model\": {},\n  \"llm_endpoint\": {},\n  \"llm_request_id\": {},\n  \"tts_provider\": {},\n  \"tts_model\": {},\n  \"tts_backend\": {},\n  \"tts_speak_text\": {},\n  \"timeline\": {},\n  \"timings\": {{\n    \"stt_ms\": {},\n    \"ttft_ms\": {},\n    \"ttfb_ms\": {},\n    \"total_ms\": {}\n  }},\n  \"capture_samples\": {},\n  \"capture_frames\": {},\n  \"capture_duration_ms\": {},\n  \"clean_samples\": {},\n  \"clean_frames\": {},\n  \"clean_duration_ms\": {},\n  \"utterance_samples\": {},\n  \"utterance_frames\": {},\n  \"utterance_duration_ms\": {},\n  \"tts_samples\": {},\n  \"tts_chunks\": {},\n  \"tts_duration_ms\": {}\n}}\n",
         json_string(outcome.as_str()),
         json_string(stt),
         json_string(stt_language),
@@ -550,6 +559,7 @@ fn render_sidecar(id: u64, outcome: TurnOutcome, dump: &TurnDump) -> String {
         json_string(&meta.request_id),
         json_string(dump.tts_provider.as_deref().unwrap_or("")),
         json_string(dump.tts_model.as_deref().unwrap_or("")),
+        json_string(dump.tts_backend.as_deref().unwrap_or("")),
         json_string(&speak),
         render_timeline(dump),
         duration_ms(timings.stt),
@@ -688,7 +698,7 @@ mod tests {
         debug.note_utterance(&utterance);
         debug.note_stt(turn, "hello", "en");
         debug.note_llm(turn, "<think>plan</think> hi **there**".into());
-        debug.note_tts(turn, &[9, 8, 7], "kokoro", Some("kokoro"));
+        debug.note_tts(turn, &[9, 8, 7], "kokoro", Some("kokoro"), Some("onnx"));
         debug
             .complete(
                 turn,
@@ -740,13 +750,20 @@ mod tests {
         let dir = unique_dir();
         let debug = TurnDebug::open(&dir).unwrap();
         debug.start_turn(TurnId(0));
-        debug.note_tts(TurnId(0), &[1, 2, 3], "local", Some("qwen3-tts-1.7b-base"));
+        debug.note_tts(
+            TurnId(0),
+            &[1, 2, 3],
+            "local",
+            Some("qwen3-tts-1.7b-base"),
+            Some("metal"),
+        );
         debug.interrupt(TurnId(0)).unwrap();
         let json = fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
         assert!(json.contains("cancelled"));
         // TTS and LLM provider metadata share one sidecar. The provider field
         // describes whether inference ran locally or online.
         assert!(json.contains("\"tts_provider\": \"local\""), "{json}");
+        assert!(json.contains("\"tts_backend\": \"metal\""), "{json}");
         assert!(
             json.contains("\"tts_model\": \"qwen3-tts-1.7b-base\""),
             "{json}"
@@ -869,7 +886,7 @@ mod tests {
             turn,
             frames: vec![frame],
         });
-        debug.note_tts(turn, &[9, 8, 7], "kokoro", Some("kokoro"));
+        debug.note_tts(turn, &[9, 8, 7], "kokoro", Some("kokoro"), Some("onnx"));
         debug.note_anchor(turn, TimelineAnchor::SpeechStart, Instant::now());
         debug.note_last_anchor(turn, TimelineAnchor::PlaybackDone, Instant::now());
         debug.finish_open().unwrap();

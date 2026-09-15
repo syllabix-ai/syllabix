@@ -68,6 +68,8 @@ struct Record {
     fingerprint: Fingerprint,
     component: String,
     model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backend: Option<String>,
     case: String,
     elapsed_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -349,6 +351,7 @@ fn benchmark_stt(
             fingerprint: fingerprint.clone(),
             component: "stt".into(),
             model: config.stt_model.as_str().into(),
+            backend: None,
             case: scenario.case.clone(),
             elapsed_ms,
             // whisper.cpp returns a completed transcript, not partial text.
@@ -441,6 +444,7 @@ fn benchmark_llm(
             fingerprint: fingerprint.clone(),
             component: "llm".into(),
             model: config.llm_model.clone(),
+            backend: None,
             case: scenario.case.clone(),
             elapsed_ms,
             first_output_ms,
@@ -499,7 +503,7 @@ fn llm_response_passes(scenario: &Scenario, response: &str) -> bool {
 }
 
 fn benchmark_tts(
-    tts: &mut impl Tts,
+    tts: &mut syllabix_core::LiveTts,
     config: &AgentConfig,
     cancel: &Cancel,
     fingerprint: &Fingerprint,
@@ -541,6 +545,7 @@ fn benchmark_tts(
             fingerprint: fingerprint.clone(),
             component: "tts".into(),
             model: config.tts_model.as_str().into(),
+            backend: tts.backend_id().map(str::to_string),
             case: scenario.case.clone(),
             elapsed_ms,
             first_output_ms,
@@ -817,6 +822,7 @@ mod tests {
             fingerprint: fingerprint(),
             component: "tts".into(),
             model: "kokoro".into(),
+            backend: Some("onnx".into()),
             case: "test".into(),
             elapsed_ms: 1,
             first_output_ms: Some(0),
@@ -845,7 +851,9 @@ mod tests {
             std::env::temp_dir().join(format!("syllabix-bench-{}.jsonl", std::process::id()));
         let _ = fs::remove_file(&path);
         write_jsonl(&path, &[sample_record()]).expect("write");
-        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 1);
+        let jsonl = fs::read_to_string(&path).unwrap();
+        assert_eq!(jsonl.lines().count(), 1);
+        assert!(jsonl.contains("\"backend\":\"onnx\""), "{jsonl}");
         assert!(write_jsonl(&path, &[]).is_err());
         fs::remove_file(path).unwrap();
     }

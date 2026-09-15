@@ -120,12 +120,19 @@ until that row is filled.
 
 ## 8. TTS provider compute placement (row 31, profile A)
 
-`provider: qwen` runs its backbone plus mtmd audio graphs on **CPU on every
-OS**, while STT/LLM keep their shipped placement (Metal on Darwin). This is
-not a fallback: the audio gen_code graph asks for a ~870 MiB Metal compute
-buffer that `ggml_backend_sched` fails to place while the STT and LLM
-contexts are resident (the normal Syllabix configuration), and llama-bench
-shows the backbone does not want the GPU anyway.
+Qwen TTS uses adaptive placement on Apple Silicon. After STT and LLM are
+resident, `compute: auto` attempts the full Metal voice-anchor warm-up. If
+the audio graph cannot reserve or execute its buffers, the Metal context is
+destroyed and Qwen is reloaded on CPU. Other operating systems select CPU;
+`compute: cpu` and `compute: metal` make either choice explicit. Pocket TTS
+remains the zero-config default, so its startup path does not run this probe.
+
+The fallback matters because the audio gen_code graph asks for a ~870 MiB
+Metal compute buffer that `ggml_backend_sched` could not place with the
+reference STT and LLM contexts resident. Allocation errors are propagated
+through mtmd rather than discovered on the first spoken reply. Diagnostics
+record the resulting backend as `tts_backend`; component benchmark JSONL
+records the same choice as `backend`.
 
 Protocol (llama-bench at the vendored llama.cpp commit `ad1de39`, 4 threads,
 pp512 / tg128, 2 repetitions, MacBook Air Apple Silicon):
@@ -143,11 +150,37 @@ llama-bench -m Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf -p 512 -n 128 -t 4 -r 2 -ngl
 | Qwen3-TTS 1.7B Q4_K_M | Metal (solo reference) | 220.2 ± 4.0 | 74.7 ± 0.3 |
 
 Read: the LLM slot is ~31% faster at generation on Metal and stays there;
-the TTS backbone is ~22% *faster* on CPU than on Metal, so the CPU pin
-costs nothing and buys coexistence. Revisit Metal for the audio graph only
-after upstream splits it smaller.
+this isolated Qwen TTS *backbone* measurement is ~22% faster on CPU than on
+Metal. The complete audio graph is a different axis. On the same M4 16 GiB
+host, a release `bench-tts-worker` with explicit `pipeline.tts.compute`
+(Qwen alone in the process — no resident STT/LLM) recorded:
 
-Sentence-level TTFB/RTF for the qwen provider land via the opt-in capture:
+| Model | `compute` | mean RTF | mean elapsed | mean audio |
+|---|---|---:|---:|---:|
+| `qwen3-0.6` | `cpu` | 1.331 | 6627 ms | 5360 ms |
+| `qwen3-0.6` | `metal` | **0.662** | 4157 ms | 6400 ms |
+| `qwen3-1.7` | `cpu` | 1.418 | 8019 ms | 5920 ms |
+| `qwen3-1.7` | `metal` | **0.766** | 4465 ms | 5920 ms |
+
+`backend` in the JSONL matched the requested placement. Metal mean RTF is
+about 2× the CPU figure and below 1, so isolated synthesis is faster than
+the audio it produces. That is compatible with a live turn when the LLM is
+`provider: online` (no local GGUF occupying Metal) or when local STT+LLM
+leave enough unified memory for the ~870 MiB audio graph; `compute: auto`
+still falls back to CPU when that graph cannot reserve. These rows are not
+a resident-stack measurement.
+
+`scripts/contribute-performance.sh` needs no change for this. It already
+runs isolated TTS workers through `syllabix bench`. On this branch those
+workers inherit `compute: auto`, which selects Metal on Apple Silicon when
+the solo warm-up succeeds, and records `backend` on each JSONL line.
+Forced CPU vs Metal comparison uses yaml `compute: cpu` or `compute: metal`
+and `bench-tts-worker --model qwen3-0.6` (same for `qwen3-1.7`); the
+contribute script does not take a compute flag.
+
+Sentence-level TTFB/RTF for the qwen provider also still land via the
+opt-in native capture (CPU-pinned unless the test is updated to pass
+`TtsCompute`):
 
 ```bash
 SYLLABIX_CACHE_DIR=<cache> SYLLABIX_NATIVE_LATENCY=1 \

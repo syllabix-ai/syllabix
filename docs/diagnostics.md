@@ -30,6 +30,10 @@ reached render as `null` (a barge-in-interrupted turn, for example, has no
 `llm_last_token_ms`; a turn cut short by quitting may have no
 `playback_done_ms` because the speaker never drained).
 
+Provider metadata includes `tts_provider`, `tts_model`, and `tts_backend`.
+For Qwen3-TTS, `tts_backend` is the placement confirmed by the startup
+warm-up (`metal` or `cpu`), including an automatic CPU fallback.
+
 | Anchor | Captured at |
 |---|---|
 | `speech_start` | First Silero-positive frame opens the turn (epoch, renders as 0) |

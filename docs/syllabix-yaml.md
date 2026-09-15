@@ -240,6 +240,30 @@ Measured latency and memory for each TTS id: [workload benchmark](workload_bench
 
 Optional. Qwen engines use it as the voice language (`en`, `zh`, `de`, `it`, `pt`, `es`, `fr`, `ja`, `ko`, `ru`). Kokoro ignores it (fixed ONNX voice).
 
+### `compute`
+
+Optional and valid only for Qwen. Values: `auto` (default), `cpu`, or `metal`.
+On Apple Silicon, `auto` runs after STT and LLM are resident: it attempts a
+complete Metal voice-anchor/audio warm-up, destroys that context if reservation
+or inference fails, then reloads Qwen on CPU. Other platforms select CPU.
+Forced `metal` fails clearly outside macOS. Pocket TTS remains the default and
+never pays this probe cost.
+
+```yaml
+pipeline:
+  tts:
+    provider: local
+    model: qwen3-0.6
+    language: en
+    compute: auto
+```
+
+The selected `metal` or `cpu` backend is recorded as `tts_backend` in turn
+diagnostics and as `backend` in component benchmark JSONL. Qwen TTS stays
+`provider: local`; it can pair with `pipeline.llm.provider: online` (audio
+never leaves the machine). That combination does not load a local LLM GGUF,
+so the Metal TTS probe competes only with resident STT.
+
 ## Skills — local instruction packages
 
 Optional top-level block. Valid only when `pipeline.llm.developer_harness` is `true`. `init` omits it. The product-shipped root beside the executable supplies default skills; repository and global roots are extra sources of local instructions.

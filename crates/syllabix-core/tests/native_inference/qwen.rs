@@ -26,34 +26,36 @@ use crate::{
 fn qwen(model: TtsModel) -> QwenTts {
     static CELL_06: std::sync::OnceLock<QwenTts> = std::sync::OnceLock::new();
     static CELL_17: std::sync::OnceLock<QwenTts> = std::sync::OnceLock::new();
-    let load = || {
-        let cache = ModelCache::v0();
-        let mut progress = StderrProgress::new();
-        let cancel = Cancel::new();
-        let backbone = cache
-            .manifest()
-            .asset(model.asset_id())
-            .expect("manifest lists the qwen3-tts backbone")
-            .clone();
-        let mmproj = cache
-            .manifest()
-            .asset(model.mmproj_asset_id().expect("qwen models have an mmproj"))
-            .expect("manifest lists the matching mmproj")
-            .clone();
-        let model_path = cache
-            .resolve(&backbone, &HttpFetcher, &mut progress, &cancel)
-            .expect("qwen3-tts backbone in cache");
-        let mmproj_path = cache
-            .resolve(&mmproj, &HttpFetcher, &mut progress, &cancel)
-            .expect("qwen3-tts mmproj in cache");
-        QwenTts::from_paths_with_seed(model_path, mmproj_path, "en", model, 42)
-            .expect("load Qwen3-TTS once")
-    };
+    let load = || load_qwen(model, syllabix_core::TtsCompute::Cpu);
     match model {
         TtsModel::Qwen06 => CELL_06.get_or_init(load),
         _ => CELL_17.get_or_init(load),
     }
     .clone()
+}
+
+fn load_qwen(model: TtsModel, compute: syllabix_core::TtsCompute) -> QwenTts {
+    let cache = ModelCache::v0();
+    let mut progress = StderrProgress::new();
+    let cancel = Cancel::new();
+    let backbone = cache
+        .manifest()
+        .asset(model.asset_id())
+        .expect("manifest lists the qwen3-tts backbone")
+        .clone();
+    let mmproj = cache
+        .manifest()
+        .asset(model.mmproj_asset_id().expect("qwen models have an mmproj"))
+        .expect("manifest lists the matching mmproj")
+        .clone();
+    let model_path = cache
+        .resolve(&backbone, &HttpFetcher, &mut progress, &cancel)
+        .expect("qwen3-tts backbone in cache");
+    let mmproj_path = cache
+        .resolve(&mmproj, &HttpFetcher, &mut progress, &cancel)
+        .expect("qwen3-tts mmproj in cache");
+    QwenTts::from_paths_with_seed_and_compute(model_path, mmproj_path, "en", model, 42, compute)
+        .expect("load Qwen3-TTS")
 }
 
 /// Every backbone in the yaml menu must pass the same gates.
@@ -76,6 +78,51 @@ fn token(text: &str, index: u32, is_last: bool) -> TokenChunk {
 
 fn has_energy(samples: &[i16]) -> bool {
     samples.iter().any(|s| s.abs() > 32)
+}
+
+/// Manual Apple Silicon smoke for the real placement decision. Loading the
+/// launch STT/LLM first reproduces the unified-memory pressure of `run`.
+#[test]
+#[ignore = "loads the launch STT/LLM plus an opt-in Qwen model"]
+fn qwen_auto_selects_a_runnable_backend_with_resident_stack() {
+    skip_unless_any_model!("qwen3-0.6", "qwen3-1.7");
+    let mut stack = native();
+    eprintln!("qwen auto smoke: loading resident STT");
+    let _ = stack.stt();
+    eprintln!("qwen auto smoke: loading resident LLM");
+    let _ = stack.llm();
+    eprintln!("qwen auto smoke: resident stack ready");
+    drop(stack);
+
+    for model in qwen_backbones() {
+        eprintln!("qwen auto smoke: probing {}", model.as_str());
+        let tts = load_qwen(model, syllabix_core::TtsCompute::Auto);
+        assert!(tts.voice_anchor_engaged());
+        assert!(matches!(tts.backend_id(), Some("metal" | "cpu")));
+        eprintln!(
+            "qwen auto [{}]: {}",
+            model.as_str(),
+            tts.backend_id().unwrap()
+        );
+    }
+}
+
+/// Manual placement smoke without the launch stack. Useful on constrained CI
+/// hosts where opening the resident Metal STT context is unavailable.
+#[test]
+#[ignore = "loads an opt-in Qwen model"]
+fn qwen_auto_selects_a_runnable_backend() {
+    skip_unless_any_model!("qwen3-0.6", "qwen3-1.7");
+    for model in qwen_backbones() {
+        let tts = load_qwen(model, syllabix_core::TtsCompute::Auto);
+        assert!(tts.voice_anchor_engaged());
+        assert!(matches!(tts.backend_id(), Some("metal" | "cpu")));
+        eprintln!(
+            "qwen auto [{}]: {}",
+            model.as_str(),
+            tts.backend_id().unwrap()
+        );
+    }
 }
 
 fn pcm_to_utterance(samples: &[i16]) -> Utterance {
@@ -248,8 +295,15 @@ fn qwen_voice_is_deterministic_under_a_pinned_seed() {
             let mmproj_path = cache
                 .resolve(&mmproj, &HttpFetcher, &mut progress, &cancel)
                 .expect("mmproj in cache");
-            QwenTts::from_paths_with_seed(model_path, mmproj_path, "en", model, 42)
-                .expect("load independent engine")
+            QwenTts::from_paths_with_seed_and_compute(
+                model_path,
+                mmproj_path,
+                "en",
+                model,
+                42,
+                syllabix_core::TtsCompute::Cpu,
+            )
+            .expect("load independent engine")
         };
         // Two fully separate contexts (the `qwen()` helper shares one engine).
         let mut first = load();

@@ -10,6 +10,8 @@ pub struct LiveLlm;
 pub struct LiveTts;
 pub struct LiveStt;
 
+impl LiveTts { pub fn backend_id(&self) -> Option<&str> { None } }
+
 fn unavailable(provider: &'static str) -> Error { Error::Provider { provider, message: "inference is not loaded in coverage tests".into() } }
 
 impl Llm for LiveLlm {

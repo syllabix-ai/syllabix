@@ -24,6 +24,16 @@ pub fn is_blank_stt(text: &str) -> bool {
     text.trim().is_empty()
 }
 
+fn tts_backend_id<T: 'static>(tts: &T) -> Option<&str> {
+    let provider = tts as &dyn std::any::Any;
+    if let Some(qwen) = provider.downcast_ref::<crate::tts::QwenTts>() {
+        return qwen.backend_id();
+    }
+    provider
+        .downcast_ref::<crate::real::LiveTts>()
+        .and_then(crate::real::LiveTts::backend_id)
+}
+
 /// How the loop should finish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopMode {
@@ -431,6 +441,7 @@ struct Shared {
     /// Sidecar facts captured from the TTS stage before the workers start.
     tts_provider: &'static str,
     tts_model: Option<String>,
+    tts_backend: Option<String>,
 }
 
 impl Shared {
@@ -440,6 +451,7 @@ impl Shared {
         controls: RuntimeControls,
         tts_provider: &'static str,
         tts_model: Option<String>,
+        tts_backend: Option<String>,
     ) -> Arc<Self> {
         Arc::new(Self {
             turns: Mutex::new(BTreeMap::new()),
@@ -458,6 +470,7 @@ impl Shared {
             interrupted: Mutex::new(HashSet::new()),
             tts_provider,
             tts_model,
+            tts_backend,
         })
     }
 
@@ -649,6 +662,7 @@ impl Shared {
                 &chunk.samples,
                 self.tts_provider,
                 self.tts_model.as_deref(),
+                self.tts_backend.as_deref(),
             );
         }
         let timings = {
@@ -845,6 +859,7 @@ where
     } = stages;
     let tts_provider = tts.name();
     let tts_model = tts.model_id().map(str::to_string);
+    let tts_backend = tts_backend_id(&tts).map(str::to_string);
     let caps: QueueCaps = config.defaults.queues;
     let (frame_tx, frame_rx, frame_stats) = bounded("frames", caps.frames);
     // Turn control stays blocking and ordered so VAD remains the single
@@ -864,6 +879,7 @@ where
         config.controls.clone(),
         tts_provider,
         tts_model,
+        tts_backend,
     );
     config.controls.arm_idle();
     let mut joins: Vec<JoinHandle<()>> = Vec::new();
@@ -1808,7 +1824,7 @@ mod tests {
 
     #[test]
     fn thinking_mutes_vad_even_with_barge_in() {
-        let shared = Shared::new(None, None, RuntimeControls::new(true), "local", None);
+        let shared = Shared::new(None, None, RuntimeControls::new(true), "local", None, None);
         shared.mark_assistant(TurnId(0));
         assert!(shared.thinking.load(Ordering::SeqCst));
         assert!(shared.pause_vad.load(Ordering::SeqCst));
