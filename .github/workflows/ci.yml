@@ -56,6 +56,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.91.0
         with:
           components: llvm-tools-preview
+      # dtolnay/rust-toolchain only prepends ~/.cargo/bin when it installs
+      # rustup. On a self-hosted Mac rustup already exists, so Homebrew
+      # rustc/cargo stay first on PATH and cargo-llvm-cov cannot find the
+      # rustup llvm-tools-preview this step just confirmed.
+      - name: Prefer rustup over Homebrew rustc
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - name: Install ALSA headers, CMake, and bubblewrap
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake bubblewrap
@@ -112,6 +118,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.91.0
         with:
           components: rustfmt
+      - name: Prefer rustup over Homebrew rustc
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --all -- --check
 
   clippy:
@@ -129,6 +137,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.91.0
         with:
           components: clippy
+      - name: Prefer rustup over Homebrew rustc
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - name: Install ALSA headers, CMake, and bubblewrap
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake bubblewrap
