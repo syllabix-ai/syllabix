@@ -88,6 +88,7 @@ Per-turn timelines and WAVs are yaml-only (`diagnostics:`). See [docs/diagnostic
 | --- | --- |
 | [Docs index](docs/README.md) | User, config, and contributor map |
 | [Install](docs/install.md) | Checksums, cache, Gatekeeper, SmartScreen, build |
+| [Hardware](docs/hardware.md) | Disk, RAM, CPU vs Metal |
 | [CLI](docs/cli.md) | `run`, `--barge-in`, `init`, `--help` |
 | [Engines](docs/engines.md) | VAD / STT / LLM / TTS ids and machine needs |
 | [Architecture](docs/architecture.md) | Cascade, AEC, barge-in, what leaves the machine |

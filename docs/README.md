@@ -5,6 +5,7 @@
 | Page | For |
 | --- | --- |
 | [Install](install.md) | Download, checksums, cache, Gatekeeper / SmartScreen, compile |
+| [Hardware](hardware.md) | Disk, RAM, CPU vs Metal |
 | [CLI](cli.md) | `run`, `--barge-in`, `init`, `--help` |
 | [Engines](engines.md) | Shipped model ids, fetch-on-use, machine needs |
 | [Architecture](architecture.md) | Cascade, AEC, barge-in, network boundary |
