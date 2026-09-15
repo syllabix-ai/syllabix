@@ -266,7 +266,7 @@ Anchors a cancelled turn never reached render as `null`.
 | `llm_ttft_ms` | llm_first_token − llm_start | Time-to-first-token |
 | `llm_stream_ms` | llm_last_token − llm_first_token | Generation duration |
 | `tts_lead_ms` | tts_first_pcm − llm_first_token | First token → first PCM (sentence buffering visible) |
-| `llm_end_to_first_pcm_ms` | tts_first_pcm − llm_last_token | Signed: negative ⇒ synthesis overlapped generation (Kokoro sentence streaming); positive ⇒ TTS waited for the whole cleaned reply (Qwen whole-utterance buffering) |
+| `llm_end_to_first_pcm_ms` | tts_first_pcm − llm_last_token | Signed: negative ⇒ synthesis of a completed sentence overlapped generation; positive ⇒ TTS began after the LLM reply completed |
 | `tts_synthesis_ms` | tts_last_pcm − tts_first_pcm | Synthesis throughput |
 | `playback_handoff_ms` | playback_first − tts_first_pcm | PCM ready → device audible |
 | **`audible_latency_ms`** | **playback_first − speech_end** | **Silence-end → first audio out of the speaker — the G4 budget metric** |
