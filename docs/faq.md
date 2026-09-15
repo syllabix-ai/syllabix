@@ -6,6 +6,10 @@ Symptom fixes (won't verify, Gatekeeper, no mic, self-interrupt): [troubleshooti
 
 Default `run` fetches Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB), then checks SHA-256. How long that takes depends on network bandwidth. Later runs reuse the cache offline. `--help` and `init` download nothing. Cold-start wall time (binary on disk → first spoken reply) is not a published number yet — do not plan on three minutes.
 
+## Memory is tight. Can I use a smaller model?
+
+Yes. `syllabix init`, then either set `pipeline.llm.model` to `lfm2.5-350m` or `lfm2.5-230m`, or set `pipeline.llm.provider: online` with `base_url` and `SYLLABIX_LLM_API_KEY` so the LLM runs in the cloud (transcript text only; mic audio stays local). Catalogue and keys: [engines](engines.md), [syllabix.yaml](syllabix-yaml.md).
+
 ## Why is barge-in off by default?
 
 The default finishes the agent's sentence so open-speaker echo cannot cut it off mid-word. Pass `run --barge-in` when you want talk-over, or enable it during the conversation via the terminal UI (`b`). AEC is still on in both modes.

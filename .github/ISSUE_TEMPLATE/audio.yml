@@ -1,0 +1,50 @@
+name: Audio / conversation
+description: Mic, speakers, echo, barge-in, STT, or spoken reply
+title: "audio: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Enable diagnostics if you can (`diagnostics: {timestamps: true, audio: true}` in `syllabix.yaml`) and attach `turn.json` plus `utterance.wav` / `clean.wav` / `tts.wav` when they are not private.
+        See [docs/diagnostics.md](https://github.com/syllabix-ai/syllabix/blob/main/docs/diagnostics.md).
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS Apple Silicon
+        - macOS Intel
+        - Linux x64
+        - Windows x64
+        - other
+    validations:
+      required: true
+  - type: input
+    id: devices
+    attributes:
+      label: Mic and speaker names from the startup line
+      placeholder: Built-in Microphone / MacBook Air Speakers
+    validations:
+      required: true
+  - type: dropdown
+    id: barge
+    attributes:
+      label: Barge-in
+      options:
+        - off (default `run`)
+        - on (`run --barge-in` or `b` in the TUI)
+    validations:
+      required: true
+  - type: textarea
+    id: yaml
+    attributes:
+      label: syllabix.yaml (redact nothing that is a key — keys must not be in yaml)
+      render: yaml
+      placeholder: Leave empty if you used zero-config run
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What you heard vs what you expected
+    validations:
+      required: true

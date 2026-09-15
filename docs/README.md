@@ -15,6 +15,7 @@
 
 | Page | For |
 | --- | --- |
+| [Configuration](configuration.md) | Index of yaml-related pages |
 | [syllabix.yaml](syllabix-yaml.md) | Optional project file — keys and safe edits |
 | [Diagnostics](diagnostics.md) | Turn timelines and WAVs |
 
@@ -27,4 +28,4 @@
 | [Contributing](contributing.md) | Build, test, packaging, CI |
 | [Reference profiles](reference-profiles.md) | How conversation quality is measured |
 | [Workload benchmark](workload_benchmark/workload_benchmark.md) | Per-model STT / LLM / TTS timings |
-| [Proposals](proposals/) | Design that is not yet product behavior |
+| [Security](../SECURITY.md) | Private vulnerability reports |

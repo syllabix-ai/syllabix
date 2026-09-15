@@ -1,0 +1,30 @@
+name: Config / yaml
+description: syllabix.yaml keys, models, online LLM, diagnostics
+title: "yaml: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: Key guide — [docs/syllabix-yaml.md](https://github.com/syllabix-ai/syllabix/blob/main/docs/syllabix-yaml.md). Catalogue — [docs/engines.md](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md).
+  - type: textarea
+    id: yaml
+    attributes:
+      label: syllabix.yaml
+      description: Never paste API keys. `SYLLABIX_LLM_API_KEY` is environment-only.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      placeholder: Unknown key, unexpected fetch, online LLM fallback, diagnostics path…
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and error
+      render: shell
+    validations:
+      required: true
