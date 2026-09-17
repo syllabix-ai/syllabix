@@ -91,6 +91,7 @@ Per-turn timelines and WAVs are yaml-only (`diagnostics:`). See [docs/diagnostic
 | [CLI](docs/cli.md) | `run`, `--barge-in`, `init`, `--help` |
 | [Engines](docs/engines.md) | VAD / STT / LLM / TTS ids and machine needs |
 | [Architecture](docs/architecture.md) | Cascade, AEC, barge-in, what leaves the machine |
+| [Compare](docs/compare.md) | vs HF S2S, Pipecat/LiveKit, Ollama |
 | [Configuration](docs/configuration.md) | Index of yaml, engines, diagnostics |
 | [syllabix.yaml](docs/syllabix-yaml.md) | Optional project file — keys and safe edits |
 | [Troubleshooting](docs/troubleshooting.md) | Mic, echo, keys, first-run fetch |
