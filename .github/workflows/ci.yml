@@ -102,7 +102,7 @@ jobs:
         # Best-effort evidence: the >=85% gate is enforced by the run step
         # above, so a stalled artifact upload must not fail a green run.
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-cobertura
           path: coverage.xml
