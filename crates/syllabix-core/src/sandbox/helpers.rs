@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::{SandboxError, SandboxRequest};
+use super::super::{SandboxError, SandboxRequest};
 use crate::policy::FilesystemMode;
 
 impl SandboxError {

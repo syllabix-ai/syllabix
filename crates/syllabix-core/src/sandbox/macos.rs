@@ -5,10 +5,11 @@ use std::process::Command;
 
 use crate::policy::{Enforcement, FilesystemMode, NetworkMode};
 
-use super::{
-    outside_probe_path, shell_quote_single, validate_request, SandboxError, SandboxProvider,
-    SandboxRequest,
-};
+#[path = "helpers.rs"]
+mod helpers;
+
+use super::{SandboxError, SandboxProvider, SandboxRequest};
+use helpers::{outside_probe_path, shell_quote_single, validate_request};
 
 /// macOS Seatbelt provider. `sandbox-exec` is deprecated by Apple, so every
 /// session must probe the runner before claiming enforcement.
