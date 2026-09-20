@@ -34,6 +34,11 @@ Co-authored-by: {model}-{harness} <{model}-{harness}@syllabix.local>
   account, use its `noreply` email instead.
 
 ### PRs
+For repository changes, agents must work in a dedicated Git worktree and raise
+a PR for human review. Agents must never merge a PR, even when checks pass or
+the PR has been approved. A request to create, fix, verify, or push a PR does
+not authorize merging it; only the human operator performs merges.
+
 Follow `.github/pull_request_template.md` exactly: same headings, no added
 or removed sections. Check the `cargo fmt` / `cargo clippy` boxes (checked
 even when N/A — the template check requires it). Fill `## AI attribution`
