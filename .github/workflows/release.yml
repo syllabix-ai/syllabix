@@ -1,13 +1,14 @@
 name: Release
 
-# Tag-only. PR CI does not package dist binaries (see ci.yml).
+# Tags publish a release; manual runs package artifacts without publishing.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -70,7 +71,10 @@ jobs:
   publish:
     name: GitHub Release
     needs: package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v6
