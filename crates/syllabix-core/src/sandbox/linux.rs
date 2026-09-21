@@ -12,10 +12,11 @@ use std::os::unix::process::CommandExt;
 
 use crate::policy::{Enforcement, FilesystemMode, NetworkMode};
 
-use super::{
-    outside_probe_path, shell_quote_single, validate_request, SandboxError, SandboxProvider,
-    SandboxRequest,
-};
+#[path = "helpers.rs"]
+mod helpers;
+
+use super::{SandboxError, SandboxProvider, SandboxRequest};
+use helpers::{outside_probe_path, shell_quote_single, validate_request};
 
 /// Which Linux backend was selected for one request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

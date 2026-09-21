@@ -15,8 +15,6 @@ use std::process::Command;
 
 use crate::policy::{Enforcement, FilesystemMode, NetworkMode};
 
-#[cfg(not(coverage))]
-mod helpers;
 #[cfg(all(target_os = "linux", not(coverage)))]
 mod linux;
 #[cfg(all(target_os = "macos", not(coverage)))]
@@ -140,13 +138,15 @@ pub use linux::{
     BubblewrapSandboxProvider, LandlockSandboxProvider, LinuxSandboxProvider, LinuxSandboxRunner,
 };
 
-#[cfg(not(coverage))]
-pub(crate) use helpers::{outside_probe_path, shell_quote_single, validate_request};
-
 #[cfg(test)]
 mod tests {
     #[cfg(coverage)]
     use super::*;
+
+    #[cfg(all(target_os = "linux", not(coverage)))]
+    use super::{linux, FilesystemMode, LinuxSandboxRunner, NetworkMode, SandboxRequest};
+    #[cfg(all(target_os = "linux", not(coverage)))]
+    use std::path::Path;
 
     #[cfg(coverage)]
     fn request(mode: FilesystemMode) -> SandboxRequest {
