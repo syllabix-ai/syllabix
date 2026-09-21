@@ -3,7 +3,12 @@
 // whisper.cpp, llama.cpp) must be static or listed here. ONNX Runtime
 // requires the declared C++ standard library.
 
-#[cfg(target_os = "linux")]
+// These assertions inspect the production binary. The unit coverage build
+// replaces native providers with coverage fakes, so its instrumented binary
+// is not expected to contain ggml; the weekly release matrix checks linkage
+// against the real binary.
+
+#[cfg(all(target_os = "linux", not(coverage)))]
 mod linux {
     use assert_cmd::cargo::cargo_bin;
     use std::process::Command;
