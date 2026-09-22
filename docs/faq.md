@@ -4,7 +4,7 @@ Symptom fixes (won't verify, Gatekeeper, no mic, self-interrupt): [troubleshooti
 
 ## Why is the first `run` so large / slow?
 
-Default `run` fetches Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB), then checks SHA-256. How long that takes depends on network bandwidth. Later runs reuse the cache offline. `--help` and `init` download nothing. Cold-start wall time (binary on disk → first spoken reply) is not a published number yet — do not plan on three minutes.
+Default `run` fetches Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB), then checks SHA-256. How long that takes depends on network bandwidth. Later runs reuse the cache offline. `--help` and `init` download nothing.
 
 ## Memory is tight. Can I use a smaller model?
 
