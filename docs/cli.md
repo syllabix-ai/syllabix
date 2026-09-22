@@ -1,6 +1,6 @@
 # CLI
 
-The product surface is `run` and `init`.
+Syllabix has two user commands: `run` and `init`.
 
 ```text
 syllabix --help

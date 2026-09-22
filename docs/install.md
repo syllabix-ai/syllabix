@@ -1,7 +1,5 @@
 # Install
 
-Download a release binary first. Compile from source second.
-
 ## Download
 
 ```bash
@@ -30,7 +28,7 @@ certutil -hashfile syllabix.exe SHA256    # compare the hash to the line for syl
 | macOS Intel | `syllabix-Darwin-x86_64` |
 | Windows x64 | `syllabix-Windows-x86_64.exe` |
 
-Each release also attaches `SHA256SUMS`. Verify before you run.
+Verify the checksum before running.
 
 ## First run
 

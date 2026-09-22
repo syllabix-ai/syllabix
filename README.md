@@ -3,18 +3,13 @@
 Local voice agent. One native binary. Apache-2.0.
 
 ```text
-mic → Silero VAD → STT → LLM → TTS → speakers
+mic → VAD → STT → LLM → TTS → speakers
               ↑______________ barge-in (interrupt + flush)
 ```
 
-Download `syllabix`, run it, talk. No Python, pip, or API key on the default path. Building from source is the second path. Audio stays on the machine unless you opt into an online LLM (transcript text only).
+Download `syllabix`, run it, talk. No Python, pip, or API key on the default path. Audio stays on the machine unless you opt into an online LLM (transcript text only).
 
-| | Default |
-| --- | --- |
-| **What** | Local mic → VAD → STT → LLM → TTS → speakers, with barge-in |
-| **Install** | One native binary (macOS, Linux, Windows). No Python. |
-| **Default models** | Whisper `small` + LFM2.5-2.6B + Pocket TTS (~2.2 GB first fetch) |
-| **License** | Apache-2.0 |
+Default models: Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB on first run).
 
 ![`syllabix run` terminal UI (illustration)](docs/assets/tui-run.png)
 
@@ -48,8 +43,6 @@ certutil -hashfile syllabix.exe SHA256    # compare against the SHA256SUMS line
 
 First `run` fetches Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB) into `~/.cache/syllabix/models/v1` (`%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows; override with `$SYLLABIX_CACHE_DIR`) and verifies SHA-256. Later runs reuse that cache offline. `--help` and `init` do not need the cache.
 
-The first-run download is large. Time-to-first-spoken-reply on a typical connection has not been published yet; do not plan on three minutes for a cold cache.
-
 macOS Gatekeeper and Windows SmartScreen: [docs/install.md](docs/install.md).
 
 ## Compile
@@ -78,9 +71,9 @@ Commands: [docs/cli.md](docs/cli.md).
 
 ## Optional config
 
-[`syllabix init`](docs/syllabix-yaml.md) writes `syllabix.yaml` if you want a different Whisper size or language, English-only Moonshine streaming STT, local LLM id, spoken `system_prompt`, Kokoro or Qwen TTS (default remains Pocket TTS), or a BYO-key online LLM (transcript text only; audio stays on the machine). A minimal example is [`examples/demo-agent.yaml`](examples/demo-agent.yaml). Model catalogue: [docs/engines.md](docs/engines.md). Full key guide: [docs/syllabix-yaml.md](docs/syllabix-yaml.md).
+`syllabix run` needs no configuration file. Run [`syllabix init`](docs/syllabix-yaml.md) when you want to change the model, language, voice, system prompt, or use a BYO-key online LLM. Online LLMs receive transcript text only; audio stays on the machine.
 
-Per-turn timelines and WAVs are yaml-only (`diagnostics:`). See [docs/diagnostics.md](docs/diagnostics.md).
+Start with [`examples/demo-agent.yaml`](examples/demo-agent.yaml). See the [model catalogue](docs/engines.md), [configuration guide](docs/syllabix-yaml.md), and [diagnostics](docs/diagnostics.md) for per-turn timelines and WAVs.
 
 ## Docs
 
