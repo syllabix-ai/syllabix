@@ -43,6 +43,49 @@ fn run_with(
     .expect("fake loop")
 }
 
+struct CancelGatedCapture {
+    first_turn: std::vec::IntoIter<syllabix_core::AudioFrame>,
+    second_turn: std::vec::IntoIter<syllabix_core::AudioFrame>,
+    second_turn_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    second_turn_delay: Duration,
+}
+
+impl AudioCapture for CancelGatedCapture {
+    fn name(&self) -> &'static str {
+        "cancel-gated"
+    }
+
+    fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<syllabix_core::AudioFrame>> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        if let Some(frame) = self.first_turn.next() {
+            return Ok(Some(frame));
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !self
+            .second_turn_ready
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting to release the second user turn"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        let frame = self.second_turn.next();
+        if frame.is_some() {
+            thread::sleep(self.second_turn_delay);
+        }
+        Ok(frame)
+    }
+}
+
 #[test]
 fn thirty_turns_preserve_order_and_queue_bounds() {
     let n = 30;
@@ -140,22 +183,44 @@ fn generation_cancel_drops_assistant_audio_and_keeps_the_next_user_turn() {
     let llm = FakeLlm::with_delay(Duration::from_millis(20));
     let calls = llm.call_log();
     let cancel = Cancel::new();
+    let second_turn_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let release_second_turn = std::sync::Arc::clone(&second_turn_ready);
     let watcher = cancel.clone();
     thread::spawn(move || loop {
         if calls.lock().map(|c| c.len()).unwrap_or(0) >= 1 {
             thread::sleep(Duration::from_millis(30));
             watcher.cancel_generation();
+            thread::sleep(Duration::from_millis(200));
+            release_second_turn.store(true, std::sync::atomic::Ordering::SeqCst);
             break;
         }
         thread::sleep(Duration::from_millis(1));
     });
 
-    let report = run_with(
-        scripted_frames(2, 2, 1),
-        llm,
+    let report = run_loop_captured(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: None,
+            controls: RuntimeControls::new(false),
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt: FakeStt,
+            llm,
+            tts: FakeTts,
+            sink: CollectingSink::default(),
+        },
+        CancelGatedCapture {
+            first_turn: scripted_frames(1, 2, 1).into_iter(),
+            second_turn: scripted_frames(1, 2, 1).into_iter(),
+            second_turn_ready,
+            second_turn_delay: Duration::from_millis(25),
+        },
         cancel,
-        LoopMode::UntilInputEnds,
-    );
+    )
+    .expect("cancelled loop");
 
     assert_eq!(report.tasks_exited, 6);
     assert_eq!(report.tasks_still_running, 0);
