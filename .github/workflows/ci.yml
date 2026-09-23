@@ -65,6 +65,14 @@ jobs:
       - name: Install ALSA headers, CMake, and bubblewrap
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake bubblewrap
+      # Ubuntu 24.04 AppArmor blocks CAP_NET_ADMIN inside unprivileged userns,
+      # so bwrap --unshare-net fails with RTM_NEWADDR and sandbox tests fail.
+      - name: Allow bubblewrap user namespaces
+        if: runner.os == 'Linux'
+        run: |
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Ensure CMake (no-op when preinstalled on the runner)
         if: runner.os == 'macOS'
         run: command -v cmake || brew install cmake
@@ -142,6 +150,14 @@ jobs:
       - name: Install ALSA headers, CMake, and bubblewrap
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake bubblewrap
+      # Ubuntu 24.04 AppArmor blocks CAP_NET_ADMIN inside unprivileged userns,
+      # so bwrap --unshare-net fails with RTM_NEWADDR and sandbox tests fail.
+      - name: Allow bubblewrap user namespaces
+        if: runner.os == 'Linux'
+        run: |
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Ensure CMake (no-op when preinstalled on the runner)
         if: runner.os == 'macOS'
         run: command -v cmake || brew install cmake
