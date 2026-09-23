@@ -8,7 +8,7 @@ Default `run` fetches Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2
 
 ## Memory is tight. Can I use a smaller model?
 
-Yes. `syllabix init`, then either set `pipeline.llm.model` to `lfm2.5-350m` or `lfm2.5-230m`, or set `pipeline.llm.provider: online` with `base_url` and `SYLLABIX_LLM_API_KEY` so the LLM runs in the cloud (transcript text only; mic audio stays local). Catalogue and keys: [engines](engines.md), [syllabix.yaml](syllabix-yaml.md).
+Yes. `syllabix init`, then either set `pipeline.llm.model` to `lfm2.5-350m` or `lfm2.5-230m`, or set `pipeline.llm.provider: online` with `base_url` and `SYLLABIX_LLM_API_KEY` so the LLM runs in the cloud (transcript text only; mic audio stays local). Catalogue and keys: [engines](engines.md), [syllabix.yaml](syllabix-yaml.md). Disk, RSS benches, and OS notes: [hardware](hardware.md).
 
 ## Why is barge-in off by default?
 

@@ -38,7 +38,7 @@ The first `run` downloads the selected models over HTTPS (defaults: Silero, Whis
 - otherwise `~/.cache/syllabix/models/v1`
 - Windows: `%LOCALAPPDATA%\syllabix\cache\models\v1`
 
-Later runs reuse the cache offline. `--help` and `init` do not download weights. Other yaml model ids fetch on first use of that id. Catalogue: [engines.md](engines.md).
+Later runs reuse the cache offline. `--help` and `init` do not download weights. Other yaml model ids fetch on first use of that id. Catalogue: [engines.md](engines.md). Disk and memory: [hardware.md](hardware.md).
 
 ## macOS Gatekeeper
 

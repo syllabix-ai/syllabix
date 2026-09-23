@@ -17,7 +17,7 @@ Cache:
 | **Release artifacts** | Linux x64, macOS Apple Silicon, macOS Intel, Windows x64 |
 | **Default cache** | ~2.2 GB on first `run` |
 | **Compute** | Darwin: Metal + Accelerate for STT/LLM. Linux/Windows: portable CPU. Qwen TTS backbones run on CPU on every OS. |
-| **RAM** | Not a published gate. The default stack is the combination measured for an Apple M4 / 16 GiB class machine; see [reference profiles](reference-profiles.md). |
+| **RAM** | Not a published full-loop gate. Isolated LLM RSS and how to shrink the local model: [hardware](hardware.md). The default stack was measured on an Apple M4 / 16 GiB class machine; see [reference profiles](reference-profiles.md). |
 | **Network** | First fetch of each id needs HTTPS. After the cache is full, default `run` needs none. |
 
 ## VAD
