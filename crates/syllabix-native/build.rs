@@ -7,6 +7,7 @@ fn main() {
     println!("cargo:rerun-if-changed=CMakeLists.txt");
     println!("cargo:rerun-if-changed=src/shim.c");
     println!("cargo:rerun-if-changed=src/shim_tts.c");
+    println!("cargo:rerun-if-changed=src/shim_vulkan.cpp");
     println!("cargo:rerun-if-changed=include/syllabix_native.h");
     println!("cargo:rerun-if-changed=../../vendor/llama.cpp");
     println!("cargo:rerun-if-changed=../../vendor/whisper.cpp");
@@ -20,6 +21,13 @@ fn main() {
     let linux = target.contains("linux");
     // Linux-only opt-in. Darwin stays Metal; Windows and other targets stay off.
     let vulkan = linux && env::var("SYLLABIX_GGML_VULKAN").as_deref() == Ok("1");
+    if vulkan {
+        // Gate Rust placement/tests on the same opt-in as the C ggml backend.
+        println!("cargo:rustc-cfg=syllabix_ggml_vulkan");
+        println!("cargo:rustc-check-cfg=cfg(syllabix_ggml_vulkan)");
+    } else {
+        println!("cargo:rustc-check-cfg=cfg(syllabix_ggml_vulkan)");
+    }
 
     let mut config = cmake::Config::new(".");
     config

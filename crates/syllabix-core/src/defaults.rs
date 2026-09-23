@@ -195,24 +195,26 @@ impl TtsProvider {
     }
 }
 
-/// Qwen3-TTS compute placement. `Auto` probes Metal on Apple Silicon after
-/// the selected STT and LLM are resident, then reloads on CPU if the complete
-/// audio warm-up cannot run.
+/// Qwen3-TTS compute placement. `Auto` probes Metal on Apple Silicon (or
+/// Vulkan on a Vulkan-enabled Linux build) after the selected STT and LLM are
+/// resident, then reloads on CPU if the complete audio warm-up cannot run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsCompute {
     Auto,
     Cpu,
     Metal,
+    Vulkan,
 }
 
 impl TtsCompute {
-    pub const ALL: [Self; 3] = [Self::Auto, Self::Cpu, Self::Metal];
+    pub const ALL: [Self; 4] = [Self::Auto, Self::Cpu, Self::Metal, Self::Vulkan];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
             Self::Cpu => "cpu",
             Self::Metal => "metal",
+            Self::Vulkan => "vulkan",
         }
     }
 

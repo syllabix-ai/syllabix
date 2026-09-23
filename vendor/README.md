@@ -29,4 +29,14 @@ compute-buffer reservation and graph-allocation failures through
 to destroy a failed Metal context and reload on CPU before the first turn.
 Keep the patch until upstream checks both scheduler return values.
 
+**Local patch (Vulkan Qwen placement), `tools/mtmd/models/qwen3tts-gen.cpp`:**
+the code predictor and code2wav `GET_ROWS` index views into `out_code_cache`
+and `inp_codes` are wrapped in `ggml_cont`. Those views sit at 4-byte element
+offsets, below the device `minStorageBufferOffsetAlignment` (16 on NVIDIA L4),
+and ggml-Vulkan aborts on
+`GGML_ASSERT(dst->op != GGML_OP_GET_ROWS || (a_offset == 0 && b_offset == 0 && d_offset == 0))`
+during the first Qwen step. The copy is one I32 row per lookup; CPU and Metal
+results are unchanged. Keep the patch until upstream ggml-Vulkan accepts
+misaligned `GET_ROWS` indices.
+
 CPU vs Metal tok/s for the three v0 GGUFs: [`llama-bench.md`](llama-bench.md).

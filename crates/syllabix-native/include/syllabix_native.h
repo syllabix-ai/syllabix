@@ -157,16 +157,21 @@ int syllabix_llama_count_prompt_tokens_with_lfm_tools(
  * pins the fixture. At load the engine synthesizes one short clip from a
  * fixed seed and reuses it as its own speaker reference, so every sentence
  * of every run speaks with the same voice. */
+/* Qwen compute placement. Distinct ids so Vulkan is not reported as Metal. */
+#define SYLLABIX_QWEN_BACKEND_CPU 0
+#define SYLLABIX_QWEN_BACKEND_METAL 1
+#define SYLLABIX_QWEN_BACKEND_VULKAN 2
+
 struct syllabix_qwen_tts *syllabix_qwen_tts_load(
     const char *model_path,
     const char *mmproj_path,
     int n_threads,
     unsigned int seed,
-    int use_gpu);
+    int backend);
 void syllabix_qwen_tts_free(struct syllabix_qwen_tts *tts);
 
-/* Selected compute placement: 0 = CPU, 1 = Metal/GPU. */
-int syllabix_qwen_tts_uses_gpu(const struct syllabix_qwen_tts *tts);
+/* Selected compute placement: SYLLABIX_QWEN_BACKEND_*. */
+int syllabix_qwen_tts_backend(const struct syllabix_qwen_tts *tts);
 
 /* 1 when the self-voice reference engaged, 0 when generation fell back to
  * unconditioned sampling (anchor failure). Diagnostics and tests. */

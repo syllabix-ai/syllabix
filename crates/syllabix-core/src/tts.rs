@@ -520,16 +520,63 @@ mod native {
         const CPU: &[QwenTtsBackend] = &[QwenTtsBackend::Cpu];
         const METAL: &[QwenTtsBackend] = &[QwenTtsBackend::Metal];
         const METAL_THEN_CPU: &[QwenTtsBackend] = &[QwenTtsBackend::Metal, QwenTtsBackend::Cpu];
+        const VULKAN: &[QwenTtsBackend] = &[QwenTtsBackend::Vulkan];
+        const VULKAN_THEN_CPU: &[QwenTtsBackend] = &[QwenTtsBackend::Vulkan, QwenTtsBackend::Cpu];
+        attempts_for(
+            compute,
+            syllabix_native::ggml_vulkan_compiled(),
+            vulkan_device_present,
+        )
+        .map(|attempts| match attempts {
+            Attempts::Cpu => CPU,
+            Attempts::Metal => METAL,
+            Attempts::MetalThenCpu => METAL_THEN_CPU,
+            Attempts::Vulkan => VULKAN,
+            Attempts::VulkanThenCpu => VULKAN_THEN_CPU,
+        })
+    }
+
+    fn vulkan_device_present() -> bool {
+        syllabix_native::vulkan_device_count() > 0
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum Attempts {
+        Cpu,
+        Metal,
+        MetalThenCpu,
+        Vulkan,
+        VulkanThenCpu,
+    }
+
+    /// Same device rule as STT/LLM offload: Vulkan is attempted only when the
+    /// build has it and the exception-safe probe finds a device. The probe is
+    /// lazy so CPU and Metal selections never touch the Vulkan loader.
+    pub(super) fn attempts_for(
+        compute: TtsCompute,
+        vulkan_compiled: bool,
+        vulkan_device: impl Fn() -> bool,
+    ) -> Result<Attempts> {
         match compute {
-            TtsCompute::Cpu => Ok(CPU),
+            TtsCompute::Cpu => Ok(Attempts::Cpu),
             TtsCompute::Auto if cfg!(all(target_os = "macos", target_arch = "aarch64")) => {
-                Ok(METAL_THEN_CPU)
+                Ok(Attempts::MetalThenCpu)
             }
-            TtsCompute::Auto => Ok(CPU),
-            TtsCompute::Metal if cfg!(target_os = "macos") => Ok(METAL),
+            TtsCompute::Auto if vulkan_compiled && vulkan_device() => Ok(Attempts::VulkanThenCpu),
+            TtsCompute::Auto => Ok(Attempts::Cpu),
+            TtsCompute::Metal if cfg!(target_os = "macos") => Ok(Attempts::Metal),
             TtsCompute::Metal => Err(Error::Provider {
                 provider: "qwen",
                 message: "Metal compute requires macOS".into(),
+            }),
+            TtsCompute::Vulkan if !vulkan_compiled => Err(Error::Provider {
+                provider: "qwen",
+                message: "Vulkan compute requires a Linux build with SYLLABIX_GGML_VULKAN=1".into(),
+            }),
+            TtsCompute::Vulkan if vulkan_device() => Ok(Attempts::Vulkan),
+            TtsCompute::Vulkan => Err(Error::Provider {
+                provider: "qwen",
+                message: "Vulkan compute found no usable Vulkan device".into(),
             }),
         }
     }
@@ -1128,7 +1175,14 @@ mod tests {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         assert_eq!(attempts, [QwenTtsBackend::Metal, QwenTtsBackend::Cpu]);
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        assert_eq!(attempts, [QwenTtsBackend::Cpu]);
+        {
+            if syllabix_native::ggml_vulkan_compiled() && syllabix_native::vulkan_device_count() > 0
+            {
+                assert_eq!(attempts, [QwenTtsBackend::Vulkan, QwenTtsBackend::Cpu]);
+            } else {
+                assert_eq!(attempts, [QwenTtsBackend::Cpu]);
+            }
+        }
 
         let mut seen = Vec::new();
         let (value, selected) =
@@ -1160,6 +1214,66 @@ mod tests {
         );
         #[cfg(not(target_os = "macos"))]
         assert!(native::backend_attempts(TtsCompute::Metal).is_err());
+        if syllabix_native::ggml_vulkan_compiled() && syllabix_native::vulkan_device_count() > 0 {
+            assert_eq!(
+                native::backend_attempts(TtsCompute::Vulkan).unwrap(),
+                [QwenTtsBackend::Vulkan]
+            );
+        } else {
+            let err = native::backend_attempts(TtsCompute::Vulkan).unwrap_err();
+            assert!(
+                err.to_string().contains("Vulkan"),
+                "expected Vulkan placement error, got {err}"
+            );
+        }
+    }
+
+    #[cfg(not(coverage))]
+    #[test]
+    fn qwen_vulkan_needs_a_live_device() {
+        use native::{attempts_for, Attempts};
+        let no_probe = || -> bool { panic!("device probe must not run") };
+
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            assert_eq!(
+                attempts_for(TtsCompute::Auto, true, || true).unwrap(),
+                Attempts::VulkanThenCpu
+            );
+            assert_eq!(
+                attempts_for(TtsCompute::Auto, true, || false).unwrap(),
+                Attempts::Cpu
+            );
+            assert_eq!(
+                attempts_for(TtsCompute::Auto, false, no_probe).unwrap(),
+                Attempts::Cpu
+            );
+        }
+        assert_eq!(
+            attempts_for(TtsCompute::Cpu, true, no_probe).unwrap(),
+            Attempts::Cpu
+        );
+
+        assert_eq!(
+            attempts_for(TtsCompute::Vulkan, true, || true).unwrap(),
+            Attempts::Vulkan
+        );
+        let no_device = attempts_for(TtsCompute::Vulkan, true, || false).unwrap_err();
+        assert!(
+            matches!(
+                no_device,
+                Error::Provider {
+                    provider: "qwen",
+                    ..
+                }
+            ) && no_device.to_string().contains("no usable Vulkan device"),
+            "got {no_device}"
+        );
+        let not_built = attempts_for(TtsCompute::Vulkan, false, no_probe).unwrap_err();
+        assert!(
+            not_built.to_string().contains("SYLLABIX_GGML_VULKAN=1"),
+            "got {not_built}"
+        );
     }
 
     #[test]

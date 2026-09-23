@@ -36,6 +36,6 @@ This page is positioning, not a benchmark. End-to-end latency and interrupt p95 
 - Better interruption, quality, or privacy than another stack without a defined path and measurements.
 - Feature parity with voice studios (cloning, dubbing, 10+ engines).
 - HIPAA, GDPR-as-a-product, or stream-level PII redaction.
-- Linux/Windows GPU. Darwin uses Metal for STT/LLM; Linux and Windows Release builds are portable CPU.
+- Linux/Windows GPU. Darwin uses Metal for STT/LLM; Linux and Windows Release builds are portable CPU. Linux can opt into ggml-Vulkan (`SYLLABIX_GGML_VULKAN=1`) for whisper/llama/Qwen when a device is present.
 
 Loop internals: [architecture](architecture.md). Model ids: [engines](engines.md). Optional yaml: [syllabix.yaml](syllabix-yaml.md).

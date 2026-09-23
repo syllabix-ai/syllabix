@@ -39,6 +39,7 @@ mod ffi {
         pub fn syllabix_llama_backend_init();
         pub fn syllabix_llama_n_gpu_layers() -> c_int;
         pub fn syllabix_whisper_use_gpu() -> c_int;
+        pub fn syllabix_vk_device_count_or_zero() -> c_int;
         pub fn syllabix_whisper_load(path: *const c_char) -> *mut WhisperContext;
         pub fn syllabix_whisper_free(ctx: *mut WhisperContext);
         pub fn syllabix_whisper_decode(
@@ -142,10 +143,10 @@ mod ffi {
             mmproj_path: *const c_char,
             n_threads: c_int,
             seed: u32,
-            use_gpu: c_int,
+            backend: c_int,
         ) -> *mut QwenTtsHandle;
         pub fn syllabix_qwen_tts_free(tts: *mut QwenTtsHandle);
-        pub fn syllabix_qwen_tts_uses_gpu(tts: *const QwenTtsHandle) -> c_int;
+        pub fn syllabix_qwen_tts_backend(tts: *const QwenTtsHandle) -> c_int;
         pub fn syllabix_qwen_tts_has_voice(tts: *const QwenTtsHandle) -> c_int;
         pub fn syllabix_qwen_tts_synthesize(
             tts: *mut QwenTtsHandle,
@@ -244,6 +245,11 @@ mod ffi {
     #[cfg(coverage)]
     pub unsafe fn syllabix_whisper_use_gpu() -> c_int {
         i32::from(cfg!(target_os = "macos"))
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_vk_device_count_or_zero() -> c_int {
+        0
     }
 
     #[cfg(coverage)]
@@ -448,7 +454,7 @@ mod ffi {
         _mmproj_path: *const c_char,
         _n_threads: c_int,
         _seed: u32,
-        _use_gpu: c_int,
+        _backend: c_int,
     ) -> *mut QwenTtsHandle {
         if fail(&text(model_path), "fail") {
             std::ptr::null_mut()
@@ -461,7 +467,7 @@ mod ffi {
     pub unsafe fn syllabix_qwen_tts_free(_tts: *mut QwenTtsHandle) {}
 
     #[cfg(coverage)]
-    pub unsafe fn syllabix_qwen_tts_uses_gpu(_tts: *const QwenTtsHandle) -> c_int {
+    pub unsafe fn syllabix_qwen_tts_backend(_tts: *const QwenTtsHandle) -> c_int {
         0
     }
 
@@ -574,14 +580,27 @@ pub fn llama_system_info() -> String {
     .clone()
 }
 
-/// Layers offloaded to Metal. `-1` on Darwin (all), `0` on Linux/Windows.
+/// Layers offloaded to GPU. `-1` on Darwin (Metal) and on Vulkan Linux builds
+/// with at least one device; `0` on the default portable CPU artifact.
 pub fn llama_n_gpu_layers() -> i32 {
     unsafe { ffi::syllabix_llama_n_gpu_layers() }
 }
 
-/// Whisper encoder uses Metal on Darwin. CPU everywhere else.
+/// Whisper encoder uses Metal on Darwin, or Vulkan when that backend is
+/// compiled in and a device is present. CPU everywhere else.
 pub fn whisper_use_gpu() -> bool {
     unsafe { ffi::syllabix_whisper_use_gpu() != 0 }
+}
+
+/// `true` when this binary was built with `SYLLABIX_GGML_VULKAN=1` (Linux).
+pub const fn ggml_vulkan_compiled() -> bool {
+    cfg!(syllabix_ggml_vulkan)
+}
+
+/// Vulkan devices ggml can use; `0` when Vulkan is not compiled in or instance
+/// init fails (no ICD, API < 1.2). Never unwinds a C++ exception into Rust.
+pub fn vulkan_device_count() -> usize {
+    usize::try_from(unsafe { ffi::syllabix_vk_device_count_or_zero() }).unwrap_or(0)
 }
 
 /// In-process whisper.cpp context loaded from a GGML weight file.
@@ -1201,6 +1220,7 @@ pub enum QwenTtsError {
 pub enum QwenTtsBackend {
     Cpu,
     Metal,
+    Vulkan,
 }
 
 impl QwenTtsBackend {
@@ -1208,6 +1228,23 @@ impl QwenTtsBackend {
         match self {
             Self::Cpu => "cpu",
             Self::Metal => "metal",
+            Self::Vulkan => "vulkan",
+        }
+    }
+
+    fn as_c_int(self) -> c_int {
+        match self {
+            Self::Cpu => 0,
+            Self::Metal => 1,
+            Self::Vulkan => 2,
+        }
+    }
+
+    fn from_c_int(value: c_int) -> Self {
+        match value {
+            1 => Self::Metal,
+            2 => Self::Vulkan,
+            _ => Self::Cpu,
         }
     }
 }
@@ -1283,7 +1320,7 @@ impl QwenTtsContext {
                 c_mmproj.as_ptr(),
                 n_threads,
                 seed,
-                i32::from(backend == QwenTtsBackend::Metal),
+                backend.as_c_int(),
             )
         };
         if raw.is_null() {
@@ -1300,11 +1337,7 @@ impl QwenTtsContext {
     /// voice-anchor warm-up succeeds.
     pub fn backend(&self) -> QwenTtsBackend {
         let _ggml = ggml_lock();
-        if unsafe { ffi::syllabix_qwen_tts_uses_gpu(self.raw) == 1 } {
-            QwenTtsBackend::Metal
-        } else {
-            QwenTtsBackend::Cpu
-        }
+        QwenTtsBackend::from_c_int(unsafe { ffi::syllabix_qwen_tts_backend(self.raw) })
     }
 
     /// 1 when the self-voice anchor and complete placement warm-up engaged.
@@ -1494,13 +1527,31 @@ mod tests {
     fn n_gpu_layers_matches_os() {
         #[cfg(not(target_vendor = "apple"))]
         {
-            assert_eq!(llama_n_gpu_layers(), 0);
-            assert!(!whisper_use_gpu());
             let lower = llama_system_info().to_ascii_lowercase();
             assert!(
                 !lower.contains("metal") && !lower.contains("mtl"),
-                "Linux/Windows ggml must stay CPU-only: {lower}"
+                "Linux/Windows ggml must not enable Metal: {lower}"
             );
+            #[cfg(syllabix_ggml_vulkan)]
+            {
+                // Device-less hosts stay at CPU layers; a present Vulkan device
+                // offloads and should appear in system info.
+                if llama_n_gpu_layers() == -1 {
+                    assert!(whisper_use_gpu());
+                    assert!(
+                        lower.contains("vulkan"),
+                        "Vulkan offload should appear in system info: {lower}"
+                    );
+                } else {
+                    assert_eq!(llama_n_gpu_layers(), 0);
+                    assert!(!whisper_use_gpu());
+                }
+            }
+            #[cfg(not(syllabix_ggml_vulkan))]
+            {
+                assert_eq!(llama_n_gpu_layers(), 0);
+                assert!(!whisper_use_gpu());
+            }
         }
         #[cfg(target_vendor = "apple")]
         {

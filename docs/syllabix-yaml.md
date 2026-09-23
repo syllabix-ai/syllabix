@@ -216,12 +216,15 @@ Optional. Qwen engines use it as the voice language (`en`, `zh`, `de`, `it`, `pt
 
 ### `compute`
 
-Optional and valid only for Qwen. Values: `auto` (default), `cpu`, or `metal`.
+Optional and valid only for Qwen. Values: `auto` (default), `cpu`, `metal`, or `vulkan`.
 On Apple Silicon, `auto` runs after STT and LLM are resident: it attempts a
 complete Metal voice-anchor/audio warm-up, destroys that context if reservation
-or inference fails, then reloads Qwen on CPU. Other platforms select CPU.
-Forced `metal` fails clearly outside macOS. Pocket TTS remains the default and
-never pays this probe cost.
+or inference fails, then reloads Qwen on CPU. On a Linux build compiled with
+`SYLLABIX_GGML_VULKAN=1`, `auto` tries Vulkan only when a Vulkan device is
+present, the same way, and falls back to CPU. Other platforms select CPU.
+Forced `metal` fails clearly outside macOS. Forced `vulkan` fails when Vulkan
+was not compiled in (including Darwin) or no Vulkan device is found.
+Pocket TTS remains the default and never pays this probe cost.
 
 ```yaml
 pipeline:
@@ -232,7 +235,7 @@ pipeline:
     compute: auto
 ```
 
-The selected `metal` or `cpu` backend is recorded as `tts_backend` in turn
+The selected `metal`, `vulkan`, or `cpu` backend is recorded as `tts_backend` in turn
 diagnostics and as `backend` in component benchmark JSONL. Qwen TTS stays
 `provider: local`; it can pair with `pipeline.llm.provider: online` (audio
 never leaves the machine). That combination does not load a local LLM GGUF,

@@ -13,6 +13,10 @@ struct syllabix_llama {
     struct llama_context *ctx;
 };
 
+/* Defined in shim_vulkan.cpp: returns device count, or 0 if Vulkan is off /
+ * unavailable (never throws into C). */
+int syllabix_vk_device_count_or_zero(void);
+
 static void silent_log(enum ggml_log_level level, const char *text, void *user_data) {
     (void)level;
     (void)text;
@@ -27,20 +31,24 @@ static int min_int(int a, int b) {
     return a < b ? a : b;
 }
 
-int syllabix_llama_n_gpu_layers(void) {
+/* Darwin: Metal. Vulkan Linux builds: offload when a device exists.
+ * Default Linux/Windows CPU artifacts stay at 0. */
+static int syllabix_native_use_gpu(void) {
 #if defined(__APPLE__)
-    return -1;
+    return 1;
+#elif defined(GGML_USE_VULKAN)
+    return syllabix_vk_device_count_or_zero() > 0 ? 1 : 0;
 #else
     return 0;
 #endif
 }
 
+int syllabix_llama_n_gpu_layers(void) {
+    return syllabix_native_use_gpu() ? -1 : 0;
+}
+
 int syllabix_whisper_use_gpu(void) {
-#if defined(__APPLE__)
-    return 1;
-#else
-    return 0;
-#endif
+    return syllabix_native_use_gpu();
 }
 
 void syllabix_native_hush_logs(void) {

@@ -471,8 +471,9 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         None => "en".to_string(),
     };
     let tts_compute = match optional_string(tts, "pipeline.tts", "compute")? {
-        Some(value) => TtsCompute::parse(&value)
-            .ok_or_else(|| unsupported("pipeline.tts.compute", &value, "auto, cpu, metal"))?,
+        Some(value) => TtsCompute::parse(&value).ok_or_else(|| {
+            unsupported("pipeline.tts.compute", &value, "auto, cpu, metal, vulkan")
+        })?,
         None => TtsCompute::Auto,
     };
     if tts_compute != TtsCompute::Auto && !matches!(tts_model, TtsModel::Qwen06 | TtsModel::Qwen17)
