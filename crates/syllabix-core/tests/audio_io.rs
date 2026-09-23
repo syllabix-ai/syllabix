@@ -3,18 +3,20 @@
 //! The soak feeds 30 minutes of *audio time* through conversion + bounded queues.
 //! It is not a 30-minute wall-clock wait.
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(coverage)))]
 use std::ffi::OsString;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+#[cfg(all(target_os = "linux", not(coverage)))]
+use std::sync::MutexGuard;
 #[cfg(target_os = "linux")]
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(coverage)))]
 use syllabix_core::audio::probe_device_names;
 use syllabix_core::audio::{
     f32_to_i16, i16_to_f32, live_buffer_ceiling_bytes, record_and_play_fixture, select_input,
@@ -35,18 +37,20 @@ fn fixture_wav() -> WavPcm {
 }
 
 #[cfg(target_os = "linux")]
-struct AlsaNullDevice {
-    _lock: MutexGuard<'static, ()>,
-    prior_config: Option<OsString>,
-}
-
-#[cfg(target_os = "linux")]
 fn alsa_config_lock() -> &'static Mutex<()> {
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     ENV_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-#[cfg(target_os = "linux")]
+// ALSA null drives real cpal paths. Under cfg(coverage) those openers are
+// stubbed unavailable, so the helper and its smoke test stay non-coverage.
+#[cfg(all(target_os = "linux", not(coverage)))]
+struct AlsaNullDevice {
+    _lock: MutexGuard<'static, ()>,
+    prior_config: Option<OsString>,
+}
+
+#[cfg(all(target_os = "linux", not(coverage)))]
 impl AlsaNullDevice {
     fn install() -> Self {
         let lock = alsa_config_lock().lock().expect("ALSA config lock");
@@ -62,7 +66,7 @@ impl AlsaNullDevice {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(coverage)))]
 impl Drop for AlsaNullDevice {
     fn drop(&mut self) {
         match &self.prior_config {
@@ -338,7 +342,8 @@ fn native_open_fails_with_actionable_error_when_no_device() {
 
 /// Linux CI has no real audio hardware. The ALSA null plugin is a deterministic
 /// device that still drives cpal's stream callbacks and conversion path.
-#[cfg(target_os = "linux")]
+/// Skipped under `cfg(coverage)`: native openers are stubbed unavailable.
+#[cfg(all(target_os = "linux", not(coverage)))]
 #[test]
 fn native_streams_work_with_alsa_null_device() {
     let _alsa = AlsaNullDevice::install();
