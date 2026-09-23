@@ -11,10 +11,15 @@ fn main() {
     println!("cargo:rerun-if-changed=../../vendor/llama.cpp");
     println!("cargo:rerun-if-changed=../../vendor/whisper.cpp");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
+    println!("cargo:rerun-if-env-changed=SYLLABIX_GGML_VULKAN");
 
     let target = env::var("TARGET").unwrap_or_default();
     let apple = target.contains("apple");
     let apple_arm = apple && (target.starts_with("aarch64") || target.contains("arm64"));
+    let windows = target.contains("windows");
+    let linux = target.contains("linux");
+    // Linux-only opt-in. Darwin stays Metal; Windows and other targets stay off.
+    let vulkan = linux && env::var("SYLLABIX_GGML_VULKAN").as_deref() == Ok("1");
 
     let mut config = cmake::Config::new(".");
     config
@@ -35,7 +40,8 @@ fn main() {
             .define("GGML_METAL_EMBED_LIBRARY", "ON")
             .define("GGML_BLAS", "ON")
             .define("GGML_BLAS_VENDOR", "Apple")
-            .define("GGML_ACCELERATE", "ON");
+            .define("GGML_ACCELERATE", "ON")
+            .define("GGML_VULKAN", "OFF");
         if apple_arm {
             config.define("GGML_NATIVE", "ON");
         } else {
@@ -52,7 +58,8 @@ fn main() {
             .define("GGML_BLAS", "OFF")
             .define("GGML_ACCELERATE", "OFF")
             .define("GGML_OPENMP", "OFF")
-            .define("GGML_CPU_KLEIDIAI", "OFF");
+            .define("GGML_CPU_KLEIDIAI", "OFF")
+            .define("GGML_VULKAN", if vulkan { "ON" } else { "OFF" });
     }
 
     let dst = config.build();
@@ -79,13 +86,18 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=Foundation");
         println!("cargo:rustc-link-lib=framework=Metal");
         println!("cargo:rustc-link-lib=framework=MetalKit");
-    } else if target.contains("windows") {
+    } else if windows {
         println!("cargo:rustc-link-lib=dylib=advapi32");
     } else {
         println!("cargo:rustc-link-lib=dylib=stdc++");
         println!("cargo:rustc-link-lib=dylib=m");
         println!("cargo:rustc-link-lib=dylib=pthread");
         println!("cargo:rustc-link-lib=dylib=dl");
+        if vulkan {
+            // ggml-vulkan links Vulkan::Vulkan privately in CMake; rustc still
+            // needs the loader for the final binary when the backend is on.
+            println!("cargo:rustc-link-lib=dylib=vulkan");
+        }
     }
 }
 

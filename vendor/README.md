@@ -9,10 +9,11 @@ PR 10 compiles **one** `ggml` and links both speech frontends to it.
 
 `ggml/include/ggml.h` is byte-identical at these two commits. Syllabix **does not compile** whisper.cpp's `ggml/` (that directory is not vendored).
 
-Sequence 26 vendors `ggml/src/ggml-metal` and `ggml/src/ggml-blas` from the same llama.cpp pin. CMake only compiles a backend when `GGML_<NAME>` is ON:
+Sequence 26 vendors `ggml/src/ggml-metal` and `ggml/src/ggml-blas` from the same llama.cpp pin. Sequence 34 also vendors `ggml/src/ggml-vulkan` from that pin (shaders + shader-gen included). CMake only compiles a backend when `GGML_<NAME>` is ON:
 
 - **Darwin:** Metal (`GGML_METAL_EMBED_LIBRARY`), Apple Accelerate BLAS, `GGML_ACCELERATE`. Darwin-arm64 also sets `GGML_NATIVE`. KleidiAI is **off**: SME objects need `___arm_tpidr2_save` and do not link from rustc.
-- **Linux / Windows:** portable CPU. CUDA, HIP, Vulkan, SYCL, OpenCL, OpenMP, OpenBLAS stay off.
+- **Linux / Windows product default:** portable CPU. CUDA, HIP, Vulkan, SYCL, OpenCL, OpenMP, OpenBLAS stay off. Published Linux x64 must not gain `DT_NEEDED` on `libvulkan.so.1`.
+- **Linux Vulkan opt-in:** set `SYLLABIX_GGML_VULKAN=1` so `build.rs` passes `-DGGML_VULKAN=ON` (needs `libvulkan-dev`, `glslc`/`shaderc`, and `spirv-headers`). Darwin and Windows ignore the env and stay off.
 
 Do not add a second `ggml` copy. Do not use `--allow-multiple-definition` or post-build `objcopy` symbol renaming.
 

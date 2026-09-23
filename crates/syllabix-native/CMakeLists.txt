@@ -5,10 +5,12 @@ project(syllabix-native C CXX)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "static ggml / whisper / llama" FORCE)
 
 # Sequence 26: Darwin uses OS-shipped Metal + Accelerate. Linux/Windows stay
-# portable CPU. CUDA/HIP/Vulkan/OpenMP/OpenBLAS stay off everywhere.
+# portable CPU. CUDA/HIP/OpenMP/OpenBLAS stay off everywhere. Vulkan sources
+# are vendored; default remains OFF. build.rs may pass -DGGML_VULKAN=ON when
+# SYLLABIX_GGML_VULKAN=1 on Linux — do not FORCE here or that -D is clobbered.
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_HIP OFF CACHE BOOL "" FORCE)
-set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+set(GGML_VULKAN OFF CACHE BOOL "ggml: use Vulkan")
 set(GGML_SYCL OFF CACHE BOOL "" FORCE)
 set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
