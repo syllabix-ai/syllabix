@@ -1,5 +1,5 @@
 machine,passed,avg_elapsed_ms,avg_first_output_ms,avg_prompt_tps,avg_gen_tps,avg_mem_after_mib,avg_mem_peak_mib
 linux-x86_64-amd-ryzen-threadripper-pro-3955wx-16-cores-5c-503.5gib-vulkan-nvidia-geforce-rtx-3090,0/5,1149.8,598.8,467.949,217.943,938.6,991.9
-linux-x86_64-intel-r-xeon-r-processor-4c-15.6gib-cpu,0/5,3411.4,517.2,136.257,39.857,3902.9,3925.1
+linux-x86_64-intel-r-xeon-r-processor-4c-15.6gib-cpu,0/5,2233.8,561.6,125.587,41.39,3904.7,3927.9
 linux-x86_64-intel-r-xeon-r-processor-8c-15.6gib-cpu,0/5,2952.8,607.2,117.115,28.887,3903.4,3925.5
 macos-aarch64-apple-m4-10c-16.0gib-cpu,0/5,1325.4,102.8,688.265,100.335,3770.8,3780.1
