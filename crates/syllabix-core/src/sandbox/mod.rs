@@ -170,14 +170,17 @@ mod tests {
         }
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     #[test]
     fn unsupported_platform_provider_fails_closed() {
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let request = super::SandboxRequest::new(
+            "/tmp/syllabix-workspace",
+            "/tmp/syllabix-temp",
+            crate::policy::FilesystemMode::ReadOnly,
+            crate::policy::NetworkMode::None,
+        );
         assert_eq!(
-            current_provider()
-                .probe(&request(FilesystemMode::ReadOnly))
-                .unwrap_err()
-                .code,
+            super::current_provider().probe(&request).unwrap_err().code,
             "SANDBOX_UNAVAILABLE"
         );
     }
