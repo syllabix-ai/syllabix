@@ -445,5 +445,10 @@ mod tests {
             SttModel::Small,
             "`whisper-small` stays the launch default"
         );
+        assert!(SttModel::QwenAsr06.is_qwen_asr());
+        assert!(!SttModel::Small.is_qwen_asr());
+        assert!(!SttModel::MoonshineStreamingSmall.is_qwen_asr());
+        assert!(SttModel::MoonshineStreamingSmall.is_moonshine());
+        assert!(!SttModel::QwenAsr06.is_moonshine());
     }
 }
