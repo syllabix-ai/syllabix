@@ -8,7 +8,7 @@ rust-version.workspace = true
 description = "Shared ggml plus whisper.cpp and llama.cpp frontends"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(syllabix_ggml_vulkan)'] }
 
 [lib]
 path = "src/lib.rs"

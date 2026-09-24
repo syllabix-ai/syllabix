@@ -46,7 +46,7 @@ struct syllabix_qwen_tts {
     struct llama_sampler *smpl;
     mtmd_helper_gen_audio *gen;
     mtmd_bitmap *voice; /* self-generated speaker reference; NULL = fallback */
-    int uses_gpu;
+    int backend; /* SYLLABIX_QWEN_BACKEND_* */
 };
 
 static int qwen_generate(
@@ -111,13 +111,21 @@ static void qwen_debug_log(enum ggml_log_level level, const char *text, void *us
         }                                                                 \
     } while (0)
 
-struct syllabix_qwen_tts *syllabix_qwen_tts_load(
+/* Public entry is syllabix_qwen_tts_load in shim_vulkan.cpp, which catches
+ * ggml backend C++ exceptions thrown through this file (built -fexceptions).
+ * A throw mid-load leaks whatever this frame had allocated. */
+struct syllabix_qwen_tts *syllabix_qwen_tts_load_unguarded(
     const char *model_path,
     const char *mmproj_path,
     int n_threads,
     unsigned int seed,
-    int use_gpu) {
+    int backend) {
     if (model_path == NULL || mmproj_path == NULL || n_threads < 1) {
+        return NULL;
+    }
+    if (backend != SYLLABIX_QWEN_BACKEND_CPU
+        && backend != SYLLABIX_QWEN_BACKEND_METAL
+        && backend != SYLLABIX_QWEN_BACKEND_VULKAN) {
         return NULL;
     }
 
@@ -127,10 +135,10 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
     llama_backend_init();
 
     /* Auto placement is orchestrated by Rust after STT and LLM are resident:
-     * it tries the complete Metal path first, then destroys this context and
+     * it tries the preferred GPU path first, then destroys this context and
      * reloads on CPU if the warm-up/voice-anchor graph cannot be allocated.
-     * Explicit cpu/metal modes use this same single-attempt entry. */
-    const int tts_gpu_layers = use_gpu ? -1 : 0;
+     * Explicit cpu/metal/vulkan modes use this same single-attempt entry. */
+    const int tts_gpu_layers = backend == SYLLABIX_QWEN_BACKEND_CPU ? 0 : -1;
 
     struct llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = tts_gpu_layers;
@@ -197,7 +205,7 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
     tts->smpl = qwen_make_sampler(seed);
     tts->gen = gen;
     tts->voice = NULL;
-    tts->uses_gpu = use_gpu != 0;
+    tts->backend = backend;
     if (tts->smpl == NULL) {
         syllabix_qwen_tts_free(tts);
         return NULL;
@@ -247,8 +255,8 @@ struct syllabix_qwen_tts *syllabix_qwen_tts_load(
     return tts;
 }
 
-int syllabix_qwen_tts_uses_gpu(const struct syllabix_qwen_tts *tts) {
-    return tts != NULL && tts->uses_gpu != 0 ? 1 : 0;
+int syllabix_qwen_tts_backend(const struct syllabix_qwen_tts *tts) {
+    return tts != NULL ? tts->backend : SYLLABIX_QWEN_BACKEND_CPU;
 }
 
 int syllabix_qwen_tts_has_voice(const struct syllabix_qwen_tts *tts) {

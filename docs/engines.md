@@ -16,7 +16,7 @@ Cache:
 | --- | --- |
 | **Release artifacts** | Linux x64, macOS Apple Silicon, macOS Intel, Windows x64 |
 | **Default cache** | ~2.2 GB on first `run` |
-| **Compute** | Darwin: Metal + Accelerate for STT/LLM. Linux/Windows: portable CPU. Qwen TTS backbones run on CPU on every OS. |
+| **Compute** | Darwin: Metal + Accelerate for STT/LLM. Linux/Windows: portable CPU by default. Opt-in Linux Vulkan builds (`SYLLABIX_GGML_VULKAN=1`) offload whisper/llama/Qwen when a device is present. Qwen TTS stays CPU unless `compute` selects Metal/Vulkan (or Auto probes them). |
 | **RAM** | Not a published gate. The default stack is the combination measured for an Apple M4 / 16 GiB class machine; see [reference profiles](reference-profiles.md). |
 | **Network** | First fetch of each id needs HTTPS. After the cache is full, default `run` needs none. |
 

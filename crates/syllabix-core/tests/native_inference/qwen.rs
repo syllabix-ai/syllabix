@@ -98,7 +98,7 @@ fn qwen_auto_selects_a_runnable_backend_with_resident_stack() {
         eprintln!("qwen auto smoke: probing {}", model.as_str());
         let tts = load_qwen(model, syllabix_core::TtsCompute::Auto);
         assert!(tts.voice_anchor_engaged());
-        assert!(matches!(tts.backend_id(), Some("metal" | "cpu")));
+        assert!(matches!(tts.backend_id(), Some("metal" | "cpu" | "vulkan")));
         eprintln!(
             "qwen auto [{}]: {}",
             model.as_str(),
@@ -116,7 +116,7 @@ fn qwen_auto_selects_a_runnable_backend() {
     for model in qwen_backbones() {
         let tts = load_qwen(model, syllabix_core::TtsCompute::Auto);
         assert!(tts.voice_anchor_engaged());
-        assert!(matches!(tts.backend_id(), Some("metal" | "cpu")));
+        assert!(matches!(tts.backend_id(), Some("metal" | "cpu" | "vulkan")));
         eprintln!(
             "qwen auto [{}]: {}",
             model.as_str(),
