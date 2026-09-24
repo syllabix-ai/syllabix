@@ -80,6 +80,7 @@ impl SttProvider {
 /// `whisper-small` is the default. `-q5_0` ids are the published quantizations of their
 /// fp16 siblings (`tiny` / `base` are deliberately not offered).
 /// `MoonshineStreamingSmall` / `MoonshineStreamingMedium` are Moonshine ONNX engine ids.
+/// `QwenAsr06` is Qwen3-ASR 0.6B through llama.cpp mtmd.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SttModel {
     /// `whisper-small` multilingual weights used by default.
@@ -96,11 +97,13 @@ pub enum SttModel {
     MoonshineStreamingSmall,
     /// Moonshine streaming-medium INT8 ONNX (English only).
     MoonshineStreamingMedium,
+    /// Qwen3-ASR 0.6B via llama.cpp mtmd (finalize only).
+    QwenAsr06,
 }
 
 impl SttModel {
     /// Every yaml-selectable id, manifest order.
-    pub const ALL: [SttModel; 7] = [
+    pub const ALL: [SttModel; 8] = [
         SttModel::Small,
         SttModel::Medium,
         SttModel::LargeV3Turbo,
@@ -108,6 +111,7 @@ impl SttModel {
         SttModel::LargeV3TurboQ5_0,
         SttModel::MoonshineStreamingSmall,
         SttModel::MoonshineStreamingMedium,
+        SttModel::QwenAsr06,
     ];
 
     /// Config / log name.
@@ -120,6 +124,7 @@ impl SttModel {
             Self::LargeV3TurboQ5_0 => "whisper-large-v3-turbo-q5_0",
             Self::MoonshineStreamingSmall => "moonshine-streaming-small",
             Self::MoonshineStreamingMedium => "moonshine-streaming-medium",
+            Self::QwenAsr06 => "qwen3-asr-0.6",
         }
     }
 
@@ -133,6 +138,7 @@ impl SttModel {
             Self::LargeV3TurboQ5_0 => "whisper-large-v3-turbo-q5_0",
             Self::MoonshineStreamingSmall => crate::moonshine::ENCODER_ASSET,
             Self::MoonshineStreamingMedium => crate::moonshine::MEDIUM_ENCODER_ASSET,
+            Self::QwenAsr06 => crate::qwen_asr::ASR_ASSET,
         }
     }
 
@@ -142,6 +148,11 @@ impl SttModel {
             self,
             Self::MoonshineStreamingSmall | Self::MoonshineStreamingMedium
         )
+    }
+
+    /// True for the Qwen3-ASR 0.6B mtmd engine.
+    pub fn is_qwen_asr(self) -> bool {
+        matches!(self, Self::QwenAsr06)
     }
 
     /// Parse a yaml `pipeline.stt.model` id.
@@ -195,9 +206,10 @@ impl TtsProvider {
     }
 }
 
-/// Qwen3-TTS compute placement. `Auto` probes Metal on Apple Silicon (or
-/// Vulkan on a Vulkan-enabled Linux build) after the selected STT and LLM are
-/// resident, then reloads on CPU if the complete audio warm-up cannot run.
+/// Qwen ggml compute placement for TTS and ASR. `Auto` probes Metal on Apple
+/// Silicon (or Vulkan on a Vulkan-enabled Linux build), then reloads on CPU if
+/// the preferred GPU path cannot run. TTS probes after STT/LLM are resident;
+/// ASR probes at STT load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsCompute {
     Auto,
@@ -419,6 +431,7 @@ mod tests {
             "whisper-large-v3-turbo-q5_0",
             "moonshine-streaming-small",
             "moonshine-streaming-medium",
+            "qwen3-asr-0.6",
         ];
         for (model, id) in SttModel::ALL.into_iter().zip(ids) {
             assert_eq!(model.as_str(), id);

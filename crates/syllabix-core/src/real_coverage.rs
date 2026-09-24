@@ -37,7 +37,10 @@ impl Stt for LiveStt {
     fn cancel_turn(&mut self, _: crate::TurnId) {}
 }
 
-impl LiveStt { pub fn with_language(self, _: &str) -> Result<Self> { Ok(self) } }
+impl LiveStt {
+    pub fn backend_id(&self) -> Option<&str> { None }
+    pub fn with_language(self, _: &str) -> Result<Self> { Ok(self) }
+}
 pub fn build_stt(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig) -> Result<LiveStt> { Err(unavailable("stt")) }
 pub fn build_tts(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig) -> Result<LiveTts> { Err(unavailable("tts")) }
 pub fn build_llm(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>) -> Result<LiveLlm> { Err(unavailable("llm")) }

@@ -120,6 +120,22 @@ Whisper-supported ISO code (`en`, `fr`, `de`, `ja`, …) or `auto`.
 
 Moonshine models are English-only: `language` must be `en`; `auto` and other codes fail at load. Partials show automatically while VAD owns the turn. There is no separate partials key — Silero `end_silence_ms` remains the one turn-end control. Medium uses a larger INT8 ONNX export (~590 MB vs ~360 MB for small) with the same runtime.
 
+### `compute`
+
+Optional and valid only for Qwen3-ASR (`qwen3-asr-0.6`). Values: `auto` (default), `cpu`, `metal`, or `vulkan`.
+Same placement rules as TTS `pipeline.tts.compute`: Apple Silicon `auto` tries Metal then CPU; Linux builds with `SYLLABIX_GGML_VULKAN=1` try Vulkan when a device is present, then CPU. Forced `metal` / `vulkan` fail clearly when unavailable. Whisper and Moonshine reject this key.
+
+```yaml
+pipeline:
+  stt:
+    provider: local
+    model: qwen3-asr-0.6
+    language: en
+    compute: auto
+```
+
+The selected backend is recorded as `backend` in component benchmark JSONL.
+
 ## LLM — text → reply
 
 ### `provider`
@@ -239,7 +255,7 @@ The selected `metal`, `vulkan`, or `cpu` backend is recorded as `tts_backend` in
 diagnostics and as `backend` in component benchmark JSONL. Qwen TTS stays
 `provider: local`; it can pair with `pipeline.llm.provider: online` (audio
 never leaves the machine). That combination does not load a local LLM GGUF,
-so the Metal TTS probe competes only with resident STT.
+so the Metal TTS probe competes with resident STT (including a GPU-backed Qwen ASR).
 
 ## Skills — local instruction packages
 

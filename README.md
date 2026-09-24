@@ -71,7 +71,7 @@ Commands: [docs/cli.md](docs/cli.md).
 
 ## Optional config
 
-`syllabix run` needs no configuration file. Run [`syllabix init`](docs/syllabix-yaml.md) when you want to change the model, language, voice, system prompt, or use a BYO-key online LLM. Online LLMs receive transcript text only; audio stays on the machine.
+`syllabix run` needs no configuration file. Run [`syllabix init`](docs/syllabix-yaml.md) when you want to change the model (including opt-in Qwen3-ASR `qwen3-asr-0.6`), language, voice, system prompt, or use a BYO-key online LLM. Online LLMs receive transcript text only; audio stays on the machine.
 
 Start with [`examples/demo-agent.yaml`](examples/demo-agent.yaml). See the [model catalogue](docs/engines.md), [configuration guide](docs/syllabix-yaml.md), and [diagnostics](docs/diagnostics.md) for per-turn timelines and WAVs.
 

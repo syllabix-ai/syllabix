@@ -328,7 +328,7 @@ fn required_rss(when: &str) -> Result<usize> {
 }
 
 fn benchmark_stt(
-    stt: &mut impl Stt,
+    stt: &mut syllabix_core::LiveStt,
     config: &AgentConfig,
     cancel: &Cancel,
     fingerprint: &Fingerprint,
@@ -359,7 +359,11 @@ fn benchmark_stt(
             fingerprint: fingerprint.clone(),
             component: "stt".into(),
             model: config.stt_model.as_str().into(),
-            backend: Some(fingerprint.ggml_backend.clone()),
+            backend: Some(
+                stt.backend_id()
+                    .unwrap_or(fingerprint.ggml_backend.as_str())
+                    .to_string(),
+            ),
             case: scenario.case.clone(),
             elapsed_ms,
             // whisper.cpp returns a completed transcript, not partial text.
@@ -1111,7 +1115,7 @@ mod tests {
         // Defaults are included; the sweep is one axis at a time, never a
         // cross-product of STT × LLM × TTS.
         assert!(SttModel::ALL.contains(&SttModel::Small));
-        assert_eq!(SttModel::ALL.len(), 7);
+        assert_eq!(SttModel::ALL.len(), 8);
         assert_eq!(V0_LLM_MODELS[0], "lfm2.5-2.6b");
         assert_eq!(V0_LLM_MODELS.len(), 6);
         assert!(TtsModel::ALL.contains(&TtsModel::PocketTts));

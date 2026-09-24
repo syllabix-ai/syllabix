@@ -12,6 +12,7 @@ extern "C" {
 struct whisper_context;
 struct syllabix_llama;
 struct syllabix_qwen_tts;
+struct syllabix_qwen_asr;
 
 void syllabix_native_hush_logs(void);
 
@@ -215,6 +216,33 @@ int syllabix_qwen_tts_synthesize_streaming(
                   int is_last, void *user),
     void *pcm_user);
 void syllabix_qwen_tts_pcm_free(int16_t *pcm);
+
+/* Qwen3-ASR (mtmd qwen3a encoder + Qwen3 decoder GGUF). Same shared ggml
+ * and SYLLABIX_QWEN_BACKEND_* placement as TTS. `language` is an English
+ * display name (`English`) or `auto`/NULL/empty for open detection. */
+struct syllabix_qwen_asr *syllabix_qwen_asr_load(
+    const char *model_path,
+    const char *mmproj_path,
+    int n_threads,
+    int backend);
+void syllabix_qwen_asr_free(struct syllabix_qwen_asr *asr);
+
+/* Selected compute placement: SYLLABIX_QWEN_BACKEND_*. */
+int syllabix_qwen_asr_backend(const struct syllabix_qwen_asr *asr);
+
+/*
+ * 0 = ok, 1 = cancelled, -1 = error.
+ * `pcm` is 16 kHz mono f32. `out` is a UTF-8 buffer of `out_cap` bytes.
+ */
+int syllabix_qwen_asr_decode(
+    struct syllabix_qwen_asr *asr,
+    const float *pcm,
+    int n_samples,
+    const char *language,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    char *out,
+    int out_cap);
 
 #ifdef __cplusplus
 }

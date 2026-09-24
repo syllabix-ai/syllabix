@@ -86,11 +86,11 @@ set(LLAMA_VERSION_MAJOR 0)
 set(MTMD_VIDEO OFF CACHE BOOL "mtmd video support" FORCE)
 add_subdirectory("${LLAMA_DIR}/tools/mtmd" "${CMAKE_BINARY_DIR}/mtmd")
 
-add_library(syllabix_native STATIC src/shim.c src/shim_tts.c src/shim_vulkan.cpp)
-# shim_vulkan.cpp catches ggml C++ exceptions raised under shim_tts.c frames;
+add_library(syllabix_native STATIC src/shim.c src/shim_tts.c src/shim_asr.c src/shim_vulkan.cpp)
+# shim_vulkan.cpp catches ggml C++ exceptions raised under shim_tts.c / shim_asr.c frames;
 # GCC/Clang only unwind C frames compiled with -fexceptions.
 if(NOT MSVC)
-    set_source_files_properties(src/shim_tts.c PROPERTIES COMPILE_OPTIONS "-fexceptions")
+    set_source_files_properties(src/shim_tts.c src/shim_asr.c PROPERTIES COMPILE_OPTIONS "-fexceptions")
 endif()
 target_include_directories(syllabix_native PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
