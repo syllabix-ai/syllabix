@@ -16,7 +16,7 @@ use syllabix_core::{
     WhisperStt, DEFAULT_SAMPLE_RATE_HZ, TTS_ASR_MIN_WORD_MATCH, V0_LLM_MODELS,
 };
 
-const SCHEMA_VERSION: u8 = 3;
+const SCHEMA_VERSION: u8 = 4;
 const SCENARIOS_JSONL: &str = include_str!("../../../docs/eval/scenarios.jsonl");
 const NUMBER_FIXTURES: [&str; 5] = ["100", "$5", "3:45 pm", "USD", "API"];
 /// Safety rail for contributor LLM evidence. Product `run` still has no
@@ -60,6 +60,14 @@ struct Fingerprint {
     ram_bytes: Option<u64>,
     binary_version: String,
     git_sha: String,
+    /// ggml placement for STT/LLM: `cpu`, `metal`, or `vulkan`.
+    ggml_backend: String,
+    /// GPU marketing name when known (Vulkan device 0, or Apple chip on Metal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gpu_name: Option<String>,
+    /// Device-local VRAM (or unified memory on Metal) when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gpu_vram_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,7 +359,7 @@ fn benchmark_stt(
             fingerprint: fingerprint.clone(),
             component: "stt".into(),
             model: config.stt_model.as_str().into(),
-            backend: None,
+            backend: Some(fingerprint.ggml_backend.clone()),
             case: scenario.case.clone(),
             elapsed_ms,
             // whisper.cpp returns a completed transcript, not partial text.
@@ -444,7 +452,7 @@ fn benchmark_llm(
             fingerprint: fingerprint.clone(),
             component: "llm".into(),
             model: config.llm_model.clone(),
-            backend: None,
+            backend: Some(fingerprint.ggml_backend.clone()),
             case: scenario.case.clone(),
             elapsed_ms,
             first_output_ms,
@@ -719,14 +727,30 @@ fn stt_fixture(case: &str) -> Result<&'static [u8]> {
 }
 
 fn fingerprint() -> Fingerprint {
+    let ggml_backend = syllabix_native::ggml_backend_id().to_owned();
+    let cpu = cpu_name();
+    let ram = ram_bytes();
+    let (gpu_name, gpu_vram_bytes) = match ggml_backend.as_str() {
+        "vulkan" => (
+            syllabix_native::vulkan_device0_name(),
+            syllabix_native::vulkan_device0_vram_bytes(),
+        ),
+        // Apple Silicon: the chip brand is the GPU marketing name; memory is
+        // unified with system RAM.
+        "metal" => ((cpu != "unknown").then_some(cpu.clone()), ram),
+        _ => (None, None),
+    };
     Fingerprint {
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
-        cpu: cpu_name(),
+        cpu,
         cpu_cores: std::thread::available_parallelism().map_or(0, usize::from),
-        ram_bytes: ram_bytes(),
+        ram_bytes: ram,
         binary_version: env!("CARGO_PKG_VERSION").into(),
         git_sha: option_env!("SYLLABIX_GIT_SHA").unwrap_or("unknown").into(),
+        ggml_backend,
+        gpu_name,
+        gpu_vram_bytes,
     }
 }
 
@@ -856,6 +880,75 @@ mod tests {
         assert!(jsonl.contains("\"backend\":\"onnx\""), "{jsonl}");
         assert!(write_jsonl(&path, &[]).is_err());
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn fingerprint_records_ggml_backend() {
+        let fp = fingerprint();
+        assert!(
+            matches!(fp.ggml_backend.as_str(), "cpu" | "metal" | "vulkan"),
+            "{}",
+            fp.ggml_backend
+        );
+        if fp.ggml_backend == "cpu" {
+            assert!(fp.gpu_name.is_none());
+            assert!(fp.gpu_vram_bytes.is_none());
+        }
+        let json = serde_json::to_string(&fp).expect("fingerprint json");
+        assert!(json.contains("\"ggml_backend\""), "{json}");
+    }
+
+    #[test]
+    fn stt_and_llm_records_serialize_ggml_backend() {
+        let fp = fingerprint();
+        let stt = Record {
+            schema_version: SCHEMA_VERSION,
+            fingerprint: fp.clone(),
+            component: "stt".into(),
+            model: "whisper-small".into(),
+            backend: Some(fp.ggml_backend.clone()),
+            case: "jfk".into(),
+            elapsed_ms: 1,
+            first_output_ms: Some(1),
+            output_units: Some(1),
+            prompt_tokens: None,
+            generated_tokens: None,
+            prompt_tokens_per_second: None,
+            generated_tokens_per_second: None,
+            word_match: Some(1.0),
+            word_match_threshold: Some(1.0),
+            input_audio_ms: Some(1),
+            generated_audio_ms: None,
+            real_time_factor: Some(1.0),
+            transcript: None,
+            response: None,
+            memory_before_load_bytes: None,
+            memory_after_load_bytes: None,
+            memory_peak_bytes: None,
+            passed: true,
+        };
+        let llm = Record {
+            component: "llm".into(),
+            model: "lfm2.5-2.6b".into(),
+            backend: Some(fp.ggml_backend.clone()),
+            case: "short".into(),
+            word_match: None,
+            word_match_threshold: None,
+            input_audio_ms: None,
+            generated_audio_ms: None,
+            real_time_factor: None,
+            prompt_tokens: Some(1),
+            generated_tokens: Some(1),
+            prompt_tokens_per_second: Some(1.0),
+            generated_tokens_per_second: Some(1.0),
+            ..stt.clone()
+        };
+        let stt_json = serde_json::to_string(&stt).expect("stt");
+        let llm_json = serde_json::to_string(&llm).expect("llm");
+        let expected = format!("\"backend\":\"{}\"", fp.ggml_backend);
+        assert!(stt_json.contains(&expected), "{stt_json}");
+        assert!(llm_json.contains(&expected), "{llm_json}");
+        assert!(stt_json.contains("\"ggml_backend\""), "{stt_json}");
     }
 
     #[test]

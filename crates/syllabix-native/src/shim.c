@@ -13,9 +13,7 @@ struct syllabix_llama {
     struct llama_context *ctx;
 };
 
-/* Defined in shim_vulkan.cpp: returns device count, or 0 if Vulkan is off /
- * unavailable (never throws into C). */
-int syllabix_vk_device_count_or_zero(void);
+/* Defined in shim_vulkan.cpp / syllabix_native.h (never throws into C). */
 
 static void silent_log(enum ggml_log_level level, const char *text, void *user_data) {
     (void)level;

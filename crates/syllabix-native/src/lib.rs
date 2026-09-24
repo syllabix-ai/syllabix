@@ -40,6 +40,8 @@ mod ffi {
         pub fn syllabix_llama_n_gpu_layers() -> c_int;
         pub fn syllabix_whisper_use_gpu() -> c_int;
         pub fn syllabix_vk_device_count_or_zero() -> c_int;
+        pub fn syllabix_vk_device0_description(out: *mut c_char, out_cap: usize) -> c_int;
+        pub fn syllabix_vk_device0_vram_bytes(total_bytes: *mut u64) -> c_int;
         pub fn syllabix_whisper_load(path: *const c_char) -> *mut WhisperContext;
         pub fn syllabix_whisper_free(ctx: *mut WhisperContext);
         pub fn syllabix_whisper_decode(
@@ -249,6 +251,22 @@ mod ffi {
 
     #[cfg(coverage)]
     pub unsafe fn syllabix_vk_device_count_or_zero() -> c_int {
+        0
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_vk_device0_description(out: *mut c_char, out_cap: usize) -> c_int {
+        if !out.is_null() && out_cap > 0 {
+            *out = 0;
+        }
+        0
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_vk_device0_vram_bytes(total_bytes: *mut u64) -> c_int {
+        if !total_bytes.is_null() {
+            *total_bytes = 0;
+        }
         0
     }
 
@@ -601,6 +619,51 @@ pub const fn ggml_vulkan_compiled() -> bool {
 /// init fails (no ICD, API < 1.2). Never unwinds a C++ exception into Rust.
 pub fn vulkan_device_count() -> usize {
     usize::try_from(unsafe { ffi::syllabix_vk_device_count_or_zero() }).unwrap_or(0)
+}
+
+/// ggml placement used for whisper/llama: `cpu`, `metal`, or `vulkan`.
+///
+/// Matches runtime offload (`llama_n_gpu_layers` / `whisper_use_gpu`): Darwin
+/// Metal when GPU is on; Vulkan only on a Vulkan-enabled Linux build with a
+/// usable device; otherwise CPU.
+pub fn ggml_backend_id() -> &'static str {
+    if !whisper_use_gpu() {
+        return "cpu";
+    }
+    if cfg!(target_os = "macos") {
+        "metal"
+    } else if ggml_vulkan_compiled() {
+        "vulkan"
+    } else {
+        // Today's shim never enables GPU outside Darwin Metal or Vulkan Linux.
+        // Fail loudly in debug if a future backend forgets to extend this map.
+        debug_assert!(
+            false,
+            "whisper_use_gpu without macOS Metal or a Vulkan build"
+        );
+        "cpu"
+    }
+}
+
+/// Marketing name for Vulkan device 0 when known.
+pub fn vulkan_device0_name() -> Option<String> {
+    let mut buf = vec![0u8; 256];
+    let ok = unsafe {
+        ffi::syllabix_vk_device0_description(buf.as_mut_ptr().cast::<c_char>(), buf.len())
+    };
+    if ok == 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).trim().to_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Total VRAM bytes for Vulkan device 0 when known.
+pub fn vulkan_device0_vram_bytes() -> Option<u64> {
+    let mut total = 0u64;
+    let ok = unsafe { ffi::syllabix_vk_device0_vram_bytes(&mut total) };
+    (ok != 0 && total > 0).then_some(total)
 }
 
 /// In-process whisper.cpp context loaded from a GGML weight file.
@@ -1562,6 +1625,25 @@ mod tests {
                 lower.contains("metal") || lower.contains("mtl"),
                 "Darwin ggml must compile Metal: {lower}"
             );
+        }
+    }
+
+    #[test]
+    fn ggml_backend_id_matches_offload() {
+        let id = ggml_backend_id();
+        assert!(
+            matches!(id, "cpu" | "metal" | "vulkan"),
+            "unexpected ggml backend {id}"
+        );
+        if whisper_use_gpu() {
+            #[cfg(target_os = "macos")]
+            assert_eq!(id, "metal");
+            #[cfg(all(not(target_os = "macos"), syllabix_ggml_vulkan))]
+            assert_eq!(id, "vulkan");
+        } else {
+            assert_eq!(id, "cpu");
+            assert!(vulkan_device0_name().is_none());
+            assert!(vulkan_device0_vram_bytes().is_none());
         }
     }
 

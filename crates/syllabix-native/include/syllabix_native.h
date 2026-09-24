@@ -22,10 +22,19 @@ const char *syllabix_llama_system_info(void);
 void syllabix_llama_backend_init(void);
 void syllabix_llama_backend_free(void);
 
-/* Darwin Metal: -1 (all layers). Linux/Windows CPU: 0. Does not load weights. */
+/* Darwin Metal: -1 (all layers). Linux/Windows CPU: 0. Does not load weights.
+ * Vulkan Linux builds: -1 when a device exists, else 0. */
 int syllabix_llama_n_gpu_layers(void);
-/* Darwin Metal: true. Linux/Windows: false. Does not load weights. */
+/* Darwin Metal: true. Vulkan Linux with a device: true. Else false. */
 int syllabix_whisper_use_gpu(void);
+
+/* Vulkan device 0 probe helpers (exception-safe). Return 0 when Vulkan is off,
+ * unavailable, or the call fails; never throw into C/Rust. */
+int syllabix_vk_device_count_or_zero(void);
+/* 1 + NUL-terminated description in `out` on success; 0 on failure. */
+int syllabix_vk_device0_description(char *out, size_t out_cap);
+/* 1 + *total_bytes set to device-local heap size on success; 0 on failure. */
+int syllabix_vk_device0_vram_bytes(uint64_t *total_bytes);
 
 struct whisper_context *syllabix_whisper_load(const char *path);
 void syllabix_whisper_free(struct whisper_context *ctx);

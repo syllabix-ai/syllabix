@@ -42,16 +42,40 @@ def fingerprint_id(fp: dict) -> str:
     return hashlib.sha256(json.dumps(fp, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _gpu_slug(name: str) -> str:
+    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in name).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug
+
+
 def machine_label(fp: dict) -> str:
     cpu = "m4" if "M4" in fp["cpu"] else "xeon"
     ram = round(fp["ram_bytes"] / 1024**3, 1)
-    return f"{fp['os']}-{fp['arch']}-{cpu}-{fp['cpu_cores']}c-{ram}gib"
+    # Schema 3 runs omit ggml_backend; treat them as cpu for stable labels.
+    backend = fp.get("ggml_backend") or "cpu"
+    label = f"{fp['os']}-{fp['arch']}-{cpu}-{fp['cpu_cores']}c-{ram}gib-{backend}"
+    gpu = fp.get("gpu_name")
+    if gpu:
+        slug = _gpu_slug(str(gpu))
+        if slug:
+            label = f"{label}-{slug}"
+    return label
 
 
 def machine_detail(fp: dict) -> str:
-    return (f"`{fp['os']} / {fp['arch']}` · {fp['cpu']} · {fp['cpu_cores']} cores · "
-            f"{round(fp['ram_bytes'] / 1024**3, 1)} GiB RAM · "
-            f"binary {fp['binary_version']} (`{fp['git_sha'][:12]}`)")
+    backend = fp.get("ggml_backend") or "cpu"
+    parts = [f"`{fp['os']} / {fp['arch']}` · {fp['cpu']} · {fp['cpu_cores']} cores · "
+             f"{round(fp['ram_bytes'] / 1024**3, 1)} GiB RAM · ggml `{backend}`"]
+    gpu = fp.get("gpu_name")
+    if gpu:
+        vram = fp.get("gpu_vram_bytes")
+        if vram:
+            parts.append(f" · GPU {gpu} ({round(vram / 1024**3, 1)} GiB VRAM)")
+        else:
+            parts.append(f" · GPU {gpu}")
+    parts.append(f" · binary {fp['binary_version']} (`{fp['git_sha'][:12]}`)")
+    return "".join(parts)
 
 
 def load(runs: Path) -> tuple[list[dict], list[dict]]:
@@ -63,6 +87,46 @@ def load(runs: Path) -> tuple[list[dict], list[dict]]:
     for r in records:
         machines[machine_label(r["fingerprint"])] = r["fingerprint"]
     return records, [machines[k] for k in sorted(machines)]
+
+
+def self_test() -> int:
+    """Synthetic fingerprints that differ only by backend must not collide."""
+    base = {
+        "os": "linux",
+        "arch": "x86_64",
+        "cpu": "Intel(R) Xeon(R) Processor",
+        "cpu_cores": 8,
+        "ram_bytes": 16 * 1024**3,
+        "binary_version": "0.1.0",
+        "git_sha": "abc123def456",
+    }
+    cpu_fp = {**base, "ggml_backend": "cpu"}
+    vk_fp = {
+        **base,
+        "ggml_backend": "vulkan",
+        "gpu_name": "NVIDIA GeForce RTX 4090",
+        "gpu_vram_bytes": 24 * 1024**3,
+    }
+    if fingerprint_id(cpu_fp) == fingerprint_id(vk_fp):
+        print("cpu and vulkan fingerprints collided", file=sys.stderr)
+        return 1
+    cpu_label = machine_label(cpu_fp)
+    vk_label = machine_label(vk_fp)
+    if cpu_label == vk_label:
+        print(f"machine labels collided: {cpu_label}", file=sys.stderr)
+        return 1
+    if "-cpu" not in cpu_label or "-vulkan" not in vk_label:
+        print(f"labels missing backend: {cpu_label!r} {vk_label!r}", file=sys.stderr)
+        return 1
+    if "rtx-4090" not in vk_label:
+        print(f"vulkan label missing gpu slug: {vk_label!r}", file=sys.stderr)
+        return 1
+    # Schema 3 fingerprints (no ggml_backend) still summarize as cpu.
+    if not machine_label(base).endswith("-cpu"):
+        print(f"schema-3 label expected *-cpu: {machine_label(base)!r}", file=sys.stderr)
+        return 1
+    print("self-test ok")
+    return 0
 
 
 def mean(vals: list) -> float:
@@ -122,7 +186,12 @@ def main() -> int:
     parser.add_argument("--markdown", type=Path,
                         default=Path("docs/workload_benchmark/workload_benchmark.md"))
     parser.add_argument("--fingerprint", type=Path, help="print the run id for one JSONL file")
+    parser.add_argument("--self-test", action="store_true",
+                        help="check backend-aware fingerprint ids and labels")
     args = parser.parse_args()
+
+    if args.self_test:
+        return self_test()
 
     if args.fingerprint:
         recs = [json.loads(l) for l in args.fingerprint.read_text(encoding="utf-8").splitlines() if l.strip()]

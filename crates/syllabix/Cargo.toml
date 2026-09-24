@@ -16,6 +16,7 @@ path = "src/main.rs"
 clap.workspace = true
 crossterm.workspace = true
 syllabix-core.workspace = true
+syllabix-native.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
