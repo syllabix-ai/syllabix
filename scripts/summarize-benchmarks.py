@@ -42,7 +42,7 @@ def fingerprint_id(fp: dict) -> str:
     return hashlib.sha256(json.dumps(fp, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _gpu_slug(name: str) -> str:
+def _slug(name: str) -> str:
     slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in name).strip("-")
     while "--" in slug:
         slug = slug.replace("--", "-")
@@ -50,14 +50,14 @@ def _gpu_slug(name: str) -> str:
 
 
 def machine_label(fp: dict) -> str:
-    cpu = "m4" if "M4" in fp["cpu"] else "xeon"
+    cpu = _slug(fp["cpu"])
     ram = round(fp["ram_bytes"] / 1024**3, 1)
     # Schema 3 runs omit ggml_backend; treat them as cpu for stable labels.
     backend = fp.get("ggml_backend") or "cpu"
     label = f"{fp['os']}-{fp['arch']}-{cpu}-{fp['cpu_cores']}c-{ram}gib-{backend}"
     gpu = fp.get("gpu_name")
     if gpu:
-        slug = _gpu_slug(str(gpu))
+        slug = _slug(str(gpu))
         if slug:
             label = f"{label}-{slug}"
     return label

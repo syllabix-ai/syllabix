@@ -1,4 +1,5 @@
 machine,passed,avg_elapsed_ms,avg_first_output_ms,avg_rtf,avg_generated_audio_ms,avg_word_match,avg_mem_after_mib,avg_mem_peak_mib
-linux-x86_64-xeon-4c-15.6gib,3/3,10185.667,7211.0,1.58,6586.667,1.0,7868.6,7946.7
-linux-x86_64-xeon-8c-15.6gib,2/3,14300.667,9830.667,2.163,6800.0,1.0,7869.6,7946.9
-macos-aarch64-m4-10c-16.0gib,2/3,12027.667,8592.0,2.061,6053.333,1.0,5158.1,5358.8
+linux-x86_64-amd-ryzen-threadripper-pro-3955wx-16-cores-5c-503.5gib-vulkan-nvidia-geforce-rtx-3090,3/3,1775.333,1117.333,0.302,5973.333,1.0,1797.3,1820.8
+linux-x86_64-intel-r-xeon-r-processor-4c-15.6gib-cpu,3/3,10185.667,7211.0,1.58,6586.667,1.0,7868.6,7946.7
+linux-x86_64-intel-r-xeon-r-processor-8c-15.6gib-cpu,2/3,14300.667,9830.667,2.163,6800.0,1.0,7869.6,7946.9
+macos-aarch64-apple-m4-10c-16.0gib-cpu,2/3,12027.667,8592.0,2.061,6053.333,1.0,5158.1,5358.8
