@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Delete superseded benchmark runs, keeping the newest full-matrix run per machine.
 
-A machine is identified by (os, arch, cpu, cpu_cores, ram_bytes) — the parts of
+A machine is identified by (os, arch, cpu, cpu_cores, ram_bytes) plus optional
+compute-backend fields (ggml_backend, gpu_name, gpu_vram_bytes) — the parts of
 the bench fingerprint that describe hardware, ignoring binary_version/git_sha.
+Schema 3 runs omit the backend keys; missing keys compare as None so old CPU
+runs stay grouped together. CPU vs Vulkan (or Metal) on the same host stay
+distinct.
 For each machine the run with the most records wins (the full STT x LLM x TTS
 matrix grows as models are added); ties break toward the lexicographically
 largest git_sha. Everything else (legacy single-axis runs, superseded matrix
@@ -20,7 +24,16 @@ import json
 import sys
 from pathlib import Path
 
-MACHINE_KEYS = ("os", "arch", "cpu", "cpu_cores", "ram_bytes")
+MACHINE_KEYS = (
+    "os",
+    "arch",
+    "cpu",
+    "cpu_cores",
+    "ram_bytes",
+    "ggml_backend",
+    "gpu_name",
+    "gpu_vram_bytes",
+)
 
 
 def load_runs(runs: Path) -> list[tuple[Path, dict, int]]:
@@ -45,7 +58,7 @@ def load_runs(runs: Path) -> list[tuple[Path, dict, int]]:
 def pick_keep(found: list[tuple[Path, dict, int]]) -> tuple[set[Path], set[Path]]:
     by_machine: dict[tuple, list[tuple[Path, dict, int]]] = {}
     for path, fp, n in found:
-        by_machine.setdefault(tuple(fp[k] for k in MACHINE_KEYS), []).append((path, fp, n))
+        by_machine.setdefault(tuple(fp.get(k) for k in MACHINE_KEYS), []).append((path, fp, n))
     keep, delete = set(), set()
     for machine, group in sorted(by_machine.items()):
         group.sort(key=lambda item: (item[2], item[1].get("git_sha", "")), reverse=True)

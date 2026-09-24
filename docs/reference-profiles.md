@@ -132,7 +132,11 @@ Metal compute buffer that `ggml_backend_sched` could not place with the
 reference STT and LLM contexts resident. Allocation errors are propagated
 through mtmd rather than discovered on the first spoken reply. Diagnostics
 record the resulting backend as `tts_backend`; component benchmark JSONL
-records the same choice as `backend`.
+records the same choice as `backend`. STT and LLM JSONL lines use the same
+`backend` vocabulary for ggml placement (`cpu` / `metal` / `vulkan`). The run
+fingerprint also stores `ggml_backend` (and GPU name / VRAM when known) so a
+CPU contribution and a Vulkan contribution on one host hash to different
+`docs/eval/runs/<fingerprint>.jsonl` paths.
 
 Protocol (llama-bench at the vendored llama.cpp commit `ad1de39`, 4 threads,
 pp512 / tg128, 2 repetitions, MacBook Air Apple Silicon):
