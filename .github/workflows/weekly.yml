@@ -1,15 +1,24 @@
 name: Weekly full check
 
-# Full cross-platform safety net on GitHub-hosted runners.
+# Full cross-platform safety net: Linux/Windows on GitHub-hosted runners,
+# macOS on the self-hosted runner (0 billed minutes). When the Mac is
+# offline, manually dispatch with the hosted pool for that run.
 # The per-PR fast gate (fmt / clippy / coverage) lives in ci.yml on the
-# self-hosted macOS runner (0 billed minutes); this workflow re-validates
-# every supported OS and the Linux coverage baseline on hosted runners
-# (~80-90 billed minutes per run).
+# self-hosted macOS runner; this workflow re-validates every supported OS
+# and the Linux coverage baseline.
 
 on:
   schedule:
     - cron: "0 06 * * 1" # Mondays 06:00 UTC
   workflow_dispatch:
+    inputs:
+      macos_pool:
+        description: "Runner pool for the macOS leg (default: self-hosted, free)"
+        type: choice
+        default: '["self-hosted", "macOS"]'
+        options:
+          - '["self-hosted", "macOS"]'
+          - '["macos-latest"]'
 
 permissions:
   contents: read
@@ -78,28 +87,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
-      # Bill all three legs only when they can all pass; stop the others as
-      # soon as one fails.
-      fail-fast: true
+      # Each leg runs to completion even if another fails, so one red OS
+      # never hides the results of the others. The macOS leg is a separate
+      # job and already runs independently of this matrix.
+      fail-fast: false
       matrix:
         include:
           - name: linux-x64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            extra_target: ""
           - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            extra_target: ""
-          - name: macos-arm64
-            os: macos-latest
-            target: aarch64-apple-darwin
-            extra_target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.91.0
         with:
-          targets: ${{ matrix.target }}${{ matrix.extra_target != '' && format(',{0}', matrix.extra_target) || '' }}
+          targets: ${{ matrix.target }}
       - name: Install ALSA headers, CMake, and bubblewrap
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake bubblewrap
@@ -111,9 +115,6 @@ jobs:
           if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - name: Install CMake
-        if: runner.os == 'macOS'
-        run: brew install cmake
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
@@ -125,9 +126,6 @@ jobs:
         run: cargo test --workspace --target ${{ matrix.target }}
       - name: Release compile
         run: cargo build --workspace --release --target ${{ matrix.target }}
-      - name: Cross-compile macOS Intel
-        if: matrix.extra_target != ''
-        run: cargo build --workspace --release --target ${{ matrix.extra_target }}
       - name: Check undeclared dynamic libraries
         if: runner.os == 'Linux'
         run: |
@@ -138,5 +136,47 @@ jobs:
         run: |
           chmod +x scripts/check-one-ggml.sh
           scripts/check-one-ggml.sh "target/${{ matrix.target }}/release/syllabix"
+
+  # macOS leg, self-hosted only (0 billed minutes): native Apple-Silicon
+  # test plus Intel cross-compile check. Scheduled runs always use the
+  # self-hosted Mac; when it is offline, manually dispatch this workflow
+  # with the hosted pool for that run (same override pattern as ci.yml).
+  test-macos:
+    name: test / macos-arm64
+    runs-on: ${{ fromJSON(inputs.macos_pool || '["self-hosted", "macOS"]') }}
+    timeout-minutes: 40
+    env:
+      # Self-hosted macOS runners ship Homebrew Rust; rustup-init otherwise
+      # refuses to install the pinned toolchain over it. Harmless on hosted.
+      RUSTUP_INIT_SKIP_PATH_CHECK: yes
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      # dtolnay/rust-toolchain only prepends ~/.cargo/bin when it installs
+      # rustup. On a self-hosted Mac rustup already exists, so Homebrew
+      # rustc/cargo stay first on PATH without this. Harmless on hosted.
+      - name: Prefer rustup over Homebrew rustc
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+      - name: Ensure CMake (no-op when preinstalled on the runner)
+        run: command -v cmake || brew install cmake
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.syllabix-cache
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
+      # Cache only when dispatched to the hosted pool. The self-hosted
+      # runner keeps target/ on disk between runs, so restore always missed
+      # while every green job uploaded ~1 GB over the home uplink (see ci.yml).
+      - uses: Swatinem/rust-cache@v2
+        if: contains(inputs.macos_pool || '', 'macos-latest')
+        with:
+          key: macos-arm64
+      - name: Unit and CLI tests
+        run: cargo test --workspace --target aarch64-apple-darwin
+      - name: Release compile
+        run: cargo build --workspace --release --target aarch64-apple-darwin
+      - name: Cross-compile macOS Intel
+        run: cargo build --workspace --release --target x86_64-apple-darwin
 
   # Dist packaging and GitHub Release attach live in release.yml (v* tags only).
