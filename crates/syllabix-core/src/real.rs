@@ -140,6 +140,8 @@ mod production {
         Whisper(WhisperStt),
         /// Moonshine streaming ONNX (small or medium; English only, partials always on).
         Moonshine(Box<MoonshineStt>),
+        /// Qwen3-ASR 0.6B through the shared ggml (finalize only).
+        Qwen(Box<crate::qwen_asr::QwenAsrStt>),
     }
 
     impl crate::providers::Stt for LiveStt {
@@ -147,6 +149,7 @@ mod production {
             match self {
                 Self::Whisper(stt) => stt.name(),
                 Self::Moonshine(stt) => stt.name(),
+                Self::Qwen(stt) => stt.name(),
             }
         }
 
@@ -154,6 +157,7 @@ mod production {
             match self {
                 Self::Whisper(stt) => stt.transcribe(utterance, cancel),
                 Self::Moonshine(stt) => stt.transcribe(utterance, cancel),
+                Self::Qwen(stt) => stt.transcribe(utterance, cancel),
             }
         }
 
@@ -165,6 +169,7 @@ mod production {
             match self {
                 Self::Whisper(stt) => stt.start_turn(turn, cancel),
                 Self::Moonshine(stt) => stt.start_turn(turn, cancel),
+                Self::Qwen(stt) => stt.start_turn(turn, cancel),
             }
         }
 
@@ -176,6 +181,7 @@ mod production {
             match self {
                 Self::Whisper(stt) => stt.push_frame(frame, cancel),
                 Self::Moonshine(stt) => stt.push_frame(frame, cancel),
+                Self::Qwen(stt) => stt.push_frame(frame, cancel),
             }
         }
 
@@ -183,16 +189,28 @@ mod production {
             match self {
                 Self::Whisper(stt) => stt.cancel_turn(turn),
                 Self::Moonshine(stt) => stt.cancel_turn(turn),
+                Self::Qwen(stt) => stt.cancel_turn(turn),
             }
         }
     }
 
     impl LiveStt {
+        /// Compute backend confirmed after load for Qwen ASR (`cpu` / `metal` /
+        /// `vulkan`). Whisper and Moonshine return `None` (bench uses the
+        /// fingerprint ggml backend instead).
+        pub fn backend_id(&self) -> Option<&str> {
+            match self {
+                Self::Qwen(stt) => stt.backend_id(),
+                Self::Whisper(_) | Self::Moonshine(_) => None,
+            }
+        }
+
         /// Apply the yaml STT language to the selected engine.
         pub fn with_language(self, language: &str) -> Result<Self> {
             match self {
                 Self::Whisper(stt) => Ok(Self::Whisper(stt.with_language(language)?)),
                 Self::Moonshine(stt) => Ok(Self::Moonshine(stt)),
+                Self::Qwen(stt) => Ok(Self::Qwen(Box::new(stt.with_language(language)?))),
             }
         }
     }
@@ -221,6 +239,16 @@ mod production {
             crate::SttModel::MoonshineStreamingSmall
             | crate::SttModel::MoonshineStreamingMedium => Ok(LiveStt::Moonshine(Box::new(
                 MoonshineStt::from_cache(cache, fetcher, progress, cancel, config.stt_model)?,
+            ))),
+            crate::SttModel::QwenAsr06 => Ok(LiveStt::Qwen(Box::new(
+                crate::qwen_asr::QwenAsrStt::from_cache(
+                    cache,
+                    fetcher,
+                    progress,
+                    cancel,
+                    config.stt_model,
+                    config.stt_compute,
+                )?,
             ))),
         }
     }

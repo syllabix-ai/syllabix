@@ -16,7 +16,7 @@ Cache:
 | --- | --- |
 | **Release artifacts** | Linux x64, macOS Apple Silicon, macOS Intel, Windows x64 |
 | **Default cache** | ~2.2 GB on first `run` |
-| **Compute** | Darwin: Metal + Accelerate for STT/LLM. Linux/Windows: portable CPU by default. Opt-in Linux Vulkan builds (`SYLLABIX_GGML_VULKAN=1`) offload whisper/llama/Qwen when a device is present. Qwen TTS stays CPU unless `compute` selects Metal/Vulkan (or Auto probes them). |
+| **Compute** | Darwin: Metal + Accelerate for STT/LLM. Linux/Windows: portable CPU by default. Opt-in Linux Vulkan builds (`SYLLABIX_GGML_VULKAN=1`) offload whisper/llama/Qwen when a device is present. Qwen TTS/ASR stay CPU unless `compute` selects Metal/Vulkan (or Auto probes them). |
 | **RAM** | Not a published gate. The default stack is the combination measured for an Apple M4 / 16 GiB class machine; see [reference profiles](reference-profiles.md). |
 | **Network** | First fetch of each id needs HTTPS. After the cache is full, default `run` needs none. |
 
@@ -37,6 +37,7 @@ Cache:
 | `whisper-large-v3-turbo-q5_0` | Published quantization | same |
 | `moonshine-streaming-small` | English-only streaming ASR; live partials (~360 MB) | pinned ONNX export; see NOTICE |
 | `moonshine-streaming-medium` | Larger English-only streaming ASR (~590 MB) | pinned ONNX export; see NOTICE |
+| `qwen3-asr-0.6` | Qwen3-ASR 0.6B via llama.cpp mtmd; finalize only (~1.0 GB). Optional `pipeline.stt.compute` (auto/cpu/metal/vulkan), same placement as Qwen TTS. | https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF |
 
 ## LLM
 

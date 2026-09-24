@@ -44,6 +44,8 @@ pub struct AgentConfig {
     pub stt: SttProvider,
     /// STT model id.
     pub stt_model: SttModel,
+    /// Qwen3-ASR compute placement (`auto`, `cpu`, `metal`, or `vulkan`).
+    pub stt_compute: TtsCompute,
     /// STT language code: a whisper-supported ISO code or `auto`.
     pub language: String,
     /// LLM provider.
@@ -75,7 +77,7 @@ pub struct AgentConfig {
     pub tts: TtsProvider,
     /// TTS model id (`kokoro`, `qwen3-0.6`, `qwen3-1.7`, or `pocket-tts`).
     pub tts_model: TtsModel,
-    /// Qwen3-TTS compute placement (`auto`, `cpu`, or `metal`).
+    /// Qwen3-TTS compute placement (`auto`, `cpu`, `metal`, or `vulkan`).
     pub tts_compute: TtsCompute,
     /// TTS language code (`en`). Qwen3-TTS speaks this language; Kokoro
     /// ignores it (the ONNX voice is fixed).
@@ -113,6 +115,7 @@ impl AgentConfig {
             vad_preroll_ms: WHISPER_PREROLL.as_millis() as u32,
             stt: defaults.stt,
             stt_model: defaults.stt_model,
+            stt_compute: TtsCompute::Auto,
             language: defaults.language.to_string(),
             llm: defaults.llm,
             llm_model: defaults.llm_model.to_string(),
@@ -193,6 +196,11 @@ impl AgentConfig {
             ""
         };
         let developer_permissions_block = self.render_developer_permissions_block();
+        let stt_compute_line = if self.stt_compute == TtsCompute::Auto {
+            String::new()
+        } else {
+            format!("    compute: {}\n", self.stt_compute.as_str())
+        };
         let tts_compute_line = if self.tts_compute == TtsCompute::Auto {
             String::new()
         } else {
@@ -211,7 +219,7 @@ pipeline:
   stt:
     provider: {stt}
     model: {stt_model}
-    language: {language}
+{stt_compute_line}    language: {language}
   llm:
     provider: {llm}
     model: {llm_model}
@@ -230,6 +238,7 @@ pipeline:
             vad_preroll_ms = self.vad_preroll_ms,
             stt = self.stt.as_str(),
             stt_model = self.stt_model.as_str(),
+            stt_compute_line = stt_compute_line,
             language = self.language,
             llm = self.llm.as_str(),
             llm_model = self.llm_model,
@@ -387,10 +396,26 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     )?;
 
     let stt = mapping(required(pipeline, "pipeline.stt", "stt")?, "pipeline.stt")?;
-    deny_unknown(stt, "pipeline.stt", &["provider", "model", "language"])?;
+    deny_unknown(
+        stt,
+        "pipeline.stt",
+        &["provider", "model", "language", "compute"],
+    )?;
     let stt_provider = parse_stt(required_string(stt, "pipeline.stt.provider", "provider")?)?;
     let stt_model = parse_stt_model(required_string(stt, "pipeline.stt.model", "model")?)?;
     let language = parse_language(required_string(stt, "pipeline.stt.language", "language")?)?;
+    let stt_compute = match optional_string(stt, "pipeline.stt", "compute")? {
+        Some(value) => TtsCompute::parse(&value).ok_or_else(|| {
+            unsupported("pipeline.stt.compute", &value, "auto, cpu, metal, vulkan")
+        })?,
+        None => TtsCompute::Auto,
+    };
+    if stt_compute != TtsCompute::Auto && !stt_model.is_qwen_asr() {
+        return Err(Error::Config {
+            field: "pipeline.stt.compute".into(),
+            message: "is only valid with qwen3-asr-0.6".into(),
+        });
+    }
     // Moonshine is English-only: any other language (including `auto`) would
     // mistranslate the `{language}` prompt pin, so reject it here where the
     // field is named.
@@ -506,6 +531,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         vad_preroll_ms,
         stt: stt_provider,
         stt_model,
+        stt_compute,
         language,
         llm: llm_provider,
         llm_model: llm_model.to_string(),
@@ -1945,6 +1971,60 @@ pipeline:
             assert!(err.to_string().contains(bad), "{bad}: {err}");
         }
         assert_eq!(AgentConfig::v0().stt_model, SttModel::Small);
+    }
+
+    #[test]
+    fn qwen_asr_accepts_non_english_language() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: whisper-small", "model: qwen3-asr-0.6")
+            .replace("language: en", "language: fr");
+        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(cfg.stt_model, SttModel::QwenAsr06);
+        assert_eq!(cfg.language, "fr");
+    }
+
+    #[test]
+    fn qwen_asr_compute_modes_parse_and_default_auto_stays_implicit() {
+        let base = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: whisper-small", "model: qwen3-asr-0.6");
+        assert_eq!(
+            AgentConfig::parse_yaml(&base).unwrap().stt_compute,
+            TtsCompute::Auto
+        );
+        assert!(!base.contains("compute:"));
+        for compute in TtsCompute::ALL {
+            let yaml = base.replace(
+                "model: qwen3-asr-0.6\n    language: en",
+                &format!(
+                    "model: qwen3-asr-0.6\n    language: en\n    compute: {}",
+                    compute.as_str()
+                ),
+            );
+            assert_eq!(AgentConfig::parse_yaml(&yaml).unwrap().stt_compute, compute);
+        }
+    }
+
+    #[test]
+    fn qwen_asr_compute_rejects_unknown_or_non_qwen_use() {
+        let base = AgentConfig::v0().to_yaml();
+        let err = AgentConfig::parse_yaml(&base.replace(
+            "model: whisper-small\n    language: en",
+            "model: whisper-small\n    language: en\n    compute: cuda",
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("pipeline.stt.compute"), "{err}");
+
+        let err = AgentConfig::parse_yaml(&base.replace(
+            "model: whisper-small\n    language: en",
+            "model: whisper-small\n    language: en\n    compute: cpu",
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("only valid with qwen3-asr-0.6"),
+            "{err}"
+        );
     }
 
     #[test]

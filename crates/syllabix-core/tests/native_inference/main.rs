@@ -22,6 +22,8 @@ mod pocket_tts;
 #[cfg(not(coverage))]
 mod qwen;
 #[cfg(not(coverage))]
+mod qwen_asr;
+#[cfg(not(coverage))]
 mod real_loop;
 #[cfg(not(coverage))]
 mod whisper;
@@ -45,12 +47,13 @@ use syllabix_core::{
 const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM25_2_6B_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
-const SUITED_NATIVE_IDS: [&str; 10] = [
+const SUITED_NATIVE_IDS: [&str; 11] = [
     "whisper-small",
     LLAMA_32_1B_ASSET,
     "kokoro",
     "qwen3-0.6",
     "qwen3-1.7",
+    "qwen3-asr-0.6",
     QWEN35_08B_ASSET,
     "pocket-tts",
     LFM25_2_6B_ASSET,

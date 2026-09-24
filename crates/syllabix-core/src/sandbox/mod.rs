@@ -142,6 +142,8 @@ pub use linux::{
 mod tests {
     #[cfg(coverage)]
     use super::*;
+    #[cfg(all(target_os = "linux", not(coverage)))]
+    use super::{FilesystemMode, LinuxSandboxRunner, NetworkMode, Path, SandboxRequest};
 
     #[cfg(all(target_os = "linux", not(coverage)))]
     use super::{linux, FilesystemMode, LinuxSandboxRunner, NetworkMode, SandboxRequest};
@@ -228,7 +230,7 @@ mod tests {
             FilesystemMode::ReadOnly,
             NetworkMode::None,
         );
-        let (runner, _) = linux::select_runner(&request).expect("linux runner");
+        let (runner, _) = super::linux::select_runner(&request).expect("linux runner");
         if Path::new("/usr/bin/bwrap").exists() || Path::new("/bin/bwrap").exists() {
             assert_eq!(runner, LinuxSandboxRunner::Bubblewrap);
         } else {

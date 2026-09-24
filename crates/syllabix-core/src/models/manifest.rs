@@ -179,6 +179,24 @@ impl Manifest {
                     "7b913404bdd039af4756783218af4440bc07fb7d6d8258d677e34f95b3ec416f",
                     3_761_754,
                 ),
+                // Qwen3-ASR 0.6B: llama.cpp mtmd decoder + qwen3a encoder.
+                // Fetched only when yaml selects qwen3-asr-0.6.
+                asset(
+                    "qwen3-asr-0.6",
+                    ModelLayer::Stt,
+                    "Qwen3-ASR-0.6B-Q8_0.gguf",
+                    "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/Qwen3-ASR-0.6B-Q8_0.gguf",
+                    "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971",
+                    804_749_248,
+                ),
+                asset(
+                    "qwen3-asr-0.6-mmproj",
+                    ModelLayer::Stt,
+                    "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+                    "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+                    "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
+                    214_392_480,
+                ),
                 asset(
                     "qwen3.5-0.8b",
                     ModelLayer::Llm,
@@ -390,10 +408,10 @@ mod tests {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
         // Silero + five whisper ids + eight moonshine assets (small+medium) +
-        // three GGUFs + Kokoro weights + voice + eight internal-only Pocket TTS
-        // assets + two Qwen3-TTS backbones, each with its own projector, plus
-        // three LFM assets.
-        assert_eq!(m.assets.len(), 34);
+        // Qwen3-ASR 0.6B decoder/mmproj + three GGUFs + Kokoro weights + voice +
+        // eight internal-only Pocket TTS assets + two Qwen3-TTS backbones, each
+        // with its own projector, plus three LFM assets.
+        assert_eq!(m.assets.len(), 36);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -411,6 +429,10 @@ mod tests {
                     asset.file_name,
                     "moonshine-streaming-medium-encoder-int8.onnx"
                 );
+                continue;
+            }
+            if model == SttModel::QwenAsr06 {
+                assert_eq!(asset.file_name, "Qwen3-ASR-0.6B-Q8_0.gguf");
                 continue;
             }
             assert!(asset.file_name.starts_with("ggml-"), "{}", asset.id);

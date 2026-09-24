@@ -35,6 +35,7 @@ mod policy;
 mod pocket_tts;
 mod providers;
 mod queue;
+mod qwen_asr;
 mod real;
 mod sandbox;
 mod skills;
@@ -104,6 +105,7 @@ pub use pocket_tts::{
 pub use policy::{resolve_effective, Enforcement, ExecutionPlan, PolicyDeny, Provenance};
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
+pub use qwen_asr::{QwenAsrStt, ASR_ASSET, ASR_MMPROJ_ASSET};
 pub use real::{build_llm, build_stt, build_tts, load_real_providers, LiveLlm, LiveStt, LiveTts};
 #[cfg(all(target_os = "macos", not(coverage)))]
 pub use sandbox::MacOsSandboxProvider;

@@ -31,6 +31,11 @@ mod ffi {
         _private: [u8; 0],
     }
 
+    #[repr(C)]
+    pub struct QwenAsrHandle {
+        _private: [u8; 0],
+    }
+
     #[cfg(not(coverage))]
     extern "C" {
         pub fn syllabix_native_hush_logs();
@@ -170,6 +175,24 @@ mod ffi {
             pcm_user: *mut c_void,
         ) -> c_int;
         pub fn syllabix_qwen_tts_pcm_free(pcm: *mut i16);
+        pub fn syllabix_qwen_asr_load(
+            model_path: *const c_char,
+            mmproj_path: *const c_char,
+            n_threads: c_int,
+            backend: c_int,
+        ) -> *mut QwenAsrHandle;
+        pub fn syllabix_qwen_asr_free(asr: *mut QwenAsrHandle);
+        pub fn syllabix_qwen_asr_backend(asr: *const QwenAsrHandle) -> c_int;
+        pub fn syllabix_qwen_asr_decode(
+            asr: *mut QwenAsrHandle,
+            pcm: *const f32,
+            n_samples: c_int,
+            language: *const c_char,
+            abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+            abort_user: *mut c_void,
+            out: *mut c_char,
+            out_cap: c_int,
+        ) -> c_int;
     }
 
     // The coverage build must exercise the Rust safety/translation layer
@@ -556,6 +579,61 @@ mod ffi {
         if !pcm.is_null() {
             drop(Box::from_raw(pcm.cast::<[i16; 2]>()));
         }
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_qwen_asr_load(
+        model_path: *const c_char,
+        _mmproj_path: *const c_char,
+        _n_threads: c_int,
+        _backend: c_int,
+    ) -> *mut QwenAsrHandle {
+        if fail(&text(model_path), "fail") {
+            std::ptr::null_mut()
+        } else {
+            std::ptr::dangling_mut::<QwenAsrHandle>()
+        }
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_qwen_asr_free(_asr: *mut QwenAsrHandle) {}
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_qwen_asr_backend(_asr: *const QwenAsrHandle) -> c_int {
+        0
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_qwen_asr_decode(
+        _asr: *mut QwenAsrHandle,
+        pcm: *const f32,
+        n_samples: c_int,
+        language: *const c_char,
+        _abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        _abort_user: *mut c_void,
+        out: *mut c_char,
+        out_cap: c_int,
+    ) -> c_int {
+        if pcm.is_null() || n_samples < 1 || out.is_null() || out_cap < 2 {
+            return -1;
+        }
+        let lang = text(language);
+        if lang.contains("cancel") {
+            return 1;
+        }
+        if lang.contains("error") {
+            return -1;
+        }
+        let reply = if lang == "auto" {
+            "language Spanish<asr_text>hola"
+        } else {
+            "hello from fake qwen asr"
+        };
+        let bytes = reply.as_bytes();
+        let n = bytes.len().min(out_cap as usize - 1);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), n);
+        *out.add(n) = 0;
+        0
     }
 }
 
@@ -1295,7 +1373,7 @@ impl QwenTtsBackend {
         }
     }
 
-    fn as_c_int(self) -> c_int {
+    pub(crate) fn as_c_int(self) -> c_int {
         match self {
             Self::Cpu => 0,
             Self::Metal => 1,
@@ -1303,7 +1381,7 @@ impl QwenTtsBackend {
         }
     }
 
-    fn from_c_int(value: c_int) -> Self {
+    pub(crate) fn from_c_int(value: c_int) -> Self {
         match value {
             1 => Self::Metal,
             2 => Self::Vulkan,
@@ -1523,6 +1601,108 @@ impl Drop for QwenTtsContext {
     }
 }
 
+/// In-process Qwen3-ASR context: decoder GGUF + qwen3a mmproj through the
+/// shared ggml. One instance transcribes utterances sequentially.
+pub struct QwenAsrContext {
+    raw: *mut ffi::QwenAsrHandle,
+}
+
+unsafe impl Send for QwenAsrContext {}
+
+impl QwenAsrContext {
+    /// Load the decoder GGUF and audio encoder mmproj with an explicit
+    /// [`QwenTtsBackend`] placement (same ids as Qwen3-TTS).
+    pub fn load(
+        model_path: impl AsRef<Path>,
+        mmproj_path: impl AsRef<Path>,
+        n_threads: i32,
+        backend: QwenTtsBackend,
+    ) -> Result<Self, String> {
+        hush_logs();
+        unsafe { ffi::syllabix_llama_backend_init() };
+        let to_c = |p: &Path| {
+            let s = p
+                .to_str()
+                .ok_or_else(|| format!("path is not valid UTF-8: {}", p.display()))?;
+            CString::new(s).map_err(|_| "path contains an interior NUL".to_string())
+        };
+        let c_model = to_c(model_path.as_ref())?;
+        let c_mmproj = to_c(mmproj_path.as_ref())?;
+        let _ggml = ggml_lock();
+        let raw = unsafe {
+            ffi::syllabix_qwen_asr_load(
+                c_model.as_ptr(),
+                c_mmproj.as_ptr(),
+                n_threads,
+                backend.as_c_int(),
+            )
+        };
+        if raw.is_null() {
+            return Err(format!(
+                "failed to load Qwen3-ASR at {} (mmproj {})",
+                model_path.as_ref().display(),
+                mmproj_path.as_ref().display()
+            ));
+        }
+        Ok(Self { raw })
+    }
+
+    /// Compute backend confirmed by the native context after load.
+    pub fn backend(&self) -> QwenTtsBackend {
+        let _ggml = ggml_lock();
+        QwenTtsBackend::from_c_int(unsafe { ffi::syllabix_qwen_asr_backend(self.raw) })
+    }
+
+    /// Decode one 16 kHz mono f32 utterance.
+    ///
+    /// `language` is an English display name (`English`) or `auto`.
+    ///
+    /// # Safety
+    /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
+    pub unsafe fn decode(
+        &mut self,
+        pcm: &[f32],
+        language: &str,
+        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        abort_user: *mut c_void,
+    ) -> Result<String, DecodeError> {
+        let c_lang = CString::new(language)
+            .map_err(|_| DecodeError::Failed("language contains NUL".into()))?;
+        let mut out = vec![0u8; 8192];
+        let _ggml = ggml_lock();
+        let rc = unsafe {
+            ffi::syllabix_qwen_asr_decode(
+                self.raw,
+                pcm.as_ptr(),
+                pcm.len() as c_int,
+                c_lang.as_ptr(),
+                abort,
+                abort_user,
+                out.as_mut_ptr().cast::<c_char>(),
+                out.len() as c_int,
+            )
+        };
+        match rc {
+            0 => {
+                let end = out.iter().position(|&b| b == 0).unwrap_or(out.len());
+                Ok(String::from_utf8_lossy(&out[..end]).into_owned())
+            }
+            1 => Err(DecodeError::Cancelled),
+            _ => Err(DecodeError::Failed("Qwen3-ASR decode failed".into())),
+        }
+    }
+}
+
+impl Drop for QwenAsrContext {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _ggml = ggml_lock();
+            unsafe { ffi::syllabix_qwen_asr_free(self.raw) };
+            self.raw = std::ptr::null_mut();
+        }
+    }
+}
+
 struct TokenSink<'a> {
     on_piece: &'a mut dyn FnMut(&str, bool) -> Result<(), LlamaError>,
 }
@@ -1681,6 +1861,21 @@ mod tests {
             Ok(_) => panic!("missing Qwen3-TTS weights should fail"),
         };
         assert!(err.contains("failed to load Qwen3-TTS"));
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn missing_qwen_asr_weights_do_not_load() {
+        let err = match QwenAsrContext::load(
+            "/no/such/qwen3-asr.gguf",
+            "/no/such/mmproj.gguf",
+            1,
+            QwenTtsBackend::Cpu,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("missing Qwen3-ASR weights should fail"),
+        };
+        assert!(err.contains("failed to load Qwen3-ASR"));
     }
 
     #[test]
@@ -2001,6 +2196,34 @@ mod tests {
             )
         }
         .is_err());
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_exercises_qwen_asr_wrapper_without_weights() {
+        assert!(
+            QwenAsrContext::load("fail-qwen-asr", "fake-mmproj", 1, QwenTtsBackend::Cpu).is_err()
+        );
+        let mut ctx = QwenAsrContext::load("fake-qwen-asr", "fake-mmproj", 1, QwenTtsBackend::Cpu)
+            .expect("fake context");
+        assert!(unsafe { ctx.decode(&[], "en", None, std::ptr::null_mut()) }.is_err());
+        assert!(unsafe { ctx.decode(&[0.0], "bad\0lang", None, std::ptr::null_mut()) }.is_err());
+        assert_eq!(
+            unsafe { ctx.decode(&[0.0], "English", None, std::ptr::null_mut()) }.unwrap(),
+            "hello from fake qwen asr"
+        );
+        assert_eq!(
+            unsafe { ctx.decode(&[0.0], "auto", None, std::ptr::null_mut()) }.unwrap(),
+            "language Spanish<asr_text>hola"
+        );
+        assert_eq!(
+            unsafe { ctx.decode(&[0.0], "cancel", None, std::ptr::null_mut()) },
+            Err(DecodeError::Cancelled)
+        );
+        assert_eq!(
+            unsafe { ctx.decode(&[0.0], "error", None, std::ptr::null_mut()) },
+            Err(DecodeError::Failed("Qwen3-ASR decode failed".into()))
+        );
     }
 
     #[cfg(coverage)]
