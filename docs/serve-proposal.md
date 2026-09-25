@@ -9,9 +9,9 @@ Syllabix ships those workers.
 
 This is usability for a fleet of endpoints (desk, laptop, speaker, later
 other UIs): one weight cache, not ten copies of Whisper, Moonshine, or
-Pocket/Qwen.
-It is not a new conversation product. Capture, AEC, VAD, barge-in, playback,
-and session history stay on the device that has the human.
+Pocket/Qwen. It is not a new conversation product. Capture, AEC, VAD,
+barge-in, playback, and session history stay on the device that has the
+human.
 
 Status: design only. Default `run` is unchanged until the PR list lands.
 
@@ -79,7 +79,8 @@ Moonshine is **in** the series (PR 3 below). It is not a v1 cut.
 
 - A CUDA-specific SKU (worker uses whatever `build_stt` / `build_tts` already compile)
 - Public internet bind as the default
-- Promising OpenAI Audio API compatibility
+- Promising full OpenAI **Realtime** (WebRTC, `session.update`) or every
+  Audio field (`translations`, diarization, `srt`/`vtt`)
 - Moving AEC, VAD, or `run` onto the server
 - WebRTC / SIP / SFU
 
@@ -109,7 +110,7 @@ pipeline:
   stt:
     provider: online
     model: whisper-small      # or moonshine-streaming-small, qwen3-asr-0.6, … — must match the worker
-    base_url: http://127.0.0.1:8091
+    base_url: http://127.0.0.1:8091/v1
   llm:
     provider: online
     model: lfm2.5-2.6b
@@ -117,7 +118,7 @@ pipeline:
   tts:
     provider: online
     model: pocket-tts
-    base_url: http://127.0.0.1:8092
+    base_url: http://127.0.0.1:8092/v1
 ```
 
 - `provider: local` remains the default `run` path.
@@ -138,38 +139,82 @@ Stay in the existing thread model. Add a small blocking HTTP server (for
 example `tiny_http`, or a short `TcpListener` parser). Do not pull
 Axum/Hyper unless the process model is being redesigned.
 
+### Wire format: OpenAI Audio where it exists
+
+Chat already uses OpenAI-compatible `POST /v1/chat/completions`. Audio has
+a **smaller** clone-set. Use it for the shapes everyone already speaks;
+do not invent `/v1/stt/transcribe` for those.
+
+**De facto standard (cloned widely):** OpenAI Audio REST under `/v1`.
+
+| Job | Method | Who clones it |
+| --- | --- | --- |
+| File / utterance STT | `POST /v1/audio/transcriptions` (multipart `file`, `model`, `language`, `response_format`) | Groq, Azure Whisper-style, whisper.cpp `whisper-server`, LocalAI, many gateways. Response `{ "text": "..." }` (`json`) or `verbose_json` (`text`, `language`, `duration`, `segments`). |
+| Full-text TTS | `POST /v1/audio/speech` (JSON `model`, `input`, `voice`, `response_format`) | Groq PlayAI, LocalAI, Kokoro-FastAPI, openedai-speech. Body is audio bytes (`mp3` default on OpenAI; we default `pcm` or `wav` for the voice loop). Optional `stream_format`: `audio` (chunked bytes) or `sse`. |
+
+Auth is `Authorization: Bearer …`, same as LLM online. `base_url` is the
+`/v1` root, same as `pipeline.llm.base_url`.
+
+**Not a clone-set** (do not pretend these are OpenAI-compatible):
+
+| Job | What majors actually use | Syllabix |
+| --- | --- | --- |
+| Live mic STT with partials | OpenAI **Realtime** (WebSocket/WebRTC, `input_audio_buffer.append`). Deepgram live WS, AssemblyAI streaming — each proprietary. Groq STT is still the **file** endpoint. | Moonshine maps to `Stt::push_frame`. Implementing full Realtime is a product fork. Expose a **small** turn session on the same worker (below). Optional later: emit OpenAI-shaped `transcript.text.delta` events on that session without the Realtime session object. |
+| TTS fed by LLM token chunks | OpenAI speech takes one `input` string; streaming is **output audio**, not input tokens. ElevenLabs / Cartesia have their own input-stream websockets. | Keep a generation session that matches `Tts::synthesize_chunk`. Sentence-buffer + repeated `/v1/audio/speech` is the compatible fallback (extra RTT). |
+
+**Decision:** `serve` **is** OpenAI Audio for finalize STT and full-text
+TTS so curl, the OpenAI Python client, and other tools work. Moonshine
+partials and token-chunk TTS use a thin Syllabix session beside that,
+not a fake `/audio/*` that no client expects.
+
+VAD stays on the endpoint for every path. The worker never decides turn
+start/end.
+
 ### STT — two shapes, one worker
 
-`serve stt` loads one yaml model via `build_stt`. The wire follows the
-`Stt` trait the pipeline already uses. VAD stay on the endpoint: the
-worker never decides turn start/end.
+`serve stt` loads one yaml model via `build_stt`.
 
-**Finalize** (Whisper, Qwen3-ASR): one request after VAD closes the
-utterance.
+**Finalize** (Whisper, Qwen3-ASR): OpenAI transcriptions after VAD closes
+the utterance.
 
-- `POST /v1/stt/transcribe`
-- Body: WAV (already encoded in-tree) or raw `s16le` plus language
-- Response JSON: `{ "text", "language" }`
+```http
+POST {base_url}/audio/transcriptions
+Authorization: Bearer …
+Content-Type: multipart/form-data
+
+file=@utterance.wav
+model=whisper-small
+language=en
+response_format=verbose_json
+```
+
+- `file`: WAV (`write_wav` already in-tree). `model` must match the
+  worker (or be ignored like whisper.cpp, with a warning).
+- Success `verbose_json`: `{ "text", "language", "duration"? }`. `json`
+  is `{ "text" }` only; the client then keeps yaml language.
 - Cancel: drop the client read; the server watches disconnect and fires
   `Cancel`.
+- Ignore or 400 unused OpenAI fields we will not honor in v1
+  (`timestamp_granularities`, `diarized_json`, `/audio/translations`).
 
 Client `RemoteStt::transcribe`: concat `utterance.pcm()`, `write_wav`,
-POST, map to `Transcript`. Check `cancel` like `openai.rs`.
+POST, map to `Transcript`. Check `cancel` like `openai.rs`. The same
+client can point `base_url` at Groq or whisper-server for experiments.
 
-**Streaming** (Moonshine: `supports_partials`): one turn session, same
-pattern as TTS generations.
+**Streaming** (Moonshine: `supports_partials`): not OpenAI
+`/audio/transcriptions` (that API has no `push_frame`). One turn session:
 
 - `POST /v1/stt/turns` → `{ turn_id }` maps to `start_turn`
 - `POST /v1/stt/turns/:id/frames` — one post-AEC `AudioFrame` (or a
   short batch) maps to `push_frame`; response may include a partial
   string
-- `POST /v1/stt/turns/:id/finalize` maps to `transcribe` (VAD-owned
-  utterance, or the frames already pushed)
+- `POST /v1/stt/turns/:id/finalize` maps to `transcribe`
 - `POST /v1/stt/turns/:id/cancel` maps to `cancel_turn`
 
 `RemoteStt` implements the full `Stt` trait. When `supports_partials`
 is true, the pipeline already calls `push_frame`; the remote adapter
-must not collapse that to a late WAV POST or live partials disappear.
+must not collapse that to a late transcriptions POST or live partials
+disappear.
 
 **Concurrency:** one in-flight turn or finalize (`Mutex`). Extra
 requests wait on a short queue (for example 8) then `503`. A Moonshine
@@ -177,10 +222,25 @@ session holds that slot until finalize or cancel.
 
 ### TTS
 
-**v1a (optional thin slice):** `POST /v1/tts/synthesize` with full text →
-WAV. Client buffers tokens. Honest extra latency; small code.
+**OpenAI speech (compatible, full `input`):**
 
-**v1b (the target):** one generation session
+```http
+POST {base_url}/audio/speech
+Content-Type: application/json
+
+{ "model": "pocket-tts", "input": "Hello.", "voice": "alloy", "response_format": "pcm" }
+```
+
+`voice` is accepted for client compatibility; Pocket’s fixed voice may
+ignore it. Response is audio bytes. `stream_format=audio` may chunk
+PCM as it is produced.
+
+This is the curl/SDK path and the sentence-buffer fallback: the endpoint
+`RemoteTts` can flush on sentence/`is_last` and call this once (honest
+extra latency).
+
+**Token-chunk session (matches `Tts::synthesize_chunk`, not in OpenAI
+Audio):**
 
 - `POST /v1/tts/generations` → `{ generation_id }`
 - `POST /v1/tts/generations/:id/chunks` with `TokenChunk` JSON (`index`,
@@ -191,10 +251,15 @@ WAV. Client buffers tokens. Honest extra latency; small code.
 The server holds one `LiveTts` and one active generation (or a small map
 by id). That reuses `synthesize_chunk_into` with no engine fork.
 
-Prefer v1b in the same PR series as the TTS client. Do not clone OpenAI
-TTS (“whole text → whole file”) as the long-term API; that is v1a.
+Prefer the generation session for `run --barge-in` and time-to-first-audio.
+Keep `/v1/audio/speech` implemented on the same process so the worker is
+still an OpenAI TTS endpoint.
 
 LAN/Tailscale can send 16 kHz mono PCM. A WAN codec (Opus) is later.
+`response_format=opus` can wait.
+
+Do not implement OpenAI Realtime (WebRTC SFU, `session.update`, audio
+output from an agent) in this series.
 
 ## Code layout
 
@@ -222,9 +287,9 @@ and streaming TTS in one change. STT alone is a complete fleet feature.
 | PR | Title (clean, no prefix) | Scope | Done when |
 | --- | --- | --- | --- |
 | 1 | Accept online STT yaml like LLM | Config only: `pipeline.stt.provider: online` + `base_url`; reject missing URL; runtime still fails clearly (same posture as TTS online today). Tests in `config.rs`. | Yaml round-trips; local still default; no network. |
-| 2 | Serve finalize STT and remote transcribe client | `syllabix serve stt` for Whisper / Qwen3-ASR; `RemoteStt::transcribe`; `LiveStt` remote arm skips cache; loopback fixture; bind localhost; token rules. | Yaml online STT (finalize id) + local LLM + local TTS works against a loopback worker. |
-| 3 | Serve Moonshine turns and remote partials | Same `serve stt` with `--model moonshine-streaming-*`; turn session API; `RemoteStt` implements `start_turn` / `push_frame` / `cancel_turn`; loopback partials. | Yaml `moonshine-streaming-small` + `provider: online` shows live partials; barge-in cancel drops the turn. |
-| 4 | Serve TTS generations and remote client | `syllabix serve tts` with v1b sessions (v1a only if a thin slice is needed first); `RemoteTts` implements `Tts`; barge-in cancel. | Yaml online TTS + local STT works; first audio can start before the LLM finishes if v1b. |
+| 2 | Serve finalize STT and remote transcribe client | `syllabix serve stt` for Whisper / Qwen3-ASR; OpenAI `POST /v1/audio/transcriptions`; `RemoteStt::transcribe`; skip cache; loopback fixture; bind localhost; token rules. | Yaml online STT works; `curl` + OpenAI-shaped multipart against the worker returns `{ "text" }`. |
+| 3 | Serve Moonshine turns and remote partials | Same `serve stt` with `--model moonshine-streaming-*`; Syllabix turn session (not Realtime); `RemoteStt` implements `start_turn` / `push_frame` / `cancel_turn`; loopback partials. | Yaml `moonshine-streaming-small` + `provider: online` shows live partials; barge-in cancel drops the turn. |
+| 4 | Serve TTS OpenAI speech and generation client | `POST /v1/audio/speech` on `serve tts`; generation session for `synthesize_chunk`; `RemoteTts` implements `Tts`; barge-in cancel. | OpenAI client can fetch a WAV; yaml online TTS + local STT works; first audio can start before the LLM finishes via the session. |
 | 5 | Document serve for a fleet of endpoints | User page: bind, token, tunnel/Tailscale, “weights on the worker,” Moonshine vs finalize STT. Default `run` story unchanged. CLI + engines + yaml cross-links. Architecture “what leaves the machine” updated for online STT/TTS. | Docs match shipped commands. |
 
 Out of this series: queue metrics, multi-model workers (two engines in
@@ -233,11 +298,11 @@ one process), GPU backend matrix, Windows-as-worker.
 ## Suggested order of work inside PRs 2–4
 
 1. Blocking HTTP listen + `/health` with no models (unit-testable).
-2. Load one Whisper via `build_stt`; transcribe fixture WAV.
+2. Load one Whisper via `build_stt`; OpenAI `transcriptions` on a fixture WAV.
 3. Wire yaml `online` to `RemoteStt` (finalize).
 4. Moonshine turn session on the same server (`build_stt` already
    selects the engine).
-5. Then TTS sessions.
+5. `/v1/audio/speech` then TTS generation sessions.
 
 ## Related
 
