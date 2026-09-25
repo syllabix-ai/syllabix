@@ -74,7 +74,7 @@ yet”). STT has only `local` today.
 
 ## Non-goals (this series)
 
-Moonshine is **in** the series (PR 3 below). It is not a v1 cut.
+Moonshine is **in** the series (last PR below). It is not a v1 cut.
 
 - A custom TTS protocol (`/v1/tts/generations`, token chunks). TTS is only
   `POST /v1/audio/speech`.
@@ -293,22 +293,22 @@ and streaming TTS in one change. STT alone is a complete fleet feature.
 | --- | --- | --- | --- |
 | 1 | Accept online STT yaml like LLM | Config only: `pipeline.stt.provider: online` + `base_url`; reject missing URL; runtime still fails clearly (same posture as TTS online today). Tests in `config.rs`. | Yaml round-trips; local still default; no network. |
 | 2 | Serve finalize STT and remote transcribe client | `syllabix serve stt` for Whisper / Qwen3-ASR; OpenAI `POST /v1/audio/transcriptions`; `RemoteStt::transcribe`; skip cache; loopback fixture; bind localhost; token rules. | Yaml online STT works; `curl` + OpenAI-shaped multipart against the worker returns `{ "text" }`. |
-| 3 | Serve Moonshine turns and remote partials | Same `serve stt` with `--model moonshine-streaming-*`; Syllabix turn session (not Realtime); `RemoteStt` implements `start_turn` / `push_frame` / `cancel_turn`; loopback partials. | Yaml `moonshine-streaming-small` + `provider: online` shows live partials; barge-in cancel drops the turn. |
-| 4 | Serve TTS over OpenAI speech | `syllabix serve tts`; `POST /v1/audio/speech`; `RemoteTts` keeps sentence buffering on the endpoint; Pocket/Kokoro full body; Qwen `stream_format=audio`; barge-in aborts the POST. No `/v1/tts/generations`. | Yaml online TTS + local STT works; first audio of a sentence can start before that sentence’s vocoder finishes when streaming. |
-| 5 | Document serve for a fleet of endpoints | User page: bind, token, tunnel/Tailscale, “weights on the worker,” Moonshine turns vs OpenAI transcriptions/speech. Default `run` story unchanged. CLI + engines + yaml cross-links. Architecture “what leaves the machine” updated for online STT/TTS. | Docs match shipped commands. |
+| 3 | Serve TTS over OpenAI speech | `syllabix serve tts`; `POST /v1/audio/speech`; `RemoteTts` keeps sentence buffering on the endpoint; Pocket/Kokoro full body; Qwen `stream_format=audio`; barge-in aborts the POST. No `/v1/tts/generations`. | Yaml online TTS + local STT works; first audio of a sentence can start before that sentence’s vocoder finishes when streaming. |
+| 4 | Document serve for a fleet of endpoints | User page: bind, token, tunnel/Tailscale, “weights on the worker,” OpenAI transcriptions/speech. Default `run` story unchanged. CLI + engines + yaml cross-links. Architecture “what leaves the machine” updated for online STT/TTS. Moonshine turns can land in PR 5. | Docs match shipped OpenAI paths. |
+| 5 | Serve Moonshine turns and remote partials | Same `serve stt` with `--model moonshine-streaming-*`; Syllabix turn session (not Realtime); `RemoteStt` implements `start_turn` / `push_frame` / `cancel_turn`; loopback partials. | Yaml `moonshine-streaming-small` + `provider: online` shows live partials; barge-in cancel drops the turn. |
 
 Out of this series: queue metrics, multi-model workers (two engines in
 one process), GPU backend matrix, Windows-as-worker, a custom TTS
 session protocol.
 
-## Suggested order of work inside PRs 2–4
+## Suggested order of work inside PRs 2–5
 
 1. Blocking HTTP listen + `/health` with no models (unit-testable).
 2. Load one Whisper via `build_stt`; OpenAI `transcriptions` on a fixture WAV.
 3. Wire yaml `online` to `RemoteStt` (finalize).
-4. Moonshine turn session on the same server (`build_stt` already
+4. `POST /v1/audio/speech` (full body, then `stream_format=audio` for Qwen).
+5. Moonshine turn session on the same STT server (`build_stt` already
    selects the engine).
-5. `POST /v1/audio/speech` (full body, then `stream_format=audio` for Qwen).
 
 ## Related
 
