@@ -141,6 +141,10 @@ struct TurnDump {
     timings: Option<TurnTimings>,
     timeline: BTreeMap<TimelineAnchor, Instant>,
     written: bool,
+    /// Outcome of the first dump. Kept so late LLM meta / tool events can
+    /// rewrite the sidecar after a fast TTS `complete()` raced ahead of the
+    /// LLM worker's post-generate bookkeeping.
+    outcome: Option<TurnOutcome>,
 }
 
 impl TurnDebug {
@@ -276,25 +280,28 @@ impl TurnDebug {
     }
 
     /// Provider facts for the sidecar (provider, model, endpoint, request id).
-    /// Best-effort: a barge-in dump that already wrote keeps its outcome.
+    /// Best-effort: a barge-in dump that already wrote keeps its outcome, but
+    /// the JSON is rewritten so late meta is not lost when TTS completes
+    /// during `llm.generate` (before the LLM worker notes facts).
     pub fn note_llm_meta(&self, turn: TurnId, meta: Option<LlmDebugMeta>) {
         let Some(meta) = meta else { return };
         let mut inner = self.lock();
-        inner.turns.entry(turn.0).or_default().llm_meta = Some(meta);
+        let dump = inner.turns.entry(turn.0).or_default();
+        dump.llm_meta = Some(meta);
+        let _ = rewrite_sidecar_if_written(&self.root, turn.0, dump);
     }
 
     /// Ordered API-tool evidence. These events exclude host-only executor
-    /// policy and ambient secrets by construction.
+    /// policy and ambient secrets by construction. Rewrites an already-written
+    /// sidecar the same way [`Self::note_llm_meta`] does.
     pub fn note_tool_events(&self, turn: TurnId, events: Vec<ToolTurnEvent>) {
         if events.is_empty() {
             return;
         }
-        self.lock()
-            .turns
-            .entry(turn.0)
-            .or_default()
-            .tool_events
-            .extend(events);
+        let mut inner = self.lock();
+        let dump = inner.turns.entry(turn.0).or_default();
+        dump.tool_events.extend(events);
+        let _ = rewrite_sidecar_if_written(&self.root, turn.0, dump);
     }
 
     /// PCM actually handed to the sink, plus the TTS provider facts for the
@@ -492,6 +499,7 @@ fn write_turn(
         return Ok(());
     }
     dump.written = true;
+    dump.outcome = Some(outcome);
     let dir = root.join(format!("turn-{id:03}"));
     fs::create_dir_all(&dir).map_err(|err| turn_debug_io(&dir, err))?;
     if collect_audio {
@@ -500,6 +508,22 @@ fn write_turn(
         write_pcm(&dir.join("utterance.wav"), &dump.utterance)?;
         write_pcm(&dir.join("tts.wav"), &dump.tts)?;
     }
+    write_sidecar_json(root, id, outcome, dump)
+}
+
+/// Refresh `turn.json` after a dump that already landed (late LLM meta / tools).
+fn rewrite_sidecar_if_written(root: &Path, id: u64, dump: &TurnDump) -> Result<()> {
+    let Some(outcome) = dump.outcome else {
+        return Ok(());
+    };
+    if !dump.written {
+        return Ok(());
+    }
+    write_sidecar_json(root, id, outcome, dump)
+}
+
+fn write_sidecar_json(root: &Path, id: u64, outcome: TurnOutcome, dump: &TurnDump) -> Result<()> {
+    let dir = root.join(format!("turn-{id:03}"));
     let sidecar = render_sidecar(id, outcome, dump).replacen(
         "\n  \"tts_provider\":",
         &format!(
@@ -820,6 +844,60 @@ mod tests {
         assert!(json.contains("\"llm_provider\": \"local\""), "{json}");
         assert!(json.contains("\"llm_endpoint\": \"\""), "{json}");
         assert!(json.contains("\"llm_request_id\": \"\""), "{json}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn late_llm_meta_rewrites_a_sidecar_already_completed_by_tts() {
+        // Mirrors the weekly Linux flake: FakeTts emits is_last audio during
+        // llm.generate, sink calls complete() before the LLM worker notes meta.
+        let dir = unique_dir();
+        let debug = TurnDebug::open(&dir).unwrap();
+        let turn = TurnId(0);
+        debug.start_turn(turn);
+        debug.note_stt(turn, "turn-000", "en");
+        debug.note_llm(turn, "echo:turn-000".into());
+        debug.note_tts(turn, &[1, 2, 3], "local", None, None);
+        debug
+            .complete(turn, TurnTimings::default())
+            .expect("complete");
+        let early = fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
+        assert!(
+            early.contains("\"llm_provider\": \"\""),
+            "precondition: empty meta before rewrite {early}"
+        );
+        debug.note_llm_meta(
+            turn,
+            Some(LlmDebugMeta {
+                provider: "online".into(),
+                model: "gpt-test".into(),
+                endpoint: "https://mock.example/v1/chat/completions".into(),
+                request_id: "req-42".into(),
+            }),
+        );
+        debug.note_tool_events(
+            turn,
+            vec![crate::types::ToolTurnEvent {
+                kind: "result".into(),
+                name: "web_fetch".into(),
+                call_id: "call-42".into(),
+                arguments: r#"{"url":"https://example.test"}"#.into(),
+                content: "fixture result".into(),
+            }],
+        );
+        let json = fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
+        assert!(json.contains("\"outcome\": \"completed\""), "{json}");
+        assert!(json.contains("\"llm_provider\": \"online\""), "{json}");
+        assert!(json.contains("\"llm_model\": \"gpt-test\""), "{json}");
+        assert!(
+            json.contains("\"llm_endpoint\": \"https://mock.example/v1/chat/completions\""),
+            "{json}"
+        );
+        assert!(json.contains("\"llm_request_id\": \"req-42\""), "{json}");
+        assert!(
+            json.contains("\"tool_events\": [{\"kind\":\"result\""),
+            "{json}"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

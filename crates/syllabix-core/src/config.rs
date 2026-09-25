@@ -1140,21 +1140,30 @@ mod tests {
 
     #[test]
     fn skills_roots_parse_and_round_trip() {
-        let yaml = r#"
+        // Global roots must be absolute on every host. `/tmp/...` is relative
+        // on Windows (no drive / UNC prefix), which made weekly windows-x64
+        // reject this fixture with "global skill roots must be absolute".
+        let global = std::env::temp_dir()
+            .join("syllabix-skills-global")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let yaml = format!(
+            r#"
 name: skills
 pipeline:
-  vad: { provider: silero }
-  stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
-  tts: { provider: local, model: kokoro }
+  vad: {{ provider: silero }}
+  stt: {{ provider: local, model: whisper-small, language: en }}
+  llm: {{ provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }}
+  tts: {{ provider: local, model: kokoro }}
 skills:
   roots:
     - path: skills
       source: repository
-    - path: /tmp/syllabix-skills
+    - path: {global}
       source: global
-"#;
-        let config = AgentConfig::parse_yaml(yaml).expect("skills config");
+"#
+        );
+        let config = AgentConfig::parse_yaml(&yaml).expect("skills config");
         assert_eq!(config.skills.roots.len(), 2);
         assert_eq!(config.skills.roots[0].source, SkillSource::Repository);
         assert_eq!(config.skills.roots[1].source, SkillSource::Global);
