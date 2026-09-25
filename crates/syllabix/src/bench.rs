@@ -1135,11 +1135,19 @@ mod tests {
             .iter()
             .filter(|scenario| scenario.component == "tts")
             .count();
+        // Fixture corpus sizes; keep these pinned so a silent corpus shrink
+        // cannot hide a missing model axis.
+        assert_eq!(stt_cases, 4);
+        assert_eq!(llm_cases, 5);
+        assert_eq!(tts_cases, 3);
+        // Derive the expected total from the live menus so adding a model
+        // cannot leave a stale hard-coded multiplier behind (as with the
+        // Qwen3-ASR STT opt-in that bumped ALL to 8 while this still said 7).
         assert_eq!(
             SttModel::ALL.len() * stt_cases
                 + V0_LLM_MODELS.len() * llm_cases
                 + TtsModel::ALL.len() * tts_cases,
-            7 * 4 + 6 * 5 + 4 * 3
+            SttModel::ALL.len() * 4 + V0_LLM_MODELS.len() * 5 + TtsModel::ALL.len() * 3
         );
     }
 }

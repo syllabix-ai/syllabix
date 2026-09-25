@@ -142,11 +142,9 @@ pub use linux::{
 mod tests {
     #[cfg(coverage)]
     use super::*;
-    #[cfg(all(target_os = "linux", not(coverage)))]
-    use super::{FilesystemMode, LinuxSandboxRunner, NetworkMode, Path, SandboxRequest};
 
     #[cfg(all(target_os = "linux", not(coverage)))]
-    use super::{linux, FilesystemMode, LinuxSandboxRunner, NetworkMode, SandboxRequest};
+    use super::{FilesystemMode, LinuxSandboxRunner, NetworkMode, SandboxRequest};
     #[cfg(all(target_os = "linux", not(coverage)))]
     use std::path::Path;
 

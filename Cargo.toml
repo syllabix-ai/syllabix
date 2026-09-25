@@ -38,7 +38,10 @@ serde_yaml = "=0.9.34"
 # Row 30: SSE chat-completions payloads for the OpenAI-compatible adapter.
 serde_json = "=1.0.134"
 # Moonshine streaming-small uses a 32k BPE tokenizer.json.
-tokenizers = "=0.22.1"
+# Drop esaxx_fast: its C++ build forces /MT on MSVC, which LNK2038-conflicts
+# with whisper/llama (/MD, matching rustc). Moonshine is BPE, not Unigram, so
+# the C++ esaxx pretok is unused.
+tokenizers = { version = "=0.22.1", default-features = false, features = ["progressbar", "onig"] }
 # Web-fetch HTML reaches the model as Markdown, not raw tag soup.
 htmd = "=0.5.5"
 ort-sys = "=2.0.0-rc.9"
