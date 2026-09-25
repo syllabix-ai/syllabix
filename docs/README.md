@@ -26,6 +26,7 @@
 
 | Page | For |
 | --- | --- |
+| [Remote STT and TTS serve](serve-proposal.md) | Design: `serve stt` / `serve tts`, yaml `online`, PR list |
 | [Contributing](contributing.md) | Build, test, packaging, CI |
 | [Reference profiles](reference-profiles.md) | How conversation quality is measured |
 | [Workload benchmark](workload_benchmark/workload_benchmark.md) | Per-model STT / LLM / TTS timings |
