@@ -147,20 +147,20 @@ do not invent `/v1/stt/transcribe` for those.
 
 **De facto standard (cloned widely):** OpenAI Audio REST under `/v1`.
 
-| Job | Method | Who clones it |
-| --- | --- | --- |
-| File / utterance STT | `POST /v1/audio/transcriptions` (multipart `file`, `model`, `language`, `response_format`) | Groq, Azure Whisper-style, whisper.cpp `whisper-server`, LocalAI, many gateways. Response `{ "text": "..." }` (`json`) or `verbose_json` (`text`, `language`, `duration`, `segments`). |
-| Full-text TTS | `POST /v1/audio/speech` (JSON `model`, `input`, `voice`, `response_format`) | Groq PlayAI, LocalAI, Kokoro-FastAPI, openedai-speech. Body is audio bytes (`mp3` default on OpenAI; we default `pcm` or `wav` for the voice loop). Optional `stream_format`: `audio` (chunked bytes) or `sse`. |
+| Job | Method | Who clones it | Compatible models |
+| --- | --- | --- | --- |
+| File / utterance STT | `POST /v1/audio/transcriptions` (multipart `file`, `model`, `language`, `response_format`) | Groq, Azure Whisper-style, whisper.cpp `whisper-server`, LocalAI, many gateways. Response `{ "text": "..." }` (`json`) or `verbose_json` (`text`, `language`, `duration`, `segments`). | OpenAI: `whisper-1`, `gpt-transcribe`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`. Groq: `whisper-large-v3`, `whisper-large-v3-turbo`. whisper.cpp: request `whisper-1` (often ignored; weights chosen at process start). Syllabix worker: yaml ids `whisper-small`, `whisper-medium`, `whisper-large-v3-turbo`, `whisper-medium-q5_0`, `whisper-large-v3-turbo-q5_0`, `qwen3-asr-0.6`. |
+| Full-text TTS | `POST /v1/audio/speech` (JSON `model`, `input`, `voice`, `response_format`) | Groq PlayAI, LocalAI, Kokoro-FastAPI, openedai-speech. Body is audio bytes (`mp3` default on OpenAI; we default `pcm` or `wav` for the voice loop). Optional `stream_format`: `audio` (chunked bytes) or `sse`. | OpenAI: `tts-1`, `tts-1-hd`, `gpt-4o-mini-tts`. Groq: `playai-tts`, `playai-tts-arabic`. Kokoro-FastAPI: `kokoro` plus a voice name. Syllabix worker: yaml ids `pocket-tts`, `kokoro`, `qwen3-0.6`, `qwen3-1.7`. `voice` is accepted for SDK compatibility; Pocket’s fixed voice may ignore it. |
 
 Auth is `Authorization: Bearer …`, same as LLM online. `base_url` is the
 `/v1` root, same as `pipeline.llm.base_url`.
 
 **Not a clone-set** (do not pretend these are OpenAI-compatible):
 
-| Job | What majors actually use | Syllabix |
-| --- | --- | --- |
-| Live mic STT with partials | OpenAI **Realtime** (WebSocket/WebRTC, `input_audio_buffer.append`). Deepgram live WS, AssemblyAI streaming — each proprietary. Groq STT is still the **file** endpoint. | Moonshine maps to `Stt::push_frame`. Implementing full Realtime is a product fork. Expose a **small** turn session on the same worker (below). Optional later: emit OpenAI-shaped `transcript.text.delta` events on that session without the Realtime session object. |
-| TTS fed by LLM token chunks | OpenAI speech takes one `input` string; streaming is **output audio**, not input tokens. ElevenLabs / Cartesia have their own input-stream websockets. | Keep a generation session that matches `Tts::synthesize_chunk`. Sentence-buffer + repeated `/v1/audio/speech` is the compatible fallback (extra RTT). |
+| Job | What majors actually use | Compatible models | Syllabix |
+| --- | --- | --- | --- |
+| Live mic STT with partials | OpenAI **Realtime** (WebSocket/WebRTC, `input_audio_buffer.append`). Deepgram live WS, AssemblyAI streaming — each proprietary. Groq STT is still the **file** endpoint. | OpenAI: `gpt-live-transcribe`. Deepgram: `nova-3` / `nova-2`. AssemblyAI: streaming model ids on their WS. No Groq live-STT model on `/audio/transcriptions`. | Yaml `moonshine-streaming-small`, `moonshine-streaming-medium` via `Stt::push_frame`. Full Realtime is a product fork. Expose a **small** turn session on the same worker (below). Optional later: emit OpenAI-shaped `transcript.text.delta` events on that session without the Realtime session object. |
+| TTS fed by LLM token chunks | OpenAI speech takes one `input` string; streaming is **output audio**, not input tokens. ElevenLabs / Cartesia have their own input-stream websockets. | No OpenAI `/audio/speech` model accepts a token stream. ElevenLabs: e.g. `eleven_multilingual_v2`. Cartesia: Sonic family. | Same yaml TTS ids (`pocket-tts`, `kokoro`, `qwen3-*`) on a generation session that matches `Tts::synthesize_chunk`. Sentence-buffer + repeated `/v1/audio/speech` is the compatible fallback (extra RTT). |
 
 **Decision:** `serve` **is** OpenAI Audio for finalize STT and full-text
 TTS so curl, the OpenAI Python client, and other tools work. Moonshine
