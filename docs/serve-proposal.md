@@ -24,7 +24,7 @@ Status: design only. Default `run` is unchanged until the PR list lands.
   endpoint N
            \  transcript text  →  LLM serve  (already: provider online)
            \  utterance PCM    →  syllabix serve stt
-           /  token/text stream → syllabix serve tts  → PCM back
+           /  one sentence     →  POST /v1/audio/speech  → PCM (chunked if Qwen)
 ```
 
 Each endpoint is a thin Syllabix runtime. One (or a few) machines hold
@@ -63,9 +63,8 @@ HTTP server and no async runtime** in the repo.
 | --- | --- | --- |
 | Client: remote finalize STT | Small | Whisper and Qwen3-ASR are `transcribe` on one utterance. `write_wav` exists. `openai.rs` already has cancel, timeouts, warm-up, `validate_base_url`. **No pipeline-loop change** if `LiveStt` grows a remote arm. |
 | Server: `serve stt` (finalize) | Moderate | Wrap `build_stt` (any finalize id). New work is bind, HTTP, auth, single-flight queue + cancel. First HTTP stack in the workspace. |
-| Moonshine over the same worker | Moderate–larger | Moonshine is a **menu id**, not a side stack. The `Stt` trait already has `start_turn` / `push_frame` / `transcribe` / `cancel_turn` and `supports_partials`. The worker holds one `MoonshineStt`; the wire is a turn session (same idea as TTS generations), not a WAV POST. Partials are why you serve it instead of collapsing it to Whisper. |
-| Client: remote TTS, full utterance | Small–moderate | Buffer tokens until `is_last`, POST text, play WAV. Fits `Tts` but waits for the whole LLM turn before first audio. |
-| Client + server: token-stream TTS | Larger | Pipeline already calls `synthesize_chunk` per token; Pocket/Qwen sentence state lives in the engine. That state must sit on the **server** for one generation, with streaming audio back and barge-in cancel. |
+| Moonshine over the same worker | Moderate–larger | Moonshine is a **menu id**, not a side stack. The `Stt` trait already has `start_turn` / `push_frame` / `transcribe` / `cancel_turn` and `supports_partials`. The worker holds one `MoonshineStt`; the wire is a turn session (the only custom protocol). Partials are why you serve it instead of collapsing it to Whisper. |
+| Client: remote TTS | Small–moderate | Same as local `run`: buffer LLM tokens until a sentence, then `POST /v1/audio/speech` with that sentence as `input`. Pocket/Kokoro return one audio body. Qwen sets `stream_format=audio` and streams PCM on the same POST. No custom TTS schema. |
 | Multi-client fairness beyond a mutex | Later | One in-flight decode plus a short queue is enough for desks that rarely overlap. |
 
 If a change edits turn-taking in the `run` loop, the split is wrong.
@@ -77,6 +76,8 @@ yet”). STT has only `local` today.
 
 Moonshine is **in** the series (PR 3 below). It is not a v1 cut.
 
+- A custom TTS protocol (`/v1/tts/generations`, token chunks). TTS is only
+  `POST /v1/audio/speech`.
 - A CUDA-specific SKU (worker uses whatever `build_stt` / `build_tts` already compile)
 - Public internet bind as the default
 - Promising full OpenAI **Realtime** (WebRTC, `session.update`) or every
@@ -150,7 +151,7 @@ do not invent `/v1/stt/transcribe` for those.
 | Job | Method | Who clones it | Compatible models |
 | --- | --- | --- | --- |
 | File / utterance STT | `POST /v1/audio/transcriptions` (multipart `file`, `model`, `language`, `response_format`) | Groq, Azure Whisper-style, whisper.cpp `whisper-server`, LocalAI, many gateways. Response `{ "text": "..." }` (`json`) or `verbose_json` (`text`, `language`, `duration`, `segments`). | OpenAI: `whisper-1`, `gpt-transcribe`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`. Groq: `whisper-large-v3`, `whisper-large-v3-turbo`. whisper.cpp: request `whisper-1` (often ignored; weights chosen at process start). Syllabix worker: yaml ids `whisper-small`, `whisper-medium`, `whisper-large-v3-turbo`, `whisper-medium-q5_0`, `whisper-large-v3-turbo-q5_0`, `qwen3-asr-0.6`. |
-| Full-text TTS | `POST /v1/audio/speech` (JSON `model`, `input`, `voice`, `response_format`) | Groq PlayAI, LocalAI, Kokoro-FastAPI, openedai-speech. Body is audio bytes (`mp3` default on OpenAI; optional `stream_format`: `audio` or `sse`). | **None from Syllabix.** OpenAI: `tts-1`, `tts-1-hd`, `gpt-4o-mini-tts`. Groq: `playai-tts`, `playai-tts-arabic`. Kokoro-FastAPI: `kokoro` plus a voice name. Optional follow-up PR if `serve tts` or `run` should speak this path. |
+| Full-text / per-sentence TTS | `POST /v1/audio/speech` (JSON `model`, `input`, `voice`, `response_format`; optional `stream_format`) | Groq PlayAI, LocalAI, Kokoro-FastAPI, openedai-speech. Body is audio bytes (`mp3` default on OpenAI; Syllabix prefers `pcm` or `wav`). | OpenAI: `tts-1`, `tts-1-hd`, `gpt-4o-mini-tts`. Groq: `playai-tts`, `playai-tts-arabic`. Kokoro-FastAPI: `kokoro` plus a voice name. Syllabix worker: yaml ids `pocket-tts`, `kokoro`, `qwen3-0.6`, `qwen3-1.7`. `run` sends **one sentence per POST** (same `take_sentences` loop as local). Qwen uses `stream_format=audio`; Pocket/Kokoro omit it (full sentence body). `voice` is accepted for SDK compatibility; Pocket’s fixed voice may ignore it. |
 
 Auth is `Authorization: Bearer …`, same as LLM online. `base_url` is the
 `/v1` root, same as `pipeline.llm.base_url`.
@@ -159,16 +160,16 @@ Auth is `Authorization: Bearer …`, same as LLM online. `base_url` is the
 
 | Job | What majors actually use | Compatible models | Syllabix |
 | --- | --- | --- | --- |
-| Live mic STT with partials | OpenAI **Realtime** (WebSocket/WebRTC, `input_audio_buffer.append`). Deepgram live WS, AssemblyAI streaming — each proprietary. Groq STT is still the **file** endpoint. | OpenAI: `gpt-live-transcribe`. Deepgram: `nova-3` / `nova-2`. AssemblyAI: streaming model ids on their WS. No Groq live-STT model on `/audio/transcriptions`. | Yaml `moonshine-streaming-small`, `moonshine-streaming-medium` via `Stt::push_frame`. Full Realtime is a product fork. Expose a **small** turn session on the same worker (below). Optional later: emit OpenAI-shaped `transcript.text.delta` events on that session without the Realtime session object. |
-| TTS fed by LLM token chunks | OpenAI speech takes one `input` string; streaming is **output audio**, not input tokens. ElevenLabs / Cartesia have their own input-stream websockets. | No OpenAI `/audio/speech` model accepts a token stream. ElevenLabs: e.g. `eleven_multilingual_v2`. Cartesia: Sonic family. | Yaml TTS ids (`pocket-tts`, `kokoro`, `qwen3-*`) on a generation session that matches `Tts::synthesize_chunk`. This is what `run` uses. |
+| Live mic STT with partials | OpenAI **Realtime** (WebSocket/WebRTC, `input_audio_buffer.append`). Deepgram live WS, AssemblyAI streaming — each proprietary. Groq STT is still the **file** endpoint. | OpenAI: `gpt-live-transcribe`. Deepgram: `nova-3` / `nova-2`. AssemblyAI: streaming model ids on their WS. No Groq live-STT model on `/audio/transcriptions`. | Yaml `moonshine-streaming-small`, `moonshine-streaming-medium` via `Stt::push_frame`. Full Realtime is a product fork. **This is the only custom Syllabix protocol** (turn session below). Optional later: emit OpenAI-shaped `transcript.text.delta` events on that session without the Realtime session object. |
 
-**Decision:** `serve stt` **is** OpenAI Audio for finalize STT
-(`POST /v1/audio/transcriptions`) so curl and the OpenAI Python client
-work. `run` TTS uses a thin generation session, not
-`POST /v1/audio/speech`. Moonshine partials use a thin turn session.
-Do not fake `/audio/speech` for token-chunk TTS. `/v1/audio/speech` is
-an optional follow-up (other clients, or pointing `run` at Groq /
-Kokoro-FastAPI).
+**Decision:** Speak OpenAI Audio for every path that already has a clone-set:
+
+- Finalize STT: `POST /v1/audio/transcriptions`
+- All TTS (Pocket, Kokoro, Qwen): `POST /v1/audio/speech`, **one sentence per call**
+
+The only custom protocol is **streaming STT** (Moonshine turns). Do not add
+`/v1/tts/generations` or token-chunk TTS. Qwen streaming is
+`stream_format=audio` on the same speech POST, not a second schema.
 
 VAD stays on the endpoint for every path. The worker never decides turn
 start/end.
@@ -225,25 +226,40 @@ session holds that slot until finalize or cancel.
 
 ### TTS
 
-**Token-chunk session (what `run` uses; not in OpenAI Audio):**
+Only `POST /v1/audio/speech`. No custom TTS routes.
 
-- `POST /v1/tts/generations` → `{ generation_id }`
-- `POST /v1/tts/generations/:id/chunks` with `TokenChunk` JSON (`index`,
-  `text`, `is_last`)
-- Chunked or SSE body of PCM frames (`SynthesizedAudio` metadata + samples)
-- `POST .../cancel` maps to existing `Cancel`
+Local `run` already buffers LLM tokens until `take_sentences` fires, then
+synthesizes. `RemoteTts` keeps that buffer on the endpoint and POSTs each
+finished sentence as `input`. Barge-in drops the in-flight request and
+sends no further sentences.
 
-The server holds one `LiveTts` and one active generation (or a small map
-by id). That reuses `synthesize_chunk_into` with no engine fork.
-Yaml ids: `pocket-tts`, `kokoro`, `qwen3-0.6`, `qwen3-1.7`.
+```http
+POST {base_url}/audio/speech
+Authorization: Bearer …
+Content-Type: application/json
 
-**OpenAI speech (optional follow-up, not this series):**
-`POST /v1/audio/speech` with a full `input` string. No Syllabix yaml id
-is advertised on that path until that PR. Useful later for curl / SDKs
-and for `run` against Groq or Kokoro-FastAPI (buffer a sentence or the
-whole reply; extra latency).
+{
+  "model": "pocket-tts",
+  "input": "Hello there.",
+  "voice": "alloy",
+  "response_format": "pcm"
+}
+```
 
-LAN/Tailscale can send 16 kHz mono PCM. A WAN codec (Opus) is later.
+- `model` is the yaml TTS id loaded on the worker: `pocket-tts`, `kokoro`,
+  `qwen3-0.6`, `qwen3-1.7`.
+- Pocket / Kokoro: omit `stream_format` (or treat as off). Response is the
+  full sentence audio (`synthesize` once).
+- Qwen: `"stream_format": "audio"`. Same JSON; response is HTTP-chunked
+  PCM. Server runs `synthesize_streaming` and writes each window. Client
+  feeds chunks to `on_audio`. Do not use `stream_format=sse` unless an
+  OpenAI SDK event parser is required later.
+- `response_format`: `pcm` (or `wav`) for the voice loop. `opus` can wait.
+- Cancel: close the client body/read; server fires `Cancel`.
+- The same client can point `base_url` at Groq or Kokoro-FastAPI
+  (full-body speech; they may ignore `stream_format`).
+
+LAN/Tailscale PCM is fine. A WAN codec is later.
 
 Do not implement OpenAI Realtime (WebRTC SFU, `session.update`, audio
 output from an agent) in this series.
@@ -258,8 +274,10 @@ output from an agent) in this series.
 | HTTP server + job mutex | `crates/syllabix/src/serve.rs` (CLI crate, like `bench.rs`) |
 | Shared request types | `syllabix-core` so client and server cannot drift |
 
-Loopback tests (required): serve on `127.0.0.1` — finalize PCM fixture
-and a Moonshine turn (`push_frame` partials + finalize). No microphone.
+Loopback tests (required): serve on `127.0.0.1` — finalize PCM fixture,
+a Moonshine turn (`push_frame` partials + finalize), and
+`POST /v1/audio/speech` for a sentence (full body and `stream_format=audio`).
+No microphone.
 
 **Copy:** `openai.rs` timeouts/cancel/warm-up; `validate_base_url`;
 `build_stt` / `build_tts`; `Cancel`; WAV; clap subcommands.
@@ -276,13 +294,12 @@ and streaming TTS in one change. STT alone is a complete fleet feature.
 | 1 | Accept online STT yaml like LLM | Config only: `pipeline.stt.provider: online` + `base_url`; reject missing URL; runtime still fails clearly (same posture as TTS online today). Tests in `config.rs`. | Yaml round-trips; local still default; no network. |
 | 2 | Serve finalize STT and remote transcribe client | `syllabix serve stt` for Whisper / Qwen3-ASR; OpenAI `POST /v1/audio/transcriptions`; `RemoteStt::transcribe`; skip cache; loopback fixture; bind localhost; token rules. | Yaml online STT works; `curl` + OpenAI-shaped multipart against the worker returns `{ "text" }`. |
 | 3 | Serve Moonshine turns and remote partials | Same `serve stt` with `--model moonshine-streaming-*`; Syllabix turn session (not Realtime); `RemoteStt` implements `start_turn` / `push_frame` / `cancel_turn`; loopback partials. | Yaml `moonshine-streaming-small` + `provider: online` shows live partials; barge-in cancel drops the turn. |
-| 4 | Serve TTS generation client | `syllabix serve tts` generation session for `synthesize_chunk`; `RemoteTts` implements `Tts`; barge-in cancel. No `/v1/audio/speech`. | Yaml online TTS + local STT works; first audio can start before the LLM finishes. |
-| 5 | Document serve for a fleet of endpoints | User page: bind, token, tunnel/Tailscale, “weights on the worker,” Moonshine vs finalize STT, TTS session vs OpenAI speech. Default `run` story unchanged. CLI + engines + yaml cross-links. Architecture “what leaves the machine” updated for online STT/TTS. | Docs match shipped commands. |
-| 6 (optional) | OpenAI `POST /v1/audio/speech` | Optional follow-up: expose speech on `serve tts` and/or let `run` call Groq / Kokoro-FastAPI with a buffered `input`. No Syllabix model ids on that path until this PR. | curl / OpenAI SDK can fetch a WAV from the worker, or yaml `online` TTS can target a third-party `/audio/speech` host. |
+| 4 | Serve TTS over OpenAI speech | `syllabix serve tts`; `POST /v1/audio/speech`; `RemoteTts` keeps sentence buffering on the endpoint; Pocket/Kokoro full body; Qwen `stream_format=audio`; barge-in aborts the POST. No `/v1/tts/generations`. | Yaml online TTS + local STT works; first audio of a sentence can start before that sentence’s vocoder finishes when streaming. |
+| 5 | Document serve for a fleet of endpoints | User page: bind, token, tunnel/Tailscale, “weights on the worker,” Moonshine turns vs OpenAI transcriptions/speech. Default `run` story unchanged. CLI + engines + yaml cross-links. Architecture “what leaves the machine” updated for online STT/TTS. | Docs match shipped commands. |
 
 Out of this series: queue metrics, multi-model workers (two engines in
-one process), GPU backend matrix, Windows-as-worker. PR 6 is optional
-and not required for the fleet `run` loop.
+one process), GPU backend matrix, Windows-as-worker, a custom TTS
+session protocol.
 
 ## Suggested order of work inside PRs 2–4
 
@@ -291,7 +308,7 @@ and not required for the fleet `run` loop.
 3. Wire yaml `online` to `RemoteStt` (finalize).
 4. Moonshine turn session on the same server (`build_stt` already
    selects the engine).
-5. TTS generation sessions (not `/v1/audio/speech`).
+5. `POST /v1/audio/speech` (full body, then `stream_format=audio` for Qwen).
 
 ## Related
 
