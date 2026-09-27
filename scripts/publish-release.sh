@@ -53,6 +53,13 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
+# Replace an existing release for the same tag (e.g. empty UI draft) without
+# deleting the git tag (--cleanup-tag is intentionally omitted).
+if gh release view "${tag}" >/dev/null 2>&1; then
+  echo "release ${tag} already exists; deleting so assets can be replaced"
+  gh release delete "${tag}" --yes
+fi
+
 echo "gh release create ${tag} (cwd files below)"
 gh release create "${tag}" \
   "${files[@]}" \
