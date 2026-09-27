@@ -98,6 +98,12 @@ jobs:
           done
           shopt -s nullglob
           sidecars=(dist/*.repro.json)
+          # Tag pushes / re-runs can race a UI-created empty release for the
+          # same tag; replace it so publish stays idempotent without deleting
+          # the git tag (--cleanup-tag is intentionally omitted).
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release delete "${tag}" --yes
+          fi
           gh release create "${tag}" \
             "${files[@]}" \
             "${sidecars[@]}" \
