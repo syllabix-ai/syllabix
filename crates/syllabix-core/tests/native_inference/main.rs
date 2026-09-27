@@ -40,7 +40,8 @@ use syllabix_core::{
 
 #[cfg(not(coverage))]
 use syllabix_core::{
-    Cancel, HttpFetcher, KokoroTts, LlamaLlm, ModelCache, StderrProgress, WhisperStt,
+    build_tts, AgentConfig, Cancel, HttpFetcher, LiveTts, LlamaLlm, ModelCache, StderrProgress,
+    WhisperStt,
 };
 
 /// YAML identifiers covered by the default native test set.
@@ -233,13 +234,31 @@ macro_rules! skip_unless_launch_stack {
 #[cfg(not(coverage))]
 pub(crate) use skip_unless_launch_stack;
 
+/// Load TTS through the same builder production uses, driven by
+/// [`AgentConfig::v0`] (today: Pocket TTS). Suites that need another TTS id
+/// (Kokoro, Qwen) construct that engine themselves.
+#[cfg(not(coverage))]
+fn load_launch_tts() -> LiveTts {
+    let cache = ModelCache::v0();
+    let mut progress = StderrProgress::new();
+    let cancel = Cancel::new();
+    build_tts(
+        &cache,
+        &HttpFetcher,
+        &mut progress,
+        &cancel,
+        &AgentConfig::v0(),
+    )
+    .expect("load launch-default TTS from AgentConfig::v0()")
+}
+
 #[cfg(not(coverage))]
 pub(crate) struct Native {
     stt: Option<WhisperStt>,
     llm: Option<LlamaLlm>,
     lfm: Option<LlamaLlm>,
     lfm_asset_id: Option<&'static str>,
-    tts: Option<KokoroTts>,
+    tts: Option<LiveTts>,
 }
 
 #[cfg(not(coverage))]
@@ -318,17 +337,20 @@ impl Native {
         }
     }
 
-    pub(crate) fn tts(&mut self) -> &KokoroTts {
+    /// Borrow the launch-default TTS (`AgentConfig::v0` → `build_tts`).
+    pub(crate) fn tts(&mut self) -> &LiveTts {
         if self.tts.is_none() {
-            let cache = ModelCache::v0();
-            let mut progress = StderrProgress::new();
-            let cancel = Cancel::new();
-            self.tts = Some(
-                KokoroTts::from_cache(&cache, &HttpFetcher, &mut progress, &cancel)
-                    .expect("load Kokoro ONNX once"),
-            );
+            self.tts = Some(load_launch_tts());
         }
-        self.tts.as_ref().expect("kokoro loaded")
+        self.tts.as_ref().expect("launch TTS loaded")
+    }
+
+    /// Move the launch-default TTS into a pipeline stage (single weight load).
+    pub(crate) fn take_tts(&mut self) -> LiveTts {
+        if self.tts.is_none() {
+            self.tts = Some(load_launch_tts());
+        }
+        self.tts.take().expect("launch TTS loaded")
     }
 
     fn ensure_stt(&mut self) {
@@ -392,6 +414,16 @@ fn unset_native_models_selects_the_launch_stack() {
 }
 
 #[test]
+fn launch_tts_config_matches_builtin_defaults() {
+    use syllabix_core::BuiltinDefaults;
+    let cfg = syllabix_core::AgentConfig::v0();
+    let defaults = BuiltinDefaults::v0();
+    assert_eq!(cfg.tts, defaults.tts);
+    assert_eq!(cfg.tts_model, defaults.tts_model);
+    assert_eq!(cfg.tts_model.as_str(), "pocket-tts");
+}
+
+#[test]
 fn native_models_list_is_exclusive() {
     let ids = parse_native_models(Some("qwen3-0.6")).expect("parse");
     assert_eq!(ids, BTreeSet::from(["qwen3-0.6".into()]));
@@ -409,7 +441,10 @@ fn native_model_without_a_suite_fails() {
     let err = parse_native_models(Some("qwen3.5-2b")).expect_err("no suite");
     assert!(err.contains("no native suite for \"qwen3.5-2b\""), "{err}");
     let err = parse_native_models(Some("whisper-medium")).expect_err("no suite");
-    assert!(err.contains("no native suite for \"medium\""), "{err}");
+    assert!(
+        err.contains("no native suite for \"whisper-medium\""),
+        "{err}"
+    );
 }
 
 #[test]

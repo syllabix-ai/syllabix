@@ -1,5 +1,9 @@
 //! Kokoro first-sentence audio, provider swapping, and TTS-to-ASR round trips.
 //!
+//! Opt-in via `SYLLABIX_NATIVE_MODELS=kokoro`. The shared `native().tts()` slot
+//! follows the launch default (`AgentConfig::v0`); this suite loads Kokoro
+//! directly.
+//!
 //! Intelligibility is a text → TTS → Whisper → text round-trip at ≥80%
 //! in-order word match (same matcher as the LibriSpeech STT fixtures). Markdown
 //! cleanup is a unit test in `kokoro_tts.rs` so coverage still sees it.
@@ -8,12 +12,22 @@ use std::time::Instant;
 
 use syllabix_core::{
     audio::FrameSplitter, run_loop, scripted_frames, transcript_words, word_match_ratio,
-    BlockedFetcher, Cancel, CollectingSink, FakeLlm, FakeStt, FakeVad, GenerationId, LoopConfig,
-    ModelCache, PipelineStages, StderrProgress, Stt, TokenChunk, Tts, TurnId, Utterance,
-    KOKORO_ASSET, KOKORO_VOICE_ASSET, TTS_ASR_MIN_WORD_MATCH,
+    BlockedFetcher, Cancel, CollectingSink, FakeLlm, FakeStt, FakeVad, GenerationId, HttpFetcher,
+    KokoroTts, LoopConfig, ModelCache, PipelineStages, StderrProgress, Stt, TokenChunk, Tts,
+    TurnId, Utterance, KOKORO_ASSET, KOKORO_VOICE_ASSET, TTS_ASR_MIN_WORD_MATCH,
 };
 
 use crate::{native, native_latency_enabled, skip_unless_model, TTS_LATENCY_SENTENCES};
+
+fn load_kokoro() -> KokoroTts {
+    KokoroTts::from_cache(
+        &ModelCache::v0(),
+        &HttpFetcher,
+        &mut StderrProgress::new(),
+        &Cancel::new(),
+    )
+    .expect("load Kokoro ONNX")
+}
 
 fn token(text: &str, index: u32, is_last: bool) -> TokenChunk {
     TokenChunk {
@@ -46,8 +60,7 @@ fn pcm_to_utterance(samples: &[i16]) -> Utterance {
 #[test]
 fn first_sentence_audio_arrives_before_full_completion() {
     skip_unless_model!("kokoro");
-    let mut n = native();
-    let mut tts = n.tts().clone();
+    let mut tts = load_kokoro();
     // `name()` describes where inference runs; the engine identity stays
     // in `model_id()`.
     assert_eq!(tts.name(), "local");
@@ -90,7 +103,7 @@ fn spoken_text_round_trips_through_whisper_at_eighty_percent() {
     );
 
     let mut n = native();
-    let mut tts = n.tts().clone();
+    let mut tts = load_kokoro();
     let chunks = tts
         .synthesize_chunk(&token(TEXT, 0, true), &Cancel::new())
         .expect("kokoro synthesize");
@@ -122,7 +135,6 @@ fn spoken_text_round_trips_through_whisper_at_eighty_percent() {
 #[test]
 fn kokoro_replaces_fake_tts_in_the_loop() {
     skip_unless_model!("kokoro");
-    let mut n = native();
     let frames = scripted_frames(1, 2, 1);
     let report = run_loop(
         LoopConfig::default(),
@@ -130,7 +142,7 @@ fn kokoro_replaces_fake_tts_in_the_loop() {
             vad: FakeVad::new(),
             stt: FakeStt,
             llm: FakeLlm::new(),
-            tts: n.tts().clone(),
+            tts: load_kokoro(),
             sink: CollectingSink::default(),
         },
         frames,
@@ -155,8 +167,7 @@ fn kokoro_replaces_fake_tts_in_the_loop() {
 #[test]
 fn populated_cache_reuses_kokoro_offline() {
     skip_unless_model!("kokoro");
-    let mut n = native();
-    let _ = n.tts();
+    let _ = load_kokoro();
     let cached = ModelCache::v0();
     for id in [KOKORO_ASSET, KOKORO_VOICE_ASSET] {
         let asset = cached.manifest().asset(id).unwrap();
@@ -179,8 +190,7 @@ fn kokoro_latency_capture() {
     if !native_latency_enabled() || !crate::native_model_selected("kokoro") {
         return;
     }
-    let mut native = native();
-    let mut tts = native.tts().clone();
+    let mut tts = load_kokoro();
     let mut ttfb_ms = Vec::new();
     let mut rtf = Vec::new();
     for text in TTS_LATENCY_SENTENCES {

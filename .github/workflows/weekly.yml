@@ -5,7 +5,8 @@ name: Weekly full check
 # offline, manually dispatch with the hosted pool for that run.
 # The per-PR fast gate (fmt / clippy / coverage) lives in ci.yml on the
 # self-hosted macOS runner; this workflow re-validates every supported OS
-# and the Linux coverage baseline.
+# and the Linux coverage baseline. Native-weight coverage is a separate
+# weekly workflow: native-tests.yml.
 
 on:
   schedule:
@@ -58,7 +59,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-pocket-tts
       # Keep cargo-llvm-cov aligned with DEVELOPMENT.md and local verification.
       - uses: taiki-e/install-action@v2
         with:
@@ -118,7 +119,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-pocket-tts
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
@@ -164,7 +165,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-kokoro-v1
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-pocket-tts
       # Cache only when dispatched to the hosted pool. The self-hosted
       # runner keeps target/ on disk between runs, so restore always missed
       # while every green job uploaded ~1 GB over the home uplink (see ci.yml).

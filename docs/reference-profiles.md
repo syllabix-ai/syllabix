@@ -98,9 +98,23 @@ cargo test --workspace   # last; launch-stack native inference runs here exactly
 ```
 
 llvm-cov sets `--cfg coverage` and must not load whisper.cpp / llama.cpp /
-Kokoro weights or open devices. The floor is 85% workspace lines and 85% in
+native TTS weights or open devices. The floor is 85% workspace lines and 85% in
 every reported `src/**/*.rs` file. Production-only native modules are excluded
 by the coverage configuration; pure helpers remain in the normal modules.
+
+Weekly native coverage (separate from the unit gate; see #174) measures
+production native providers with real weights:
+
+```bash
+SYLLABIX_NATIVE_MODELS=whisper-small,lfm2.5-2.6b,pocket-tts \
+  cargo llvm-cov --no-cfg-coverage --release \
+    -p syllabix-core --features native-inference --test native_inference \
+    --cobertura --output-path coverage-native.xml
+```
+
+CI runs that lane via `native-tests.yml` on the self-hosted Mac by default;
+override the pool to `ubuntu-latest` via `workflow_dispatch` when the Mac is
+offline. No native percentage floor yet.
 
 ## 7. 3-minute gate (profile C)
 

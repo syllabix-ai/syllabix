@@ -8,8 +8,8 @@
 //! ```
 //!
 //! The suite covers the family's native tools dialect. The co-residency
-//! suite also loads Whisper `small` and Kokoro in the same process;
-//! expect their caches plus the selected LFM GGUF on a cold machine.
+//! suite also loads Whisper `small` and the launch-default TTS in the same
+//! process; expect their caches plus the selected LFM GGUF on a cold machine.
 
 use std::thread;
 use std::time::{Duration, Instant};
