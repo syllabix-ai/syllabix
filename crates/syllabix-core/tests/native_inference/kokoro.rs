@@ -11,10 +11,10 @@
 use std::time::Instant;
 
 use syllabix_core::{
-    audio::FrameSplitter, run_loop, scripted_frames, transcript_words, word_match_ratio,
-    BlockedFetcher, Cancel, CollectingSink, FakeLlm, FakeStt, FakeVad, GenerationId, HttpFetcher,
-    KokoroTts, LoopConfig, ModelCache, PipelineStages, StderrProgress, Stt, TokenChunk, Tts,
-    TurnId, Utterance, KOKORO_ASSET, KOKORO_VOICE_ASSET, TTS_ASR_MIN_WORD_MATCH,
+    audio::FrameSplitter, run_loop, scripted_frames, transcript_words, word_match_ratio, Cancel,
+    CollectingSink, FakeLlm, FakeStt, FakeVad, GenerationId, HttpFetcher, KokoroTts, LoopConfig,
+    ModelCache, PipelineStages, StderrProgress, Stt, TokenChunk, Tts, TurnId, Utterance,
+    KOKORO_ASSET, KOKORO_VOICE_ASSET, TTS_ASR_MIN_WORD_MATCH,
 };
 
 use crate::{native, native_latency_enabled, skip_unless_model, TTS_LATENCY_SENTENCES};
@@ -172,12 +172,7 @@ fn populated_cache_reuses_kokoro_offline() {
     for id in [KOKORO_ASSET, KOKORO_VOICE_ASSET] {
         let asset = cached.manifest().asset(id).unwrap();
         let path = cached
-            .resolve(
-                asset,
-                &BlockedFetcher::default(),
-                &mut StderrProgress::new(),
-                &Cancel::new(),
-            )
+            .require_cached(asset)
             .expect("populated cache must not need the network");
         assert!(path.exists());
     }

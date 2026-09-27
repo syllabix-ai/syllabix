@@ -1,4 +1,4 @@
-//! On-disk cache: lookup, atomic write, checksum, offline reuse.
+//! On-disk cache: lookup, serialized download, atomic write, checksum, offline reuse.
 
 use std::env;
 use std::fs::{self, File, OpenOptions};
@@ -12,6 +12,38 @@ use super::manifest::{Manifest, ModelAsset};
 use super::progress::Progress;
 use crate::cancel::Cancel;
 use crate::error::{Error, Result};
+
+/// Exclusive advisory lock for one asset download. Released when dropped.
+///
+/// Held across processes and threads so parallel `resolve` calls (including
+/// cargo-test workers and child processes that share `SYLLABIX_CACHE_DIR`)
+/// download each asset at most once and never race on the same `.part` file.
+struct AssetDownloadLock {
+    _file: File,
+}
+
+fn acquire_asset_lock(dest: &Path) -> Result<AssetDownloadLock> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let lock_path = dest.with_file_name(format!(
+        "{}.lock",
+        dest.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|err| Error::ModelCache {
+            message: format!("{}: lock open failed: {err}", lock_path.display()),
+        })?;
+    file.lock().map_err(|err| Error::ModelCache {
+        message: format!("{}: lock failed: {err}", lock_path.display()),
+    })?;
+    Ok(AssetDownloadLock { _file: file })
+}
 
 /// Resolve the cache root from environment variables.
 ///
@@ -91,6 +123,10 @@ impl ModelCache {
     }
 
     /// Return the path to a verified file, downloading if needed.
+    ///
+    /// Concurrent callers for the same asset serialize on a per-file lock:
+    /// the first downloads, waiters re-check the cache and reuse the file
+    /// without touching the network.
     pub fn resolve(
         &self,
         asset: &ModelAsset,
@@ -104,12 +140,38 @@ impl ModelCache {
             progress.finish(asset, true);
             return Ok(dest);
         }
+        let _lock = acquire_asset_lock(&dest)?;
+        // Another resolve may have finished while we waited for the lock.
+        if verify_file(&dest, asset).is_ok() {
+            progress.finish(asset, true);
+            return Ok(dest);
+        }
         if dest.exists() {
             let _ = fs::remove_file(&dest);
         }
         download_atomic(asset, &dest, fetcher, progress, cancel)?;
         progress.finish(asset, false);
         Ok(dest)
+    }
+
+    /// Return the path to a verified cached file without fetching.
+    ///
+    /// Waits on the per-asset download lock so an in-flight [`Self::resolve`]
+    /// from another thread or process can finish first. Use this for offline
+    /// assertions; do not call [`Self::resolve`] with [`BlockedFetcher`] on a
+    /// cold cache — that path can win the lock and fail before anyone downloads.
+    pub fn require_cached(&self, asset: &ModelAsset) -> Result<PathBuf> {
+        let dest = self.asset_path(asset);
+        if verify_file(&dest, asset).is_ok() {
+            return Ok(dest);
+        }
+        let _lock = acquire_asset_lock(&dest)?;
+        if verify_file(&dest, asset).is_ok() {
+            return Ok(dest);
+        }
+        Err(Error::ModelCache {
+            message: format!("{}: not cached", asset.id),
+        })
     }
 
     /// Resolve every asset in the manifest, in list order.
@@ -234,7 +296,9 @@ mod tests {
     use crate::models::progress::NoProgress;
     use sha2::{Digest, Sha256};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Barrier, Mutex};
+    use std::thread;
+    use std::time::Duration;
 
     struct ScriptedFetcher {
         body: Vec<u8>,
@@ -492,5 +556,180 @@ mod tests {
         assert!(cache.models_dir().ends_with(Path::new("models/v1")));
         let silero = cache.manifest().asset("silero").unwrap();
         assert!(cache.asset_path(silero).ends_with("silero_vad.onnx"));
+    }
+
+    /// Fetcher that signals once the download is in flight, then pauses so
+    /// waiters can pile up on the asset lock before bytes are committed.
+    struct GateFetcher {
+        body: Vec<u8>,
+        calls: AtomicUsize,
+        started: Arc<Barrier>,
+        hold: Duration,
+    }
+
+    impl Fetcher for GateFetcher {
+        fn fetch(
+            &self,
+            _url: &str,
+            writer: &mut dyn Write,
+            on_chunk: &mut dyn FnMut(u64),
+            cancel: &Cancel,
+        ) -> Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            // Lock is already held; release the waiter thread, then keep
+            // writing deferred so it blocks on the same asset lock.
+            self.started.wait();
+            thread::sleep(self.hold);
+            writer.write_all(&self.body)?;
+            on_chunk(self.body.len() as u64);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn concurrent_resolves_download_once() {
+        let body = b"one-download-for-all-waiters".to_vec();
+        let asset = hashed_asset("race-once", &body);
+        let cache = Arc::new(ModelCache::new(
+            scratch(),
+            Manifest {
+                version: 1,
+                assets: vec![asset.clone()],
+            },
+        ));
+        let fetcher = Arc::new(ScriptedFetcher::ok(body.clone()));
+        let start = Arc::new(Barrier::new(8));
+        let mut handles = Vec::with_capacity(8);
+        for _ in 0..8 {
+            let cache = Arc::clone(&cache);
+            let asset = asset.clone();
+            let fetcher = Arc::clone(&fetcher);
+            let start = Arc::clone(&start);
+            handles.push(thread::spawn(move || {
+                start.wait();
+                cache
+                    .resolve(&asset, fetcher.as_ref(), &mut NoProgress, &Cancel::new())
+                    .expect("resolve under contention")
+            }));
+        }
+        let mut paths = Vec::with_capacity(8);
+        for handle in handles {
+            paths.push(handle.join().expect("worker"));
+        }
+        assert_eq!(fetcher.calls.load(Ordering::SeqCst), 1);
+        for path in &paths {
+            assert_eq!(fs::read(path).unwrap(), body);
+        }
+    }
+
+    #[test]
+    fn blocked_waiter_reuses_in_flight_download() {
+        let body = b"wait-for-inflight-bytes".to_vec();
+        let asset = hashed_asset("race-block", &body);
+        let root = scratch();
+        let cache = ModelCache::new(
+            root.clone(),
+            Manifest {
+                version: 1,
+                assets: vec![asset.clone()],
+            },
+        );
+        let started = Arc::new(Barrier::new(2));
+        let fetcher = GateFetcher {
+            body: body.clone(),
+            calls: AtomicUsize::new(0),
+            started: Arc::clone(&started),
+            hold: Duration::from_millis(200),
+        };
+
+        let downloader = {
+            let cache = ModelCache::new(
+                root.clone(),
+                Manifest {
+                    version: 1,
+                    assets: vec![asset.clone()],
+                },
+            );
+            let asset = asset.clone();
+            thread::spawn(move || {
+                cache
+                    .resolve(&asset, &fetcher, &mut NoProgress, &Cancel::new())
+                    .expect("download")
+            })
+        };
+
+        // Download owns the asset lock and has entered fetch.
+        started.wait();
+        let blocked = BlockedFetcher::default();
+        let path = cache
+            .resolve(&asset, &blocked, &mut NoProgress, &Cancel::new())
+            .expect("waiter must reuse the file after the lock releases");
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(
+            blocked.hits.load(Ordering::SeqCst),
+            0,
+            "waiter must not call BlockedFetcher after a concurrent download"
+        );
+        assert_eq!(downloader.join().expect("downloader"), path);
+    }
+
+    #[test]
+    fn require_cached_waits_for_in_flight_download() {
+        let body = b"require-cached-waits".to_vec();
+        let asset = hashed_asset("race-require", &body);
+        let root = scratch();
+        let cache = ModelCache::new(
+            root.clone(),
+            Manifest {
+                version: 1,
+                assets: vec![asset.clone()],
+            },
+        );
+        let started = Arc::new(Barrier::new(2));
+        let fetcher = GateFetcher {
+            body: body.clone(),
+            calls: AtomicUsize::new(0),
+            started: Arc::clone(&started),
+            hold: Duration::from_millis(200),
+        };
+        let downloader = {
+            let cache = ModelCache::new(
+                root,
+                Manifest {
+                    version: 1,
+                    assets: vec![asset.clone()],
+                },
+            );
+            let asset = asset.clone();
+            thread::spawn(move || {
+                cache
+                    .resolve(&asset, &fetcher, &mut NoProgress, &Cancel::new())
+                    .expect("download")
+            })
+        };
+        started.wait();
+        let path = cache
+            .require_cached(&asset)
+            .expect("offline waiter must see the committed file");
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(downloader.join().expect("downloader"), path);
+    }
+
+    #[test]
+    fn require_cached_fails_when_cold() {
+        let body = b"missing".to_vec();
+        let asset = hashed_asset("cold", &body);
+        let cache = ModelCache::new(
+            scratch(),
+            Manifest {
+                version: 1,
+                assets: vec![asset.clone()],
+            },
+        );
+        let err = cache.require_cached(&asset).unwrap_err();
+        assert!(err.to_string().contains("not cached"), "{err}");
     }
 }

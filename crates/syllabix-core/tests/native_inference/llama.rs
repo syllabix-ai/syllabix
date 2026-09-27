@@ -4,9 +4,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use syllabix_core::{
-    run_loop, scripted_frames, BlockedFetcher, Cancel, CollectingSink, FakeStt, FakeTts, FakeVad,
-    HistoryTurn, LlamaLlm, Llm, LoopConfig, ModelCache, PipelineStages, StderrProgress, TokenChunk,
-    Transcript, TurnId, LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT, VOICE_SYSTEM_PROMPT,
+    run_loop, scripted_frames, Cancel, CollectingSink, FakeStt, FakeTts, FakeVad, HistoryTurn,
+    LlamaLlm, Llm, LoopConfig, ModelCache, PipelineStages, TokenChunk, Transcript, TurnId,
+    LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT, VOICE_SYSTEM_PROMPT,
 };
 
 use crate::{native, skip_unless_model};
@@ -194,11 +194,6 @@ fn populated_cache_reuses_the_gguf_offline() {
     let cached = ModelCache::v0();
     let asset = cached.manifest().asset(LLAMA_32_1B_ASSET).unwrap();
     cached
-        .resolve(
-            asset,
-            &BlockedFetcher::default(),
-            &mut StderrProgress::new(),
-            &Cancel::new(),
-        )
+        .require_cached(asset)
         .expect("populated cache must not need the network");
 }
