@@ -14,9 +14,9 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames},
-    contains_words_in_order, run_loop, word_match_ratio, BlockedFetcher, Cancel, CollectingSink,
-    FakeLlm, FakeTts, FakeVad, LoopConfig, ModelCache, PipelineStages, StderrProgress, Stt,
-    SttModel, TurnId, Utterance, WhisperStt, LIBRISPEECH_MIN_WORD_MATCH,
+    contains_words_in_order, run_loop, word_match_ratio, Cancel, CollectingSink, FakeLlm, FakeTts,
+    FakeVad, HttpFetcher, LoopConfig, ModelCache, PipelineStages, StderrProgress, Stt, SttModel,
+    TurnId, Utterance, WhisperStt, LIBRISPEECH_MIN_WORD_MATCH,
 };
 
 use crate::{hex, native, skip_unless_model};
@@ -158,12 +158,7 @@ fn recorded_fixtures_match_documented_transcripts() {
     let cached = ModelCache::v0();
     let asset = cached.manifest().asset("whisper-small").unwrap();
     cached
-        .resolve(
-            asset,
-            &BlockedFetcher::default(),
-            &mut StderrProgress::new(),
-            &Cancel::new(),
-        )
+        .require_cached(asset)
         .expect("populated cache must not need the network");
 }
 
@@ -232,16 +227,21 @@ fn cancel_aborts_native_decode_and_context_stays_usable() {
 #[test]
 fn auto_language_detects_english_and_pins_the_code() {
     skip_unless_model!("whisper-small");
+    // Hold the shared native lock so this ggml context does not overlap other
+    // native tests. Fetch with HttpFetcher so a cold SYLLABIX_CACHE_DIR can
+    // populate; BlockedFetcher on a cold cache can win the asset lock and fail
+    // before any download starts.
+    let _native = native();
     let cache = ModelCache::v0();
     let asset = cache.manifest().asset(SttModel::Small.asset_id()).unwrap();
     let path = cache
         .resolve(
             asset,
-            &BlockedFetcher::default(),
+            &HttpFetcher::new(),
             &mut StderrProgress::new(),
             &Cancel::new(),
         )
-        .expect("populated whisper-small cache");
+        .expect("whisper-small weights");
     let mut stt = WhisperStt::from_model_path(path, SttModel::Small)
         .expect("load small for auto run")
         .with_language("auto")
