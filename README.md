@@ -1,6 +1,15 @@
+<div align="center">
+
 # Syllabix
 
 Local voice agent. One native binary. Apache-2.0.
+
+[![CI](https://github.com/syllabix-ai/syllabix/actions/workflows/ci.yml/badge.svg)](https://github.com/syllabix-ai/syllabix/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.91%2B-orange?logo=rust)](https://www.rust-lang.org)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](./docs/install.md)
+
+</div>
 
 ```text
 mic → VAD → STT → LLM → TTS → speakers
