@@ -1,5 +1,12 @@
 # Syllabix
 
+[![Version](https://img.shields.io/badge/version-v0.0.2-blue)](https://github.com/syllabix-ai/syllabix/releases)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE)
+[![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](./docs/install.md)
+[![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)](./docs/install.md)
+[![Windows](https://img.shields.io/badge/Windows-0078D4)](./docs/install.md)
+[![Rust](https://img.shields.io/badge/rust-1.91%2B-orange?logo=rust)](./rust-toolchain.toml)
+
 Local voice agent. One native binary. Apache-2.0.
 
 ```text
