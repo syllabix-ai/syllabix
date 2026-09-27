@@ -204,6 +204,9 @@ pub struct RuntimeControls(Arc<RuntimeControlsInner>);
 struct RuntimeControlsInner {
     barge_in: AtomicBool,
     mic_muted: AtomicBool,
+    /// Mirrored from the loop's assistant-hold pause so fixture capture can
+    /// wait for a listening window between turns.
+    vad_paused: AtomicBool,
     /// `Duration::ZERO` disables.
     mic_mute_after: Duration,
     /// `Duration::ZERO` disables.
@@ -240,6 +243,7 @@ impl RuntimeControls {
         Self(Arc::new(RuntimeControlsInner {
             barge_in: AtomicBool::new(barge_in),
             mic_muted: AtomicBool::new(false),
+            vad_paused: AtomicBool::new(false),
             mic_mute_after: Duration::from_millis(u64::from(mic_mute_ms)),
             exit_after: Duration::from_millis(u64::from(exit_ms)),
             idle_since_ms: Mutex::new(None),
@@ -258,6 +262,16 @@ impl RuntimeControls {
     pub fn mic_muted(&self) -> bool {
         self.0.mic_muted.load(Ordering::SeqCst)
     }
+
+    /// True when VAD will accept inbound capture (not assistant-held, not muted).
+    pub fn capture_open(&self) -> bool {
+        !self.0.vad_paused.load(Ordering::SeqCst) && !self.mic_muted()
+    }
+
+    pub(crate) fn set_vad_paused(&self, paused: bool) {
+        self.0.vad_paused.store(paused, Ordering::SeqCst);
+    }
+
     pub fn toggle_barge_in(&self) -> bool {
         !self.0.barge_in.fetch_xor(true, Ordering::SeqCst)
     }
@@ -496,12 +510,17 @@ impl Shared {
         }
     }
 
+    fn set_pause_vad(&self, paused: bool) {
+        self.pause_vad.store(paused, Ordering::SeqCst);
+        self.controls.set_vad_paused(paused);
+    }
+
     fn mark_assistant(&self, turn: TurnId) {
         *self.assistant_turn.lock().expect("assistant turn") = Some(turn);
         // Thinking mutes the mic unconditionally. Speaking re-applies the
         // barge-in flag when the first audio arrives.
         self.thinking.store(true, Ordering::SeqCst);
-        self.pause_vad.store(true, Ordering::SeqCst);
+        self.set_pause_vad(true);
         self.emit(LoopEvent::Thinking { turn });
     }
 
@@ -512,8 +531,7 @@ impl Shared {
                 .lock()
                 .expect("assistant turn")
                 .is_some();
-            self.pause_vad
-                .store(active && !self.controls.barge_in(), Ordering::SeqCst);
+            self.set_pause_vad(active && !self.controls.barge_in());
         }
     }
 
@@ -522,14 +540,14 @@ impl Shared {
         if *slot == Some(turn) {
             *slot = None;
             self.thinking.store(false, Ordering::SeqCst);
-            self.pause_vad.store(false, Ordering::SeqCst);
+            self.set_pause_vad(false);
             self.controls.arm_idle();
         }
     }
 
     fn sync_barge_in(&self) {
         if self.thinking.load(Ordering::SeqCst) {
-            self.pause_vad.store(true, Ordering::SeqCst);
+            self.set_pause_vad(true);
             return;
         }
         let active = self
@@ -537,8 +555,7 @@ impl Shared {
             .lock()
             .expect("assistant turn")
             .is_some();
-        self.pause_vad
-            .store(active && !self.controls.barge_in(), Ordering::SeqCst);
+        self.set_pause_vad(active && !self.controls.barge_in());
     }
 
     /// Cancel in-flight LLM/TTS when `--barge-in` hears SpeechStart.
@@ -555,7 +572,7 @@ impl Shared {
             slot.take()
         };
         self.thinking.store(false, Ordering::SeqCst);
-        self.pause_vad.store(false, Ordering::SeqCst);
+        self.set_pause_vad(false);
         cancel.cancel_generation();
         self.flush_playback.store(true, Ordering::SeqCst);
         if let Some(turn) = turn {
@@ -1628,12 +1645,19 @@ mod tests {
         let controls = RuntimeControls::new(false);
         assert!(!controls.barge_in());
         assert!(!controls.mic_muted());
+        assert!(controls.capture_open());
         assert!(controls.toggle_barge_in());
         assert!(controls.toggle_mic_muted());
         assert!(controls.barge_in());
         assert!(controls.mic_muted());
+        assert!(!controls.capture_open());
         assert!(!controls.toggle_mic_muted());
         assert!(!controls.mic_muted());
+        assert!(controls.capture_open());
+        controls.set_vad_paused(true);
+        assert!(!controls.capture_open());
+        controls.set_vad_paused(false);
+        assert!(controls.capture_open());
     }
 
     fn controls_with_clock(mic_mute_ms: u32, exit_ms: u32) -> RuntimeControls {
@@ -1828,6 +1852,7 @@ mod tests {
         shared.mark_assistant(TurnId(0));
         assert!(shared.thinking.load(Ordering::SeqCst));
         assert!(shared.pause_vad.load(Ordering::SeqCst));
+        assert!(!shared.controls.capture_open());
 
         let chunk = SynthesizedAudio {
             turn: TurnId(0),
@@ -1842,6 +1867,7 @@ mod tests {
             !shared.pause_vad.load(Ordering::SeqCst),
             "speaking with --barge-in listens"
         );
+        assert!(shared.controls.capture_open());
     }
 
     fn run_turns(n: usize) -> LoopReport {

@@ -1,0 +1,98 @@
+name: Weekly native tests
+
+# Launch-stack native inference with real weights and --no-cfg-coverage.
+# Separate from weekly.yml (unit coverage + OS matrix) and from the per-PR
+# gate in ci.yml. Default runner is the self-hosted Mac (0 billed minutes);
+# workflow_dispatch may override to ubuntu-latest. No percentage floor yet —
+# establish a baseline from uploaded reports before enforcing a native-
+# specific gate (see #174).
+
+on:
+  schedule:
+    # After weekly.yml (06:00) so the self-hosted Mac is not contended.
+    - cron: "0 08 * * 1" # Mondays 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      pool:
+        description: "Runner pool (default: self-hosted Mac; ubuntu-latest for hosted Linux)"
+        type: choice
+        default: '["self-hosted", "macOS"]'
+        options:
+          - '["self-hosted", "macOS"]'
+          - '["ubuntu-latest"]'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  SYLLABIX_CACHE_DIR: ${{ github.workspace }}/.syllabix-cache
+  RUSTUP_INIT_SKIP_PATH_CHECK: yes
+  # Launch-stack ids from native_inference::LAUNCH_NATIVE_IDS.
+  SYLLABIX_NATIVE_MODELS: whisper-small,lfm2.5-2.6b,pocket-tts
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage-native:
+    name: native coverage
+    runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          components: llvm-tools-preview
+      - name: Prefer rustup over Homebrew rustc
+        if: runner.os == 'macOS'
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+      - name: Install ALSA headers, CMake, and bubblewrap
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake bubblewrap
+      # Ubuntu 24.04 AppArmor blocks CAP_NET_ADMIN inside unprivileged userns,
+      # so bwrap --unshare-net fails with RTM_NEWADDR and sandbox tests fail.
+      - name: Allow bubblewrap user namespaces
+        if: runner.os == 'Linux'
+        run: |
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Ensure CMake (no-op when preinstalled on the runner)
+        if: runner.os == 'macOS'
+        run: command -v cmake || brew install cmake
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.syllabix-cache
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-pocket-tts
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.8.7
+      # Cache only on hosted Linux. Self-hosted keeps target/ on disk; the
+      # rust-cache save upload alone can dominate wall time (see ci.yml).
+      - uses: Swatinem/rust-cache@v2
+        if: contains(inputs.pool || '', 'ubuntu-latest')
+        with:
+          key: native-coverage
+      - name: Clear stale coverage profiles
+        run: |
+          if [ -d target/llvm-cov-target ]; then
+            find target/llvm-cov-target -type f \( -name '*.profraw' -o -name '*.profdata' \) -delete
+          fi
+      - name: Run native inference with coverage
+        run: |
+          cargo llvm-cov --no-cfg-coverage --release --no-clean \
+            -p syllabix-core --features native-inference --test native_inference \
+            --cobertura --output-path coverage-native.xml
+          # LCOV keeps usable line tables when Cobertura conversion is empty.
+          cargo llvm-cov report --release --lcov --output-path coverage-native.lcov
+      - name: Store native coverage report
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-cobertura-native
+          path: |
+            coverage-native.xml
+            coverage-native.lcov
+          if-no-files-found: error

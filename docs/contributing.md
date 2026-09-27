@@ -169,3 +169,11 @@ Per-PR CI is fmt, clippy, and llvm-cov ≥85% workspace lines and ≥85% lines i
 every reported `src/**/*.rs` file, without loading native weights. Weekly CI
 repeats that file-level gate on Linux and runs `cargo test --workspace` on
 Linux / Windows / macOS, including launch-stack native inference.
+
+A separate weekly **native coverage** workflow (`native-tests.yml`, job
+`coverage-native`) runs launch-stack weights under
+`cargo llvm-cov --no-cfg-coverage --release` with
+`-p syllabix-core --features native-inference --test native_inference`.
+It defaults to the self-hosted Mac; `workflow_dispatch` can override the
+pool to `ubuntu-latest`. Reports upload as `coverage-cobertura-native`.
+No native percentage floor yet — baseline first (#174).
