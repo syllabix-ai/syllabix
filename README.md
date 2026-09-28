@@ -7,16 +7,16 @@
 [![Windows](https://img.shields.io/badge/Windows-0078D4)](./docs/install.md)
 [![Rust](https://img.shields.io/badge/rust-1.91%2B-orange?logo=rust)](./rust-toolchain.toml)
 
-Local voice agent. One native binary. Apache-2.0.
+Talk to a voice agent on your computer. One native binary. Easy to set up. Apache-2.0.
 
 ```text
 mic → VAD → STT → LLM → TTS → speakers
               ↑______________ barge-in (interrupt + flush)
 ```
 
-Download `syllabix`, run it, talk. No Python, pip, or API key on the default path. Audio stays on the machine unless you opt into an online LLM (transcript text only).
+Download `syllabix`, run it, and talk. You do not need Python, pip, or an API key for the default setup. Your audio stays on your machine.
 
-Default models: Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB on first run).
+Default models: Whisper `small` (STT), LFM2.5-2.6B (local small LLM), and Pocket TTS (TTS).
 
 ![`syllabix run` terminal UI](docs/assets/tui-run.png)
 
@@ -39,63 +39,61 @@ certutil -hashfile syllabix.exe SHA256    # compare against the SHA256SUMS line
 .\syllabix.exe run
 ```
 
-| Target | Artifact |
+| Computer | File to download |
 | --- | --- |
 | Linux x64 | `syllabix-Linux-x86_64` |
-| macOS Apple Silicon | `syllabix-Darwin-arm64` |
-| macOS Intel | `syllabix-Darwin-x86_64` |
+| Mac with Apple chip | `syllabix-Darwin-arm64` |
+| Mac with Intel chip | `syllabix-Darwin-x86_64` |
 | Windows x64 | `syllabix-Windows-x86_64.exe` |
 
-First `run` fetches Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB) into `~/.cache/syllabix/models/v1` (`%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows; override with `$SYLLABIX_CACHE_DIR`) and verifies SHA-256. Later runs reuse that cache offline. `--help` and `init` do not need the cache.
+The first time you run it, Syllabix downloads the models (Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS — about 2.2 GB) into `~/.cache/syllabix/models/v1` (or `%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows). You can change that folder with `$SYLLABIX_CACHE_DIR`.
 
-macOS Gatekeeper and Windows SmartScreen: [docs/install.md](docs/install.md).
+Blocked by macOS Gatekeeper or Windows SmartScreen? See [docs/install.md](docs/install.md).
 
-## Compile
+## Build from source
 
-Requires Rust 1.91+, CMake, and a C++ compiler. Linux also needs ALSA headers (`libasound2-dev`).
+You need Rust 1.91+, CMake, and a C++ compiler. On Linux, also install ALSA headers (`libasound2-dev`).
 
 ```bash
 cargo run -p syllabix -- run
 ```
 
-Fmt, clippy, tests, and packaging: [docs/contributing.md](docs/contributing.md).
-
 ## Talk
 
-`syllabix run` uses the built-in microphone and speakers. Grant microphone access when the OS asks. Echo control (WebRTC AEC3) is on by default and calibrates for about 10 seconds — wait before speaking. If laptop speakers still trigger the agent as if you were talking, use headphones and include the device names from the startup line in a bug report.
+`syllabix run` uses your microphone and speakers. Allow mic access when your system asks. Echo canceling is on by default.
 
 ```bash
-./syllabix run              # default: finish the sentence before listening
-./syllabix run --barge-in   # stop playback when you talk over the agent
-./syllabix init             # optional: write syllabix.yaml in a project folder
+./syllabix run
+./syllabix run --barge-in   # cut off the agent when the user starts speaking
+./syllabix init             # optional: create syllabix.yaml — see docs/syllabix-yaml.md
 ```
 
-Default `run` needs no yaml and no API key. After the cache is full, it needs no network.
+Default `run` needs no config file and no API key. Once models are downloaded, it needs no internet.
 
-Commands: [docs/cli.md](docs/cli.md).
+Full command list: [docs/cli.md](docs/cli.md).
 
 ## Optional config
 
-`syllabix run` needs no configuration file. Run [`syllabix init`](docs/syllabix-yaml.md) when you want to change the model (including opt-in Qwen3-ASR `qwen3-asr-0.6`), language, voice, system prompt, or use a BYO-key online LLM. Online LLMs receive transcript text only; audio stays on the machine.
+You do not need a config file for the basic setup. Run [`syllabix init`](docs/syllabix-yaml.md) when you want to change the model. Language, voice, system prompt, online LLMs, and other options are in [docs/syllabix-yaml.md](docs/syllabix-yaml.md).
 
-Start with [`examples/demo-agent.yaml`](examples/demo-agent.yaml). See the [model catalogue](docs/engines.md), [configuration guide](docs/syllabix-yaml.md), and [diagnostics](docs/diagnostics.md) for per-turn timelines and WAVs.
+A starter file is in [`examples/demo-agent.yaml`](examples/demo-agent.yaml). More detail: [model list](docs/engines.md), [config guide](docs/syllabix-yaml.md), and [diagnostics](docs/diagnostics.md) (per-turn timelines and WAV files).
 
 ## Docs
 
-| Page | For |
+| Page | What it covers |
 | --- | --- |
-| [Docs index](docs/README.md) | User, config, and contributor map |
-| [Install](docs/install.md) | Checksums, cache, Gatekeeper, SmartScreen, build |
+| [Docs index](docs/README.md) | User and config map |
+| [Install](docs/install.md) | Checksums, cache, Gatekeeper, SmartScreen, building |
 | [CLI](docs/cli.md) | `run`, `--barge-in`, `init`, `--help` |
 | [Engines](docs/engines.md) | VAD / STT / LLM / TTS ids and machine needs |
-| [Architecture](docs/architecture.md) | Cascade, AEC, barge-in, what leaves the machine |
-| [Compare](docs/compare.md) | vs HF S2S, Pipecat/LiveKit, Ollama |
+| [Architecture](docs/architecture.md) | How the pipeline works, barge-in, what leaves your machine |
+| [Compare](docs/compare.md) | vs Hugging Face S2S, Pipecat/LiveKit, Ollama |
 | [Configuration](docs/configuration.md) | Index of yaml, engines, diagnostics |
 | [syllabix.yaml](docs/syllabix-yaml.md) | Optional project file — keys and safe edits |
-| [Troubleshooting](docs/troubleshooting.md) | Mic, echo, keys, first-run fetch |
-| [FAQ](docs/faq.md) | Large first run, barge-in, keys |
+| [Troubleshooting](docs/troubleshooting.md) | Mic, echo, keys, first-run download |
+| [FAQ](docs/faq.md) | Large first run, barge-in, API keys |
 | [Contributing](docs/contributing.md) | Tests, packaging, CI |
-| [Security](SECURITY.md) | Private vulnerability reports |
+| [Security](SECURITY.md) | How to report security issues privately |
 
 ## License
 
