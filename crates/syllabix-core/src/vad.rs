@@ -356,7 +356,9 @@ impl ProbabilityScorer for OrtScorer {
         debug_assert_eq!(frame.sample_rate_hz, DEFAULT_SAMPLE_RATE_HZ);
         let audio: Vec<f32> = frame
             .samples
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| (f32::from(pair[0]) + f32::from(pair[1])) / (2.0 * 32_768.0))
             .collect();
         let outputs = self

@@ -948,10 +948,10 @@ mod native {
             });
         }
         let mut rows = Vec::with_capacity(VOICE_ROWS);
-        for chunk in bytes.chunks_exact(STYLE_DIM * 4) {
+        for chunk in bytes.as_chunks::<{ STYLE_DIM * 4 }>().0 {
             let mut style = vec![0.0_f32; STYLE_DIM];
-            for (slot, fbytes) in style.iter_mut().zip(chunk.chunks_exact(4)) {
-                *slot = f32::from_le_bytes(fbytes.try_into().expect("4-byte float"));
+            for (slot, fbytes) in style.iter_mut().zip(chunk.as_chunks::<4>().0) {
+                *slot = f32::from_le_bytes(*fbytes);
             }
             rows.push(style);
         }

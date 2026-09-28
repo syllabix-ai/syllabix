@@ -7,41 +7,42 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/syllabix-ai/syllabix"
-rust-version = "1.91"
+rust-version = "1.98"
 
 [workspace.dependencies]
 # Keep the dependency graph deterministic across the target matrix.
-clap = { version = "=4.5.23", features = ["derive"] }
-thiserror = "=2.0.17"
-tracing = "=0.1.41"
-tracing-subscriber = { version = "=0.3.19", features = ["env-filter"] }
+clap = { version = "=4.6.7", features = ["derive"] }
+thiserror = "=2.0.21"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 syllabix-core = { path = "crates/syllabix-core" }
-assert_cmd = "=2.0.16"
-predicates = "=3.1.2"
+assert_cmd = "=2.2.2"
+predicates = "=3.1.4"
 cpal = "=0.15.3"
 sonora = "=0.2.0"
 # Keep the CoreAudio bindings aligned with cpal 0.15.
-coreaudio-sys = "=0.2.16"
+coreaudio-sys = "=0.2.18"
 # rustls-backed HTTP so the binary does not pick up libssl.
 # ureq 2.12 + url 2.5.4 pull idna 1.x / edition 2024, which Cargo 1.83 cannot parse.
+# url stays below 2.5.4 for that reason; idna remains pinned with ureq 2.10.
 ureq = { version = "=2.10.1", default-features = false, features = ["tls"] }
 sha2 = "=0.10.8"
 url = "=2.5.2"
 idna = "=0.5.0"
-zeroize = "=1.8.1"
+zeroize = "=1.9.0"
 # jobserver 0.1.33+ pulls getrandom 0.3/0.4 (edition 2024) on Windows.
 jobserver = "=0.1.32"
 getrandom = "=0.2.17"
 # Exact serialization pins keep generated config stable.
-serde = { version = "=1.0.217", features = ["derive"] }
+serde = { version = "=1.0.229", features = ["derive"] }
 serde_yaml = "=0.9.34"
 # Row 30: SSE chat-completions payloads for the OpenAI-compatible adapter.
-serde_json = "=1.0.134"
+serde_json = "=1.0.151"
 # Moonshine streaming-small uses a 32k BPE tokenizer.json.
 # Drop esaxx_fast: its C++ build forces /MT on MSVC, which LNK2038-conflicts
 # with whisper/llama (/MD, matching rustc). Moonshine is BPE, not Unigram, so
 # the C++ esaxx pretok is unused.
-tokenizers = { version = "=0.22.1", default-features = false, features = ["progressbar", "onig"] }
+tokenizers = { version = "=0.23.2", default-features = false, features = ["progressbar", "onig"] }
 # Web-fetch HTML reaches the model as Markdown, not raw tag soup.
 htmd = "=0.5.5"
 ort-sys = "=2.0.0-rc.9"

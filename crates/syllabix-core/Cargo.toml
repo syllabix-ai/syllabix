@@ -34,7 +34,7 @@ syllabix-native.workspace = true
 sonora.workspace = true
 # Kokoro G2P: Misaki US lexicon in-process. default-features includes
 # espeak-ng (GPL + extra dylib) — keep that off.
-misaki-rs = { version = "=0.3.0", default-features = false }
+misaki-rs = { version = "=0.6.0", default-features = false }
 # Pure-Rust SentencePiece reader for Pocket TTS's pinned tokenizer.model.
 sentencepiece-rs = "=0.2.2"
 

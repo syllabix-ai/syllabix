@@ -67,8 +67,8 @@ fn example_sidecar_fields_round_trip() {
     let json = r#"
         {
           "git_sha": "abc123",
-          "rustc": "rustc 1.91.0",
-          "cargo": "cargo 1.91.0",
+          "rustc": "rustc 1.98.1",
+          "cargo": "cargo 1.98.1",
           "target": "x86_64-unknown-linux-gnu",
           "profile": "dist",
           "artifact": "syllabix-Linux-x86_64",

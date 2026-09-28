@@ -5,7 +5,7 @@
 [![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](./docs/install.md)
 [![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)](./docs/install.md)
 [![Windows](https://img.shields.io/badge/Windows-0078D4)](./docs/install.md)
-[![Rust](https://img.shields.io/badge/rust-1.91%2B-orange?logo=rust)](./rust-toolchain.toml)
+[![Rust](https://img.shields.io/badge/rust-1.98%2B-orange?logo=rust)](./rust-toolchain.toml)
 
 Talk to a voice agent on your computer. One native binary. Easy to set up. Apache-2.0.
 
@@ -84,7 +84,7 @@ Full command list: [docs/cli.md](docs/cli.md).
 
 ## Build from source
 
-You need Rust 1.91+, CMake, and a C++ compiler. On Linux, also install ALSA headers (`libasound2-dev`).
+You need Rust 1.98+, CMake, and a C++ compiler. On Linux, also install ALSA headers (`libasound2-dev`).
 
 ```bash
 cargo run -p syllabix -- run

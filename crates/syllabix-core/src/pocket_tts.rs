@@ -729,8 +729,10 @@ fn voice_state(specs: &[StateSpec], path: &Path) -> Result<Vec<OnnxTensor>> {
             match (&mut target.data, source.dtype.as_str()) {
                 (OnnxData::F32(out), "F32") => {
                     let values = data
-                        .chunks_exact(4)
-                        .map(|value| f32::from_le_bytes(value.try_into().expect("four bytes")))
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|value| f32::from_le_bytes(*value))
                         .collect::<Vec<_>>();
                     copy_voice_f32(out, &spec.shape, &values, &source.shape);
                 }
@@ -780,15 +782,16 @@ fn standard_normal_tensor(width: usize, scale: f32) -> Result<OnnxTensor> {
     getrandom::getrandom(&mut bytes)
         .map_err(|err| provider(&format!("could not sample Pocket TTS noise: {err}")))?;
     let uniforms = bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| {
             // Keep away from zero so Box-Muller remains finite.
-            (u32::from_le_bytes(chunk.try_into().expect("four bytes")) as f64 + 1.0)
-                / (u32::MAX as f64 + 2.0)
+            (u32::from_le_bytes(*chunk) as f64 + 1.0) / (u32::MAX as f64 + 2.0)
         })
         .collect::<Vec<_>>();
     let mut values = Vec::with_capacity(width);
-    for pair in uniforms.chunks_exact(2) {
+    for pair in uniforms.as_chunks::<2>().0 {
         let radius = (-2.0 * pair[0].ln()).sqrt();
         let angle = std::f64::consts::TAU * pair[1];
         values.push((radius * angle.cos()) as f32 * scale);

@@ -64,7 +64,7 @@ Windows: Settings → Privacy → Microphone.
 
 ## Compile
 
-Requires Rust 1.91+, CMake, and a C++ compiler. Linux also needs ALSA headers (`libasound2-dev`).
+Requires Rust 1.98+, CMake, and a C++ compiler. Linux also needs ALSA headers (`libasound2-dev`).
 
 ```bash
 cargo run -p syllabix -- run
