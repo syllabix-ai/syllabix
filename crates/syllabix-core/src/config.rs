@@ -1556,11 +1556,15 @@ auto-timeout:
 
     #[test]
     fn example_config_parses_to_launch_defaults() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-agent.yaml");
-        let text = fs::read_to_string(&path).expect("examples/demo-agent.yaml exists");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/demo-fully-self-hosted-voice-agents.yaml");
+        let text = fs::read_to_string(&path)
+            .expect("examples/demo-fully-self-hosted-voice-agents.yaml exists");
         assert!(text.contains("#"), "example documents its keys in comments");
         let config = AgentConfig::parse_yaml(&text).expect("example parses");
-        assert_eq!(config, AgentConfig::v0());
+        let mut expected = AgentConfig::v0();
+        expected.name = "demo-fully-self-hosted-voice-agents".into();
+        assert_eq!(config, expected);
         assert!(!config.thinking, "thinking stays off by default");
         assert_eq!(
             config.system_prompt,
@@ -1575,11 +1579,29 @@ auto-timeout:
 
     #[test]
     fn example_config_loads_from_path_with_field_context() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-agent.yaml");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/demo-fully-self-hosted-voice-agents.yaml");
         let config = AgentConfig::load_path(&path).expect("load example");
-        assert_eq!(config.name, "demo-agent");
+        assert_eq!(config.name, "demo-fully-self-hosted-voice-agents");
         assert_eq!(config.llm_model, "lfm2.5-2.6b");
         assert_eq!(config.language, "en");
+    }
+
+    #[test]
+    fn open_ai_llm_voice_agent_example_parses() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/demo-open-ai-llm-voice-agent.yaml");
+        let config = AgentConfig::load_path(&path).expect("load openai example");
+        assert_eq!(config.name, "demo-open-ai-llm-voice-agent");
+        assert_eq!(config.llm, LlmProvider::Online);
+        assert_eq!(config.llm_model, "gpt-5.4");
+        assert_eq!(
+            config.llm_base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
+        assert!(config.llm_developer_harness);
+        assert_eq!(config.stt_model, SttModel::Small);
+        assert_eq!(config.tts_model, TtsModel::PocketTts);
     }
 
     #[test]

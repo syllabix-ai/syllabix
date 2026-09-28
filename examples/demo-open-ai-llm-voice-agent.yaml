@@ -1,0 +1,23 @@
+# OpenAI LLM voice agent with developer harness on. Copy as syllabix.yaml.
+# Needs SYLLABIX_LLM_API_KEY. Key guide: docs/syllabix-yaml.md. Catalogue: docs/engines.md
+name: demo-open-ai-llm-voice-agent
+pipeline:
+  vad:
+    provider: silero
+  stt:
+    provider: local
+    model: whisper-small
+    language: en
+  llm:
+    provider: online
+    model: gpt-5.4
+    base_url: https://api.openai.com/v1
+    developer_harness: true
+  tts:
+    provider: local
+    model: pocket-tts
+
+# Optional idle timers (defaults shown). Set either value to 0 to disable it.
+# auto-timeout:
+#   mic_mute_ms: 180000
+#   exit_ms: 600000

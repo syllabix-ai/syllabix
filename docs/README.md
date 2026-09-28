@@ -20,7 +20,7 @@
 | [syllabix.yaml](syllabix-yaml.md) | Optional project file — keys and safe edits |
 | [Diagnostics](diagnostics.md) | Turn timelines and WAVs |
 
-`syllabix run` needs no yaml. Create a starter file with `syllabix init [dir]`, or copy [`examples/demo-agent.yaml`](../examples/demo-agent.yaml).
+`syllabix run` needs no yaml. Create a starter file with `syllabix init [dir]`, or copy [`examples/demo-fully-self-hosted-voice-agents.yaml`](../examples/demo-fully-self-hosted-voice-agents.yaml).
 
 ## Build / measure
 

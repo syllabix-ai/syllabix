@@ -10,4 +10,4 @@
 | [Diagnostics](diagnostics.md) | `diagnostics:` timelines and WAVs |
 | [Install](install.md) | Cache directory, Gatekeeper / SmartScreen |
 
-Create a starter file with `syllabix init [dir]`, or copy [`examples/demo-agent.yaml`](../examples/demo-agent.yaml).
+Create a starter file with `syllabix init [dir]`, or copy [`examples/demo-fully-self-hosted-voice-agents.yaml`](../examples/demo-fully-self-hosted-voice-agents.yaml).

@@ -6,7 +6,7 @@ Optional project file for Syllabix. **`syllabix run` needs no yaml.** Defaults t
 | --- | --- |
 | Name | `syllabix.yaml` (only this name is loaded) |
 | Where | Current working directory when you `run` |
-| Create | `syllabix init [dir]`, or copy [`examples/demo-agent.yaml`](../examples/demo-agent.yaml) |
+| Create | `syllabix init [dir]`, or copy [`examples/demo-fully-self-hosted-voice-agents.yaml`](../examples/demo-fully-self-hosted-voice-agents.yaml) |
 | Missing file | Quietly uses defaults — not an error |
 | Unknown keys | Fail at load |
 | Not in this file | API keys, barge-in (`run --barge-in`), sample rate / frame size |
