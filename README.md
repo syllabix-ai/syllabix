@@ -18,8 +18,6 @@ Download `syllabix`, run it, and talk. You do not need Python, pip, or an API ke
 
 Default models: Whisper `small` (STT), LFM2.5-2.6B (local small LLM), and Pocket TTS (TTS).
 
-![`syllabix run` terminal UI](docs/assets/tui-run.png)
-
 ## Download
 
 ```bash
@@ -46,9 +44,43 @@ certutil -hashfile syllabix.exe SHA256    # compare against the SHA256SUMS line
 | Mac with Intel chip | `syllabix-Darwin-x86_64` |
 | Windows x64 | `syllabix-Windows-x86_64.exe` |
 
-The first time you run it, Syllabix downloads the models (Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS — about 2.2 GB) into `~/.cache/syllabix/models/v1` (or `%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows). You can change that folder with `$SYLLABIX_CACHE_DIR`.
-
 Blocked by macOS Gatekeeper or Windows SmartScreen? See [docs/install.md](docs/install.md).
+
+## Run
+
+### Fully local
+
+No API key. Default `run` uses on-device Whisper, LFM2.5-2.6B, and Pocket TTS.
+
+```bash
+./syllabix run
+```
+
+The first local run downloads the models (Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS — about 2.2 GB) into `~/.cache/syllabix/models/v1` (or `%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows). You can change that folder with `$SYLLABIX_CACHE_DIR`. Once cached, it needs no internet.
+
+![Fully local `syllabix run` terminal UI](docs/assets/tui-run.png)
+
+### OpenAI LLM
+
+Uses OpenAI `gpt-5.4` with the developer harness on. Needs `SYLLABIX_LLM_API_KEY`. STT and TTS stay local; only transcript text goes to OpenAI.
+
+```bash
+curl -L https://raw.githubusercontent.com/syllabix-ai/syllabix/main/examples/demo-open-ai-llm-voice-agent.yaml -o syllabix.yaml
+SYLLABIX_LLM_API_KEY=sk-… ./syllabix run
+```
+
+![OpenAI LLM `syllabix run` terminal UI](docs/assets/tui-run-openai.png)
+
+### Talk
+
+`syllabix run` uses your microphone and speakers. Allow mic access when your system asks. Echo canceling is on by default.
+
+```bash
+./syllabix run --barge-in   # cut off the agent when the user starts speaking
+./syllabix init             # optional: create syllabix.yaml — see docs/syllabix-yaml.md
+```
+
+Full command list: [docs/cli.md](docs/cli.md).
 
 ## Build from source
 
@@ -58,25 +90,11 @@ You need Rust 1.91+, CMake, and a C++ compiler. On Linux, also install ALSA head
 cargo run -p syllabix -- run
 ```
 
-## Talk
-
-`syllabix run` uses your microphone and speakers. Allow mic access when your system asks. Echo canceling is on by default.
-
-```bash
-./syllabix run
-./syllabix run --barge-in   # cut off the agent when the user starts speaking
-./syllabix init             # optional: create syllabix.yaml — see docs/syllabix-yaml.md
-```
-
-Default `run` needs no config file and no API key. Once models are downloaded, it needs no internet.
-
-Full command list: [docs/cli.md](docs/cli.md).
-
 ## Optional config
 
 You do not need a config file for the basic setup. Run [`syllabix init`](docs/syllabix-yaml.md) when you want to change the model. Language, voice, system prompt, online LLMs, and other options are in [docs/syllabix-yaml.md](docs/syllabix-yaml.md).
 
-A starter file is in [`examples/demo-agent.yaml`](examples/demo-agent.yaml). More detail: [model list](docs/engines.md), [config guide](docs/syllabix-yaml.md), and [diagnostics](docs/diagnostics.md) (per-turn timelines and WAV files).
+A starter file is in [`examples/demo-fully-self-hosted-voice-agents.yaml`](examples/demo-fully-self-hosted-voice-agents.yaml). More detail: [model list](docs/engines.md), [config guide](docs/syllabix-yaml.md), and [diagnostics](docs/diagnostics.md) (per-turn timelines and WAV files).
 
 ## Docs
 
