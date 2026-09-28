@@ -18,9 +18,7 @@ Download `syllabix`, run it, talk. No Python, pip, or API key on the default pat
 
 Default models: Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB on first run).
 
-![`syllabix run` terminal UI (illustration)](docs/assets/tui-run.png)
-
-Replace [`docs/assets/tui-run.png`](docs/assets/tui-run.png) with a live capture when you have one. See [`docs/assets/`](docs/assets/README.md).
+![`syllabix run` terminal UI](docs/assets/tui-run.png)
 
 ## Download
 
