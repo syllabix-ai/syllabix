@@ -10,6 +10,8 @@ use syllabix_core::{run_live, AgentConfig, Cancel, Result};
 use crate::tui;
 #[cfg(not(coverage))]
 use std::io::{self, IsTerminal};
+#[cfg(not(coverage))]
+use syllabix_core::{warm_sandbox, FilesystemMode};
 
 /// Local voice agent.
 ///
@@ -110,7 +112,8 @@ pub fn execute(cli: Cli) -> Result<()> {
 }
 
 fn run(barge_in: bool) -> Result<()> {
-    let config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
+    let cwd = std::env::current_dir()?;
+    let config = AgentConfig::resolve_for_run(cwd.as_path())?;
     let cancel = Cancel::new();
     #[cfg(coverage)]
     {
@@ -120,12 +123,40 @@ fn run(barge_in: bool) -> Result<()> {
     }
     #[cfg(not(coverage))]
     {
+        warm_session_sandbox(&cwd, &config);
         if io::stdout().is_terminal() {
             tui::run_conversation_tui(config, cancel, barge_in)
         } else {
             let report = run_live(&config, cancel, None, barge_in)?;
             tracing::info!(turns = report.turns.len(), "conversation ended");
             Ok(())
+        }
+    }
+}
+
+/// Probe the sandbox once while the terminal is still in cooked mode, so
+/// tool calls during the conversation skip their per-call probe. Only runs
+/// when the developer harness is on; a failed warm changes nothing — the
+/// first tool call still probes and fails closed.
+#[cfg(not(coverage))]
+fn warm_session_sandbox(cwd: &std::path::Path, config: &AgentConfig) {
+    if !config.llm_developer_harness {
+        return;
+    }
+    let session = &config.llm_developer_permissions;
+    // Warm the provider-backed modes a turn may use: the ceiling itself
+    // plus a read-only narrowing. `DangerFullAccess` has no sandbox
+    // provider, so there is nothing to warm for it — warm the modes below
+    // it instead.
+    let modes = match session.filesystem {
+        FilesystemMode::ReadOnly => vec![FilesystemMode::ReadOnly],
+        FilesystemMode::WorkspaceWrite | FilesystemMode::DangerFullAccess => {
+            vec![FilesystemMode::WorkspaceWrite, FilesystemMode::ReadOnly]
+        }
+    };
+    for filesystem in modes {
+        if let Err(error) = warm_sandbox(cwd, filesystem, session.network) {
+            tracing::warn!("sandbox unavailable ({error}); shell tools will fail");
         }
     }
 }
@@ -371,6 +402,40 @@ mod tests {
             init_target(Some(PathBuf::from("demo-agent"))),
             PathBuf::from("demo-agent")
         );
+    }
+
+    #[cfg(not(coverage))]
+    #[test]
+    fn warm_session_sandbox_skips_when_harness_is_off() {
+        // Developer harness off: no probing, no sandbox output.
+        warm_session_sandbox(&std::env::temp_dir(), &AgentConfig::v0());
+    }
+
+    #[cfg(not(coverage))]
+    #[test]
+    fn warm_session_sandbox_probes_each_mode_when_harness_is_on() {
+        // Host-dependent outcome (sandbox present or not); the warm must
+        // simply not panic, covering the single-mode, narrowed read-only,
+        // and danger-ceiling branches.
+        let read_only = AgentConfig {
+            llm_developer_harness: true,
+            ..AgentConfig::v0()
+        };
+        warm_session_sandbox(&std::env::temp_dir(), &read_only);
+        for filesystem in [
+            syllabix_core::FilesystemMode::WorkspaceWrite,
+            syllabix_core::FilesystemMode::DangerFullAccess,
+        ] {
+            let config = AgentConfig {
+                llm_developer_harness: true,
+                llm_developer_permissions: syllabix_core::DeveloperPermissions {
+                    filesystem,
+                    ..syllabix_core::DeveloperPermissions::default_session()
+                },
+                ..AgentConfig::v0()
+            };
+            warm_session_sandbox(&std::env::temp_dir(), &config);
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! macOS Seatbelt sandbox provider.
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::policy::{Enforcement, FilesystemMode, NetworkMode};
 
@@ -49,7 +49,10 @@ impl SandboxProvider for MacOsSandboxProvider {
             .map_err(|e| SandboxError::unavailable(format!("probe temp dir: {e}")))?;
         let marker = request.temp_dir.join(".syllabix-sandbox-probe");
         let mut command = Command::new("/usr/bin/sandbox-exec");
-        command.args(["-p", &profile, "/usr/bin/true"]);
+        command
+            .args(["-p", &profile, "/usr/bin/true"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         let status = command
             .status()
             .map_err(|e| SandboxError::unavailable(format!("sandbox-exec probe: {e}")))?;
@@ -59,7 +62,10 @@ impl SandboxProvider for MacOsSandboxProvider {
 
         let script = format!("touch '{}'", shell_quote_single(&marker));
         let mut write = Command::new("/usr/bin/sandbox-exec");
-        write.args(["-p", &profile, "/bin/sh", "-c", &script]);
+        write
+            .args(["-p", &profile, "/bin/sh", "-c", &script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         let write_status = write
             .status()
             .map_err(|e| SandboxError::unavailable(format!("sandbox write probe: {e}")))?;
@@ -74,7 +80,10 @@ impl SandboxProvider for MacOsSandboxProvider {
         let outside = outside_probe_path(request)?;
         let outside_script = format!("touch '{}'", shell_quote_single(&outside));
         let mut outside_write = Command::new("/usr/bin/sandbox-exec");
-        outside_write.args(["-p", &profile, "/bin/sh", "-c", &outside_script]);
+        outside_write
+            .args(["-p", &profile, "/bin/sh", "-c", &outside_script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         let _ = outside_write
             .status()
             .map_err(|e| SandboxError::unavailable(format!("sandbox outside-write probe: {e}")))?;

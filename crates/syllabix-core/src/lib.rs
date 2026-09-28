@@ -62,6 +62,7 @@ pub use dist::{
     SHA256SUMS_FILE_NAME,
 };
 pub use error::{Error, Result};
+pub use executor::warm_sandbox;
 pub use fake::{
     scripted_frames, CollectingSink, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt,
     FakeTts, FakeVad, LlmCall, ScriptedStt,

@@ -32,9 +32,15 @@ fn run_parsed(cli: cli::Cli) -> i32 {
 }
 
 /// Tracing default per subcommand: chatty for setup, quiet for conversation.
+///
+/// `run` also silences the `htmd` HTML stack (`html5ever` logs
+/// `foster parenting not implemented` per table token through the
+/// `log` bridge; one fetched page can emit a burst of them into the TUI).
 fn default_filter_for(command: &cli::Commands) -> &'static str {
     match command {
-        cli::Commands::Run { .. } => "warn",
+        cli::Commands::Run { .. } => {
+            "warn,html5ever=off,markup5ever=off,markup5ever_rcdom=off,xml5ever=off"
+        }
         cli::Commands::Init { .. } => "info",
         cli::Commands::Bench { .. } => "info",
         cli::Commands::BenchAsrWorker { .. } => "info",
@@ -63,11 +69,11 @@ mod tests {
     fn run_is_quiet_and_setup_is_info() {
         assert_eq!(
             default_filter_for(&cli::Commands::Run { barge_in: false }),
-            "warn"
+            "warn,html5ever=off,markup5ever=off,markup5ever_rcdom=off,xml5ever=off"
         );
         assert_eq!(
             default_filter_for(&cli::Commands::Run { barge_in: true }),
-            "warn"
+            "warn,html5ever=off,markup5ever=off,markup5ever_rcdom=off,xml5ever=off"
         );
         assert_eq!(
             default_filter_for(&cli::Commands::Init { dir: None }),
@@ -106,6 +112,20 @@ mod tests {
     fn init_tracing_is_idempotent() {
         init_tracing("info");
         init_tracing("warn");
+    }
+
+    #[test]
+    fn run_filter_directives_parse() {
+        // The silenced HTML-parser targets must stay valid `EnvFilter`
+        // syntax, otherwise `run` would fall back or panic at startup.
+        for barge_in in [false, true] {
+            let filter = default_filter_for(&cli::Commands::Run { barge_in });
+            assert!(
+                EnvFilter::try_new(filter).is_ok(),
+                "run filter must parse: {filter}"
+            );
+            assert!(filter.contains("html5ever=off"), "{filter}");
+        }
     }
 
     #[test]
