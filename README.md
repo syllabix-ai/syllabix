@@ -84,11 +84,7 @@ Full command list: [docs/cli.md](docs/cli.md).
 
 ## Build from source
 
-You need Rust 1.91+, CMake, and a C++ compiler. On Linux, also install ALSA headers (`libasound2-dev`).
-
-```bash
-cargo run -p syllabix -- run
-```
+See [Compile](docs/install.md#compile).
 
 ## Optional config
 

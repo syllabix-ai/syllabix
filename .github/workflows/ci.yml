@@ -62,9 +62,9 @@ jobs:
       # rustup llvm-tools-preview this step just confirmed.
       - name: Prefer rustup over Homebrew rustc
         run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
-      - name: Install ALSA headers, CMake, and bubblewrap
+      - name: Compile dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake bubblewrap
+        run: ./scripts/setup-linux.sh
       # Ubuntu 24.04 AppArmor blocks CAP_NET_ADMIN inside unprivileged userns,
       # so bwrap --unshare-net fails with RTM_NEWADDR and sandbox tests fail.
       - name: Allow bubblewrap user namespaces
@@ -73,9 +73,9 @@ jobs:
           if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - name: Ensure CMake (no-op when preinstalled on the runner)
+      - name: Compile dependencies (macOS)
         if: runner.os == 'macOS'
-        run: command -v cmake || brew install cmake
+        run: ./scripts/setup-macos.sh
       # No model-weights cache here: cfg(coverage) never loads weights (all
       # native modules are gated off in native_inference), so nothing can
       # fill .syllabix-cache. weekly.yml keeps its cache for real inference.
@@ -147,9 +147,9 @@ jobs:
           components: clippy
       - name: Prefer rustup over Homebrew rustc
         run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
-      - name: Install ALSA headers, CMake, and bubblewrap
+      - name: Compile dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake bubblewrap
+        run: ./scripts/setup-linux.sh
       # Ubuntu 24.04 AppArmor blocks CAP_NET_ADMIN inside unprivileged userns,
       # so bwrap --unshare-net fails with RTM_NEWADDR and sandbox tests fail.
       - name: Allow bubblewrap user namespaces
@@ -158,9 +158,9 @@ jobs:
           if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - name: Ensure CMake (no-op when preinstalled on the runner)
+      - name: Compile dependencies (macOS)
         if: runner.os == 'macOS'
-        run: command -v cmake || brew install cmake
+        run: ./scripts/setup-macos.sh
       # Same gate as the coverage job: the cache is for ephemeral hosted
       # runners; on self-hosted its save step alone cost ~17 min per green
       # job and timed the run out.
