@@ -16,7 +16,7 @@ mic → VAD → STT → LLM → TTS → speakers
 
 Download `syllabix`, run it, and talk. You do not need Python, pip, or an API key for the default setup. Your audio stays on your machine.
 
-Default models: Whisper `small` (STT), LFM2.5-2.6B (local small LLM), and Pocket TTS (TTS).
+Default models: Whisper `small` (STT), LFM2.5-350M (local small LLM), and Pocket TTS (TTS).
 
 ![`syllabix run` terminal UI](docs/assets/tui-run.png)
 
@@ -46,7 +46,7 @@ certutil -hashfile syllabix.exe SHA256    # compare against the SHA256SUMS line
 | Mac with Intel chip | `syllabix-Darwin-x86_64` |
 | Windows x64 | `syllabix-Windows-x86_64.exe` |
 
-The first time you run it, Syllabix downloads the models (Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS — about 2.2 GB) into `~/.cache/syllabix/models/v1` (or `%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows). You can change that folder with `$SYLLABIX_CACHE_DIR`.
+The first time you run it, Syllabix downloads the models (Silero, Whisper `small`, LFM2.5-350M, and Pocket TTS — about 0.9 GB) into `~/.cache/syllabix/models/v1` (or `%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows). You can change that folder with `$SYLLABIX_CACHE_DIR`.
 
 Blocked by macOS Gatekeeper or Windows SmartScreen? See [docs/install.md](docs/install.md).
 

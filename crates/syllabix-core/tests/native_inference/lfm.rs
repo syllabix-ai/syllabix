@@ -2,9 +2,9 @@
 //!
 //! ```bash
 //! # launch default
-//! SYLLABIX_NATIVE_MODELS=lfm2.5-2.6b cargo test -p syllabix-core --features native-inference --test native_inference lfm
-//! # yaml opt-in spikes
-//! SYLLABIX_NATIVE_MODELS=lfm2.5-350m,lfm2.5-230m cargo test -p syllabix-core --features native-inference --test native_inference lfm_
+//! SYLLABIX_NATIVE_MODELS=lfm2.5-350m cargo test -p syllabix-core --features native-inference --test native_inference lfm
+//! # yaml opt-in spikes (2.6B tools dialect + 230M)
+//! SYLLABIX_NATIVE_MODELS=lfm2.5-2.6b,lfm2.5-230m cargo test -p syllabix-core --features native-inference --test native_inference lfm_
 //! ```
 //!
 //! The suite covers the family's native tools dialect. The co-residency

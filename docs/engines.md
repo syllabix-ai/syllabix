@@ -2,7 +2,7 @@
 
 The ids you can put in `syllabix.yaml`. Key syntax: [syllabix.yaml](syllabix-yaml.md). Measured timings: [workload benchmark](workload_benchmark/workload_benchmark.md). Licenses of fetched weights: [NOTICE](../NOTICE).
 
-Weights download on first use of each id (HTTPS URL pinned in the binary, SHA-256 check, then reuse from cache). Default `run` fetches only the launch stack: Silero, Whisper `small`, LFM2.5-2.6B, Pocket TTS (~2.2 GB). `--help` and `init` download nothing.
+Weights download on first use of each id (HTTPS URL pinned in the binary, SHA-256 check, then reuse from cache). Default `run` fetches only the launch stack: Silero, Whisper `small`, LFM2.5-350M, Pocket TTS (~0.9 GB). `--help` and `init` download nothing.
 
 Cache:
 
@@ -15,7 +15,7 @@ Cache:
 | | What ships / what is known |
 | --- | --- |
 | **Release artifacts** | Linux x64, macOS Apple Silicon, macOS Intel, Windows x64 |
-| **Default cache** | ~2.2 GB on first `run` |
+| **Default cache** | ~0.9 GB on first `run` |
 | **Compute** | Darwin: Metal + Accelerate for STT/LLM. Linux/Windows: portable CPU by default. Opt-in Linux Vulkan builds (`SYLLABIX_GGML_VULKAN=1`) offload whisper/llama/Qwen when a device is present. Qwen TTS/ASR stay CPU unless `compute` selects Metal/Vulkan (or Auto probes them). |
 | **RAM** | Not a published gate. The default stack is the combination measured for an Apple M4 / 16 GiB class machine; see [reference profiles](reference-profiles.md). |
 | **Network** | First fetch of each id needs HTTPS. After the cache is full, default `run` needs none. |
@@ -45,8 +45,8 @@ Local menu (unknown ids fail at load):
 
 | Yaml `pipeline.llm.model` | Notes | Source |
 | --- | --- | --- |
-| `lfm2.5-2.6b` | Default; first-run cache | https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF |
-| `lfm2.5-350m` | Fetched when selected | https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF |
+| `lfm2.5-350m` | Default; first-run cache | https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF |
+| `lfm2.5-2.6b` | Fetched when selected | https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF |
 | `lfm2.5-230m` | Fetched when selected | https://huggingface.co/LiquidAI/LFM2.5-230M-GGUF |
 | `llama-3.2-1b` | Fetched when selected | https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF |
 | `qwen3.5-0.8b` | Fetched when selected | https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF |

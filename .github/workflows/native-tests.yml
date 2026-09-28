@@ -30,7 +30,7 @@ env:
   SYLLABIX_CACHE_DIR: ${{ github.workspace }}/.syllabix-cache
   RUSTUP_INIT_SKIP_PATH_CHECK: yes
   # Launch-stack ids from native_inference::LAUNCH_NATIVE_IDS.
-  SYLLABIX_NATIVE_MODELS: whisper-small,lfm2.5-2.6b,pocket-tts
+  SYLLABIX_NATIVE_MODELS: whisper-small,lfm2.5-350m,pocket-tts
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

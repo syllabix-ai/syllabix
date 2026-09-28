@@ -30,7 +30,7 @@ pipeline:
     language: en
   llm:                           # text → reply
     provider: local
-    model: lfm2.5-2.6b
+    model: lfm2.5-350m
     thinking: false
     system_prompt: "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji."
   tts:                           # reply → speech
@@ -44,7 +44,7 @@ pipeline:
 # skills:                        # local instruction packages (harness only)
 ```
 
-First `run` fetches only the selected model ids (~2.2 GB for the default stack). Model catalogue (ids, sources, machine needs): [engines.md](engines.md). The rest of this page walks every key in order.
+First `run` fetches only the selected model ids (~0.9 GB for the default stack). Model catalogue (ids, sources, machine needs): [engines.md](engines.md). The rest of this page walks every key in order.
 
 ## `name`
 

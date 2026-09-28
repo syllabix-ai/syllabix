@@ -1116,7 +1116,7 @@ mod tests {
         // cross-product of STT × LLM × TTS.
         assert!(SttModel::ALL.contains(&SttModel::Small));
         assert_eq!(SttModel::ALL.len(), 8);
-        assert_eq!(V0_LLM_MODELS[0], "lfm2.5-2.6b");
+        assert_eq!(V0_LLM_MODELS[0], "lfm2.5-350m");
         assert_eq!(V0_LLM_MODELS.len(), 6);
         assert!(TtsModel::ALL.contains(&TtsModel::PocketTts));
         assert_eq!(TtsModel::ALL.len(), 4);

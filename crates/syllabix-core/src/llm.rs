@@ -28,12 +28,13 @@ pub const QWEN35_2B_ASSET: &str = "qwen3.5-2b";
 /// Manifest id for the yaml-only Llama 3.2 1B instruct GGUF.
 pub const LLAMA_32_1B_ASSET: &str = "llama-3.2-1b";
 
-/// Manifest id for the LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF.
-/// It is the default local `pipeline.llm.model`; the other ids are yaml opt-ins.
+/// Manifest id for the LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF (yaml opt-in).
 /// Named `2_6B` (not `26B`) so the constant cannot be read as twenty-six billion.
+/// Local developer-harness stays gated to this id (or `provider: online`).
 pub const LFM25_2_6B_ASSET: &str = "lfm2.5-2.6b";
 
-/// Manifest id for the yaml-only LiquidAI LFM2.5-350M QAD Q4_0 GGUF.
+/// Manifest id for the LiquidAI LFM2.5-350M QAD Q4_0 GGUF.
+/// It is the default local `pipeline.llm.model`.
 pub const LFM25_350M_ASSET: &str = "lfm2.5-350m";
 
 /// Manifest id for the yaml-only LiquidAI LFM2.5-230M QAD Q4_0 GGUF.
@@ -122,8 +123,8 @@ pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_
 
 /// Every yaml-selectable local GGUF id, default first.
 pub const V0_LLM_MODELS: [&str; 6] = [
-    LFM25_2_6B_ASSET,
     LFM25_350M_ASSET,
+    LFM25_2_6B_ASSET,
     LFM25_230M_ASSET,
     LLAMA_32_1B_ASSET,
     QWEN35_08B_ASSET,
@@ -200,7 +201,7 @@ impl LlamaLlm {
         })
     }
 
-    /// Resolve the default `lfm2.5-2.6b` GGUF from the manifest cache, then load it.
+    /// Resolve the default `lfm2.5-350m` GGUF from the manifest cache, then load it.
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -230,7 +231,7 @@ impl LlamaLlm {
             return Err(Error::Config {
                 field: "pipeline.llm.model".into(),
                 message: format!(
-                    "unsupported value {model_id:?} (allowed: lfm2.5-2.6b, lfm2.5-350m, lfm2.5-230m, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b)"
+                    "unsupported value {model_id:?} (allowed: lfm2.5-350m, lfm2.5-2.6b, lfm2.5-230m, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b)"
                 ),
             });
         }
@@ -1865,15 +1866,15 @@ mod tests {
             last_messages: Arc::new(Mutex::new(Vec::new())),
         }));
         assert_eq!(llm.name(), "local");
-        assert_eq!(LFM25_2_6B_ASSET, BuiltinDefaults::v0().llm_model);
+        assert_eq!(LFM25_350M_ASSET, BuiltinDefaults::v0().llm_model);
         assert_eq!(QWEN35_08B_ASSET, "qwen3.5-0.8b");
         assert_eq!(QWEN35_2B_ASSET, "qwen3.5-2b");
         assert_eq!(LLAMA_32_1B_ASSET, "llama-3.2-1b");
         assert_eq!(
             V0_LLM_MODELS,
             [
-                LFM25_2_6B_ASSET,
                 LFM25_350M_ASSET,
+                LFM25_2_6B_ASSET,
                 LFM25_230M_ASSET,
                 LLAMA_32_1B_ASSET,
                 QWEN35_08B_ASSET,
@@ -2152,7 +2153,7 @@ mod tests {
             Ok(_) => panic!("empty manifest should fail"),
         };
         assert!(matches!(err, Error::ModelCache { .. }));
-        assert!(err.to_string().contains("lfm2.5-2.6b"));
+        assert!(err.to_string().contains("lfm2.5-350m"));
     }
 
     #[test]

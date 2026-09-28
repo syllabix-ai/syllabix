@@ -13,7 +13,7 @@ mic → Silero VAD → STT → LLM → TTS → speakers
 | Echo | WebRTC AEC3 (Sonora), on by default | Stops the agent from treating its own voice as a user turn. Calibrates ~10 s at start. |
 | VAD | Silero ONNX | Speech start / end |
 | STT | whisper.cpp `small` | Speech → text, in-process |
-| LLM | llama.cpp + LFM2.5-2.6B | Text → reply, in-process |
+| LLM | llama.cpp + LFM2.5-350M | Text → reply, in-process |
 | TTS | Pocket TTS ONNX | Reply → speech, in-process |
 
 Ids other than the defaults are yaml-selected and fetch on first use — [engines](engines.md), [syllabix.yaml](syllabix-yaml.md).

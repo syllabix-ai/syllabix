@@ -32,7 +32,7 @@ Verify the checksum before running.
 
 ## First run
 
-The first `run` downloads the selected models over HTTPS (defaults: Silero, Whisper `small`, LFM2.5-2.6B, Pocket TTS — about **2.2 GB**), checks SHA-256, and stores them in:
+The first `run` downloads the selected models over HTTPS (defaults: Silero, Whisper `small`, LFM2.5-350M, Pocket TTS — about **0.9 GB**), checks SHA-256, and stores them in:
 
 - `$SYLLABIX_CACHE_DIR/models/v1` if `SYLLABIX_CACHE_DIR` is set
 - otherwise `~/.cache/syllabix/models/v1`

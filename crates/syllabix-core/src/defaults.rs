@@ -348,7 +348,7 @@ impl BuiltinDefaults {
             stt: SttProvider::Local,
             stt_model: SttModel::Small,
             llm: LlmProvider::Local,
-            llm_model: "lfm2.5-2.6b",
+            llm_model: "lfm2.5-350m",
             llm_thinking: false,
             tts: TtsProvider::Local,
             tts_model: TtsModel::PocketTts,
@@ -379,7 +379,7 @@ mod tests {
         assert_eq!(d.stt.as_str(), "local");
         assert_eq!(d.stt_model.as_str(), "whisper-small");
         assert_eq!(d.llm.as_str(), "local");
-        assert_eq!(d.llm_model, "lfm2.5-2.6b");
+        assert_eq!(d.llm_model, "lfm2.5-350m");
         assert!(!d.llm_thinking);
         assert_eq!(d.tts.as_str(), "local");
         assert_eq!(d.tts_model.as_str(), "pocket-tts");

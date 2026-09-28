@@ -50,7 +50,7 @@ pub struct AgentConfig {
     pub language: String,
     /// LLM provider.
     pub llm: LlmProvider,
-    /// LLM model id (`lfm2.5-2.6b`, `lfm2.5-350m`, `lfm2.5-230m`, `llama-3.2-1b`, `qwen3.5-0.8b`, or `qwen3.5-2b`).
+    /// LLM model id (`lfm2.5-350m`, `lfm2.5-2.6b`, `lfm2.5-230m`, `llama-3.2-1b`, `qwen3.5-0.8b`, or `qwen3.5-2b`).
     pub llm_model: String,
     /// Qwen thinking. Default false; yaml `thinking: true` enables it on
     /// `qwen3.5-2b` only and is rejected for every other model.
@@ -998,7 +998,7 @@ fn parse_llm_model(provider: LlmProvider, value: &str) -> Result<String> {
             other => Err(unsupported(
                 "pipeline.llm.model",
                 other,
-                "lfm2.5-2.6b, lfm2.5-350m, lfm2.5-230m, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b",
+                "lfm2.5-350m, lfm2.5-2.6b, lfm2.5-230m, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b",
             )),
         },
         LlmProvider::Online => {
@@ -1126,7 +1126,7 @@ mod tests {
     fn generated_yaml_round_trips() {
         let yaml = AgentConfig::v0().to_yaml();
         assert!(yaml.contains("language: en"));
-        assert!(yaml.contains("model: lfm2.5-2.6b"));
+        assert!(yaml.contains("model: lfm2.5-350m"));
         assert!(yaml.contains("thinking: false"));
         assert!(yaml.contains("system_prompt:"));
         assert!(yaml.contains("{language}"));
@@ -1578,7 +1578,7 @@ auto-timeout:
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-agent.yaml");
         let config = AgentConfig::load_path(&path).expect("load example");
         assert_eq!(config.name, "demo-agent");
-        assert_eq!(config.llm_model, "lfm2.5-2.6b");
+        assert_eq!(config.llm_model, "lfm2.5-350m");
         assert_eq!(config.language, "en");
     }
 
@@ -1626,7 +1626,7 @@ pipeline:
     language: en
   llm:
     provider: local
-    model: lfm2.5-2.6b
+    model: lfm2.5-350m
   tts:
     provider: local
     model: pocket-tts
@@ -1638,31 +1638,31 @@ pipeline:
     fn yaml_qwen_sizes_and_thinking_on() {
         let two = AgentConfig::v0()
             .to_yaml()
-            .replace("model: lfm2.5-2.6b", "model: qwen3.5-2b")
+            .replace("model: lfm2.5-350m", "model: qwen3.5-2b")
             .replace("thinking: false", "thinking: true");
         let cfg = AgentConfig::parse_yaml(&two).unwrap();
         assert_eq!(cfg.llm_model, "qwen3.5-2b");
         assert!(cfg.thinking);
         let small = AgentConfig::v0()
             .to_yaml()
-            .replace("model: lfm2.5-2.6b", "model: qwen3.5-0.8b");
+            .replace("model: lfm2.5-350m", "model: qwen3.5-0.8b");
         let cfg = AgentConfig::parse_yaml(&small).unwrap();
         assert_eq!(cfg.llm_model, "qwen3.5-0.8b");
         assert!(!cfg.thinking);
 
         let llama = AgentConfig::v0()
             .to_yaml()
-            .replace("model: lfm2.5-2.6b", "model: llama-3.2-1b");
+            .replace("model: lfm2.5-350m", "model: llama-3.2-1b");
         let cfg = AgentConfig::parse_yaml(&llama).unwrap();
         assert_eq!(cfg.llm_model, "llama-3.2-1b");
         assert!(!cfg.thinking);
         let lfm_default = AgentConfig::v0();
-        assert_eq!(lfm_default.llm_model, "lfm2.5-2.6b");
+        assert_eq!(lfm_default.llm_model, "lfm2.5-350m");
         assert!(!lfm_default.thinking);
-        for model in ["lfm2.5-350m", "lfm2.5-230m"] {
+        for model in ["lfm2.5-2.6b", "lfm2.5-230m"] {
             let yaml = AgentConfig::v0()
                 .to_yaml()
-                .replace("model: lfm2.5-2.6b", &format!("model: {model}"));
+                .replace("model: lfm2.5-350m", &format!("model: {model}"));
             let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
             assert_eq!(cfg.llm_model, model);
             assert!(!cfg.thinking);
@@ -1680,7 +1680,7 @@ pipeline:
         ] {
             let yaml = AgentConfig::v0()
                 .to_yaml()
-                .replace("model: lfm2.5-2.6b", &format!("model: {model}"))
+                .replace("model: lfm2.5-350m", &format!("model: {model}"))
                 .replace("thinking: false", "thinking: true");
             let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
             assert!(err.to_string().contains("pipeline.llm.thinking"), "{err}");
@@ -1691,7 +1691,7 @@ pipeline:
     fn unknown_llm_model_is_field_level() {
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("model: lfm2.5-2.6b", "model: huge");
+            .replace("model: lfm2.5-350m", "model: huge");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.model"), "{err}");
         assert!(err.to_string().contains("huge"), "{err}");
@@ -1860,7 +1860,7 @@ pipeline:
                 "  llm:\n    provider: local",
                 "  llm:\n    provider: online",
             )
-            .replace("model: lfm2.5-2.6b", "model: gpt-4o-mini");
+            .replace("model: lfm2.5-350m", "model: gpt-4o-mini");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.base_url"), "{err}");
         assert!(err.to_string().contains("required"), "{err}");
@@ -1870,7 +1870,7 @@ pipeline:
     fn local_provider_still_enforces_the_gguf_menu() {
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("model: lfm2.5-2.6b", "model: gpt-4o-mini");
+            .replace("model: lfm2.5-350m", "model: gpt-4o-mini");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.model"), "{err}");
     }
@@ -2411,7 +2411,7 @@ pipeline:
             (
                 AgentConfig::v0()
                     .to_yaml()
-                    .replace("model: lfm2.5-2.6b", "model: huge"),
+                    .replace("model: lfm2.5-350m", "model: huge"),
                 "pipeline.llm.model:",
             ),
             (extra, "pipeline.extra:"),

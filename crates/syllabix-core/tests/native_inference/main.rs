@@ -4,7 +4,7 @@
 //! process. `cargo llvm-cov` sets `--cfg coverage` and skips weight loads;
 //! a fake loop still runs so this binary is not a coverage hole.
 //!
-//! Default `cargo test` loads Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS.
+//! Default `cargo test` loads Silero, Whisper `small`, LFM2.5-350M, and Pocket TTS.
 //! Set `SYLLABIX_NATIVE_MODELS` to a comma-separated list of YAML
 //! `pipeline.*.model` identifiers to run only those native suites. Unknown
 //! identifiers fail fast, and identifiers without a native suite fail
@@ -45,7 +45,7 @@ use syllabix_core::{
 };
 
 /// YAML identifiers covered by the default native test set.
-const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM25_2_6B_ASSET, "pocket-tts"];
+const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM25_350M_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
 const SUITED_NATIVE_IDS: [&str; 11] = [
@@ -225,7 +225,7 @@ macro_rules! skip_unless_launch_stack {
     () => {
         if !crate::launch_stack_selected() {
             eprintln!(
-                "skipping launch-stack native test (needs small, lfm2.5-2.6b, pocket-tts in SYLLABIX_NATIVE_MODELS)"
+                "skipping launch-stack native test (needs small, lfm2.5-350m, pocket-tts in SYLLABIX_NATIVE_MODELS)"
             );
             return;
         }
@@ -331,7 +331,7 @@ impl Native {
             let mut progress = StderrProgress::new();
             let cancel = Cancel::new();
             let llm = LlamaLlm::from_cache(&cache, &HttpFetcher, &mut progress, &cancel)
-                .expect("load LFM2.5-2.6B QAD Q4_0 once");
+                .expect("load default LFM QAD Q4_0 once");
             assert!(!llm.thinking(), "v0 thinking is off until yaml enables it");
             self.llm = Some(llm);
         }
@@ -407,7 +407,7 @@ fn unset_native_models_selects_the_launch_stack() {
         ids,
         BTreeSet::from([
             "whisper-small".into(),
-            "lfm2.5-2.6b".into(),
+            "lfm2.5-350m".into(),
             "pocket-tts".into()
         ])
     );

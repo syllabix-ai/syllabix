@@ -4,11 +4,11 @@ Symptom fixes (won't verify, Gatekeeper, no mic, self-interrupt): [troubleshooti
 
 ## Why is the first `run` so large / slow?
 
-Default `run` fetches Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (~2.2 GB), then checks SHA-256. How long that takes depends on network bandwidth. Later runs reuse the cache offline. `--help` and `init` download nothing.
+Default `run` fetches Silero, Whisper `small`, LFM2.5-350M, and Pocket TTS (~0.9 GB), then checks SHA-256. How long that takes depends on network bandwidth. Later runs reuse the cache offline. `--help` and `init` download nothing.
 
 ## Memory is tight. Can I use a smaller model?
 
-Yes. `syllabix init`, then either set `pipeline.llm.model` to `lfm2.5-350m` or `lfm2.5-230m`, or set `pipeline.llm.provider: online` with `base_url` and `SYLLABIX_LLM_API_KEY` so the LLM runs in the cloud (transcript text only; mic audio stays local). Catalogue and keys: [engines](engines.md), [syllabix.yaml](syllabix-yaml.md).
+Yes. `syllabix init`, then either set `pipeline.llm.model` to `lfm2.5-230m`, or set `pipeline.llm.provider: online` with `base_url` and `SYLLABIX_LLM_API_KEY` so the LLM runs in the cloud (transcript text only; mic audio stays local). For higher local quality, set `pipeline.llm.model` to `lfm2.5-2.6b`. Catalogue and keys: [engines](engines.md), [syllabix.yaml](syllabix-yaml.md).
 
 ## Why is barge-in off by default?
 

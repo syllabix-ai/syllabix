@@ -116,4 +116,4 @@ cargo test --workspace   # launch stack; extra yaml models via SYLLABIX_NATIVE_M
 cargo run -p syllabix --release -- run
 ```
 
-KleidiAI SME did not link (`___arm_tpidr2_save`). It stays off. Default GGUF is `lfm2.5-2.6b`. Metal + Accelerate are the Darwin path.
+KleidiAI SME did not link (`___arm_tpidr2_save`). It stays off. Default GGUF is `lfm2.5-350m`. Metal + Accelerate are the Darwin path.

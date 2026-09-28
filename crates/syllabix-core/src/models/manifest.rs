@@ -54,7 +54,7 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// Assets for the default Silero, whisper.cpp `small`, LFM2.5-2.6B, and
+    /// Assets for the default Silero, whisper.cpp `small`, LFM2.5-350M, and
     /// Pocket TTS stack, plus models selectable through YAML.
     pub fn v0() -> Self {
         Self {
@@ -352,8 +352,9 @@ impl Manifest {
                     "a247afd6414918eac8e520a9e6137dc271235461ecbe1180462221d5b8d40b03",
                     1_593_894_944,
                 ),
-                // LiquidAI LFM2.5-350M / 230M QAD Q4_0 GGUFs. Same LFM Open
-                // License v1.0 family as 2.6B; yaml opt-in only.
+                // LiquidAI LFM2.5-350M (launch default) / 230M QAD Q4_0 GGUFs.
+                // Same LFM Open License v1.0 family as 2.6B; 230M is yaml
+                // opt-in only.
                 asset(
                     "lfm2.5-350m",
                     ModelLayer::Llm,
