@@ -29,4 +29,4 @@
 | [Contributing](contributing.md) | Build, test, packaging, CI |
 | [Reference profiles](reference-profiles.md) | How conversation quality is measured |
 | [Workload benchmark](workload_benchmark/workload_benchmark.md) | Per-model STT / LLM / TTS timings |
-| [Security](../SECURITY.md) | Private vulnerability reports |
+| [Issues](issues.md) | Bugs, features, and security reports |

@@ -93,7 +93,7 @@ A starter file is in [`examples/demo-agent.yaml`](examples/demo-agent.yaml). Mor
 | [Troubleshooting](docs/troubleshooting.md) | Mic, echo, keys, first-run download |
 | [FAQ](docs/faq.md) | Large first run, barge-in, API keys |
 | [Contributing](docs/contributing.md) | Tests, packaging, CI |
-| [Security](SECURITY.md) | How to report security issues privately |
+| [Issues](docs/issues.md) | Bugs, features, and security reports |
 
 ## License
 
