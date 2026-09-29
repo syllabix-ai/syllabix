@@ -9,7 +9,9 @@
 [![Windows](https://img.shields.io/badge/Windows-0078D4)](./docs/install.md)
 [![Rust](https://img.shields.io/badge/rust-1.91%2B-orange?logo=rust)](./rust-toolchain.toml)
 
-Talk to a voice agent on your computer. One native binary. Easy to set up. Apache-2.0.
+Talk to a voice agent on your computer.
+
+A local-first voice-agent runtime. One native binary, on-device speech, and real-time interruption. No Python or API key required for the default setup.
 
 ```text
 mic → VAD → STT → LLM / agentic LLM (⇄ sandboxed shell, tool exec) → TTS → speakers
