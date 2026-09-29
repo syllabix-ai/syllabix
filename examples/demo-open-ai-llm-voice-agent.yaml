@@ -13,6 +13,7 @@ pipeline:
     model: gpt-5.4
     base_url: https://api.openai.com/v1
     developer_harness: true
+    system_prompt: "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji. You have a terminal and other tools available; when the user's request calls for it, use them and answer from what you find."
   tts:
     provider: local
     model: pocket-tts
