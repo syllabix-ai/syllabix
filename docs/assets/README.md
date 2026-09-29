@@ -2,6 +2,7 @@
 
 | File | Status |
 | --- | --- |
+| [`logo.png`](logo.png) | Syllabix wordmark and mark used at the top of the root README. |
 | [`tui-run.png`](tui-run.png) | Live capture of fully local `syllabix run` (real session on the reference Air). |
 | [`tui-run-openai.png`](tui-run-openai.png) | Sample terminal UI for the OpenAI LLM voice-agent example. |
 
