@@ -1,4 +1,6 @@
-# Syllabix
+<p align="center">
+  <img src="docs/assets/logo.png" alt="Syllabix" width="220">
+</p>
 
 [![Version](https://img.shields.io/badge/version-v0.0.2-blue)](https://github.com/syllabix-ai/syllabix/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE)
