@@ -86,6 +86,19 @@ SYLLABIX_LLM_API_KEY=sk-… ./syllabix run
 
 Full command list: [docs/cli.md](docs/cli.md).
 
+## Supported models
+
+VAD is always `silero`. Default stack is `whisper-small` + `lfm2.5-2.6b` + `pocket-tts`.
+
+| Stage | Models |
+| --- | --- |
+| STT | `whisper-small` (default), `whisper-medium`, `whisper-large-v3-turbo`, `whisper-medium-q5_0`, `whisper-large-v3-turbo-q5_0`, `moonshine-streaming-small`, `moonshine-streaming-medium`, `qwen3-asr-0.6` |
+| Local LLM | `lfm2.5-2.6b` (default), `lfm2.5-350m`, `lfm2.5-230m`, `llama-3.2-1b`, `qwen3.5-0.8b`, `qwen3.5-2b` |
+| Online LLM | Any OpenAI-compatible endpoint, e.g. model `gpt-5.4` at `https://api.openai.com/v1` (needs `SYLLABIX_LLM_API_KEY`) |
+| TTS | `pocket-tts` (default), `kokoro`, `qwen3-0.6`, `qwen3-1.7` |
+
+Sources, download sizes, and machine needs: [docs/engines.md](docs/engines.md). Config keys: [docs/syllabix-yaml.md](docs/syllabix-yaml.md).
+
 ## Build from source
 
 See [Compile](docs/install.md#compile).
