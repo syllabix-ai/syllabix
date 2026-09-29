@@ -12,8 +12,8 @@
 Talk to a voice agent on your computer. One native binary. Easy to set up. Apache-2.0.
 
 ```text
-mic → VAD → STT → LLM → TTS → speakers
-              ↑______________ barge-in (interrupt + flush)
+mic → VAD → STT → LLM / agentic LLM (⇄ sandboxed shell, tool exec) → TTS → speakers
+              ↑________________________ barge-in (interrupt + flush)
 ```
 
 Download `syllabix`, run it, and talk. You do not need Python, pip, or an API key for the default setup. Your audio stays on your machine.
@@ -64,7 +64,7 @@ The first local run downloads the models (Silero, Whisper `small`, LFM2.5-2.6B, 
 
 ### OpenAI LLM
 
-Uses OpenAI `gpt-5.4` with the developer harness on. Needs `SYLLABIX_LLM_API_KEY`. STT and TTS stay local; only transcript text goes to OpenAI.
+Uses OpenAI `gpt-5.4` with the developer harness on. Needs `SYLLABIX_LLM_API_KEY`. STT and TTS stay local; only transcript text goes to OpenAI. The [developer harness](docs/syllabix-yaml.md#developer_harness) can also be enabled for a local model, but accuracy can be poor and the model can be slow.
 
 ```bash
 curl -L https://raw.githubusercontent.com/syllabix-ai/syllabix/main/examples/demo-open-ai-llm-voice-agent.yaml -o syllabix.yaml
