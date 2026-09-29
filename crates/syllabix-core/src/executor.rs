@@ -9,11 +9,12 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::cancel::Cancel;
-use crate::policy::{resolve_effective, DeveloperPermissions, FilesystemMode};
+use crate::policy::{resolve_effective, DeveloperPermissions, FilesystemMode, NetworkMode};
 use crate::sandbox::{current_provider, SandboxRequest};
 use crate::types::ToolCall;
 
@@ -38,6 +39,78 @@ const FETCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const FETCH_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Successful sandbox probes, keyed by canonical workspace plus the
+/// effective modes. Probing spawns several helper processes, so re-probing
+/// on every tool call adds latency to the voice turn. Enforcement is a host
+/// property — the profile is rebuilt deterministically for each invocation —
+/// so one success per key per process is enough. Failures are never cached:
+/// every unproven invocation still fails closed.
+type ProbeCacheKey = (String, &'static str, &'static str);
+static PROBE_CACHE: OnceLock<Mutex<std::collections::HashSet<ProbeCacheKey>>> = OnceLock::new();
+
+fn probe_cache() -> &'static Mutex<std::collections::HashSet<ProbeCacheKey>> {
+    PROBE_CACHE.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+fn probe_cache_key(
+    workspace: &Path,
+    filesystem: FilesystemMode,
+    network: NetworkMode,
+) -> ProbeCacheKey {
+    (
+        workspace.to_string_lossy().into_owned(),
+        filesystem.as_str(),
+        network.as_str(),
+    )
+}
+
+fn probe_cache_hit(key: &ProbeCacheKey) -> bool {
+    probe_cache()
+        .lock()
+        .map(|cache| cache.contains(key))
+        .unwrap_or(false)
+}
+
+fn probe_cache_store(key: ProbeCacheKey) {
+    if let Ok(mut cache) = probe_cache().lock() {
+        cache.insert(key);
+    }
+}
+
+/// Probe the sandbox once before the conversation starts, while the terminal
+/// is still in cooked mode. Warmed modes skip their per-call probe later;
+/// a failed warm changes nothing — the first tool call still probes and
+/// fails closed with a model-visible error.
+pub fn warm_sandbox(
+    workspace: &Path,
+    filesystem: FilesystemMode,
+    network: NetworkMode,
+) -> Result<(), String> {
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|_| "workspace is unavailable")?;
+    let key = probe_cache_key(&workspace, filesystem, network);
+    if probe_cache_hit(&key) {
+        return Ok(());
+    }
+    let staging =
+        std::env::temp_dir().join(format!("syllabix-sandbox-warm-{}", std::process::id(),));
+    std::fs::create_dir_all(&staging).map_err(|_| "sandbox temp directory unavailable")?;
+    let staging = staging
+        .canonicalize()
+        .map_err(|_| "sandbox temp directory unavailable")?;
+    let request = SandboxRequest::new(&workspace, &staging, filesystem, network);
+    let result = current_provider()
+        .probe(&request)
+        .map(|_| ())
+        .map_err(|error| error.to_string());
+    let _ = std::fs::remove_dir_all(&staging);
+    if result.is_ok() {
+        probe_cache_store(key);
+    }
+    result
+}
 
 struct TempDirGuard(PathBuf);
 
@@ -240,8 +313,12 @@ fn execute_shell(
         effective.filesystem,
         effective.network,
     );
-    if let Err(error) = sandbox.probe(&sandbox_request) {
-        return Err(error.to_string());
+    let cache_key = probe_cache_key(&workspace, effective.filesystem, effective.network);
+    if !probe_cache_hit(&cache_key) {
+        if let Err(error) = sandbox.probe(&sandbox_request) {
+            return Err(error.to_string());
+        }
+        probe_cache_store(cache_key);
     }
     let mut command = match sandbox.command(
         &sandbox_request,
@@ -1826,5 +1903,76 @@ mod tests {
                 result.content
             );
         }
+    }
+
+    #[test]
+    fn probe_cache_keys_carry_workspace_and_modes() {
+        let workspace = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let key = probe_cache_key(
+            &workspace,
+            crate::policy::FilesystemMode::ReadOnly,
+            crate::policy::NetworkMode::None,
+        );
+        assert_eq!(key.0, workspace.to_string_lossy());
+        assert_eq!(key.1, "read-only");
+        assert_eq!(key.2, "none");
+        let write_key = probe_cache_key(
+            &workspace,
+            crate::policy::FilesystemMode::WorkspaceWrite,
+            crate::policy::NetworkMode::None,
+        );
+        assert_ne!(key, write_key);
+    }
+
+    #[test]
+    fn probe_cache_stores_hits_and_warm_rejects_missing_workspaces() {
+        // Synthetic keys keep this host-independent: the cache helpers must
+        // record a stored key and miss everything else.
+        let key = (
+            format!("syllabix-probe-cache-test-{}", std::process::id()),
+            "read-only",
+            "none",
+        );
+        assert!(!probe_cache_hit(&key));
+        probe_cache_store(key.clone());
+        assert!(probe_cache_hit(&key));
+
+        // A failed warm never populates the cache: the next tool call still
+        // probes and fails closed.
+        let missing = std::env::temp_dir().join(format!(
+            "syllabix-warm-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        assert!(warm_sandbox(
+            &missing,
+            crate::policy::FilesystemMode::ReadOnly,
+            crate::policy::NetworkMode::None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn warm_sandbox_is_repeatable_for_a_live_workspace() {
+        // Host-dependent outcome (sandbox present or not), but warming twice
+        // must agree with itself and leave no staging directory behind.
+        let workspace = std::env::current_dir().unwrap();
+        let first = warm_sandbox(
+            &workspace,
+            crate::policy::FilesystemMode::ReadOnly,
+            crate::policy::NetworkMode::None,
+        );
+        let second = warm_sandbox(
+            &workspace,
+            crate::policy::FilesystemMode::ReadOnly,
+            crate::policy::NetworkMode::None,
+        );
+        assert_eq!(first.is_ok(), second.is_ok());
+        assert!(!std::env::temp_dir()
+            .join(format!("syllabix-sandbox-warm-{}", std::process::id()))
+            .exists());
     }
 }
