@@ -11,7 +11,7 @@
 
 Talk to a voice agent on your computer.
 
-A local-first voice-agent runtime. One native binary, on-device speech, and real-time interruption. No Python or API key required for the default setup. Syllabix is a local voice agent for local speech-to-speech conversation on your machine.
+Syllabix is a Rust local-first voice agent (library + binary). One native binary, on-device speech, and real-time interruption. No Python or API key required for the default setup. It is a local voice agent for local speech-to-speech conversation on your machine.
 
 ```text
 mic → VAD → STT → LLM / agentic LLM (⇄ sandboxed shell, tool exec) → TTS → speakers
