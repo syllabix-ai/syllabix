@@ -2,7 +2,7 @@
   <img src="docs/assets/logo.png" alt="Syllabix" width="220">
 </p>
 
-[![Version](https://img.shields.io/badge/version-v0.0.2-blue)](https://github.com/syllabix-ai/syllabix/releases)
+[![Version](https://img.shields.io/badge/version-v0.1.0-blue)](https://github.com/syllabix-ai/syllabix/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE)
 [![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](./docs/install.md)
 [![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)](./docs/install.md)
