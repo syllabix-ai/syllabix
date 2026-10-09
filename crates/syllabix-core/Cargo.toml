@@ -4,8 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
 rust-version.workspace = true
-description = "Shared types, provider contracts, and in-memory conversation loop"
+description = "Voice-agent SDK: shared types, provider contracts, and an in-memory speech-to-speech conversation loop"
+readme = "README.md"
+keywords = ["voice-agent", "speech-to-speech", "whisper", "vad", "tts"]
+categories = ["multimedia::audio", "artificial-intelligence"]
 
 [features]
 # Native inference fetches and executes the launch-model stack. Keep it

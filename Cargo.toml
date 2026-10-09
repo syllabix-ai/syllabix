@@ -7,7 +7,10 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/syllabix-ai/syllabix"
+homepage = "https://github.com/syllabix-ai/syllabix"
 rust-version = "1.91"
+# Git tags are the first supported SDK; crates.io comes later (issue #208).
+publish = false
 
 [workspace.dependencies]
 # Keep the dependency graph deterministic across the target matrix.

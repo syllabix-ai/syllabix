@@ -4,8 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
 rust-version.workspace = true
-description = "Local voice agent CLI"
+description = "Local-first voice agent CLI for on-device speech-to-speech with Whisper, VAD, and TTS"
+readme = "README.md"
+keywords = ["voice-agent", "speech-to-speech", "whisper", "vad", "tts"]
+categories = ["command-line-utilities", "multimedia::audio", "artificial-intelligence"]
 build = "build.rs"
 
 [[bin]]
