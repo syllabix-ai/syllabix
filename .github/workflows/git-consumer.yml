@@ -1,0 +1,58 @@
+name: Git consumer
+
+# Dummy out-of-tree crate that depends on syllabix-core the way another repo
+# would, then cargo-checks the Lane 2 / Lane 3 embed examples so the public
+# git-consumer path cannot bitrot. On v* tags the pin is git + tag. On PRs
+# (and main) a new tag does not exist yet, so the pin is git + the commit
+# under test.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  SYLLABIX_CACHE_DIR: ${{ github.workspace }}/.syllabix-cache
+
+jobs:
+  git-consumer:
+    name: git-consumer
+    runs-on: ubuntu-latest
+    # Same headroom as clippy: one ggml compile via the dummy crate.
+    timeout-minutes: 25
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@1.91.0
+      - name: Compile dependencies (Linux)
+        run: ./scripts/setup-linux.sh
+      - name: Materialize git-consumer crate (git tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          SYLLABIX_GIT_URL: https://github.com/${{ github.repository }}.git
+          SYLLABIX_GIT_TAG: ${{ github.ref_name }}
+        run: ./scripts/ci-git-consumer.sh --prepare
+      - name: Materialize git-consumer crate (git rev)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          SYLLABIX_GIT_URL: https://github.com/${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}.git
+          SYLLABIX_GIT_REV: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ./scripts/ci-git-consumer.sh --prepare
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: target/git-consumer
+      - name: cargo check embed examples as git consumer
+        run: ./scripts/ci-git-consumer.sh --check
