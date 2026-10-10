@@ -150,6 +150,8 @@ If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`,
 
 ## Packaging (maintainers)
 
+The app and `syllabix-core` share one version number. A release tag covers both. Say what changed for library users in the GitHub Release notes for that tag. Other repos pin the tag, not `main`. See [embed.md](embed.md#versions).
+
 GitHub Release files are the four artifact names plus `SHA256SUMS`. `.github/workflows/release.yml` publishes them on `v*` tags. Pull requests do not package dist binaries. If Actions cannot run, build each target with `scripts/package-release.sh` and attach with `scripts/publish-release.sh v0.1.0`.
 
 ```bash

@@ -11,6 +11,12 @@ syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0
 cargo add syllabix-core --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0
 ```
 
+## Versions
+
+The app (`syllabix`) and the library (`syllabix-core`) share one version number. When we tag a release, both move together. Pin a tag (`tag = "vX.Y.Z"`). Do not pin `main`.
+
+`v0.1.0` is the current release tag. It was cut before the embed examples landed, so those examples are on `main` until the next tag.
+
 ## Three lanes
 
 | Lane | Status | What you do | When it fits |
