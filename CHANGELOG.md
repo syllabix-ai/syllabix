@@ -17,6 +17,8 @@ Dates are UTC.
   a `vX.Y.Z` git tag.
 - Host compile and model-cache sharing for repos that embed `syllabix-core`
   (`docs/embed.md`, `docs/install.md`).
+- Lane 1 `cargo install --git` path: pin `--tag vX.Y.Z`; the GitHub Release
+  binary remains the usual install.
 
 ## 0.1.0 - 2026-09-29
 

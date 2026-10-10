@@ -31,7 +31,15 @@ Ready = used by the CLI, bugfixes only. Preview = on `main`, may churn.
 
 ## Lane 1 — Sidecar binary
 
-Download a [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) artifact ([install](install.md)) or, from a machine that already has the compile toolchain, `cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0 syllabix`.
+The usual Lane 1 install is a [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) binary ([install](install.md)). That path needs no CMake in your repo.
+
+From a machine that already has the compile toolchain, you can instead install the CLI from a git tag:
+
+```bash
+cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0 syllabix
+```
+
+`syllabix` is the CLI package. Pin `--tag vX.Y.Z`. Do not track `main`. This compiles ggml, so it needs the same packages as [Host compile](#host-compile) — listed once there and in [install — Compile](install.md#compile). Full command notes: [install — Install from git](install.md#install-from-git).
 
 **Contract**
 
@@ -144,7 +152,7 @@ Do not fork `pipeline.rs`. Swap a trait impl instead.
 
 ## Host compile
 
-Lane 2 and Lane 3 compile `syllabix-native` (vendored llama.cpp / whisper.cpp, one ggml via CMake in `build.rs`). Lane 1 hosts that only spawn a Release binary do not need this toolchain.
+Lane 2 and Lane 3 compile `syllabix-native` (vendored llama.cpp / whisper.cpp, one ggml via CMake in `build.rs`). Lane 1 hosts that only spawn a Release binary do not need this toolchain. A Lane 1 `cargo install --git` build does compile the CLI, so it needs the same packages ([install — Install from git](install.md#install-from-git)).
 
 Same OS packages as [install — Compile](install.md#compile), except tools this repo uses only for its own tests (`bubblewrap` in `scripts/setup-linux.sh` is for sandbox CI, not for linking `syllabix-core`).
 

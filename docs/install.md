@@ -30,6 +30,20 @@ certutil -hashfile syllabix.exe SHA256    # compare the hash to the line for syl
 
 Verify the checksum before running.
 
+## Install from git
+
+The usual install is still the GitHub Release binary above. Lane 1 hosts that spawn `syllabix` do not need to compile anything when they use that artifact.
+
+From a machine that already has the compile toolchain, you can instead install the CLI crate from a git tag:
+
+```bash
+cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0 syllabix
+```
+
+`syllabix` at the end is the CLI package (`crates/syllabix`). Pin `--tag vX.Y.Z` to match the SDK contract. Do not track `main` or a branch. The binary lands on your Cargo bin path (`~/.cargo/bin/syllabix` unless `CARGO_HOME` is set).
+
+This compiles ggml. Same packages as [Compile](#compile); do not repeat them here — embed hosts also list them under [embed — Host compile](embed.md#host-compile). First `run` still downloads models as under [First run](#first-run).
+
 ## First run
 
 The first `run` downloads the selected models over HTTPS (defaults: Silero, Whisper `small`, LFM2.5-2.6B, Pocket TTS — about **2.2 GB**; pinned sizes sum to 2,234,270,682 bytes), checks SHA-256, and stores them under the cache root:
