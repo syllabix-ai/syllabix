@@ -118,6 +118,7 @@ A starter file is in [`examples/demo-fully-self-hosted-voice-agents.yaml`](examp
 | [CLI](docs/cli.md) | `run`, `--barge-in`, `init`, `--help` |
 | [Engines](docs/engines.md) | VAD / STT / LLM / TTS ids and machine needs |
 | [Architecture](docs/architecture.md) | How the pipeline works, barge-in, what leaves your machine |
+| [Embed](docs/embed.md) | Other repos: sidecar binary, `run_live`, or `run_loop` |
 | [Compare](docs/compare.md) | vs Hugging Face S2S, Pipecat/LiveKit, Ollama |
 | [Configuration](docs/configuration.md) | Index of yaml, engines, diagnostics |
 | [syllabix.yaml](docs/syllabix-yaml.md) | Optional project file — keys and safe edits |
