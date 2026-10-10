@@ -32,11 +32,17 @@ Verify the checksum before running.
 
 ## First run
 
-The first `run` downloads the selected models over HTTPS (defaults: Silero, Whisper `small`, LFM2.5-2.6B, Pocket TTS — about **2.2 GB**), checks SHA-256, and stores them in:
+The first `run` downloads the selected models over HTTPS (defaults: Silero, Whisper `small`, LFM2.5-2.6B, Pocket TTS — about **2.2 GB**; pinned sizes sum to 2,234,270,682 bytes), checks SHA-256, and stores them under the cache root:
 
-- `$SYLLABIX_CACHE_DIR/models/v1` if `SYLLABIX_CACHE_DIR` is set
-- otherwise `~/.cache/syllabix/models/v1`
-- Windows: `%LOCALAPPDATA%\syllabix\cache\models\v1`
+| When | Asset directory |
+| --- | --- |
+| `SYLLABIX_CACHE_DIR` set | `$SYLLABIX_CACHE_DIR/models/v1` |
+| else `$XDG_CACHE_HOME` set | `$XDG_CACHE_HOME/syllabix/models/v1` |
+| else Windows | `%LOCALAPPDATA%\syllabix\cache\models\v1` |
+| else `$HOME` set | `~/.cache/syllabix/models/v1` |
+| else | `.syllabix-cache/models/v1` (cwd) |
+
+`SYLLABIX_CACHE_DIR` is the cache root, not the `models/v1` folder. Leave it unset to share the per-user default across the CLI and any host that embeds `syllabix-core`, or set the same root in every process. Hosts: [embed — Cache](embed.md#cache).
 
 Later runs reuse the cache offline. `--help` and `init` do not download weights. Other yaml model ids fetch on first use of that id. Catalogue: [engines.md](engines.md).
 
@@ -64,7 +70,7 @@ Windows: Settings → Privacy → Microphone.
 
 ## Compile
 
-Requires Rust 1.91+ (pinned in `rust-toolchain.toml`), CMake, and a C++ compiler. whisper.cpp and llama.cpp share one `ggml` compiled into the binary (Darwin Metal + Accelerate; Linux/Windows portable CPU by default). Vendored trees ship in the repo — no git submodules. Linux also needs ALSA headers (`libasound2-dev`) and `pkg-config`.
+Requires Rust 1.91+ (pinned in `rust-toolchain.toml`), CMake, and a C++ compiler. whisper.cpp and llama.cpp share one `ggml` compiled into the binary (Darwin Metal + Accelerate; Linux/Windows portable CPU by default). Vendored trees ship in the repo — no git submodules. Linux also needs ALSA headers (`libasound2-dev`) and `pkg-config`. Other repos that embed `syllabix-core` (Lane 2 / Lane 3) need this same compile toolchain — [embed — Host compile](embed.md#host-compile).
 
 ### Compile dependencies
 
@@ -74,7 +80,9 @@ Requires Rust 1.91+ (pinned in `rust-toolchain.toml`), CMake, and a C++ compiler
 ./scripts/setup-linux.sh
 ```
 
-Installs `build-essential`, `cmake`, `pkg-config`, `libasound2-dev`, `git`, and `bubblewrap`, then rustup if missing. CI Linux jobs run this same script. Optional Vulkan toolchain packages: `./scripts/setup-linux.sh --with-vulkan`, then `SYLLABIX_GGML_VULKAN=1 cargo build -p syllabix --release`. Vulkan details: [vendor/README.md](../vendor/README.md).
+Installs `build-essential`, `cmake`, `pkg-config`, `libasound2-dev`, `git`, and `bubblewrap`, then rustup if missing. CI Linux jobs (including the out-of-tree git-consumer check) run this same script. Optional Vulkan toolchain packages: `./scripts/setup-linux.sh --with-vulkan`, then `SYLLABIX_GGML_VULKAN=1 cargo build -p syllabix --release`. Vulkan details: [vendor/README.md](../vendor/README.md).
+
+A host crate that only depends on `syllabix-core` needs `build-essential`, `cmake`, `pkg-config`, and `libasound2-dev`. `bubblewrap` is for this repo’s Linux sandbox tests, not for compiling the SDK.
 
 On Ubuntu 24.04+, if `bwrap --unshare-net` fails during sandbox tests, see [contributing.md](contributing.md) / CI (`kernel.apparmor_restrict_unprivileged_userns=0`).
 
@@ -111,4 +119,4 @@ cargo run -p syllabix -- run
 
 The first compile builds ggml and the Rust workspace (several minutes cold). The first `run` still downloads models as under [First run](#first-run).
 
-Tests, packaging, and CI: [contributing.md](contributing.md).
+Tests, packaging, and CI: [contributing.md](contributing.md). Embedding `syllabix-core` from another repo: [embed.md](embed.md).
