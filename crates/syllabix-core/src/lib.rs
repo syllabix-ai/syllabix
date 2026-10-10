@@ -41,6 +41,7 @@ mod queue;
 mod qwen_asr;
 mod real;
 mod sandbox;
+mod session;
 mod skills;
 mod speech_text;
 mod stt;
@@ -125,6 +126,7 @@ pub use sandbox::{
 pub use sandbox::{
     BubblewrapSandboxProvider, LandlockSandboxProvider, LinuxSandboxProvider, LinuxSandboxRunner,
 };
+pub use session::Session;
 pub use skills::{
     builtin_root, DiscoveredSkill, SkillDiagnostic, SkillDiscovery, SkillInput, SkillManifest,
     SkillRoot, SkillSource, SkillsConfig, MAX_SKILL_DESCRIPTION_BYTES, MAX_SKILL_FILE_BYTES,

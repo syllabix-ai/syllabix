@@ -19,6 +19,20 @@ pub trait Vad: Send {
     fn flush(&mut self) -> Result<Vec<VadEvent>>;
 }
 
+impl<T: Vad + ?Sized> Vad for Box<T> {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+
+    fn push_frame(&mut self, frame: AudioFrame) -> Result<Vec<VadEvent>> {
+        (**self).push_frame(frame)
+    }
+
+    fn flush(&mut self) -> Result<Vec<VadEvent>> {
+        (**self).flush()
+    }
+}
+
 /// Speech-to-text for a completed VAD utterance.
 pub trait Stt: Send {
     /// Config name (`whisper.cpp`).
@@ -49,11 +63,52 @@ pub trait Stt: Send {
     fn cancel_turn(&mut self, _turn: TurnId) {}
 }
 
+impl<T: Stt + ?Sized> Stt for Box<T> {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+
+    fn transcribe(&mut self, utterance: &Utterance, cancel: &Cancel) -> Result<Transcript> {
+        (**self).transcribe(utterance, cancel)
+    }
+
+    fn supports_partials(&self) -> bool {
+        (**self).supports_partials()
+    }
+
+    fn start_turn(&mut self, turn: TurnId, cancel: &Cancel) -> Result<()> {
+        (**self).start_turn(turn, cancel)
+    }
+
+    fn push_frame(&mut self, frame: &AudioFrame, cancel: &Cancel) -> Result<Option<String>> {
+        (**self).push_frame(frame, cancel)
+    }
+
+    fn cancel_turn(&mut self, turn: TurnId) {
+        (**self).cancel_turn(turn);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crate::types::{AudioFrame, GenerationId, Utterance};
+
+    struct StubVad;
+    impl Vad for StubVad {
+        fn name(&self) -> &'static str {
+            "stub-vad"
+        }
+
+        fn push_frame(&mut self, _frame: AudioFrame) -> Result<Vec<VadEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn flush(&mut self) -> Result<Vec<VadEvent>> {
+            Ok(Vec::new())
+        }
+    }
 
     struct StubStt;
     impl Stt for StubStt {
@@ -109,6 +164,17 @@ mod tests {
         fn play(&mut self, _audio: SynthesizedAudio, _cancel: &Cancel) -> Result<()> {
             self.played += 1;
             Ok(())
+        }
+    }
+
+    struct StubCapture;
+    impl AudioCapture for StubCapture {
+        fn name(&self) -> &'static str {
+            "stub-capture"
+        }
+
+        fn next_frame(&mut self, _cancel: &Cancel) -> Result<Option<AudioFrame>> {
+            Ok(None)
         }
     }
 
@@ -210,6 +276,80 @@ mod tests {
         sink.interrupt();
         assert_eq!(sink.played, 1);
     }
+
+    #[test]
+    fn boxed_stages_forward_to_the_inner_impl() {
+        let cancel = Cancel::new();
+        let mut vad: Box<dyn Vad> = Box::new(StubVad);
+        assert_eq!(vad.name(), "stub-vad");
+        assert!(vad.push_frame(frame()).expect("vad").is_empty());
+        assert!(vad.flush().expect("flush").is_empty());
+
+        let mut stt: Box<dyn Stt> = Box::new(StubStt);
+        assert_eq!(stt.name(), "stub-stt");
+        assert!(!stt.supports_partials());
+        stt.start_turn(TurnId(1), &cancel).expect("start_turn");
+        assert_eq!(stt.push_frame(&frame(), &cancel).expect("push"), None);
+        stt.cancel_turn(TurnId(1));
+        assert_eq!(
+            stt.transcribe(
+                &Utterance {
+                    turn: TurnId(1),
+                    frames: vec![frame()],
+                },
+                &cancel,
+            )
+            .expect("transcribe")
+            .text,
+            "hello"
+        );
+
+        let mut llm: Box<dyn Llm> = Box::new(StubLlm);
+        assert_eq!(llm.name(), "stub-llm");
+        assert!(llm.debug_meta().is_none());
+        assert!(llm.take_tool_events().is_empty());
+        llm.generate(
+            &[],
+            &Transcript {
+                turn: TurnId(1),
+                text: String::from("hello"),
+                language: String::from("en"),
+            },
+            &cancel,
+            &mut |_| Ok(()),
+        )
+        .expect("generate");
+
+        let mut tts: Box<dyn Tts> = Box::new(StubTts);
+        assert_eq!(tts.name(), "stub-tts");
+        assert!(tts.model_id().is_none());
+        let token = token();
+        assert!(tts
+            .synthesize_chunk(&token, &cancel)
+            .expect("chunk")
+            .is_empty());
+        tts.synthesize_chunk_into(&token, &cancel, &mut |_| Ok(()))
+            .expect("into");
+
+        let mut sink: Box<dyn AudioSink> = Box::new(StubSink { played: 0 });
+        sink.play(
+            SynthesizedAudio {
+                turn: TurnId(7),
+                generation: GenerationId(1),
+                index: 0,
+                samples: vec![0],
+                is_last: true,
+            },
+            &cancel,
+        )
+        .expect("play");
+        sink.finish_turn(TurnId(7), &cancel).expect("finish");
+        sink.interrupt();
+
+        let mut capture: Box<dyn AudioCapture> = Box::new(StubCapture);
+        assert_eq!(capture.name(), "stub-capture");
+        assert!(capture.next_frame(&cancel).expect("eof").is_none());
+    }
 }
 
 /// Streaming language model.
@@ -239,6 +379,30 @@ pub trait Llm: Send {
         cancel: &Cancel,
         on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
     ) -> Result<()>;
+}
+
+impl<T: Llm + ?Sized> Llm for Box<T> {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+
+    fn debug_meta(&self) -> Option<LlmDebugMeta> {
+        (**self).debug_meta()
+    }
+
+    fn take_tool_events(&mut self) -> Vec<ToolTurnEvent> {
+        (**self).take_tool_events()
+    }
+
+    fn generate(
+        &mut self,
+        history: &[HistoryTurn],
+        user: &Transcript,
+        cancel: &Cancel,
+        on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
+    ) -> Result<()> {
+        (**self).generate(history, user, cancel, on_token)
+    }
 }
 
 /// Streaming text-to-speech.
@@ -278,6 +442,33 @@ pub trait Tts: Send {
     }
 }
 
+impl<T: Tts + ?Sized> Tts for Box<T> {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+
+    fn model_id(&self) -> Option<&str> {
+        (**self).model_id()
+    }
+
+    fn synthesize_chunk(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+    ) -> Result<Vec<SynthesizedAudio>> {
+        (**self).synthesize_chunk(token, cancel)
+    }
+
+    fn synthesize_chunk_into(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        (**self).synthesize_chunk_into(token, cancel, on_audio)
+    }
+}
+
 /// Playback destination implemented by native speakers or an in-memory collector.
 pub trait AudioSink: Send {
     /// Play or collect one chunk. Must check `cancel`.
@@ -298,6 +489,20 @@ pub trait AudioSink: Send {
     fn interrupt(&mut self) {}
 }
 
+impl<T: AudioSink + ?Sized> AudioSink for Box<T> {
+    fn play(&mut self, audio: SynthesizedAudio, cancel: &Cancel) -> Result<()> {
+        (**self).play(audio, cancel)
+    }
+
+    fn finish_turn(&mut self, turn: TurnId, cancel: &Cancel) -> Result<()> {
+        (**self).finish_turn(turn, cancel)
+    }
+
+    fn interrupt(&mut self) {
+        (**self).interrupt();
+    }
+}
+
 /// Microphone or fixture source yielding pipeline PCM frames.
 pub trait AudioCapture: Send {
     /// Config / backend name (`cpal`, `fixture`).
@@ -307,4 +512,14 @@ pub trait AudioCapture: Send {
     ///
     /// Must return [`crate::Error::Cancelled`] when `cancel` is shut down.
     fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<AudioFrame>>;
+}
+
+impl<T: AudioCapture + ?Sized> AudioCapture for Box<T> {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+
+    fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<AudioFrame>> {
+        (**self).next_frame(cancel)
+    }
 }

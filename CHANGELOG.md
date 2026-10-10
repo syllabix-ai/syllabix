@@ -19,6 +19,8 @@ Dates are UTC.
   (`docs/embed.md`, `docs/install.md`).
 - Lane 1 `cargo install --git` path: pin `--tag vX.Y.Z`; the GitHub Release
   binary remains the usual install.
+- `Session` builder on `syllabix-core`: defaults for every pipeline stage,
+  with `with_llm` (and the other stage setters) before `run`.
 
 ## 0.1.0 - 2026-09-29
 
