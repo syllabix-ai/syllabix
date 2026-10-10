@@ -24,7 +24,7 @@ Nowhere in yaml, and nowhere in a `.env` file. Only `SYLLABIX_LLM_API_KEY` in th
 
 ## Download or compile?
 
-Download a Release binary if you just want to talk. Compile (`cargo run -p syllabix -- run`) if you are changing the code. Both paths end in the same `run` command. Details: [install](install.md).
+Download a Release binary if you just want to talk — that is the usual install. Compile (`cargo run -p syllabix -- run`) if you are changing the code. To put a tagged CLI on your `PATH` without cloning, `cargo install --git … --tag vX.Y.Z syllabix`. Details: [install](install.md).
 
 ## Can I change the voice / model without rebuilding?
 
