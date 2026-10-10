@@ -163,6 +163,20 @@ After a Release is published, validate the documented download path: `SMOKE_RELE
 
 Linux contributors who hit a missing ALSA link need `libasound2-dev`.
 
+## Supported library API
+
+`syllabix-core` re-exports many types at the crate root. Other repos may rely
+only on the Lane 2 and Lane 3 lists in [`embed.md`](embed.md). Everything else
+at the crate root can change without notice.
+
+Do not add a new crate-root `pub use` unless you also document it in
+`docs/embed.md` (either as supported, or as explicitly not frozen). The same
+rule sits above the re-exports in `crates/syllabix-core/src/lib.rs`.
+`crates/syllabix-core/tests/supported_api.rs` fails if a freeze-list name
+leaves the crate root. A strict check that every crate-root re-export is
+named in `docs/embed.md` comes back in Phase 2, after fakes, `*_ASSET`
+constants, and the sandbox/G2P helpers leave the crate root.
+
 ## CI
 
 Per-PR CI (`ci.yml`) runs on GitHub-hosted Linux: fmt, clippy, and llvm-cov
