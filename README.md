@@ -50,6 +50,14 @@ certutil -hashfile syllabix.exe SHA256    # compare against the SHA256SUMS line
 
 Blocked by macOS Gatekeeper or Windows SmartScreen? See [docs/install.md](docs/install.md).
 
+Those GitHub Release files are the usual install. Building from git is optional:
+
+```bash
+cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0 syllabix
+```
+
+Always pass `--tag vX.Y.Z`. Do not install from `main`. You need CMake, a C++ compiler, and on Linux ALSA — see [Compile](docs/install.md#compile). Full notes: [install from git](docs/install.md#install-from-git).
+
 ## Run
 
 ### Fully local
@@ -101,7 +109,7 @@ Sources, download sizes, and machine needs: [docs/engines.md](docs/engines.md). 
 
 ## Build from source
 
-See [Compile](docs/install.md#compile).
+See [Compile](docs/install.md#compile). For a tagged CLI on your `PATH` without cloning, [install from git](docs/install.md#install-from-git).
 
 ## Optional config
 
@@ -114,7 +122,7 @@ A starter file is in [`examples/demo-fully-self-hosted-voice-agents.yaml`](examp
 | Page | What it covers |
 | --- | --- |
 | [Docs index](docs/README.md) | User and config map |
-| [Install](docs/install.md) | Checksums, cache, Gatekeeper, SmartScreen, building |
+| [Install](docs/install.md) | Checksums, cache, Gatekeeper, SmartScreen, building, `cargo install --git` |
 | [CLI](docs/cli.md) | `run`, `--barge-in`, `init`, `--help` |
 | [Engines](docs/engines.md) | VAD / STT / LLM / TTS ids and machine needs |
 | [Architecture](docs/architecture.md) | How the pipeline works, barge-in, what leaves your machine |

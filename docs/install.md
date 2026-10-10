@@ -30,6 +30,20 @@ certutil -hashfile syllabix.exe SHA256    # compare the hash to the line for syl
 
 Verify the checksum before running.
 
+## Install from git
+
+The usual install is still the GitHub Release binary above. Use that if you only want to run `syllabix`.
+
+If this machine already has CMake, a C++ compiler, and (on Linux) ALSA, you can instead build the CLI from a git tag:
+
+```bash
+cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0 syllabix
+```
+
+The last word (`syllabix`) is the crate that provides the `syllabix` binary. Always pass `--tag vX.Y.Z`. Do not install from `main` or a branch. Cargo puts the binary on your PATH (`~/.cargo/bin/syllabix` unless `CARGO_HOME` is set).
+
+This build needs the same packages as [Compile](#compile). Projects that embed the library list them under [embed — Host compile](embed.md#host-compile). The first `run` still downloads models; see [First run](#first-run).
+
 ## First run
 
 The first `run` downloads the default models over HTTPS: Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (about **2.2 GB**). Each file is checked, then stored under the cache root:
