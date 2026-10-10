@@ -46,6 +46,8 @@ mod turn_debug;
 mod types;
 mod vad;
 
+// Only names listed in `docs/embed.md` are the supported library surface.
+// Do not add a new crate-root `pub use` unless that page lists it too.
 pub use cancel::Cancel;
 pub use config::{
     AgentConfig, DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy, CONFIG_FILE_NAME,

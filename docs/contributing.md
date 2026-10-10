@@ -1,5 +1,9 @@
 # Contributing
 
+## Supported library surface
+
+Other repos should depend on the names listed in [embed.md](embed.md). `syllabix-core` also re-exports helpers for the app itself. Do not add a new crate-root `pub use` unless you add that name to `docs/embed.md` in the same change.
+
 ## Build
 
 Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share one `ggml` compiled into the binary (Darwin Metal + Accelerate; Linux/Windows portable CPU by default). Linux Vulkan is opt-in: `SYLLABIX_GGML_VULKAN=1` compiles the vendored ggml-Vulkan backend (needs Vulkan SDK headers/loader). Linux also needs ALSA headers (`libasound2-dev`).
