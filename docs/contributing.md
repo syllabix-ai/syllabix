@@ -165,15 +165,18 @@ Linux contributors who hit a missing ALSA link need `libasound2-dev`.
 
 ## CI
 
-Per-PR CI is fmt, clippy, and llvm-cov ≥85% workspace lines and ≥85% lines in
-every reported `src/**/*.rs` file, without loading native weights. Weekly CI
-repeats that file-level gate on Linux and runs `cargo test --workspace` on
-Linux / Windows / macOS, including launch-stack native inference.
+Per-PR CI (`ci.yml`) runs on GitHub-hosted Linux: fmt, clippy, and llvm-cov
+≥85% workspace lines and ≥85% lines in every reported `src/**/*.rs` file,
+without loading native weights. PR template and harness-evidence checks also
+run on hosted Linux. Weekly CI runs `cargo test --workspace` on Linux /
+Windows (hosted) and macOS (self-hosted Apple Silicon), including
+launch-stack native inference.
 
 A separate weekly **native coverage** workflow (`native-tests.yml`, job
 `coverage-native`) runs launch-stack weights under
 `cargo llvm-cov --no-cfg-coverage --release` with
 `-p syllabix-core --features native-inference --test native_inference`.
-It defaults to the self-hosted Mac; `workflow_dispatch` can override the
-pool to `ubuntu-latest`. Reports upload as `coverage-cobertura-native`.
-No native percentage floor yet — baseline first (#174).
+It defaults to the self-hosted Mac (Metal / Apple Silicon); `workflow_dispatch`
+can override the pool to `ubuntu-latest`. Reports upload as
+`coverage-cobertura-native`. No native percentage floor yet — baseline first
+(#174).

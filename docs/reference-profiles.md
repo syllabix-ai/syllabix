@@ -15,9 +15,9 @@ runs the protocol — do not invent them in user-facing docs.
 | **B — Linux x64** | GitHub runner or contributor box, ALSA null / no devices, `libasound2-dev` installed | The merge bar: fmt/clippy/release link/dylibs/one-ggml, llvm-cov ≥85% without native weights, `cargo test --workspace` with native inference once. |
 | **C — Clean machine** | Any OS image with **no rustc/cargo/python**, network available for the first download only | The scripted README smoke (`scripts/smoke-setup.sh`) and the human 3-minute spoken-reply gate after a Release exists. |
 
-Windows x64 and macOS Intel have no profile owner yet: CI compiles them
-(`ci.yml` matrix), but nobody has measured audio quality on them. Say so in
-PRs rather than assuming Linux numbers transfer.
+Windows x64 and macOS Intel have no profile owner yet: weekly CI compiles
+them (`weekly.yml` matrix), but nobody has measured audio quality on them.
+Say so in PRs rather than assuming Linux numbers transfer.
 
 ## 2. Echo — AEC zero false turns (profile A)
 

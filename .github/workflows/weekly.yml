@@ -1,12 +1,11 @@
 name: Weekly full check
 
 # Full cross-platform safety net: Linux/Windows on GitHub-hosted runners,
-# macOS on the self-hosted runner (0 billed minutes). When the Mac is
-# offline, manually dispatch with the hosted pool for that run.
-# The per-PR fast gate (fmt / clippy / coverage) lives in ci.yml on the
-# self-hosted macOS runner; this workflow re-validates every supported OS
-# and the Linux coverage baseline. Native-weight coverage is a separate
-# weekly workflow: native-tests.yml.
+# macOS on the self-hosted runner (Apple Silicon, 0 billed minutes). When
+# the Mac is offline, manually dispatch with the hosted pool for that run.
+# The per-PR fast gate (fmt / clippy / coverage) lives in ci.yml on
+# GitHub-hosted Linux. Native-weight coverage is a separate weekly
+# workflow: native-tests.yml.
 
 on:
   schedule:
@@ -36,53 +35,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Keeps the Linux coverage baseline honest now that the per-PR coverage
-  # gate runs on macOS (Darwin-specific code paths shift line coverage).
-  coverage-linux:
-    name: code coverage (linux baseline)
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.91.0
-        with:
-          components: llvm-tools-preview
-      - name: Compile dependencies (Linux)
-        run: ./scripts/setup-linux.sh
-      # Ubuntu 24.04 AppArmor blocks CAP_NET_ADMIN inside unprivileged userns,
-      # so bwrap --unshare-net fails with RTM_NEWADDR and sandbox tests fail.
-      - name: Allow bubblewrap user namespaces
-        run: |
-          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-      - uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-pocket-tts
-      # Keep cargo-llvm-cov aligned with DEVELOPMENT.md and local verification.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-llvm-cov@0.8.7
-      - uses: Swatinem/rust-cache@v2
-      # Do not merge coverage profiles left by an earlier retry on a reused
-      # runner; build artifacts remain cached.
-      - name: Clear stale coverage profiles
-        run: |
-          if [ -d target/llvm-cov-target ]; then
-            find target/llvm-cov-target -type f \( -name '*.profraw' -o -name '*.profdata' \) -delete
-          fi
-      - name: Run unit tests with coverage
-        # Native inference is an opt-in integration suite, not part of this
-        # unit-coverage gate or the OS matrix below.
-        run: cargo llvm-cov --no-clean --workspace --fail-under-lines 85 --fail-under-file-lines 85 --cobertura --output-path coverage.xml
-      - name: Store coverage report
-        uses: actions/upload-artifact@v6
-        with:
-          name: coverage-cobertura-linux
-          path: coverage.xml
-          if-no-files-found: error
-
   test:
     name: test / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -141,7 +93,7 @@ jobs:
   # macOS leg, self-hosted only (0 billed minutes): native Apple-Silicon
   # test plus Intel cross-compile check. Scheduled runs always use the
   # self-hosted Mac; when it is offline, manually dispatch this workflow
-  # with the hosted pool for that run (same override pattern as ci.yml).
+  # with the hosted pool for that run.
   test-macos:
     name: test / macos-arm64
     runs-on: ${{ fromJSON(inputs.macos_pool || '["self-hosted", "macOS"]') }}

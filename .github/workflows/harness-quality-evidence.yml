@@ -18,16 +18,9 @@ on:
       - crates/syllabix-core/src/policy.rs
       - crates/syllabix-core/src/sandbox/**
       - crates/syllabix-core/tests/harness-quality.rs
-      - docs/contributing.md
+      # contributing.md documents the paste-in-PR rule but also CI runner
+      # notes; editing it must not require a live keyed admission run.
   workflow_dispatch:
-    inputs:
-      pool:
-        description: "Runner pool (default: self-hosted, free)"
-        type: choice
-        default: '["self-hosted", "macOS"]'
-        options:
-          - '["self-hosted", "macOS"]'
-          - '["ubuntu-latest"]'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -39,10 +32,8 @@ permissions:
 jobs:
   harness-quality-evidence:
     name: harness quality evidence
-    # Single runner, like coverage/clippy: self-hosted macOS (0 billed
-    # minutes); workflow_dispatch may override to hosted Ubuntu. The job
-    # needs no devices, weights, or network beyond the GitHub API.
-    runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
+    # OS-agnostic: needs no devices, weights, or network beyond the GitHub API.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     if: github.event.pull_request.draft == false
     permissions:
