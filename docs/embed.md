@@ -46,7 +46,7 @@ Download a [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) ar
 
 ## Lane 2 — Embed the live loop
 
-The host compiles ggml (CMake, C++, ALSA on Linux), shares the model cache, and must carry Apache-2.0 plus Sonora BSD in its NOTICE.
+The host compiles the C++ speech libraries ([Host compile](#host-compile)), shares the model cache ([Cache](#cache)), and must carry Apache-2.0 plus Sonora BSD in its NOTICE.
 
 ```rust
 use syllabix_core::{run_live, AgentConfig, Cancel};
@@ -144,27 +144,47 @@ Do not fork `pipeline.rs`. Swap a trait impl instead.
 
 ## Host compile
 
-Lane 2 and Lane 3 compile `syllabix-native` (vendored llama.cpp / whisper.cpp, one ggml). Same bar as [install — Compile](install.md#compile):
+If you embed Syllabix in your own Rust app (Lane 2 or Lane 3), your machine compiles the C++ speech libraries that ship with Syllabix. You need CMake and a C++ compiler. The first compile takes several minutes. If you only run a downloaded Syllabix binary (Lane 1), skip this section.
 
-- Rust 1.91+ (`rust-toolchain.toml`)
-- CMake and a C++ compiler
-- Linux: ALSA headers (`libasound2-dev`) and `pkg-config` (`./scripts/setup-linux.sh`)
-- Darwin: Metal + Accelerate for STT/LLM
-- Linux / Windows: portable CPU by default; Linux Vulkan is `SYLLABIX_GGML_VULKAN=1`
+Same packages as [install — Compile](install.md#compile). This repo’s Linux setup script also installs extra tools used only in our tests; those are called out below.
 
-Lane 1 hosts do not need CMake.
+| You need | Why |
+| --- | --- |
+| Rust 1.91 or newer | Pinned in this repo. |
+| CMake and a C++ compiler | Builds the speech libraries. First compile takes several minutes. |
+| Linux: `pkg-config` and ALSA headers (`libasound2-dev`) | Mic and speakers on Linux. |
+| macOS: Xcode Command Line Tools | Apple’s C++ compiler. GPU libraries link on their own. |
+| Windows: Visual C++ build tools, Windows SDK, and CMake | Open an x64 Native Tools prompt so `cl.exe` is on `PATH`. |
+
+**Linux (Debian / Ubuntu)**
+
+```bash
+sudo apt-get install -y build-essential cmake pkg-config libasound2-dev
+```
+
+In a Syllabix checkout you can run `./scripts/setup-linux.sh` instead. That script also installs `git` and `bubblewrap`. You do not need those two just to depend on `syllabix-core` from another repo.
+
+**macOS** — Install Xcode Command Line Tools, CMake (Homebrew `cmake` if needed), and rustup. Put rustup’s `cargo` ahead of Homebrew’s. In a Syllabix checkout you can run `./scripts/setup-macos.sh`.
+
+**Windows** — Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with **Desktop development with C++**, [CMake](https://cmake.org/download/) on `PATH`, and rustup. Open an x64 Native Tools prompt, then build.
+
+Optional: Linux Vulkan is `SYLLABIX_GGML_VULKAN=1` (needs Vulkan headers). Default Linux and Windows builds use CPU.
 
 ## Cache
 
-Weights download on first use of each id (HTTPS URL pinned in the binary, SHA-256, then reuse). Default stack is about **2.2 GB** (Silero, Whisper `small`, LFM2.5-2.6B, Pocket TTS). Catalogue: [engines](engines.md).
+The first run of the default models downloads about **2.2 GB** (Silero, Whisper `small`, LFM2.5-2.6B, Pocket TTS). Files are fetched over HTTPS, checked, then reused. `--help` and `init` download nothing. Other yaml model ids download the first time you use that id. Full list: [engines](engines.md).
 
-| Variable / path | Effect |
-| --- | --- |
-| `SYLLABIX_CACHE_DIR` | Cache root. Assets land in `$SYLLABIX_CACHE_DIR/models/v1`. |
-| unset, Unix | `~/.cache/syllabix/models/v1` (or `$XDG_CACHE_HOME/syllabix/models/v1`) |
-| unset, Windows | `%LOCALAPPDATA%\syllabix\cache\models\v1` |
+Files always go in `<cache-root>/models/v1`.
 
-Point every app on the machine at the same `SYLLABIX_CACHE_DIR` to share downloads. `ModelCache` uses an advisory lock so parallel resolves of one asset do not race.
+| When | Cache root | Files |
+| --- | --- | --- |
+| `SYLLABIX_CACHE_DIR` is set | that folder | `$SYLLABIX_CACHE_DIR/models/v1` |
+| else `$XDG_CACHE_HOME` is set | `$XDG_CACHE_HOME/syllabix` | `$XDG_CACHE_HOME/syllabix/models/v1` |
+| else on Windows | `%LOCALAPPDATA%\syllabix\cache` | `%LOCALAPPDATA%\syllabix\cache\models\v1` |
+| else `$HOME` is set | `~/.cache/syllabix` | `~/.cache/syllabix/models/v1` |
+| else | `.syllabix-cache` in the current directory | `.syllabix-cache/models/v1` |
+
+Set `SYLLABIX_CACHE_DIR` to the **cache root**, not to `models/v1`. Two apps share downloads when they use the same root: leave the variable unset (same user default) or set the same path in every process.
 
 ## Licenses
 
