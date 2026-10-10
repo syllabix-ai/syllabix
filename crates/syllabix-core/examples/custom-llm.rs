@@ -1,21 +1,21 @@
-//! Lane 3 — compose stages: custom `Llm` + `run_loop`.
+//! Lane 3 — compose stages: custom `Llm` on a `Session`.
 //!
 //! Copy-paste starting point for other repos that implement `Llm` (or any
-//! stage) and call `run_loop` instead of forking `pipeline.rs`. Uses the
-//! Lane 3 crate-root surface listed in `docs/embed.md`.
+//! stage) and swap it on [`syllabix_core::Session`] instead of forking
+//! `pipeline.rs` or wiring `load_real_providers` by hand. Uses the Lane 3
+//! crate-root surface listed in `docs/embed.md`.
 //!
 //! Companion VAD / STT / TTS / sink types are in-example fixtures so this
 //! binary compiles and runs without opening a microphone or fetching the
-//! launch-stack weights. Production hosts typically keep those stages from
-//! `load_real_providers` and swap only the LLM.
+//! launch-stack weights. Production hosts typically keep those stages as
+//! `Session` defaults and swap only the LLM.
 
 use std::sync::mpsc::channel;
 
 use syllabix_core::{
-    run_loop, AudioFrame, AudioSink, BuiltinDefaults, Cancel, Error, HistoryTurn, Llm, LoopConfig,
-    LoopMode, PipelineStages, Result, RuntimeControls, Stt, SynthesizedAudio, TokenChunk,
-    Transcript, Tts, TurnId, Utterance, Vad, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ,
-    FRAME_SAMPLES,
+    AudioFrame, AudioSink, Cancel, Error, HistoryTurn, Llm, Result, Session, Stt, SynthesizedAudio,
+    TokenChunk, Transcript, Tts, TurnId, Utterance, Vad, VadEvent, DEFAULT_CHANNELS,
+    DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
 struct EchoLlm;
@@ -161,27 +161,18 @@ fn main() -> Result<()> {
             println!("event: {event:?}");
         }
     });
-    let report = run_loop(
-        LoopConfig {
-            defaults: BuiltinDefaults::v0(),
-            mode: LoopMode::UntilInputEnds,
-            events: Some(events_tx),
-            turn_debug: None,
-            controls: RuntimeControls::new(false),
-        },
-        PipelineStages {
-            vad: EnergyVad {
-                next_turn: 0,
-                current: None,
-            },
-            stt: FixedStt,
-            llm: EchoLlm,
-            tts: PassthroughTts,
-            sink: DiscardSink,
-        },
-        fixture_turn()?,
-        cancel,
-    )?;
+    let report = Session::v0()
+        .with_vad(EnergyVad {
+            next_turn: 0,
+            current: None,
+        })
+        .with_stt(FixedStt)
+        .with_llm(EchoLlm)
+        .with_tts(PassthroughTts)
+        .with_sink(DiscardSink)
+        .with_frames(fixture_turn()?)
+        .with_events(Some(events_tx))
+        .run(cancel)?;
     let _ = printer.join();
     println!(
         "conversation ended: {} turn(s), {} skipped",
