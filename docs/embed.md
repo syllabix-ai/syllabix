@@ -109,7 +109,7 @@ impl Llm for EchoLlm {
         }
         on_token(TokenChunk {
             turn: user.turn,
-            generation: syllabix_core::GenerationId(1),
+            generation: cancel.generation(),
             index: 0,
             text: user.text.clone(),
             is_last: true,
@@ -117,6 +117,8 @@ impl Llm for EchoLlm {
     }
 }
 ```
+
+The trait impl above is covered by `crates/syllabix-core/examples/custom-llm.rs`: a CI-checked copy that wires `EchoLlm` into `PipelineStages` with fixture VAD/STT/TTS/sink and `run_loop` (`cargo clippy --workspace --all-targets` compiles examples, so the supported API cannot bitrot). Production hosts typically keep the stages they do not replace from `load_real_providers`.
 
 Wire `EchoLlm` into `PipelineStages` with the VAD/STT/TTS you loaded (or your own impls) and a sink. Native mic/speaker types live under `syllabix_core::audio` and are **not** in the Lane 2 freeze list.
 
