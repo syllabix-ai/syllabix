@@ -6,8 +6,10 @@
 //! listed in `docs/embed.md`.
 //!
 //! Host requirements: CMake plus a C++ compiler (vendored ggml), Linux ALSA
-//! headers (`libasound2-dev`), and a shared `SYLLABIX_CACHE_DIR`. Ctrl-C stops
-//! the process; the first `run` fetches about 2.2 GB into the cache.
+//! headers (`libasound2-dev`) and `pkg-config`, and a shared model cache
+//! (`SYLLABIX_CACHE_DIR` is the cache root; assets land in `models/v1`).
+//! Ctrl-C stops the process; the first `run` fetches about 2.2 GB into the
+//! cache (see `docs/embed.md`).
 
 use std::sync::mpsc::channel;
 

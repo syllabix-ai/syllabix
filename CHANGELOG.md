@@ -15,6 +15,8 @@ Dates are UTC.
 
 - Tag and changelog contract: SDK and CLI version together; dependents pin
   a `vX.Y.Z` git tag.
+- Host compile and model-cache sharing for repos that embed `syllabix-core`
+  (`docs/embed.md`, `docs/install.md`).
 
 ## 0.1.0 - 2026-09-29
 
