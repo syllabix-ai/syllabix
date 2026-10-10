@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::onnx::{MockSession, OnnxSession, OnnxTensor};
-use crate::{Cancel, Error, GenerationId, TokenChunk, Tts, TurnId};
+use crate::types::GenerationId;
+use crate::{Cancel, Error, TokenChunk, Tts, TurnId};
 
 fn names(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| (*word).to_string()).collect()

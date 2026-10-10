@@ -18,14 +18,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use syllabix_core::{
-    current_provider, join_endpoint, resolve_api_key, resolve_effective, speak_text_for_tts,
-    validate_base_url, AgentConfig, BlockedFetcher, Cancel, DeveloperPermissions, Enforcement,
-    FilesystemMode, LlamaLlm, Llm, ModelCache, NetworkMode, NoProgress, OpenAiLlm, OpenAiSettings,
-    SandboxRequest, SecretPolicy, ToolCall, ToolResult, ToolTurnEvent, Transcript, TurnId,
-    CLOUD_FALLBACK_TEXT, LFM25_2_6B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, TOOL_LIMIT_TEXT,
-    VOICE_SYSTEM_PROMPT_TEMPLATE,
+use syllabix_core::config::{DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy};
+use syllabix_core::llm::{
+    LlamaLlm, LFM25_2_6B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
+use syllabix_core::models::{BlockedFetcher, NoProgress};
+use syllabix_core::openai::{
+    join_endpoint, resolve_api_key, validate_base_url, OpenAiLlm, OpenAiSettings,
+    CLOUD_FALLBACK_TEXT, TOOL_LIMIT_TEXT,
+};
+use syllabix_core::policy::{resolve_effective, Enforcement};
+use syllabix_core::sandbox::{current_provider, SandboxRequest};
+use syllabix_core::speech_text::speak_text_for_tts;
+use syllabix_core::types::{ToolCall, ToolResult, ToolTurnEvent};
+use syllabix_core::{AgentConfig, Cancel, Llm, ModelCache, Transcript, TurnId};
 
 /// Base URL environment variable for the manual run. It is required because
 /// online endpoints are never inferred.
@@ -417,7 +423,7 @@ impl FakeSandbox {
         call: ToolCall,
         output: &str,
         cancel: &Cancel,
-        generation: syllabix_core::GenerationId,
+        generation: syllabix_core::types::GenerationId,
     ) -> Option<ToolResult> {
         if cancel.is_stale(generation) {
             // No result is emitted for cancelled work, so it cannot become a

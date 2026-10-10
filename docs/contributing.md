@@ -144,7 +144,7 @@ not an admission gate and its report is not pasted into PRs. Local
 developer-harness stays opt-in via yaml (`pipeline.llm.developer_harness: true`
 under `lfm2.5-2.6b`); the default voice path is unchanged.
 
-If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`, `src/openai.rs`, `src/types.rs`, `src/providers.rs`, `src/policy.rs`, `src/sandbox/`, or `tests/harness-quality.rs`), paste the online verdict report into the PR body inside an HTML comment starting with `<!-- syllabix-harness-quality -->`, including the seven fixture lines (`[read-repo]`, `[repo-orientation]`, `[write-and-verify]`, `[write-denied]`, `[network-denied]`, `[secret-denied]`, `[cancelled-command]`) and a summary such as `summary: completion=7/7 ratio=1.00 policy_violations=0 secret_exposures=0 stale_results=0`. A CI check enforces this; CI itself never calls the model.
+If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`, `src/openai.rs`, `src/types.rs`, `src/providers.rs`, `src/policy.rs`, `src/sandbox/`, or `tests/harness-quality.rs`), paste the online verdict report into the PR body inside an HTML comment starting with `<!-- syllabix-harness-quality -->`, including the seven fixture lines (`[read-repo]`, `[repo-orientation]`, `[write-and-verify]`, `[write-denied]`, `[network-denied]`, `[secret-denied]`, `[cancelled-command]`) and a summary such as `summary: completion=7/7 ratio=1.00 policy_violations=0 secret_exposures=0 stale_results=0`. A CI check enforces this; CI itself never calls the model. Import-only edits on those files (moved `use` lines, comments, or type paths with no behavior change) do not need a pasted report; the evidence workflow skips them.
 
 ## Packaging (maintainers)
 
@@ -173,17 +173,17 @@ Linux contributors who hit a missing ALSA link need `libasound2-dev`.
 
 ## Supported library API
 
-`syllabix-core` re-exports many types at the crate root. Other repos may rely
-only on the Lane 2 and Lane 3 lists in [`embed.md`](embed.md). Everything else
-at the crate root can change without notice.
+`syllabix-core` crate-root re-exports are the Lane 2 and Lane 3 lists in
+[`embed.md`](embed.md). Other public items live in named modules and can
+change without notice.
 
 Do not add a new crate-root `pub use` unless you also document it in
 `docs/embed.md` (either as supported, or as explicitly not frozen). The same
 rule sits above the re-exports in `crates/syllabix-core/src/lib.rs`.
 `crates/syllabix-core/tests/supported_api.rs` fails if a freeze-list name
-leaves the crate root. A strict check that every crate-root re-export is
-named in `docs/embed.md` comes back in Phase 2, after fakes, `*_ASSET`
-constants, and the sandbox/G2P helpers leave the crate root.
+leaves the crate root, and if a crate-root re-export is missing from those
+lists. The test honors `#[cfg(feature)]` so names that need `full` are
+only required when those features are on.
 
 ## CI
 

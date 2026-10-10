@@ -7,11 +7,10 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::defaults::SttModel;
 use crate::onnx::{MockSession, OnnxSession, OnnxTensor};
-use crate::{
-    AudioFrame, Cancel, Error, Stt, SttModel, TurnId, Utterance, DEFAULT_CHANNELS,
-    DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
-};
+use crate::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES};
+use crate::{AudioFrame, Cancel, Error, Stt, TurnId, Utterance};
 
 const SYNTHETIC_VOCAB: &str = r#"{
     "model": {"type": "BPE", "vocab": {

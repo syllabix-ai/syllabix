@@ -24,7 +24,10 @@ use syllabix_core::audio::{
     EchoReference, FixtureCapture, FrameSplitter, PcmConverter, PcmFormat, SampleRing, WavPcm,
     AEC_FRAME_SAMPLES, AUDIO_LIVE_BYTES_CEILING, FRAME_SPLITTER_MAX,
 };
-use syllabix_core::{bounded, AudioCapture, Cancel, QueueCaps, FRAME_SAMPLES};
+use syllabix_core::defaults::QueueCaps;
+use syllabix_core::queue::bounded;
+use syllabix_core::types::FRAME_SAMPLES;
+use syllabix_core::{AudioCapture, Cancel};
 
 fn fixture_wav() -> WavPcm {
     WavPcm {
@@ -348,7 +351,8 @@ fn native_open_fails_with_actionable_error_when_no_device() {
 fn native_streams_work_with_alsa_null_device() {
     let _alsa = AlsaNullDevice::install();
     use syllabix_core::audio::{NativeCapture, NativePlayback};
-    use syllabix_core::{AudioSink, GenerationId, SynthesizedAudio, TurnId};
+    use syllabix_core::types::GenerationId;
+    use syllabix_core::{AudioSink, SynthesizedAudio, TurnId};
 
     let (input, output) = probe_device_names().expect("null devices");
     assert_eq!(input.reason, "os-default");
@@ -382,7 +386,8 @@ fn native_streams_work_with_alsa_null_device() {
 #[ignore]
 fn hardware_record_and_play_if_devices_exist() {
     use syllabix_core::audio::{NativeCapture, NativePlayback};
-    use syllabix_core::{AudioSink, GenerationId, SynthesizedAudio, TurnId};
+    use syllabix_core::types::GenerationId;
+    use syllabix_core::{AudioSink, SynthesizedAudio, TurnId};
 
     let (mut playback, reference) = NativePlayback::open_with_echo().expect("speakers");
     let mut capture = NativeCapture::open_with_echo(reference).expect("microphone");
@@ -419,10 +424,10 @@ fn hardware_aec_1_minute_playback_has_zero_false_turns() {
     use std::time::Instant;
 
     use syllabix_core::audio::{read_wav, record_fixture_to_frames, NativeCapture, NativePlayback};
-    use syllabix_core::{
-        AudioSink, GenerationId, HttpFetcher, ModelCache, SileroVad, StderrProgress,
-        SynthesizedAudio, TurnId, Vad, VadEvent,
-    };
+    use syllabix_core::models::{HttpFetcher, StderrProgress};
+    use syllabix_core::types::GenerationId;
+    use syllabix_core::vad::SileroVad;
+    use syllabix_core::{AudioSink, ModelCache, SynthesizedAudio, TurnId, Vad, VadEvent};
 
     const CALIBRATION: Duration = Duration::from_secs(10);
     const MEASUREMENT: Duration = Duration::from_secs(60);
@@ -665,7 +670,9 @@ fn load_mono16k_f32(path: &Path) -> Vec<f32> {
 }
 
 fn silero_speech_starts(samples: &[f32]) -> u64 {
-    use syllabix_core::{HttpFetcher, ModelCache, SileroVad, StderrProgress, Vad, VadEvent};
+    use syllabix_core::models::{HttpFetcher, StderrProgress};
+    use syllabix_core::vad::SileroVad;
+    use syllabix_core::{ModelCache, Vad, VadEvent};
 
     // Both delayed-fixture tests run in parallel and use the versioned shared
     // cache. Resolve atomically per test, not concurrently, so one test cannot
@@ -744,9 +751,10 @@ fn delayed_kokoro_fixture_is_cancelled_before_silero() {
 #[test]
 #[ignore]
 fn generate_kokoro_aec_farend_fixture() {
-    use syllabix_core::{
-        GenerationId, HttpFetcher, KokoroTts, ModelCache, StderrProgress, TokenChunk, Tts, TurnId,
-    };
+    use syllabix_core::models::{HttpFetcher, StderrProgress};
+    use syllabix_core::tts::KokoroTts;
+    use syllabix_core::types::GenerationId;
+    use syllabix_core::{ModelCache, TokenChunk, Tts, TurnId};
 
     let mut tts = KokoroTts::from_cache(
         &ModelCache::v0(),

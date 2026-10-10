@@ -9,169 +9,77 @@
 //!
 //! Hosts that embed this crate: see `docs/embed.md` (`Session` for Lane 3).
 //! Only the Lane 2 and Lane 3 lists on that page are a stability promise.
+//! Other public items live in named modules (`testing`, `g2p`, `sandbox`,
+//! and the rest) and can change.
 
 pub mod audio;
+pub mod config;
+pub mod defaults;
+pub mod dist;
+pub mod executor;
+pub mod g2p;
+pub mod llm;
+pub mod memory;
 pub mod models;
+pub mod moonshine;
+pub mod openai;
+pub mod pipeline;
+pub mod pocket_tts;
+pub mod policy;
+pub mod queue;
+pub mod qwen_asr;
+#[cfg(any(coverage, feature = "ggml"))]
+pub mod real;
+pub mod sandbox;
+pub mod skills;
+pub mod speech_text;
+pub mod stt;
+pub mod testing;
+pub mod tts;
+pub mod turn_debug;
+pub mod types;
+pub mod vad;
 
 mod cancel;
-mod config;
-mod defaults;
-mod dist;
 mod error;
-mod executor;
 mod fake;
-mod g2p;
 mod language;
 #[cfg(all(feature = "ggml", feature = "device-audio"))]
 mod live;
-mod llm;
-mod memory;
-// Moonshine's production adapter dynamically loads three ONNX graphs and a
-// tokenizer. Coverage tests inject scripted sessions instead of downloading
-// weights, so the real adapter always compiles.
-mod moonshine;
 mod onnx;
-mod openai;
-mod pipeline;
-mod policy;
-// Pocket TTS native inference runs in the model suite; coverage tests inject
-// scripted sessions, so the real adapter always compiles.
-mod pocket_tts;
 mod providers;
-mod queue;
-mod qwen_asr;
-mod real;
-mod sandbox;
 mod session;
-mod skills;
-mod speech_text;
-mod stt;
-mod tts;
-mod turn_debug;
-mod types;
-mod vad;
+
+// Unit tests in this crate still write `crate::LlmProvider`. That name is
+// not a crate-root `pub use`, so it stays off the freeze list.
+#[cfg(test)]
+pub(crate) use defaults::LlmProvider;
 
 // Supported crate-root surface is the Lane 2 / Lane 3 lists in docs/embed.md.
 // Do not add a new crate-root `pub use` unless that page documents it
-// (supported freeze, or an explicit note that it is not frozen). The
-// kitchen-sink re-exports below predate that rule and are not a stability
-// promise.
+// (supported freeze, or an explicit note that it is not frozen).
 pub use cancel::Cancel;
-pub use config::{
-    AgentConfig, DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy, CONFIG_FILE_NAME,
-    DEFAULT_AUTO_TIMEOUT_EXIT_MS, DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS,
-};
-pub use defaults::{
-    BuiltinDefaults, LlmProvider, QueueCaps, SttModel, SttProvider, TtsCompute, TtsModel,
-    TtsProvider, VadProvider,
-};
-pub use dist::{
-    artifact_name_for_target, artifact_name_for_uname, format_sha256sums_line,
-    latest_release_download_url, parse_sha256sums, sha256sums_contains, ARTIFACT_FILE_NAMES,
-    DIST_PROFILE, DIST_TARGETS, MAX_DIST_BINARY_BYTES, RELEASE_LATEST_DOWNLOAD_PREFIX,
-    SHA256SUMS_FILE_NAME,
-};
+pub use config::AgentConfig;
 pub use error::{Error, Result};
-pub use executor::warm_sandbox;
-pub use fake::{
-    scripted_frames, CollectingSink, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt,
-    FakeTts, FakeVad, LlmCall, ScriptedStt,
-};
-pub use g2p::{english_to_ipa, english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
 #[cfg(all(feature = "ggml", feature = "device-audio"))]
 pub use live::{run_live, run_live_with_controls};
-pub use llm::{
-    is_v0_llm_model, render_system_prompt, render_system_prompt_with_skills, system_prompt_for,
-    LlamaLlm, LFM25_230M_ASSET, LFM25_2_6B_ASSET, LFM25_350M_ASSET, LFM_TOOL_TURN_MAX_CHARS,
-    LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT, LLAMA_MAX_HISTORY_TURNS, LOCAL_TOOL_FALLBACK_TEXT,
-    QWEN35_08B_ASSET, QWEN35_2B_ASSET, V0_LLM_MODELS, VOICE_SYSTEM_PROMPT,
-    VOICE_SYSTEM_PROMPT_TEMPLATE,
-};
-pub use memory::{process_rss_bytes, LOOP_RSS_GROWTH_CEILING_BYTES};
-pub use models::{
-    cache_root, format_progress_line, BlockedFetcher, Fetcher, HttpFetcher, Manifest, ModelAsset,
-    ModelCache, ModelLayer, NoProgress, Progress, StderrProgress,
-};
-pub use moonshine::{
-    MoonshineStt, MoonshineTokenizer, DECODER_ASSET as MOONSHINE_DECODER_ASSET,
-    DECODER_PAST_ASSET as MOONSHINE_DECODER_PAST_ASSET, ENCODER_ASSET as MOONSHINE_ENCODER_ASSET,
-    MEDIUM_DECODER_ASSET as MOONSHINE_MEDIUM_DECODER_ASSET,
-    MEDIUM_DECODER_PAST_ASSET as MOONSHINE_MEDIUM_DECODER_PAST_ASSET,
-    MEDIUM_ENCODER_ASSET as MOONSHINE_MEDIUM_ENCODER_ASSET,
-    MEDIUM_TOKENIZER_ASSET as MOONSHINE_MEDIUM_TOKENIZER_ASSET,
-    TOKENIZER_ASSET as MOONSHINE_TOKENIZER_ASSET,
-};
-pub use openai::{
-    join_endpoint, resolve_api_key, validate_base_url, OpenAiLlm, OpenAiSettings, API_KEY_ENV,
-    CLOUD_FALLBACK_TEXT, DEFAULT_LLM_BASE_URL, MAX_TOOL_CALLS_PER_TURN, TOOL_LIMIT_TEXT,
-};
+pub use models::{cache_root, ModelCache};
 pub use pipeline::{
-    is_blank_stt, run_loop, run_loop_captured, AutoTimeoutAction, IdleClock, LoopConfig, LoopEvent,
-    LoopMode, LoopReport, PipelineStages, RuntimeControls,
+    run_loop, run_loop_captured, LoopConfig, LoopEvent, LoopReport, PipelineStages, RuntimeControls,
 };
-pub use pocket_tts::{
-    PocketTts, POCKET_TTS_BOS_ASSET, POCKET_TTS_BUNDLE_ASSET, POCKET_TTS_FLOW_ASSET,
-    POCKET_TTS_FLOW_MAIN_ASSET, POCKET_TTS_MIMI_DECODER_ASSET, POCKET_TTS_TEXT_CONDITIONER_ASSET,
-    POCKET_TTS_TOKENIZER_ASSET, POCKET_TTS_VOICE_ASSET,
-};
-pub use policy::{resolve_effective, Enforcement, ExecutionPlan, PolicyDeny, Provenance};
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
-pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
-pub use qwen_asr::{QwenAsrStt, ASR_ASSET, ASR_MMPROJ_ASSET};
 #[cfg(any(coverage, feature = "ggml"))]
-pub use real::{build_llm, build_stt, build_tts, load_real_providers, LiveLlm, LiveStt, LiveTts};
-#[cfg(all(target_os = "macos", not(coverage)))]
-pub use sandbox::MacOsSandboxProvider;
-pub use sandbox::{
-    current_provider, SandboxError, SandboxProvider, SandboxRequest, UnavailableSandboxProvider,
-};
-#[cfg(all(target_os = "linux", not(coverage)))]
-pub use sandbox::{
-    BubblewrapSandboxProvider, LandlockSandboxProvider, LinuxSandboxProvider, LinuxSandboxRunner,
-};
+pub use real::load_real_providers;
 pub use session::Session;
-pub use skills::{
-    builtin_root, DiscoveredSkill, SkillDiagnostic, SkillDiscovery, SkillInput, SkillManifest,
-    SkillRoot, SkillSource, SkillsConfig, MAX_SKILL_DESCRIPTION_BYTES, MAX_SKILL_FILE_BYTES,
-};
-pub use speech_text::{
-    speak_text_for_tts, strip_markdown_for_speech, strip_think_for_speech, take_sentences,
-    ThinkFilter,
-};
-pub use stt::{
-    contains_words_in_order, transcript_words, word_match_ratio, WhisperStt,
-    LIBRISPEECH_MIN_WORD_MATCH, STT_LANGUAGE,
-};
-pub use tts::{
-    KokoroTts, QwenTts, KOKORO_ASSET, KOKORO_NATIVE_RATE_HZ, KOKORO_VOICE_ASSET,
-    QWEN_TTS_06B_ASSET, QWEN_TTS_06B_MMPROJ_ASSET, QWEN_TTS_ASSET, QWEN_TTS_MMPROJ_ASSET,
-    TTS_ASR_MIN_WORD_MATCH,
-};
-pub use turn_debug::{
-    prepare_turn_debug_dir, PlaybackWatch, TimelineAnchor, TurnDebug, TurnOutcome,
-    DEFAULT_TURN_DEBUG_DIR,
-};
 pub use types::{
-    AudioFrame, CompletedTurn, GenerationId, HistoryTurn, LlmDebugMeta, SynthesizedAudio,
-    TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript, TurnId, TurnTimings, Utterance,
-    VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    AudioFrame, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId, Utterance, VadEvent,
 };
-pub use vad::{
-    SileroVad, VadSettings, END_SILENCE, END_SILENCE_FRAMES, FRAME_DURATION, MIN_SPEECH,
-    MIN_SPEECH_FRAMES, PREROLL_SAMPLES, SPEECH_THRESHOLD, WHISPER_PREROLL,
-};
-
-/// Force-link the whisper.cpp and llama.cpp frontends into the executable.
-#[cfg(feature = "ggml")]
-pub fn ensure_shared_ggml_frontends() -> bool {
-    syllabix_native::frontends_linked()
-}
 
 #[cfg(all(test, feature = "ggml"))]
 mod shared_ggml_tests {
     #[test]
     fn llama_and_whisper_frontends_share_one_ggml() {
-        assert!(super::ensure_shared_ggml_frontends());
+        assert!(syllabix_native::frontends_linked());
         let info = syllabix_native::llama_system_info();
         assert!(!info.is_empty(), "llama.cpp frontend must be linked");
         #[cfg(not(target_vendor = "apple"))]

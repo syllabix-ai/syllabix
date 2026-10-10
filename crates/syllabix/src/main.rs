@@ -14,7 +14,7 @@ fn main() {
 /// Parse, configure tracing, and dispatch. Separated from [`main`] so unit
 /// tests can cover argument handling without exiting the test process.
 fn run_cli() -> i32 {
-    let _linked = syllabix_core::ensure_shared_ggml_frontends();
+    let _linked = syllabix_native::frontends_linked();
     let cli = cli::Cli::parse();
     run_parsed(cli)
 }

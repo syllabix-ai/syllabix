@@ -4,10 +4,11 @@ use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sha2::{Digest, Sha256};
-use syllabix_core::{
-    BlockedFetcher, Cancel, Fetcher, Manifest, ModelAsset, ModelCache, ModelLayer, NoProgress,
-    Result, TtsModel,
+use syllabix_core::defaults::TtsModel;
+use syllabix_core::models::{
+    BlockedFetcher, Fetcher, Manifest, ModelAsset, ModelLayer, NoProgress,
 };
+use syllabix_core::{Cancel, ModelCache, Result};
 
 struct BytesFetcher {
     body: Vec<u8>,

@@ -12,11 +12,15 @@ use std::thread;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+use syllabix_core::defaults::SttModel;
+use syllabix_core::models::{HttpFetcher, StderrProgress};
+use syllabix_core::stt::{
+    contains_words_in_order, word_match_ratio, WhisperStt, LIBRISPEECH_MIN_WORD_MATCH,
+};
+use syllabix_core::testing::{CollectingSink, FakeLlm, FakeTts, FakeVad};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames},
-    contains_words_in_order, run_loop, word_match_ratio, Cancel, CollectingSink, FakeLlm, FakeTts,
-    FakeVad, HttpFetcher, LoopConfig, ModelCache, PipelineStages, StderrProgress, Stt, SttModel,
-    TurnId, Utterance, WhisperStt, LIBRISPEECH_MIN_WORD_MATCH,
+    run_loop, Cancel, LoopConfig, ModelCache, PipelineStages, Stt, TurnId, Utterance,
 };
 
 use crate::{hex, native, skip_unless_model};

@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(all(not(coverage), feature = "ggml"))]
 use syllabix_native::{DecodeError, QwenAsrContext, QwenTtsBackend};
 
+use crate::defaults::SttModel;
 use crate::defaults::TtsCompute;
 use crate::error::{Error, Result};
 use crate::language::{is_supported, language_name, LANGUAGE_AUTO};
@@ -18,7 +19,6 @@ use crate::providers::Stt;
 use crate::stt::STT_LANGUAGE;
 use crate::types::{Transcript, Utterance};
 use crate::Cancel;
-use crate::SttModel;
 
 /// Config / log name for this engine.
 pub const PROVIDER_NAME: &str = "qwen-asr";
