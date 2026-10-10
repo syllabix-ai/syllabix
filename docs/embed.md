@@ -11,6 +11,14 @@ syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0
 cargo add syllabix-core --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0
 ```
 
+## Tags and versions
+
+The SDK (`syllabix-core`) and the CLI (`syllabix`) share one version: `[workspace.package] version` in the root `Cargo.toml`. A git tag `vX.Y.Z` is that version for both crates and for the GitHub Release binaries. `syllabix-native` is not a public API; it ships as a workspace member of the same tag.
+
+Pin `tag = "vX.Y.Z"`. Do not track `main` or a branch. `main` can change without a version bump.
+
+What each tag contains: [CHANGELOG.md](../CHANGELOG.md). Maintainers cut tags as described in [contributing — Packaging](contributing.md#packaging-maintainers).
+
 ## Three lanes
 
 | Lane | Status | What you do | When it fits |
