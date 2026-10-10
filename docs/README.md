@@ -8,7 +8,8 @@
 | [CLI](cli.md) | `run`, `--barge-in`, `init`, `--help` |
 | [Engines](engines.md) | Shipped model ids, fetch-on-use, machine needs |
 | [Architecture](architecture.md) | Cascade, AEC, barge-in, network boundary |
-| [Embed](embed.md) | Other repos: sidecar binary, `run_live`, or `run_loop` |
+| [Embed](embed.md) | Other repos: sidecar binary, `run_live`, or `run_loop`; pin a git tag |
+| [Changelog](../CHANGELOG.md) | SDK + CLI share one `vX.Y.Z` tag; do not track `main` |
 | [Compare](compare.md) | vs HF S2S, Pipecat / LiveKit, Ollama |
 | [Troubleshooting](troubleshooting.md) | Symptom → fix |
 | [FAQ](faq.md) | Large first run, barge-in, keys |

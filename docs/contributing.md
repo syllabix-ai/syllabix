@@ -146,6 +146,12 @@ If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`,
 
 ## Packaging (maintainers)
 
+The SDK (`syllabix-core`) and the CLI (`syllabix`) version together. Bump
+`[workspace.package] version` once, move notes from `## Unreleased` in
+[`CHANGELOG.md`](../CHANGELOG.md) under that version, then push a `vX.Y.Z`
+tag. That tag is the pin other repos use (`tag = "vX.Y.Z"`); they must not
+track `main`. Hosts: [`embed.md`](embed.md).
+
 GitHub Release files are the four artifact names plus `SHA256SUMS`. `.github/workflows/release.yml` publishes them on `v*` tags. Pull requests do not package dist binaries. If Actions cannot run, build each target with `scripts/package-release.sh` and attach with `scripts/publish-release.sh v0.1.0`.
 
 ```bash
