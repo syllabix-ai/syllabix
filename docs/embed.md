@@ -50,7 +50,7 @@ fn main() -> syllabix_core::Result<()> {
 }
 ```
 
-The snippets match the `v0.1.0` signatures. They are not yet compile-tested in CI ([#208](https://github.com/syllabix-ai/syllabix/issues/208)).
+The minimal call above is covered by `crates/syllabix-core/examples/embed-loop.rs`: a CI-checked fuller copy that also subscribes to `LoopEvent` and reports `LoopReport` (`cargo clippy --workspace --all-targets` compiles examples, so the supported API cannot bitrot).
 
 `AgentConfig::v0()` is the same zero-config stack as a missing yaml file. Pass `true` as the last argument of `run_live` for barge-in. Subscribe to `LoopEvent` with `std::sync::mpsc::channel` when you need a UI. For a live handle, call `run_live_with_controls(config, cancel, Some(tx), controls)`.
 
