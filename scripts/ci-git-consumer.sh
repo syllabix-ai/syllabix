@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Out-of-tree cargo check of the Lane 2 / Lane 3 embed examples.
+# Compile the embed examples as if they lived in another repository.
 #
-# Other repos pin syllabix-core with a git tag (see docs/embed.md). This
-# script builds a dummy crate that is not a workspace member and depends on
-# this repo the same way. On v* tags it uses git + tag. On PRs and local
-# runs a new tag does not exist, so it substitutes git + rev (CI) or a path
-# override (local default).
+# Other repos depend on syllabix-core with a git tag (see docs/embed.md). This
+# script writes a throwaway crate under target/ and points it at this repo the
+# same way. On a v* tag it uses that tag. In CI on a pull request or on main it
+# uses the commit under test. Locally, unpushed commits cannot be fetched, so it
+# uses a path to crates/syllabix-core instead.
 #
 # Usage:
 #   ./scripts/ci-git-consumer.sh
@@ -26,7 +26,7 @@ while [[ $# -gt 0 ]]; do
     --prepare) mode="prepare" ;;
     --check) mode="check" ;;
     -h|--help)
-      sed -n '2,18p' "$0"
+      sed -n '2,16p' "$0"
       exit 0
       ;;
     *)

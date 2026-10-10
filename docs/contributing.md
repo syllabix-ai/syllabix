@@ -188,11 +188,15 @@ constants, and the sandbox/G2P helpers leave the crate root.
 Per-PR CI (`ci.yml`) runs on GitHub-hosted Linux: fmt, clippy, and llvm-cov
 ≥85% workspace lines and ≥85% lines in every reported `src/**/*.rs` file,
 without loading native weights. PR template and harness-evidence checks also
-run on hosted Linux. A **git-consumer** workflow (`git-consumer.yml`) builds a
-dummy crate that is not a workspace member, depends on `syllabix-core` via git
-(tag on `v*` pushes; the PR commit otherwise), and `cargo check`s
-`crates/syllabix-core/examples/embed-loop.rs` and `custom-llm.rs`. Weekly CI
-runs `cargo test --workspace` on Linux / Windows (hosted) and macOS
+run on hosted Linux.
+
+The **git-consumer** workflow (`git-consumer.yml`) pretends to be another repo.
+It depends on `syllabix-core` from git: a `v*` tag when one exists, otherwise
+the commit under test. It then compiles
+`crates/syllabix-core/examples/embed-loop.rs` and `custom-llm.rs`. Locally, run
+`./scripts/ci-git-consumer.sh`.
+
+Weekly CI runs `cargo test --workspace` on Linux / Windows (hosted) and macOS
 (self-hosted Apple Silicon), including launch-stack native inference.
 
 A separate weekly **native coverage** workflow (`native-tests.yml`, job

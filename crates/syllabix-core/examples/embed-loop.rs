@@ -5,9 +5,9 @@
 //! the shipped conversation loop. Uses only the supported crate-root surface
 //! listed in `docs/embed.md`.
 //!
-//! Host requirements: CMake plus a C++ compiler (vendored ggml), Linux ALSA
-//! headers (`libasound2-dev`), and a shared `SYLLABIX_CACHE_DIR`. Ctrl-C stops
-//! the process; the first `run` fetches about 2.2 GB into the cache.
+//! Host requirements: CMake, a C++ compiler, and on Linux ALSA headers
+//! (`libasound2-dev`). The first run downloads about 2.2 GB into the shared
+//! model cache. Details: `docs/embed.md`. Ctrl-C stops the process.
 
 use std::sync::mpsc::channel;
 
