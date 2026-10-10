@@ -23,7 +23,7 @@ What each tag contains is on the git tag and its [GitHub Release](https://github
 
 | Lane | Status | What you do | When it fits |
 | --- | --- | --- | --- |
-| **1 — Sidecar binary** | Ready | Spawn a Release binary (or `cargo install --git`) with `syllabix.yaml` in the working directory | Electron / Tauri / Python / CI. No CMake in your repo. No custom STT/LLM. |
+| **1 — Sidecar binary** | Ready | Run a GitHub Release binary (usual) or `cargo install --git`. Put `syllabix.yaml` in the working directory. | Electron / Tauri / Python / CI. No custom STT/LLM. A Release needs no compile; `cargo install --git` does. |
 | **2 — Embed the live loop** | Ready | `run_live` / `run_live_with_controls` + `LoopEvent` | In-process Rust host that wants the shipped conversation loop. |
 | **3 — Compose stages** | Preview | Implement `Vad` / `Stt` / `Llm` / `Tts` / `AudioCapture` / `AudioSink` and call `run_loop` | Bring your own engine (often only the LLM). |
 
@@ -31,7 +31,15 @@ Ready = used by the CLI, bugfixes only. Preview = on `main`, may churn.
 
 ## Lane 1 — Sidecar binary
 
-Download a [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) artifact ([install](install.md)) or, from a machine that already has the compile toolchain, `cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0 syllabix`.
+The usual Lane 1 install is a [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) binary ([install](install.md)). You download a file and run it. You do not compile.
+
+If this machine already has a C++ compiler and CMake, you can instead install from a git tag:
+
+```bash
+cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0 syllabix
+```
+
+Always pass `--tag vX.Y.Z`. Do not install from `main`. This builds the on-device speech libraries, so you need the packages under [Host compile](#host-compile) (same list: [install — Compile](install.md#compile)). More notes: [install — Install from git](install.md#install-from-git).
 
 **Contract**
 
@@ -144,7 +152,7 @@ Do not fork `pipeline.rs`. Swap a trait impl instead.
 
 ## Host compile
 
-If you embed Syllabix in your own Rust app (Lane 2 or Lane 3), your machine compiles the C++ speech libraries that ship with Syllabix. You need CMake and a C++ compiler. The first compile takes several minutes. If you only run a downloaded Syllabix binary (Lane 1), skip this section.
+If you embed Syllabix in your own Rust app (Lane 2 or Lane 3), your machine compiles the C++ speech libraries that ship with Syllabix. You need CMake and a C++ compiler. The first compile takes several minutes. If you only run a downloaded Syllabix binary (Lane 1), skip this section. A Lane 1 `cargo install --git` build compiles the CLI, so it needs the same packages ([install — Install from git](install.md#install-from-git)).
 
 Same packages as [install — Compile](install.md#compile). This repo’s Linux setup script also installs extra tools used only in our tests; those are called out below.
 
