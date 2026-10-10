@@ -9,14 +9,6 @@ on:
     # stale SKIPPED checks until the next push. Keep the default types.
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
-    inputs:
-      pool:
-        description: "Runner pool for the fast checks (default: self-hosted, free)"
-        type: choice
-        default: '["self-hosted", "macOS"]'
-        options:
-          - '["self-hosted", "macOS"]'
-          - '["ubuntu-latest"]'
 
 # Superseded runs (multiple pushes per branch) are cancelled so they stop
 # consuming runner time.
@@ -31,22 +23,15 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
   SYLLABIX_CACHE_DIR: ${{ github.workspace }}/.syllabix-cache
-  # Self-hosted macOS runners ship Homebrew Rust; rustup-init otherwise
-  # refuses to install the pinned toolchain over it.
-  RUSTUP_INIT_SKIP_PATH_CHECK: yes
 
 jobs:
-  # Fast per-PR gate. OS-agnostic, runs on the self-hosted macOS runner
-  # (0 billed Actions minutes); workflow_dispatch may override to hosted.
+  # Fast per-PR gate. OS-agnostic: GitHub-hosted Linux is unlimited for
+  # public repositories. fmt / clippy / coverage run in parallel.
   coverage:
     name: code coverage
-    runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
-    # Warm runs finish in ~3 min (2m03s instrumented compile + tests). The
-    # budget is headroom for a cold instrumented build (vendored C++ + all
-    # deps) after a runner restart or a target wipe. The earlier 15/20-minute
-    # reds were the rust-cache save upload, not compile time — see the gate
-    # on that step below.
-    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    # Headroom for a cold instrumented build (vendored C++ + all deps).
+    timeout-minutes: 25
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     steps:
       # Use the PR head so reported lines map to the submitted diff.
@@ -56,26 +41,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.91.0
         with:
           components: llvm-tools-preview
-      # dtolnay/rust-toolchain only prepends ~/.cargo/bin when it installs
-      # rustup. On a self-hosted Mac rustup already exists, so Homebrew
-      # rustc/cargo stay first on PATH and cargo-llvm-cov cannot find the
-      # rustup llvm-tools-preview this step just confirmed.
-      - name: Prefer rustup over Homebrew rustc
-        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - name: Compile dependencies (Linux)
-        if: runner.os == 'Linux'
         run: ./scripts/setup-linux.sh
       # Ubuntu 24.04 AppArmor blocks CAP_NET_ADMIN inside unprivileged userns,
       # so bwrap --unshare-net fails with RTM_NEWADDR and sandbox tests fail.
       - name: Allow bubblewrap user namespaces
-        if: runner.os == 'Linux'
         run: |
           if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - name: Compile dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: ./scripts/setup-macos.sh
       # No model-weights cache here: cfg(coverage) never loads weights (all
       # native modules are gated off in native_inference), so nothing can
       # fill .syllabix-cache. weekly.yml keeps its cache for real inference.
@@ -84,19 +58,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov@0.8.7
-      # Coverage now runs on macOS (self-hosted) instead of hosted Linux; the
-      # Linux baseline is re-checked weekly in weekly.yml (coverage-linux).
-      # Cache only when dispatched to the hosted pool. The self-hosted runner
-      # keeps target/ on disk between runs, so restore always missed ("No
-      # cache found") — while every green job uploaded ~/.cargo + ~1.1 GB of
-      # target/ over the home uplink (~17 min) until the job timeout killed
-      # it and turned the run red. Hosted runners are ephemeral, so there the
-      # cache is the compile-time win it is designed to be.
       - uses: Swatinem/rust-cache@v2
-        if: contains(inputs.pool || '', 'ubuntu-latest')
-      # The self-hosted macOS runner retains target/ between jobs. llvm-cov
-      # merges every .profraw it finds, including profiles from an earlier PR
-      # revision, so discard only those transient coverage inputs.
+      # Do not merge coverage profiles left by an earlier retry on a reused
+      # runner; build artifacts remain cached.
       - name: Clear stale coverage profiles
         run: |
           if [ -d target/llvm-cov-target ]; then
@@ -118,7 +82,7 @@ jobs:
 
   fmt:
     name: rustfmt
-    runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     steps:
@@ -126,50 +90,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.91.0
         with:
           components: rustfmt
-      - name: Prefer rustup over Homebrew rustc
-        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --all -- --check
 
   clippy:
     name: clippy
-    # Serialize behind coverage: both jobs compile the whole workspace, and
-    # co-scheduling them on one self-hosted box starves clippy past its
-    # timeout. Running second also reuses the warm target dir the coverage
-    # build left on the self-hosted disk.
-    needs: coverage
-    runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
-    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.91.0
         with:
           components: clippy
-      - name: Prefer rustup over Homebrew rustc
-        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - name: Compile dependencies (Linux)
-        if: runner.os == 'Linux'
         run: ./scripts/setup-linux.sh
-      # Ubuntu 24.04 AppArmor blocks CAP_NET_ADMIN inside unprivileged userns,
-      # so bwrap --unshare-net fails with RTM_NEWADDR and sandbox tests fail.
-      - name: Allow bubblewrap user namespaces
-        if: runner.os == 'Linux'
-        run: |
-          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-      - name: Compile dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: ./scripts/setup-macos.sh
-      # Same gate as the coverage job: the cache is for ephemeral hosted
-      # runners; on self-hosted its save step alone cost ~17 min per green
-      # job and timed the run out.
       - uses: Swatinem/rust-cache@v2
-        if: contains(inputs.pool || '', 'ubuntu-latest')
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # The cross-platform test matrix (linux/windows/macos + Intel cross-build)
-  # moved to weekly.yml: scheduled Mondays or on demand via workflow_dispatch.
-  # It bills GitHub Actions minutes (~80-90/run), so it no longer runs on
-  # every push/PR. Dist packaging and GitHub Release attach remain in
-  # release.yml (v* tags only). PR CI still does not package dist binaries.
+  # lives in weekly.yml: scheduled Mondays or on demand via workflow_dispatch.
+  # Dist packaging and GitHub Release attach remain in release.yml (v* tags
+  # only). PR CI still does not package dist binaries.
