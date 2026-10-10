@@ -5,10 +5,14 @@ Rust **voice agent** library: VAD, Whisper STT, LLM, and TTS in one
 the in-memory runtime).
 
 This crate is not on crates.io yet (`publish = false`). Other repos take a git
-dependency until a later publish:
+dependency until a later publish. Pin a tag: the SDK (`syllabix-core`) and
+the CLI (`syllabix`) share one version and ship on the same `vX.Y.Z` tag.
+Do not track `main`.
 
 ```toml
-syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git" }
+syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.0" }
 ```
 
-See the [repository README](https://github.com/syllabix-ai/syllabix#readme).
+See [docs/embed.md](../../docs/embed.md). Release notes are on the git tag
+and its GitHub Release.
+See also the [repository README](https://github.com/syllabix-ai/syllabix#readme).

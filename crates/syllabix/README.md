@@ -6,6 +6,7 @@ for the default setup.
 
 This crate is not on crates.io yet (`publish = false`). Use a
 [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) binary, or
-build this workspace from git.
+build this workspace from a `vX.Y.Z` git tag. The CLI and the SDK
+(`syllabix-core`) share that version. Do not track `main`.
 
 See the [repository README](https://github.com/syllabix-ai/syllabix#readme).
