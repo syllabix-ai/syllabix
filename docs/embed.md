@@ -58,7 +58,7 @@ The minimal call above is covered by `crates/syllabix-core/examples/embed-loop.r
 
 ### Supported types (Lane 2)
 
-Treat only this list as the supported crate-root surface. Other `pub use` items in `syllabix-core` are not a stability promise.
+Treat only this list as the supported crate-root surface. Other `pub use` items in `syllabix-core` are not a stability promise. New crate-root re-exports still need a line on this page before they land ([contributing](contributing.md#supported-library-api)). The automated check that every crate-root name is mentioned here comes back in Phase 2, after fakes, `*_ASSET` constants, and the sandbox/G2P helpers leave the crate root.
 
 | Type / function | Role |
 | --- | --- |

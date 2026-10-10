@@ -6,6 +6,9 @@
 //! selects specific model suites, while `cfg(coverage)` replaces live audio
 //! loops with lightweight fakes. Model weights live in the first-run cache
 //! rather than the executable.
+//!
+//! Hosts that embed this crate: see `docs/embed.md`. Only the Lane 2 and Lane 3
+//! lists on that page are a stability promise.
 
 pub mod audio;
 pub mod models;
@@ -46,6 +49,11 @@ mod turn_debug;
 mod types;
 mod vad;
 
+// Supported crate-root surface is the Lane 2 / Lane 3 lists in docs/embed.md.
+// Do not add a new crate-root `pub use` unless that page documents it
+// (supported freeze, or an explicit note that it is not frozen). The
+// kitchen-sink re-exports below predate that rule and are not a stability
+// promise.
 pub use cancel::Cancel;
 pub use config::{
     AgentConfig, DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy, CONFIG_FILE_NAME,
