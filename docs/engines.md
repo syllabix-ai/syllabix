@@ -4,11 +4,15 @@ The ids you can put in `syllabix.yaml`. Key syntax: [syllabix.yaml](syllabix-yam
 
 Weights download on first use of each id (HTTPS URL pinned in the binary, SHA-256 check, then reuse from cache). Default `run` fetches only the launch stack: Silero, Whisper `small`, LFM2.5-2.6B, Pocket TTS (~2.2 GB). `--help` and `init` download nothing.
 
-Cache:
+Cache (`cache_root()`, then `models/v1`), in lookup order:
 
-- `$SYLLABIX_CACHE_DIR/models/v1` if set
-- otherwise `~/.cache/syllabix/models/v1`
-- Windows: `%LOCALAPPDATA%\syllabix\cache\models\v1`
+- `$SYLLABIX_CACHE_DIR/models/v1` if `SYLLABIX_CACHE_DIR` is set (that variable is the cache root, not `models/v1`)
+- else `$XDG_CACHE_HOME/syllabix/models/v1`
+- else, on Windows, `%LOCALAPPDATA%\syllabix\cache\models\v1`
+- else `~/.cache/syllabix/models/v1`
+- else `.syllabix-cache/models/v1` (cwd)
+
+Share downloads across the CLI and embed hosts by leaving the variable unset or pointing every process at the same root. Details: [embed — Cache](embed.md#cache).
 
 ## Machine needs
 
