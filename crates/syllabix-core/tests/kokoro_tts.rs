@@ -1,7 +1,7 @@
 //! Markdown speech cleanup for Kokoro (no model load). Native TTS lives in
 //! `native_inference` so `cargo llvm-cov` can skip inference.
 
-use syllabix_core::strip_markdown_for_speech;
+use syllabix_core::speech_text::strip_markdown_for_speech;
 
 #[test]
 fn markdown_fixtures_remove_headings_lists_and_emphasis() {

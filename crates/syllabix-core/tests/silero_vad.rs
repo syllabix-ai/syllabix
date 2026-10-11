@@ -6,10 +6,11 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
+use syllabix_core::models::{BlockedFetcher, HttpFetcher, StderrProgress};
+use syllabix_core::vad::{SileroVad, END_SILENCE_FRAMES, MIN_SPEECH, MIN_SPEECH_FRAMES};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames},
-    BlockedFetcher, Cancel, HttpFetcher, ModelCache, SileroVad, StderrProgress, Vad, VadEvent,
-    END_SILENCE_FRAMES, MIN_SPEECH, MIN_SPEECH_FRAMES,
+    Cancel, ModelCache, Vad, VadEvent,
 };
 
 struct VadFixture {

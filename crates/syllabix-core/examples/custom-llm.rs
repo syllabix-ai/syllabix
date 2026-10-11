@@ -13,10 +13,10 @@
 
 use std::sync::mpsc::channel;
 
+use syllabix_core::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES};
 use syllabix_core::{
     AudioFrame, AudioSink, Cancel, Error, HistoryTurn, Llm, Result, Session, Stt, SynthesizedAudio,
-    TokenChunk, Transcript, Tts, TurnId, Utterance, Vad, VadEvent, DEFAULT_CHANNELS,
-    DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    TokenChunk, Transcript, Tts, TurnId, Utterance, Vad, VadEvent,
 };
 
 struct EchoLlm;

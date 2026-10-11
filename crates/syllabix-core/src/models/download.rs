@@ -6,7 +6,11 @@ use crate::cancel::Cancel;
 use crate::error::{Error, Result};
 
 /// User-Agent Hugging Face and GitHub accept. Also identifies the product.
-pub const USER_AGENT: &str = "syllabix/0.1.0 (+https://github.com/syllabix-ai/syllabix)";
+pub const USER_AGENT: &str = concat!(
+    "syllabix/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/syllabix-ai/syllabix)"
+);
 
 /// Source of asset bytes. Tests replace this to avoid the public internet.
 pub trait Fetcher: Send + Sync {

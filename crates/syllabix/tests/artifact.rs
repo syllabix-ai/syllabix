@@ -1,7 +1,7 @@
 //! Sidecar and SHA256SUMS written next to a `dist/` executable.
 
 use serde::Deserialize;
-use syllabix_core::{
+use syllabix_core::dist::{
     artifact_name_for_target, artifact_name_for_uname, format_sha256sums_line,
     latest_release_download_url, parse_sha256sums, sha256sums_contains, ARTIFACT_FILE_NAMES,
     DIST_PROFILE, DIST_TARGETS, MAX_DIST_BINARY_BYTES, RELEASE_LATEST_DOWNLOAD_PREFIX,

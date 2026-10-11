@@ -49,8 +49,10 @@ pub fn run_live_with_controls(
     controls: RuntimeControls,
 ) -> Result<LoopReport> {
     let llm_api_key = match config.llm {
-        crate::LlmProvider::Online => Some(resolve_api_key(|name| std::env::var(name).ok())?),
-        crate::LlmProvider::Local => None,
+        crate::defaults::LlmProvider::Online => {
+            Some(resolve_api_key(|name| std::env::var(name).ok())?)
+        }
+        crate::defaults::LlmProvider::Local => None,
     };
     let turn_debug = TurnDebug::from_config(config)?;
     run_live_inner(config, cancel, events, turn_debug, controls, llm_api_key)
@@ -66,11 +68,11 @@ fn run_live_inner(
     llm_api_key: Option<Zeroizing<String>>,
 ) -> Result<LoopReport> {
     use crate::audio::{NativeCapture, NativePlayback};
+    use crate::defaults::BuiltinDefaults;
     use crate::models::{HttpFetcher, ModelCache, StderrProgress};
     use crate::pipeline::{run_loop_captured, LoopConfig, LoopMode, PipelineStages};
     use crate::real::load_real_providers;
     use crate::turn_debug::PlaybackWatch;
-    use crate::BuiltinDefaults;
 
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();

@@ -20,12 +20,12 @@ mod production {
     use crate::moonshine::MoonshineStt;
     #[cfg(feature = "cloud-llm")]
     use crate::openai::{OpenAiLlm, OpenAiSettings, API_KEY_ENV, PROVIDER_NAME};
+    use crate::pocket_tts::PocketTts;
     use crate::providers::Llm;
     use crate::stt::WhisperStt;
     use crate::tts::{KokoroTts, QwenTts};
     use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, Transcript, Utterance};
     use crate::vad::SileroVad;
-    use crate::PocketTts;
 
     /// The configured LLM implementation for one live run.
     pub enum LiveLlm {
@@ -231,22 +231,24 @@ mod production {
         config: &AgentConfig,
     ) -> Result<LiveStt> {
         match config.stt_model {
-            crate::SttModel::Small
-            | crate::SttModel::Medium
-            | crate::SttModel::LargeV3Turbo
-            | crate::SttModel::MediumQ5_0
-            | crate::SttModel::LargeV3TurboQ5_0 => Ok(LiveStt::Whisper(WhisperStt::from_cache(
-                cache,
-                fetcher,
-                progress,
-                cancel,
-                config.stt_model,
-            )?)),
-            crate::SttModel::MoonshineStreamingSmall
-            | crate::SttModel::MoonshineStreamingMedium => Ok(LiveStt::Moonshine(Box::new(
-                MoonshineStt::from_cache(cache, fetcher, progress, cancel, config.stt_model)?,
-            ))),
-            crate::SttModel::QwenAsr06 => Ok(LiveStt::Qwen(Box::new(
+            crate::defaults::SttModel::Small
+            | crate::defaults::SttModel::Medium
+            | crate::defaults::SttModel::LargeV3Turbo
+            | crate::defaults::SttModel::MediumQ5_0
+            | crate::defaults::SttModel::LargeV3TurboQ5_0 => Ok(LiveStt::Whisper(
+                WhisperStt::from_cache(cache, fetcher, progress, cancel, config.stt_model)?,
+            )),
+            crate::defaults::SttModel::MoonshineStreamingSmall
+            | crate::defaults::SttModel::MoonshineStreamingMedium => {
+                Ok(LiveStt::Moonshine(Box::new(MoonshineStt::from_cache(
+                    cache,
+                    fetcher,
+                    progress,
+                    cancel,
+                    config.stt_model,
+                )?)))
+            }
+            crate::defaults::SttModel::QwenAsr06 => Ok(LiveStt::Qwen(Box::new(
                 crate::qwen_asr::QwenAsrStt::from_cache(
                     cache,
                     fetcher,
@@ -305,13 +307,13 @@ mod production {
         config: &AgentConfig,
     ) -> Result<LiveTts> {
         match config.tts {
-            crate::TtsProvider::Local => match config.tts_model {
-                crate::TtsModel::Kokoro => Ok(LiveTts::Kokoro(KokoroTts::from_cache(
+            crate::defaults::TtsProvider::Local => match config.tts_model {
+                crate::defaults::TtsModel::Kokoro => Ok(LiveTts::Kokoro(KokoroTts::from_cache(
                     cache, fetcher, progress, cancel,
                 )?)),
-                crate::TtsModel::PocketTts => Ok(LiveTts::Pocket(Box::new(PocketTts::from_cache(
-                    cache, fetcher, progress, cancel,
-                )?))),
+                crate::defaults::TtsModel::PocketTts => Ok(LiveTts::Pocket(Box::new(
+                    PocketTts::from_cache(cache, fetcher, progress, cancel)?,
+                ))),
                 qwen => Ok(LiveTts::Qwen(QwenTts::from_cache(
                     cache,
                     fetcher,
@@ -324,7 +326,7 @@ mod production {
             },
             // Config parsing rejects `online`; this arm keeps the builder total
             // for hand-built configurations and reports where inference runs.
-            crate::TtsProvider::Online => Err(Error::Config {
+            crate::defaults::TtsProvider::Online => Err(Error::Config {
                 field: "pipeline.tts.provider".into(),
                 message: "online TTS is not supported yet; use provider \"local\"".into(),
             }),
@@ -362,7 +364,7 @@ mod production {
             String::new()
         };
         match config.llm {
-            crate::LlmProvider::Local => Ok(LiveLlm::Local(
+            crate::defaults::LlmProvider::Local => Ok(LiveLlm::Local(
                 LlamaLlm::from_cached_model(
                     cache,
                     fetcher,
@@ -376,7 +378,7 @@ mod production {
                 .with_developer_harness(config.llm_developer_harness)
                 .with_developer_permissions(config.llm_developer_permissions.clone()),
             )),
-            crate::LlmProvider::Online => {
+            crate::defaults::LlmProvider::Online => {
                 #[cfg(feature = "cloud-llm")]
                 {
                     let key = llm_api_key.ok_or_else(|| Error::Config {
@@ -451,7 +453,7 @@ mod production {
         #[test]
         fn cloud_llm_needs_no_weights_but_requires_the_key() {
             let mut config = crate::AgentConfig::v0();
-            config.llm = crate::LlmProvider::Online;
+            config.llm = crate::defaults::LlmProvider::Online;
             config.llm_model = "gpt-4o-mini".into();
 
             let err = build_llm(
@@ -491,7 +493,7 @@ mod production {
             // The slot type reports the configured provider without loading weights;
             // loading the engine itself stays with native inference tests.
             let mut config = crate::AgentConfig::v0();
-            config.llm = crate::LlmProvider::Local;
+            config.llm = crate::defaults::LlmProvider::Local;
             let err = build_llm(
                 &empty_manifest_cache("local-meta"),
                 &BlockedFetcher::default(),

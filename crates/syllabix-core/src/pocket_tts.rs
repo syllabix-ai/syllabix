@@ -17,7 +17,8 @@ use crate::models::{Fetcher, ModelCache, Progress};
 use crate::onnx::{OnnxData, OnnxSession, OnnxTensor, OrtSession};
 use crate::providers::Tts;
 use crate::speech_text::{speak_text_for_tts, take_sentences, ThinkFilter};
-use crate::{Cancel, Error, GenerationId, Result, SynthesizedAudio, TokenChunk, TurnId};
+use crate::types::GenerationId;
+use crate::{Cancel, Error, Result, SynthesizedAudio, TokenChunk, TurnId};
 
 pub const POCKET_TTS_BUNDLE_ASSET: &str = "pocket-tts-bundle";
 pub const POCKET_TTS_BOS_ASSET: &str = "pocket-tts-bos";

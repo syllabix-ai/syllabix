@@ -6,6 +6,7 @@ use zeroize::Zeroizing;
 
 use crate::cancel::Cancel;
 use crate::config::AgentConfig;
+use crate::defaults::BuiltinDefaults;
 use crate::defaults::LlmProvider;
 use crate::error::Result;
 use crate::openai::resolve_api_key;
@@ -19,7 +20,6 @@ use crate::types::{
     AudioFrame, HistoryTurn, LlmDebugMeta, SynthesizedAudio, TokenChunk, ToolTurnEvent, Transcript,
     TurnId, Utterance, VadEvent,
 };
-use crate::BuiltinDefaults;
 
 enum Input {
     Default,
@@ -135,7 +135,7 @@ impl AudioCapture for DynCapture {
 }
 
 /// Compose a conversation loop without wiring [`crate::load_real_providers`],
-/// [`crate::HttpFetcher`], and [`crate::audio::NativeCapture`] by hand.
+/// [`crate::models::HttpFetcher`], and [`crate::audio::NativeCapture`] by hand.
 ///
 /// Unset stages use the same defaults as [`crate::run_live`]: Silero VAD,
 /// the STT/LLM/TTS engines from yaml (or the built-in stack), loaded from

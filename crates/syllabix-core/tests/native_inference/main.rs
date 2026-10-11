@@ -33,16 +33,21 @@ use std::collections::BTreeSet;
 #[cfg(not(coverage))]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use syllabix_core::{
-    SttModel, TtsModel, LFM25_230M_ASSET, LFM25_2_6B_ASSET, LFM25_350M_ASSET, LLAMA_32_1B_ASSET,
-    QWEN35_08B_ASSET, QWEN35_2B_ASSET,
+use syllabix_core::defaults::{SttModel, TtsModel};
+use syllabix_core::llm::{
+    LFM25_230M_ASSET, LFM25_2_6B_ASSET, LFM25_350M_ASSET, LLAMA_32_1B_ASSET, QWEN35_08B_ASSET,
+    QWEN35_2B_ASSET,
 };
 
 #[cfg(not(coverage))]
-use syllabix_core::{
-    build_tts, AgentConfig, Cancel, HttpFetcher, LiveTts, LlamaLlm, ModelCache, StderrProgress,
-    WhisperStt,
-};
+use syllabix_core::llm::LlamaLlm;
+#[cfg(not(coverage))]
+use syllabix_core::models::{HttpFetcher, StderrProgress};
+#[cfg(not(coverage))]
+use syllabix_core::real::{build_tts, LiveTts};
+#[cfg(not(coverage))]
+use syllabix_core::stt::WhisperStt;
+use syllabix_core::{AgentConfig, Cancel, ModelCache};
 
 /// YAML identifiers covered by the default native test set.
 const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM25_2_6B_ASSET, "pocket-tts"];
@@ -415,7 +420,7 @@ fn unset_native_models_selects_the_launch_stack() {
 
 #[test]
 fn launch_tts_config_matches_builtin_defaults() {
-    use syllabix_core::BuiltinDefaults;
+    use syllabix_core::defaults::BuiltinDefaults;
     let cfg = syllabix_core::AgentConfig::v0();
     let defaults = BuiltinDefaults::v0();
     assert_eq!(cfg.tts, defaults.tts);
@@ -481,10 +486,10 @@ fn latency_without_tts_fails() {
 #[cfg(coverage)]
 #[test]
 fn native_weights_are_not_loaded_under_llvm_cov() {
-    use syllabix_core::{
-        run_loop, scripted_frames, Cancel, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad,
-        LoopConfig, PipelineStages,
+    use syllabix_core::testing::{
+        scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad,
     };
+    use syllabix_core::{run_loop, Cancel, LoopConfig, PipelineStages};
 
     let report = run_loop(
         LoopConfig::default(),

@@ -3,10 +3,11 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
+use syllabix_core::llm::{LlamaLlm, LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT, VOICE_SYSTEM_PROMPT};
+use syllabix_core::testing::{scripted_frames, CollectingSink, FakeStt, FakeTts, FakeVad};
 use syllabix_core::{
-    run_loop, scripted_frames, Cancel, CollectingSink, FakeStt, FakeTts, FakeVad, HistoryTurn,
-    LlamaLlm, Llm, LoopConfig, ModelCache, PipelineStages, TokenChunk, Transcript, TurnId,
-    LLAMA_32_1B_ASSET, LLAMA_CANCEL_TIMEOUT, VOICE_SYSTEM_PROMPT,
+    run_loop, Cancel, HistoryTurn, Llm, LoopConfig, ModelCache, PipelineStages, TokenChunk,
+    Transcript, TurnId,
 };
 
 use crate::{native, skip_unless_model};
@@ -52,7 +53,7 @@ fn q4_km_gguf_loads_without_segfault() {
         assert_eq!(chunk.index, i as u32);
         assert_eq!(chunk.turn, TurnId(0));
     }
-    let spoken = syllabix_core::speak_text_for_tts(&joined(&chunks));
+    let spoken = syllabix_core::speech_text::speak_text_for_tts(&joined(&chunks));
     assert!(!spoken.contains("<think>"), "{spoken}");
     assert!(!spoken.contains("</think>"), "{spoken}");
 }

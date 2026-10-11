@@ -11,7 +11,9 @@ use crate::tui;
 #[cfg(not(coverage))]
 use std::io::{self, IsTerminal};
 #[cfg(not(coverage))]
-use syllabix_core::{warm_sandbox, FilesystemMode};
+use syllabix_core::config::FilesystemMode;
+#[cfg(not(coverage))]
+use syllabix_core::executor::warm_sandbox;
 
 /// Local voice agent.
 ///
@@ -178,7 +180,8 @@ mod tests {
     use super::*;
     use clap::{CommandFactory, Parser};
     use std::time::{SystemTime, UNIX_EPOCH};
-    use syllabix_core::{AgentConfig, Error, CONFIG_FILE_NAME};
+    use syllabix_core::config::CONFIG_FILE_NAME;
+    use syllabix_core::{AgentConfig, Error};
 
     fn unique_dir(prefix: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -423,14 +426,14 @@ mod tests {
         };
         warm_session_sandbox(&std::env::temp_dir(), &read_only);
         for filesystem in [
-            syllabix_core::FilesystemMode::WorkspaceWrite,
-            syllabix_core::FilesystemMode::DangerFullAccess,
+            syllabix_core::config::FilesystemMode::WorkspaceWrite,
+            syllabix_core::config::FilesystemMode::DangerFullAccess,
         ] {
             let config = AgentConfig {
                 llm_developer_harness: true,
-                llm_developer_permissions: syllabix_core::DeveloperPermissions {
+                llm_developer_permissions: syllabix_core::config::DeveloperPermissions {
                     filesystem,
-                    ..syllabix_core::DeveloperPermissions::default_session()
+                    ..syllabix_core::config::DeveloperPermissions::default_session()
                 },
                 ..AgentConfig::v0()
             };

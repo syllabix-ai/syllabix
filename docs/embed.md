@@ -40,14 +40,14 @@ Ready = used by the CLI, bugfixes only. Preview = on `main`, may churn.
 
 ## Cargo features
 
-`syllabix-core` defaults to the same build as `syllabix run`: local speech engines, microphone and speakers, and the online LLM adapter. With `default-features = false` you get `run_loop`, the provider traits, the fakes, and `Session` if you supply every stage yourself. That path does not run CMake and does not compile whisper.cpp / llama.cpp.
+`syllabix-core` defaults to the same build as `syllabix run`: local speech engines, microphone and speakers, and the online LLM adapter. With `default-features = false` you get `run_loop`, the provider traits, `Session`, and the in-memory stages under `syllabix_core::testing` if you supply every stage yourself. That path does not run CMake and does not compile whisper.cpp / llama.cpp.
 
 | Feature | On by default? | Who should enable it | What it turns on |
 | --- | --- | --- | --- |
 | `full` | yes (`default`) | Lane 2, and Lane 3 hosts that still use shipped engines or the real mic/speakers | `ggml` + `device-audio` + `cloud-llm`. `run_live`, `load_real_providers`, and `Session` defaults. |
 | `ggml` | via `full` | Lane 3 that still loads this crate’s Whisper / local LLM / Qwen engines | Optional `syllabix-native` (CMake + C++). |
 | `device-audio` | via `full` | Lane 3 that still uses the real microphone and speakers | Device I/O and echo cancellation (`NativeCapture` / `NativePlayback`). |
-| `cloud-llm` | via `full` | Hosts whose yaml uses `pipeline.llm.provider: online` with `load_real_providers` | `LiveLlm::Cloud` in the real loader. Crate-root `OpenAiLlm` always compiles. |
+| `cloud-llm` | via `full` | Hosts whose yaml uses `pipeline.llm.provider: online` with `load_real_providers` | `LiveLlm::Cloud` in the real loader. `openai::OpenAiLlm` always compiles. |
 | `native-inference` | no | Contributors running the slow model tests (`native_inference`) | Turns on `ggml` plus the tests that download and run the real models (GGUF and ONNX). ONNX (`ort`) is always built in; this feature does not switch it on. |
 
 **Lane 3 that implements every stage** (see `examples/custom-llm.rs`): `default-features = false`.  
@@ -101,7 +101,7 @@ The minimal call above is covered by `crates/syllabix-core/examples/embed-loop.r
 
 ### Supported types (Lane 2)
 
-Treat only this list as the supported crate-root surface. Other `pub use` items in `syllabix-core` are not a stability promise. New crate-root re-exports still need a line on this page before they land ([contributing](contributing.md#supported-library-api)). The automated check that every crate-root name is mentioned here comes back in Phase 2, after fakes, `*_ASSET` constants, and the sandbox/G2P helpers leave the crate root.
+Treat only this list as the supported crate-root surface. Other public items live in named modules (`syllabix_core::testing`, `syllabix_core::g2p`, `syllabix_core::sandbox`, and the rest) and are not a stability promise. New crate-root re-exports still need a line on this page before they land ([contributing](contributing.md#supported-library-api)). `crates/syllabix-core/tests/supported_api.rs` fails if a crate-root `pub use` is missing from these tables, or if a freeze-list name leaves the crate root.
 
 | Type / function | Role |
 | --- | --- |
@@ -186,6 +186,10 @@ A yaml `pipeline.llm.provider: online` still needs `SYLLABIX_LLM_API_KEY` when t
 | `AudioCapture`, `AudioSink` | Mic (or fixture) and speakers (or collector). |
 | `run_loop` / `run_loop_captured` | In-memory cascade; blocks until workers join. |
 | `PipelineStages`, `LoopConfig` | Arguments to `run_loop`. |
+| `AudioFrame` | One PCM frame into VAD or capture. |
+| `VadEvent` / `Utterance` / `TurnId` | VAD events and the turn they belong to. |
+| `Transcript` / `HistoryTurn` / `TokenChunk` | STT text, chat history, and LLM stream chunks. |
+| `SynthesizedAudio` | TTS audio for the sink. |
 
 Do not fork `pipeline.rs`. Swap a trait impl instead.
 

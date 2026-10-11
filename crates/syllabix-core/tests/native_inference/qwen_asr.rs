@@ -6,10 +6,13 @@ use std::thread;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+use syllabix_core::defaults::SttModel;
+use syllabix_core::models::{HttpFetcher, StderrProgress};
+use syllabix_core::qwen_asr::QwenAsrStt;
+use syllabix_core::stt::{contains_words_in_order, word_match_ratio, LIBRISPEECH_MIN_WORD_MATCH};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames},
-    contains_words_in_order, word_match_ratio, Cancel, HttpFetcher, ModelCache, QwenAsrStt,
-    StderrProgress, Stt, SttModel, TurnId, Utterance, LIBRISPEECH_MIN_WORD_MATCH,
+    Cancel, ModelCache, Stt, TurnId, Utterance,
 };
 
 use crate::{hex, skip_unless_model};
@@ -125,7 +128,7 @@ fn qwen_asr() -> QwenAsrStt {
                 &mut progress,
                 &Cancel::new(),
                 SttModel::QwenAsr06,
-                syllabix_core::TtsCompute::Auto,
+                syllabix_core::defaults::TtsCompute::Auto,
             )
             .expect("load qwen3-asr-0.6")
             .with_language("en")

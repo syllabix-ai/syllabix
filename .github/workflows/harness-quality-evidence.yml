@@ -41,13 +41,21 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      # Skip the pasted-report gate when the harness files only moved imports:
+      # `use` lines (including wrapped `{ A, B }` name lists), comments, braces,
+      # or a type path `name: path::Type`. Any other changed line needs a report.
       - name: Check PR body for pasted harness-quality report
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 - <<'EOF'
           import os
           import re
+          import subprocess
           import sys
 
           body = os.environ.get("PR_BODY") or ""
@@ -65,6 +73,63 @@ jobs:
               r"summary:\s*completion=\d+/\d+\s+ratio=\d+\.\d+"
               r"\s+policy_violations=0\s+secret_exposures=0\s+stale_results=0"
           )
+          boundary = [
+              "crates/syllabix-core/src/executor.rs",
+              "crates/syllabix-core/src/openai.rs",
+              "crates/syllabix-core/src/types.rs",
+              "crates/syllabix-core/src/providers.rs",
+              "crates/syllabix-core/src/policy.rs",
+              "crates/syllabix-core/src/sandbox",
+              "crates/syllabix-core/tests/harness-quality.rs",
+          ]
+          # `name: path::Type` (at least one `::`), optional trailing comma.
+          type_path = re.compile(
+              r"^[A-Za-z_][A-Za-z0-9_]*:\s*[A-Za-z_][A-Za-z0-9_]*"
+              r"(::[A-Za-z_][A-Za-z0-9_]*)+,?$"
+          )
+          # Names inside `use foo::{A, B, C}`.
+          use_names = re.compile(
+              r"^[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*,?$"
+          )
+
+          def is_import_only_line(rest, in_use_list):
+              if rest.startswith("use ") or rest.startswith("//"):
+                  return True
+              if rest in {"{", "}", "},", "};"}:
+                  return True
+              if type_path.match(rest):
+                  return True
+              if in_use_list and use_names.match(rest):
+                  return True
+              return False
+
+          def import_only_boundary_diff():
+              base = os.environ.get("BASE_SHA") or ""
+              head = os.environ.get("HEAD_SHA") or ""
+              if not base or not head:
+                  return False
+              diff = subprocess.check_output(
+                  ["git", "diff", base, head, "--", *boundary],
+                  text=True,
+              )
+              if not diff.strip():
+                  return True
+              in_use_list = False
+              for line in diff.splitlines():
+                  if not line or line.startswith(("+++", "---", "diff ", "index ", "@@")):
+                      continue
+                  if line[0] not in "+-":
+                      continue
+                  rest = line[1:].strip()
+                  if not rest:
+                      continue
+                  if not is_import_only_line(rest, in_use_list):
+                      return False
+                  if rest.startswith("use "):
+                      in_use_list = "{" in rest and ";" not in rest
+                  elif rest in {"}", "},", "};"}:
+                      in_use_list = False
+              return True
 
           missing = []
           if marker not in body:
@@ -76,6 +141,9 @@ jobs:
               missing.append("summary line with completion ratio and zero policy_violations/secret_exposures/stale_results")
 
           if missing:
+              if import_only_boundary_diff():
+                  print("harness-quality evidence not required: listed files only moved imports.")
+                  sys.exit(0)
               print("harness-quality evidence missing: " + "; ".join(missing))
               sys.exit(1)
           print("harness-quality evidence present.")

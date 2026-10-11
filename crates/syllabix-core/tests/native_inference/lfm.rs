@@ -14,10 +14,11 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use syllabix_core::{
-    Cancel, Llm, Transcript, TurnId, LFM25_230M_ASSET, LFM25_2_6B_ASSET, LFM25_350M_ASSET,
-    LFM_TOOL_TURN_MAX_CHARS, LLAMA_CANCEL_TIMEOUT,
+use syllabix_core::llm::{
+    LFM25_230M_ASSET, LFM25_2_6B_ASSET, LFM25_350M_ASSET, LFM_TOOL_TURN_MAX_CHARS,
+    LLAMA_CANCEL_TIMEOUT,
 };
+use syllabix_core::{Cancel, Llm, Transcript, TurnId};
 
 use crate::{native, skip_unless_model};
 

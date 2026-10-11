@@ -10,10 +10,13 @@
 
 use std::time::{Duration, Instant};
 
+use syllabix_core::defaults::TtsModel;
+use syllabix_core::models::{HttpFetcher, StderrProgress};
+use syllabix_core::stt::{transcript_words, word_match_ratio};
+use syllabix_core::tts::{QwenTts, TTS_ASR_MIN_WORD_MATCH};
+use syllabix_core::types::GenerationId;
 use syllabix_core::{
-    audio::FrameSplitter, transcript_words, word_match_ratio, Cancel, GenerationId, HttpFetcher,
-    ModelCache, QwenTts, StderrProgress, Stt, TokenChunk, Tts, TtsModel, TurnId, Utterance,
-    TTS_ASR_MIN_WORD_MATCH,
+    audio::FrameSplitter, Cancel, ModelCache, Stt, TokenChunk, Tts, TurnId, Utterance,
 };
 
 use crate::{
@@ -26,7 +29,7 @@ use crate::{
 fn qwen(model: TtsModel) -> QwenTts {
     static CELL_06: std::sync::OnceLock<QwenTts> = std::sync::OnceLock::new();
     static CELL_17: std::sync::OnceLock<QwenTts> = std::sync::OnceLock::new();
-    let load = || load_qwen(model, syllabix_core::TtsCompute::Cpu);
+    let load = || load_qwen(model, syllabix_core::defaults::TtsCompute::Cpu);
     match model {
         TtsModel::Qwen06 => CELL_06.get_or_init(load),
         _ => CELL_17.get_or_init(load),
@@ -34,7 +37,7 @@ fn qwen(model: TtsModel) -> QwenTts {
     .clone()
 }
 
-fn load_qwen(model: TtsModel, compute: syllabix_core::TtsCompute) -> QwenTts {
+fn load_qwen(model: TtsModel, compute: syllabix_core::defaults::TtsCompute) -> QwenTts {
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
     let cancel = Cancel::new();
@@ -96,7 +99,7 @@ fn qwen_auto_selects_a_runnable_backend_with_resident_stack() {
 
     for model in qwen_backbones() {
         eprintln!("qwen auto smoke: probing {}", model.as_str());
-        let tts = load_qwen(model, syllabix_core::TtsCompute::Auto);
+        let tts = load_qwen(model, syllabix_core::defaults::TtsCompute::Auto);
         assert!(tts.voice_anchor_engaged());
         assert!(matches!(tts.backend_id(), Some("metal" | "cpu" | "vulkan")));
         eprintln!(
@@ -114,7 +117,7 @@ fn qwen_auto_selects_a_runnable_backend_with_resident_stack() {
 fn qwen_auto_selects_a_runnable_backend() {
     skip_unless_any_model!("qwen3-0.6", "qwen3-1.7");
     for model in qwen_backbones() {
-        let tts = load_qwen(model, syllabix_core::TtsCompute::Auto);
+        let tts = load_qwen(model, syllabix_core::defaults::TtsCompute::Auto);
         assert!(tts.voice_anchor_engaged());
         assert!(matches!(tts.backend_id(), Some("metal" | "cpu" | "vulkan")));
         eprintln!(
@@ -301,7 +304,7 @@ fn qwen_voice_is_deterministic_under_a_pinned_seed() {
                 "en",
                 model,
                 42,
-                syllabix_core::TtsCompute::Cpu,
+                syllabix_core::defaults::TtsCompute::Cpu,
             )
             .expect("load independent engine")
         };

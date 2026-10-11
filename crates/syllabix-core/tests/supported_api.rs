@@ -1,9 +1,9 @@
 //! Guard the supported crate-root surface documented in `docs/embed.md`.
 //!
-//! Freeze-list names must stay crate-root re-exports. A strict check that
-//! every crate-root `pub use` is named on that page comes back in Phase 2,
-//! after fakes, `*_ASSET` constants, and the sandbox/G2P helpers leave the
-//! crate root.
+//! Freeze-list names must stay crate-root re-exports. Every crate-root
+//! `pub use` name must appear on that page. Feature `#[cfg]` on a re-export
+//! is honored. Lane 3 loader names need `ggml` (or a coverage build). Lane 2
+//! names need `ggml` and `device-audio`, which is what `full` gives you.
 
 use std::collections::BTreeSet;
 
@@ -27,6 +27,19 @@ fn cfg_active_in_this_build(inner: &str) -> bool {
         }
         other => panic!("unsupported #[cfg({other})] on a crate-root pub use in lib.rs"),
     }
+}
+
+/// Whether a `### Supported types` heading applies to this test binary.
+fn freeze_section_active(heading: &str) -> bool {
+    if !heading.contains("needs `full`") {
+        return true;
+    }
+    // Lane 3 loader is crate-root with `ggml` (also on in coverage builds).
+    if heading.contains("Lane 3") {
+        return cfg!(coverage) || cfg!(feature = "ggml");
+    }
+    // Lane 2 `run_live` needs ggml engines and device audio.
+    cfg!(feature = "ggml") && cfg!(feature = "device-audio")
 }
 
 fn crate_root_reexports(src: &str) -> BTreeSet<String> {
@@ -88,7 +101,11 @@ fn parse_use_item(item: &str, names: &mut BTreeSet<String>) {
             names.insert(name.to_string());
         }
     } else if let Some((_, name)) = item.rsplit_once("::") {
-        names.insert(name.trim().to_string());
+        let name = name
+            .rsplit_once(" as ")
+            .map(|(_, alias)| alias.trim())
+            .unwrap_or(name.trim());
+        names.insert(name.to_string());
     }
 }
 
@@ -118,21 +135,21 @@ fn is_ident(s: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn freeze_list_names(embed: &str, needs_full: bool) -> BTreeSet<String> {
+fn documented_freeze_names(embed: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let mut in_supported = false;
-    let mut section_needs_full = false;
+    let mut section_active = false;
     for line in embed.lines() {
         if line.starts_with("### Supported types") {
             in_supported = true;
-            section_needs_full = line.contains("needs `full`");
+            section_active = freeze_section_active(line);
             continue;
         }
         if in_supported && line.starts_with("## ") {
             in_supported = false;
             continue;
         }
-        if in_supported && section_needs_full == needs_full && line.starts_with('|') {
+        if in_supported && section_active && line.starts_with('|') {
             let first_cell = line.trim_start_matches('|').split('|').next().unwrap_or("");
             names.extend(backtick_idents(first_cell));
         }
@@ -143,33 +160,34 @@ fn freeze_list_names(embed: &str, needs_full: bool) -> BTreeSet<String> {
 #[test]
 fn freeze_list_names_are_crate_root_reexports() {
     let reexports = crate_root_reexports(LIB_RS);
-    let always = freeze_list_names(EMBED_MD, false);
-    let missing_always: Vec<_> = always
+    let missing: Vec<_> = documented_freeze_names(EMBED_MD)
         .into_iter()
         .filter(|name| !reexports.contains(name))
         .collect();
     assert!(
-        missing_always.is_empty(),
-        "docs/embed.md always-available freeze list names missing from this build's crate-root pub use: {missing_always:?}"
+        missing.is_empty(),
+        "docs/embed.md freeze list names missing from this build's crate-root pub use: {missing:?}"
     );
-    if cfg!(all(feature = "ggml", feature = "device-audio")) {
-        let full = freeze_list_names(EMBED_MD, true);
-        let missing_full: Vec<_> = full
-            .into_iter()
-            .filter(|name| !reexports.contains(name))
-            .collect();
-        assert!(
-            missing_full.is_empty(),
-            "docs/embed.md needs-full freeze list names missing from this build's crate-root pub use: {missing_full:?}"
-        );
-    }
+}
+
+#[test]
+fn crate_root_reexports_are_on_the_embed_md_freeze_list() {
+    let documented = documented_freeze_names(EMBED_MD);
+    let extra: Vec<_> = crate_root_reexports(LIB_RS)
+        .into_iter()
+        .filter(|name| !documented.contains(name))
+        .collect();
+    assert!(
+        extra.is_empty(),
+        "crate-root pub use names missing from the docs/embed.md freeze list: {extra:?}"
+    );
 }
 
 #[test]
 fn loop_traits_and_fakes_compile_without_optional_features() {
+    use syllabix_core::testing::{CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
     use syllabix_core::{
-        run_loop, AudioCapture, AudioSink, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad, Llm,
-        LoopConfig, Session, Stt, Tts, Vad,
+        run_loop, AudioCapture, AudioSink, Llm, LoopConfig, Session, Stt, Tts, Vad,
     };
     let _ = std::any::type_name::<FakeLlm>();
     let _ = std::any::type_name::<FakeStt>();

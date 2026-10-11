@@ -1,4 +1,4 @@
-//! Minimal `syllabix.yaml`. Missing file means [`crate::BuiltinDefaults`].
+//! Minimal `syllabix.yaml`. Missing file means [`crate::defaults::BuiltinDefaults`].
 
 use std::fs;
 use std::path::{Path, PathBuf};

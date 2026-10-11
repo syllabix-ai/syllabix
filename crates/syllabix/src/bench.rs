@@ -8,12 +8,18 @@ use std::process::Command;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use syllabix_core::defaults::{SttModel, TtsModel};
+use syllabix_core::llm::{is_v0_llm_model, LlamaLlm, V0_LLM_MODELS};
+use syllabix_core::memory::process_rss_bytes;
+use syllabix_core::models::{HttpFetcher, StderrProgress};
+use syllabix_core::real::{build_stt, build_tts, LiveStt, LiveTts};
+use syllabix_core::stt::{contains_words_in_order, word_match_ratio, WhisperStt};
+use syllabix_core::tts::TTS_ASR_MIN_WORD_MATCH;
+use syllabix_core::types::DEFAULT_SAMPLE_RATE_HZ;
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames, FrameSplitter, WavPcm},
-    build_stt, build_tts, contains_words_in_order, process_rss_bytes, word_match_ratio,
-    AgentConfig, Cancel, Error, HistoryTurn, HttpFetcher, LlamaLlm, Llm, ModelCache, Result,
-    StderrProgress, Stt, SttModel, TokenChunk, Transcript, Tts, TtsModel, TurnId, Utterance,
-    WhisperStt, DEFAULT_SAMPLE_RATE_HZ, TTS_ASR_MIN_WORD_MATCH, V0_LLM_MODELS,
+    AgentConfig, Cancel, Error, HistoryTurn, Llm, ModelCache, Result, Stt, TokenChunk, Transcript,
+    Tts, TurnId, Utterance,
 };
 
 const SCHEMA_VERSION: u8 = 4;
@@ -127,7 +133,7 @@ pub(crate) fn run(out: PathBuf) -> Result<()> {
         });
     }
     let config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
-    if !matches!(config.llm, syllabix_core::LlmProvider::Local) {
+    if !matches!(config.llm, syllabix_core::defaults::LlmProvider::Local) {
         return Err(Error::Config {
             field: "pipeline.llm.provider".into(),
             message: "bench measures local component ids only".into(),
@@ -207,13 +213,13 @@ pub(crate) fn run_llm_worker(out: PathBuf, model: String) -> Result<()> {
         });
     }
     let mut config = AgentConfig::resolve_for_run(std::env::current_dir()?.as_path())?;
-    if !matches!(config.llm, syllabix_core::LlmProvider::Local) {
+    if !matches!(config.llm, syllabix_core::defaults::LlmProvider::Local) {
         return Err(Error::Config {
             field: "pipeline.llm.provider".into(),
             message: "bench measures local component ids only".into(),
         });
     }
-    if !syllabix_core::is_v0_llm_model(&model) {
+    if !is_v0_llm_model(&model) {
         return Err(Error::Config {
             field: "bench.worker.model".into(),
             message: format!("unsupported local LLM model {model:?}"),
@@ -328,7 +334,7 @@ fn required_rss(when: &str) -> Result<usize> {
 }
 
 fn benchmark_stt(
-    stt: &mut syllabix_core::LiveStt,
+    stt: &mut LiveStt,
     config: &AgentConfig,
     cancel: &Cancel,
     fingerprint: &Fingerprint,
@@ -515,7 +521,7 @@ fn llm_response_passes(scenario: &Scenario, response: &str) -> bool {
 }
 
 fn benchmark_tts(
-    tts: &mut syllabix_core::LiveTts,
+    tts: &mut LiveTts,
     config: &AgentConfig,
     cancel: &Cancel,
     fingerprint: &Fingerprint,

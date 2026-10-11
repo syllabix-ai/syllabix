@@ -14,11 +14,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+use syllabix_core::memory::{process_rss_bytes, LOOP_RSS_GROWTH_CEILING_BYTES};
+use syllabix_core::models::{HttpFetcher, StderrProgress};
+use syllabix_core::types::FRAME_SAMPLES;
+use syllabix_core::vad::{SileroVad, END_SILENCE_FRAMES};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames, DrainingPlayback, PcmFormat},
-    process_rss_bytes, run_loop_captured, AudioCapture, AudioFrame, Cancel, Error, HttpFetcher,
-    LoopConfig, ModelCache, PipelineStages, Result, RuntimeControls, SileroVad, StderrProgress,
-    END_SILENCE_FRAMES, FRAME_SAMPLES, LOOP_RSS_GROWTH_CEILING_BYTES,
+    run_loop_captured, AudioCapture, AudioFrame, Cancel, Error, LoopConfig, ModelCache,
+    PipelineStages, Result, RuntimeControls,
 };
 
 use crate::{hex, native, skip_unless_launch_stack};
@@ -44,8 +47,8 @@ fn speech_frames() -> Vec<AudioFrame> {
 fn silence_frame(seq: u64) -> AudioFrame {
     AudioFrame::new(
         seq,
-        syllabix_core::DEFAULT_SAMPLE_RATE_HZ,
-        syllabix_core::DEFAULT_CHANNELS,
+        syllabix_core::types::DEFAULT_SAMPLE_RATE_HZ,
+        syllabix_core::types::DEFAULT_CHANNELS,
         vec![0; FRAME_SAMPLES],
     )
     .expect("silence")

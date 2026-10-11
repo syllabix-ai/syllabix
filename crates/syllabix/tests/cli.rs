@@ -2,7 +2,8 @@ use assert_cmd::cargo::cargo_bin;
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str;
-use syllabix_core::{AgentConfig, CONFIG_FILE_NAME};
+use syllabix_core::config::CONFIG_FILE_NAME;
+use syllabix_core::AgentConfig;
 
 fn syllabix() -> Command {
     Command::new(cargo_bin("syllabix"))

@@ -1,6 +1,7 @@
 //! Inline transcript and status renderer for `syllabix run`.
 
-use syllabix_core::{LoopEvent, ThinkFilter, TurnId};
+use syllabix_core::speech_text::ThinkFilter;
+use syllabix_core::{LoopEvent, TurnId};
 
 /// Subtle, theme-aware TUI colors.
 ///
@@ -706,14 +707,14 @@ mod live_terminal {
         use std::time::Duration;
 
         let mut renderer = InlineRenderer::new();
-        let clock = syllabix_core::IdleClock::manual(0);
+        let clock = syllabix_core::pipeline::IdleClock::manual(0);
         let controls =
             syllabix_core::RuntimeControls::with_auto_timeout_clock(false, 30, 60, clock.clone());
         controls.arm_idle();
         clock.advance(Duration::from_millis(30));
         assert_eq!(
             controls.poll_auto_timeout(),
-            syllabix_core::AutoTimeoutAction::MicMute
+            syllabix_core::pipeline::AutoTimeoutAction::MicMute
         );
         assert!(controls.mic_muted());
 
@@ -814,7 +815,8 @@ pub use live_terminal::run_conversation_tui;
 mod tests {
     use super::*;
     use std::time::Duration;
-    use syllabix_core::{TurnId, TurnTimings};
+    use syllabix_core::types::TurnTimings;
+    use syllabix_core::TurnId;
 
     #[test]
     fn apply_builds_transcript_and_latency() {
@@ -901,7 +903,7 @@ mod tests {
         for kind in ["call", "result", "call", "result"] {
             ui.apply(LoopEvent::Tool {
                 turn: TurnId(0),
-                event: syllabix_core::ToolTurnEvent {
+                event: syllabix_core::types::ToolTurnEvent {
                     kind: kind.into(),
                     name: "shell".into(),
                     call_id: "c1".into(),
@@ -1052,7 +1054,7 @@ mod tests {
         assert!(ui.transcript_text().contains("Agent: working"));
         ui.apply(LoopEvent::Tool {
             turn: TurnId(0),
-            event: syllabix_core::ToolTurnEvent {
+            event: syllabix_core::types::ToolTurnEvent {
                 kind: "other".into(),
                 name: "noop".into(),
                 call_id: "c".into(),
