@@ -94,7 +94,7 @@ Requires Rust 1.91+ (pinned in `rust-toolchain.toml`), CMake, and a C++ compiler
 ./scripts/setup-linux.sh
 ```
 
-Installs `build-essential`, `cmake`, `pkg-config`, `libasound2-dev`, `git`, and `bubblewrap`, then rustup if missing. CI Linux jobs run this same script. Optional Vulkan toolchain packages: `./scripts/setup-linux.sh --with-vulkan`, then `SYLLABIX_GGML_VULKAN=1 cargo build -p syllabix --release`. Vulkan details: [vendor/README.md](../vendor/README.md).
+Installs `build-essential`, `cmake`, `pkg-config`, `libasound2-dev`, `git`, and `bubblewrap`, then rustup if missing. CI Linux jobs run this same script. Optional Vulkan toolchain packages: `./scripts/setup-linux.sh --with-vulkan`, then `SYLLABIX_GGML_VULKAN=1 cargo build -p syllabix --release`. Vulkan details: [`crates/syllabix-native/vendor/README.md`](../crates/syllabix-native/vendor/README.md).
 
 A host crate that only depends on `syllabix-core` needs `build-essential`, `cmake`, `pkg-config`, and `libasound2-dev`. `bubblewrap` is for this repo’s Linux sandbox tests, not for compiling the SDK.
 

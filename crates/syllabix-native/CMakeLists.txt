@@ -58,8 +58,8 @@ set(LLAMA_USE_SYSTEM_GGML OFF CACHE BOOL "" FORCE)
 set(LLAMA_ALL_WARNINGS OFF CACHE BOOL "" FORCE)
 set(LLAMA_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
 
-set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/llama.cpp")
-set(WHISPER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/whisper.cpp")
+set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/llama.cpp")
+set(WHISPER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/whisper.cpp")
 
 add_subdirectory("${LLAMA_DIR}" "${CMAKE_BINARY_DIR}/llama.cpp")
 

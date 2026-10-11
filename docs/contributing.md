@@ -56,7 +56,7 @@ Weights download on first use of each id: HTTPS from the URL pinned in the binar
 | `pipeline.tts.model` `qwen3-1.7` | Backbone GGUF + speech-tokenizer mmproj | https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF |
 | `pipeline.tts.model` `pocket-tts` | Eight pinned English ONNX/tokenizer/fixed-voice assets (~150 MB) | https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts |
 
-CPU vs Metal tok/s for the three default GGUFs: [`vendor/llama-bench.md`](../vendor/llama-bench.md). ggml vendor pins and local patches: [`vendor/README.md`](../vendor/README.md). Measurement protocols: [`reference-profiles.md`](reference-profiles.md).
+CPU vs Metal tok/s for the three default GGUFs: [`crates/syllabix-native/vendor/llama-bench.md`](../crates/syllabix-native/vendor/llama-bench.md). ggml vendor pins and local patches: [`crates/syllabix-native/vendor/README.md`](../crates/syllabix-native/vendor/README.md). Measurement protocols: [`reference-profiles.md`](reference-profiles.md).
 
 ## Contribute component-performance evidence
 
