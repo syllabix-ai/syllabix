@@ -2,35 +2,51 @@
 
 Other repos can use Syllabix without forking `pipeline.rs`. The default product is still `syllabix run`.
 
-Most apps use the defaults (same as `syllabix run`). Building them needs CMake and a C++ compiler.
+Depend on the library from [crates.io](https://crates.io/crates/syllabix-core). API docs: [docs.rs/syllabix-core](https://docs.rs/syllabix-core).
+
+Most apps use the defaults (same as `syllabix run`). The first build compiles the bundled whisper.cpp / llama.cpp with CMake and a C++ compiler ([Host compile](#host-compile)). Nothing is downloaded at build time. Models still download on first run ([Cache](#cache)).
+
+```bash
+cargo add syllabix-core
+```
 
 ```toml
 [dependencies]
-syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.0" }
+syllabix-core = "0.1"
 ```
 
 If your app brings its own speech-to-text, LLM, and text-to-speech, turn the defaults off. Then you don't need CMake:
 
 ```toml
 [dependencies]
-syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.0", default-features = false }
+syllabix-core = { version = "0.1", default-features = false }
 ```
 
-```bash
-cargo add syllabix-core --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0
+For unreleased changes on `main`, you can still depend on git:
+
+```toml
+[dependencies]
+syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git" }
 ```
+
+To use a released git tag instead of crates.io:
+
+```toml
+[dependencies]
+syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.0" }
+```
+
+The `syllabix` CLI is not on crates.io. Install it from a [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) or `cargo install --git` (Lane 1).
 
 ## Tags and versions
 
-The SDK (`syllabix-core`) and the CLI (`syllabix`) share one version: `[workspace.package] version` in the root `Cargo.toml`. A git tag `vX.Y.Z` is that version for both crates and for the GitHub Release binaries. `syllabix-native` is not a public API; it ships as a workspace member of the same tag.
+The SDK (`syllabix-core`) and the CLI (`syllabix`) share one version. A git tag `vX.Y.Z` is that version for both crates, the GitHub Release binaries, and the crates.io publish. `syllabix-native` is not a public API; depend on `syllabix-core`.
 
-Pin `tag = "vX.Y.Z"`. Do not track `main` or a branch. `main` can change without a version bump.
-
-What each tag contains is on the git tag and its [GitHub Release](https://github.com/syllabix-ai/syllabix/releases). Maintainers cut tags as described in [contributing — Packaging](contributing.md#packaging-maintainers). Hosts: [Compatibility](#compatibility).
+What each release contains is on the git tag and its [GitHub Release](https://github.com/syllabix-ai/syllabix/releases). Maintainers cut tags as described in [contributing — Packaging](contributing.md#packaging-maintainers). Hosts: [Compatibility](#compatibility).
 
 ## Compatibility
 
-Pin a git tag. Before moving to a newer tag, read its [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) notes, because any release may change the supported API until Syllabix is published on crates.io. Version rules will be set then.
+Depend on `syllabix-core` from crates.io, and read the [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) notes before upgrading.
 
 The supported API is only the freeze lists on this page: [Lane 2](#supported-types-lane-2), [Lane 2 with `full`](#supported-types-lane-2-needs-full), [Lane 3](#supported-types-lane-3-additional), and [Lane 3 with `full`](#supported-types-lane-3-needs-full). These are names that are always at the crate root, plus the ones that exist only with `full`.
 
@@ -46,7 +62,7 @@ Items in named modules (`testing`, `g2p`, `sandbox`, and the rest) and the `*_AS
 | **2 — Embed the live loop** | Ready | `run_live` / `run_live_with_controls` + `LoopEvent` | In-process Rust host that wants the shipped conversation loop. |
 | **3 — Compose stages** | Preview | Implement `Vad` / `Stt` / `Llm` / `Tts` / `AudioCapture` / `AudioSink`, swap them on a `Session`, and run | Bring your own engine (often only the LLM). |
 
-Ready = used by the CLI. Preview = less proven. Pin a git tag ([Compatibility](#compatibility)).
+Ready = used by the CLI. Preview = less proven. Depend from crates.io ([Compatibility](#compatibility)).
 
 ## Cargo features
 
@@ -213,7 +229,7 @@ Do not fork `pipeline.rs`. Swap a trait impl instead.
 
 ## Host compile
 
-If you embed Syllabix in your own Rust app (Lane 2 or Lane 3), your machine compiles the C++ speech libraries that ship with Syllabix. You need CMake and a C++ compiler. The first compile takes several minutes. Lane 3 hosts that set `default-features = false` and supply every stage themselves skip that compile. If you only run a downloaded Syllabix binary (Lane 1), skip this section. A Lane 1 `cargo install --git` build compiles the CLI, so it needs the same packages ([install — Install from git](install.md#install-from-git)).
+If you embed Syllabix in your own Rust app (Lane 2 or Lane 3), your machine compiles the C++ speech libraries that ship with Syllabix (whisper.cpp / llama.cpp). The source is bundled in the crate; nothing is downloaded at build time. You need CMake and a C++ compiler. The first compile takes several minutes. Lane 3 hosts that set `default-features = false` and supply every stage themselves skip that compile. If you only run a downloaded Syllabix binary (Lane 1), skip this section. A Lane 1 `cargo install --git` build compiles the CLI, so it needs the same packages ([install — Install from git](install.md#install-from-git)).
 
 Same packages as [install — Compile](install.md#compile). This repo’s Linux setup script also installs extra tools used only in our tests; those are called out below.
 

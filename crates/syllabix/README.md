@@ -4,7 +4,7 @@ Local-first **voice agent** CLI for on-device **speech-to-speech** conversation
 (Whisper STT, VAD, TTS). Download one binary and talk; no Python or API key
 for the default setup.
 
-This crate is not on crates.io yet (`publish = false`). Prefer a
+This crate is not on crates.io (`publish = false`). Prefer a
 [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) binary. To
 compile the CLI from a git tag:
 

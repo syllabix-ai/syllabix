@@ -4,29 +4,53 @@ Rust **voice agent** library: VAD, Whisper STT, LLM, and TTS in one
 **speech-to-speech** conversation loop (shared types, provider contracts, and
 the in-memory runtime).
 
-This crate is not on crates.io yet. Other repos take a git dependency
-until the first crates.io publish. Pin a tag: the SDK (`syllabix-core`) and
-the CLI (`syllabix`) share one version and ship on the same `vX.Y.Z` tag.
-Do not track `main`.
+```bash
+cargo add syllabix-core
+```
 
-Most apps use the defaults. They give you everything `syllabix run` uses
-(local speech engines, mic and speakers, and a cloud LLM option). Building
-them needs CMake and a C++ compiler.
+Or in `Cargo.toml`:
 
 ```toml
-syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.0" }
+syllabix-core = "0.1"
 ```
+
+API docs: [docs.rs/syllabix-core](https://docs.rs/syllabix-core).
+
+Most apps use the defaults. They give you everything `syllabix run` uses
+(local speech engines, mic and speakers, and a cloud LLM option). The first
+build compiles the bundled whisper.cpp / llama.cpp with CMake and a C++
+compiler. Nothing is downloaded at build time. Host packages:
+[embed — Host compile](https://github.com/syllabix-ai/syllabix/blob/main/docs/embed.md#host-compile).
 
 If your app brings its own speech-to-text, LLM, and text-to-speech, turn the
 defaults off. Then you don't need CMake:
 
 ```toml
-syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.0", default-features = false }
+syllabix-core = { version = "0.1", default-features = false }
 ```
 
 The other options are listed under
-[Cargo features](../../docs/embed.md#cargo-features).
+[Cargo features](https://github.com/syllabix-ai/syllabix/blob/main/docs/embed.md#cargo-features).
 
-See [docs/embed.md](../../docs/embed.md). Release notes are on the git tag
-and its GitHub Release.
+For unreleased changes on `main`, you can still depend on git:
+
+```toml
+[dependencies]
+syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git" }
+```
+
+To use a released git tag instead of crates.io:
+
+```toml
+[dependencies]
+syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.0" }
+```
+
+The `syllabix` CLI is not on crates.io. Install it from
+[GitHub Releases](https://github.com/syllabix-ai/syllabix/releases) or
+`cargo install --git`.
+
+See [docs/embed.md](https://github.com/syllabix-ai/syllabix/blob/main/docs/embed.md)
+for lanes and the supported API. Release notes live on
+[GitHub Releases](https://github.com/syllabix-ai/syllabix/releases).
 See also the [repository README](https://github.com/syllabix-ai/syllabix#readme).

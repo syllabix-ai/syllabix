@@ -2,14 +2,21 @@ name: crates.io
 
 # Publish syllabix-native then syllabix-core when a version tag is pushed.
 # GitHub Release binaries stay in release.yml; this workflow only talks to
-# crates.io. Pull requests never publish.
+# crates.io. Pull requests never publish. A manual run from the Actions tab
+# is always a dry run: it never uploads and never uses a token.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to rehearse, e.g. v0.1.1"
+        required: true
+        type: string
 
 concurrency:
-  group: crates-io-${{ github.ref }}
+  group: crates-io-${{ github.event_name }}-${{ github.event.inputs.tag || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -24,48 +31,128 @@ jobs:
     permissions:
       contents: read
       # Trusted publishing later: rust-lang/crates-io-auth-action exchanges
-      # this OIDC token for a short-lived crates.io token.
+      # this OIDC token for a short-lived crates.io token. Only the push
+      # auth step below requests it.
       id-token: write
-    env:
-      # Boolean only. GitHub does not allow secrets in `if:`.
-      HAS_CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.91.0
       - name: Compile dependencies (Linux)
         run: ./scripts/setup-linux.sh
 
-      # Fail if the git tag is not v<workspace version>. A mistagged push
-      # must not upload the wrong crate versions.
-      - name: Check tag matches workspace version
+      # Version comes from the git tag (vX.Y.Z → X.Y.Z), or from the
+      # workflow_dispatch tag input on a dry run. Written into Cargo.toml
+      # for this job only; do not bump versions in a commit.
+      - name: Set crate versions from tag
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          version="$(python3 - <<'PY'
-          import pathlib, re
-          text = pathlib.Path("Cargo.toml").read_text()
-          match = re.search(r"(?ms)^\[workspace\.package\].*?^version = \"([^\"]+)\"", text)
-          if not match:
-              raise SystemExit("could not read workspace.package version")
-          print(match.group(1))
+          python3 - <<'PY'
+          import os, pathlib, re, sys
+
+          tag = os.environ.get("RELEASE_TAG", "")
+          if not tag.startswith("v"):
+              sys.exit(f"tag {tag!r} must start with v")
+          version = tag[1:]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+              sys.exit(f"tag {tag!r} is not a plain vX.Y.Z version")
+
+          root = pathlib.Path("Cargo.toml")
+          text = root.read_text()
+          lines = text.splitlines(keepends=True)
+          in_pkg = False
+          replaced_pkg = False
+          out = []
+          for line in lines:
+              if line.strip() == "[workspace.package]":
+                  in_pkg = True
+                  out.append(line)
+                  continue
+              if in_pkg and line.startswith("["):
+                  in_pkg = False
+              if in_pkg and re.match(r"^version\s*=", line) and not replaced_pkg:
+                  out.append(f'version = "{version}"\n')
+                  replaced_pkg = True
+                  continue
+              out.append(line)
+          if not replaced_pkg:
+              sys.exit("could not find [workspace.package] version")
+          text = "".join(out)
+          text, n = re.subn(
+              r'syllabix-native = \{ path = "crates/syllabix-native", version = "[^"]+" \}',
+              f'syllabix-native = {{ path = "crates/syllabix-native", version = "{version}" }}',
+              text,
+              count=1,
+          )
+          if n != 1:
+              sys.exit("could not find syllabix-native version requirement")
+          root.write_text(text)
+
+          # Keep Cargo.lock in sync so `cargo publish --locked` still works.
+          lock_path = pathlib.Path("Cargo.lock")
+          names = {"syllabix", "syllabix-core", "syllabix-native"}
+          lock_out = []
+          pending = None
+          lock_n = 0
+          for line in lock_path.read_text().splitlines(keepends=True):
+              m = re.match(r'^name = "([^"]+)"\s*$', line)
+              if m and m.group(1) in names:
+                  pending = m.group(1)
+                  lock_out.append(line)
+                  continue
+              if pending and re.match(r"^version = ", line):
+                  lock_out.append(f'version = "{version}"\n')
+                  lock_n += 1
+                  pending = None
+                  continue
+              pending = None
+              lock_out.append(line)
+          if lock_n != 3:
+              sys.exit(f"expected 3 workspace crate versions in Cargo.lock, got {lock_n}")
+          lock_path.write_text("".join(lock_out))
+
+          env_file = os.environ["GITHUB_ENV"]
+          with open(env_file, "a", encoding="utf-8") as fh:
+              fh.write(f"VERSION={version}\n")
+          print(f"tag={tag} publish_version={version}")
           PY
-          )"
-          echo "tag=${tag} workspace_version=${version}"
-          if [ "${tag}" != "v${version}" ]; then
-            echo "tag ${tag} does not match workspace version ${version}" >&2
-            exit 1
-          fi
-          echo "VERSION=${version}" >> "${GITHUB_ENV}"
+
+      - name: Dry-run publish syllabix-native
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          # --allow-dirty: this job writes the tag version into Cargo.toml
+          # (and matching Cargo.lock workspace crate versions). That edit is
+          # not committed. --dry-run builds from the packaged tarball and
+          # does not upload.
+          cargo publish -p syllabix-native --dry-run --locked --allow-dirty
+
+      - name: List syllabix-core package
+        if: github.event_name == 'workflow_dispatch'
+        # cargo publish --dry-run for core would try to download this version
+        # of syllabix-native from crates.io. Core cannot be fully dry-run
+        # until that version is on crates.io, so this only lists the tarball.
+        run: cargo package -p syllabix-core --allow-dirty --no-verify --list
+
+      # Boolean via env: GitHub does not allow secrets in `if:`. This step
+      # (and the secret) only runs on a tag push, never on a dry run.
+      - name: Detect crates.io token
+        id: token
+        if: github.event_name == 'push'
+        env:
+          HAS_CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+        run: echo "has=${HAS_CARGO_REGISTRY_TOKEN}" >> "$GITHUB_OUTPUT"
 
       # Prefer a stored API token (needed for the first publish, before
       # trusted publishing can be configured for the crate). If that secret
       # is empty, exchange GitHub OIDC for a crates.io token.
       - name: Authenticate with crates.io (trusted publishing)
         id: auth
-        if: env.HAS_CARGO_REGISTRY_TOKEN != 'true'
+        if: github.event_name == 'push' && steps.token.outputs.has != 'true'
         uses: rust-lang/crates-io-auth-action@v1
 
       # Native first: core's crates.io Cargo.toml depends on it by version.
       - name: Publish syllabix-native
+        if: github.event_name == 'push'
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
         run: |
@@ -73,12 +160,16 @@ jobs:
             echo "no crates.io token: set CARGO_REGISTRY_TOKEN or trusted publishing" >&2
             exit 1
           fi
-          cargo publish -p syllabix-native --locked
+          # --allow-dirty: this job writes the tag version into Cargo.toml
+          # (and matching Cargo.lock workspace crate versions). That edit is
+          # not committed.
+          cargo publish -p syllabix-native --locked --allow-dirty
 
       # The index can lag the upload. Wait until this version is visible
       # before publishing core, otherwise cargo publish -p syllabix-core
       # fails to resolve syllabix-native.
       - name: Wait until syllabix-native is on crates.io
+        if: github.event_name == 'push'
         run: |
           version="${VERSION}"
           deadline=$((SECONDS + 600))
@@ -96,9 +187,10 @@ jobs:
           done
 
       - name: Publish syllabix-core
+        if: github.event_name == 'push'
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p syllabix-core --locked --no-verify
+        run: cargo publish -p syllabix-core --locked --no-verify --allow-dirty
         # --no-verify: the packaged core crate depends on syllabix-native
         # by version only. Verify would rebuild from crates.io; the native
         # publish step already built this workspace, and PR CI already

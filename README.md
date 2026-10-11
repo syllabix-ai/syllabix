@@ -111,6 +111,24 @@ Sources, download sizes, and machine needs: [docs/engines.md](docs/engines.md). 
 
 See [Compile](docs/install.md#compile). For a tagged CLI on your `PATH` without cloning, [install from git](docs/install.md#install-from-git).
 
+## Use in another Rust app
+
+The library crate is [`syllabix-core`](https://crates.io/crates/syllabix-core) on crates.io. API docs: [docs.rs/syllabix-core](https://docs.rs/syllabix-core).
+
+```bash
+cargo add syllabix-core
+```
+
+Or in `Cargo.toml`:
+
+```toml
+syllabix-core = "0.1"
+```
+
+The first build compiles the bundled whisper.cpp / llama.cpp with CMake and a C++ compiler. Nothing is downloaded at build time. Host packages: [embed — Host compile](docs/embed.md#host-compile). Lanes and features: [embed](docs/embed.md).
+
+The `syllabix` CLI is not on crates.io. Use a [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) or `cargo install --git` above.
+
 ## Optional config
 
 You do not need a config file for the basic setup. Run [`syllabix init`](docs/syllabix-yaml.md) when you want to change the model. Language, voice, system prompt, online LLMs, and other options are in [docs/syllabix-yaml.md](docs/syllabix-yaml.md).
@@ -126,7 +144,7 @@ A starter file is in [`examples/demo-fully-self-hosted-voice-agents.yaml`](examp
 | [CLI](docs/cli.md) | `run`, `--barge-in`, `init`, `--help` |
 | [Engines](docs/engines.md) | VAD / STT / LLM / TTS ids and machine needs |
 | [Architecture](docs/architecture.md) | How the pipeline works, barge-in, what leaves your machine |
-| [Embed](docs/embed.md) | Other repos: sidecar binary, `run_live`, or `run_loop`; pin a git tag |
+| [Embed](docs/embed.md) | Other repos: sidecar binary, `run_live`, or `run_loop`; `cargo add syllabix-core` |
 | [Compare](docs/compare.md) | vs Hugging Face S2S, Pipecat/LiveKit, Ollama |
 | [Configuration](docs/configuration.md) | Index of yaml, engines, diagnostics |
 | [syllabix.yaml](docs/syllabix-yaml.md) | Optional project file — keys and safe edits |
