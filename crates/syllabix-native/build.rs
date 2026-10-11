@@ -15,6 +15,18 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
     println!("cargo:rerun-if-env-changed=SYLLABIX_GGML_VULKAN");
 
+    // crates.io unpacks this crate into a tarball with no parent repo.
+    // Engine sources must already be under vendor/; do not fetch them.
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    for rel in ["vendor/llama.cpp", "vendor/whisper.cpp"] {
+        let path = manifest_dir.join(rel);
+        assert!(
+            path.is_dir(),
+            "{} is missing; syllabix-native must ship engine source in vendor/",
+            path.display()
+        );
+    }
+
     let target = env::var("TARGET").unwrap_or_default();
     let apple = target.contains("apple");
     let apple_arm = apple && (target.starts_with("aarch64") || target.contains("arm64"));

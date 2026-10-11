@@ -4,8 +4,8 @@ Rust **voice agent** library: VAD, Whisper STT, LLM, and TTS in one
 **speech-to-speech** conversation loop (shared types, provider contracts, and
 the in-memory runtime).
 
-This crate is not on crates.io yet (`publish = false`). Other repos take a git
-dependency until a later publish. Pin a tag: the SDK (`syllabix-core`) and
+This crate is not on crates.io yet. Other repos take a git dependency
+until the first crates.io publish. Pin a tag: the SDK (`syllabix-core`) and
 the CLI (`syllabix`) share one version and ship on the same `vX.Y.Z` tag.
 Do not track `main`.
 

@@ -148,11 +148,26 @@ If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`,
 
 ## Packaging (maintainers)
 
-The SDK (`syllabix-core`) and the CLI (`syllabix`) version together. Bump
-`[workspace.package] version` once, then push a `vX.Y.Z` tag. That tag is
-the pin other repos use (`tag = "vX.Y.Z"`); they must not track `main`.
-Release notes live on the git tag and the GitHub Release for that tag.
-Hosts: [`embed.md`](embed.md).
+Three packages share one version: the library other apps use
+(`syllabix-core`), the on-device speech build it compiles (`syllabix-native`),
+and the `syllabix` command. Bump `[workspace.package] version` once, then
+push a tag named `vX.Y.Z`. Other repos should pin that tag
+(`tag = "vX.Y.Z"`), not `main`. Release notes are on the tag and the GitHub
+Release. If you are embedding Syllabix in another app, see
+[`embed.md`](embed.md).
+
+Pushing the tag also publishes crates to crates.io. A pull request never
+uploads anything. The tag must match the version in Cargo.toml (`v0.1.0`
+for `0.1.0`). Publish in this order:
+
+1. `syllabix-native` first. It contains the whisper.cpp / llama.cpp source
+   the library needs to compile.
+2. Wait until that version is listed on crates.io.
+3. Then `syllabix-core`, which depends on that same version of
+   `syllabix-native`.
+
+The `syllabix` command is not on crates.io. People download the app from
+GitHub Releases. The crates.io job is `.github/workflows/crates-io.yml`.
 
 GitHub Release files are the four artifact names plus `SHA256SUMS`. `.github/workflows/release.yml` publishes them on `v*` tags. Pull requests do not package dist binaries. If Actions cannot run, build each target with `scripts/package-release.sh` and attach with `scripts/publish-release.sh v0.1.0`.
 
@@ -191,7 +206,11 @@ Per-PR CI (`ci.yml`) runs on GitHub-hosted Linux: fmt, clippy, and llvm-cov
 ≥85% workspace lines and ≥85% lines in every reported `src/**/*.rs` file,
 without loading native weights. A **sdk no-native** job
 `cargo check`s `syllabix-core` with `--no-default-features` on a runner
-without CMake (`setup-linux.sh` is skipped). PR template and harness-evidence
+without CMake (`setup-linux.sh` is skipped). A Linux-only **crates.io
+package** job runs `cargo package -p syllabix-native` with verify (builds
+from the tarball) and lists `syllabix-core` without verify (core cannot
+download `syllabix-native` from crates.io until the first publish). It
+fails if the native `.crate` is over 10 MB. PR template and harness-evidence
 checks also run on hosted Linux.
 
 The **git-consumer** workflow (`git-consumer.yml`) pretends to be another repo.

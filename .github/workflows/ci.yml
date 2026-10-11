@@ -138,7 +138,42 @@ jobs:
       - name: cargo test supported API without default features
         run: cargo test -p syllabix-core --no-default-features --test supported_api -- --nocapture
 
+  # Dry-run the crates.io tarballs on every PR. Linux only: the native
+  # verify step compiles C++, and other OSes would only repeat that cost.
+  crates-io-package:
+    name: crates.io package
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.91.0
+      - name: Compile dependencies (Linux)
+        run: ./scripts/setup-linux.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: crates-io-package
+      - name: Package syllabix-native (verify from tarball)
+        run: |
+          cargo package -p syllabix-native
+          crate="$(echo target/package/syllabix-native-*.crate)"
+          size="$(stat -c%s "$crate")"
+          echo "syllabix-native .crate is ${size} bytes"
+          # crates.io default crate size limit is 10 MB (10485760 bytes).
+          if [ "$size" -gt 10485760 ]; then
+            echo "syllabix-native .crate exceeds 10485760 bytes: ${size}" >&2
+            exit 1
+          fi
+      - name: List syllabix-core package (no verify)
+        # syllabix-core depends on syllabix-native by version. cargo package
+        # --verify would try to download that version from crates.io, which
+        # is not there until a version tag publishes native first. Listing
+        # the tarball is enough on PRs; native is the crate that must build
+        # from the packaged files.
+        run: cargo package -p syllabix-core --no-verify --list
+
   # The cross-platform test matrix (linux/windows/macos + Intel cross-build)
   # lives in weekly.yml: scheduled Mondays or on demand via workflow_dispatch.
   # Dist packaging and GitHub Release attach remain in release.yml (v* tags
-  # only). PR CI still does not package dist binaries.
+  # only). crates.io publish is crates-io.yml (also v* tags). PR CI still
+  # does not package dist binaries.

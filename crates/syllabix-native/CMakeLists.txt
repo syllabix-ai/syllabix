@@ -107,3 +107,6 @@ install(TARGETS syllabix_native whisper llama mtmd
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 # ggml / ggml-base / ggml-cpu install themselves from the llama.cpp tree.
+
+# crates.io: KleidiAI remains OFF above. Turning it on downloads kernel
+# sources at configure time, which a packaged tarball cannot do.

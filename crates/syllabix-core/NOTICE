@@ -1,0 +1,170 @@
+Syllabix
+Copyright 2026 Syllabix contributors
+
+This product includes software and model assets developed by third parties.
+Each entry lists what ships inside the executable or what the binary fetches
+into its first-run cache (`$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix`).
+
+## Vendored source (compiled into the executable)
+
+### Sonora — Rust port of WebRTC Audio Processing (AEC3)
+
+BSD 3-Clause License.
+
+Copyright (c) 2011, The WebRTC Project Authors. All rights reserved.
+Copyright (c) 2016, Arun Raghavan and contributors. All rights reserved.
+Copyright (c) 2026, dignifiedquire. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of Google nor the names of its contributors may be used to
+  endorse or promote products derived from this software without specific
+  prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+### llama.cpp and ggml (`crates/syllabix-native/vendor/llama.cpp`)
+
+MIT License. Copyright (c) 2023-2026 The ggml authors, Georgi Gerganov, and
+contributors. Full text: `crates/syllabix-native/vendor/llama.cpp/LICENSE`.
+
+### whisper.cpp (`crates/syllabix-native/vendor/whisper.cpp`)
+
+MIT License. Copyright (c) 2023-2026 The ggml authors, Georgi Gerganov, and
+contributors. Full text: `crates/syllabix-native/vendor/whisper.cpp/LICENSE`.
+
+Whisper and llama.cpp share one ggml build; see
+`crates/syllabix-native/vendor/README.md` for pins.
+
+### ONNX Runtime
+
+This product uses ONNX Runtime (via the Rust `ort` bindings), MIT License,
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+## Model assets (downloaded into the local cache on first run)
+
+### Silero VAD (`silero_vad.onnx`, v6.2.1)
+
+MIT License. Copyright (c) 2020-present Silero Team.
+Source: https://github.com/snakers4/silero-vad
+
+### Whisper `small` (`ggml-small.bin`)
+
+MIT License. Whisper models and code are Copyright (c) OpenAI.
+GGML conversion: https://huggingface.co/ggerganov/whisper.cpp
+
+### Moonshine Streaming Small ONNX INT8 (optional yaml STT)
+
+MIT License. The source model is Useful Sensors' English-only
+`moonshine-streaming-small`: https://huggingface.co/UsefulSensors/moonshine-streaming-small
+The pinned ONNX INT8 export is from Mazino0 at revision
+`d47300364351d5dd673073c16f0159b5ee46f512`:
+https://huggingface.co/Mazino0/moonshine-streaming-small-onnx
+It is fetched only when `pipeline.stt.provider: local` and
+`pipeline.stt.model: moonshine-streaming-small` are selected.
+
+### Moonshine Streaming Medium ONNX INT8 (optional yaml STT)
+
+MIT License. The source model is Useful Sensors' English-only
+`moonshine-streaming-medium`: https://huggingface.co/UsefulSensors/moonshine-streaming-medium
+(also published as `moonshine-ai/moonshine-streaming-medium`).
+The pinned ONNX INT8 export is from Mazino0 at revision
+`8da8adfd536fe69a255dcd20831ec2361bd63280`:
+https://huggingface.co/Mazino0/moonshine-streaming-medium-onnx
+It is fetched only when `pipeline.stt.provider: local` and
+`pipeline.stt.model: moonshine-streaming-medium` are selected.
+
+### LFM2.5-2.6B QAD Q4_0 (`LFM2.5-2.6B-QAD-Q4_0.gguf`, default)
+
+LiquidAI LFM 1.0 license. Copyright LiquidAI.
+Source: https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF
+LFM is not distributed under the Apache-2.0 license that covers the
+rest of Syllabix.
+
+### LFM2.5-350M QAD Q4_0 (`LFM2.5-350M-QAD-Q4_0.gguf`, optional)
+
+LiquidAI LFM 1.0 license. Copyright LiquidAI.
+Source: https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF
+Selected only when `syllabix.yaml` sets `pipeline.llm.model: lfm2.5-350m`.
+
+### LFM2.5-230M QAD Q4_0 (`LFM2.5-230M-QAD-Q4_0.gguf`, optional)
+
+LiquidAI LFM 1.0 license. Copyright LiquidAI.
+Source: https://huggingface.co/LiquidAI/LFM2.5-230M-GGUF
+Selected only when `syllabix.yaml` sets `pipeline.llm.model: lfm2.5-230m`.
+
+### Llama 3.2 1B Instruct (`Llama-3.2-1B-Instruct-Q4_K_M.gguf`, optional)
+
+Llama 3.2 Community License. Copyright (c) Meta Platforms, Inc. All rights
+reserved. Selected only when `syllabix.yaml` sets `pipeline.llm.model`;
+not fetched by the default zero-config run. The license and its
+acceptable use policy govern redistribution and use of this model:
+https://github.com/meta-llama/llama-models/blob/main/models/Llama_3.2_Model_License.md
+Llama 3.2 is not distributed under the Apache-2.0 license that covers the
+rest of Syllabix.
+
+### Qwen3.5 0.8B / 2B Instruct (optional yaml GGUFs)
+
+Apache License 2.0. Copyright the Qwen team (Alibaba Cloud).
+Selected only when `syllabix.yaml` sets `pipeline.llm.model`; not fetched by
+the default zero-config run.
+
+### Kokoro v1.0 ONNX (`kokoro-v1.0.onnx`) and `af_heart` voice
+
+Apache License 2.0. Copyright (c) 2024 hexgrad.
+Source: https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
+
+### Pocket TTS English ONNX assets
+
+Creative Commons Attribution 4.0 International (CC BY 4.0). Model weights
+and published speaker states are the work of Kyutai. Syllabix uses the
+English `english_2026-04` ONNX mirror at the immutable
+`81b240f24f896f4cc480dc90858d1f72c9b7d64a` revision:
+https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts
+
+The mirror attributes the source model to `kyutai/pocket-tts`, the ONNX graph
+export to `KevinAHM/pocket-tts-onnx`, and the fixed `alba` speaker state to
+`kyutai/pocket-tts-without-voice-cloning`. Syllabix does not expose voice
+cloning or user voice registration.
+
+## Data
+
+### Misaki English lexicons (compiled into the Kokoro grapheme-to-phoneme table)
+
+Apache License 2.0. Copyright hexgrad.
+Source: https://github.com/hexgrad/misaki
+The in-process engine is `misaki-rs` (MIT), with the espeak-ng feature
+disabled so the binary does not link GPL code or an extra dylib.
+
+## Rust dependencies
+
+Rust crates are used unmodified from crates.io under their own permissive
+licenses (Apache-2.0 and/or MIT unless noted below); exact versions are
+pinned in `Cargo.lock`. Two TLS-stack components carried in for rustls-based
+model downloads carry their own notices: `ring` (ISC-style and OpenSSL
+derived licenses, Copyright (c) The ring project authors) and
+`webpki-roots` (MPL-2.0, embeds the Mozilla root store).
+
+## License
+
+Syllabix itself is licensed under the Apache License, Version 2.0.
+See [LICENSE](LICENSE). Nothing in this product requires a GPL component at
+runtime or as a static link.
