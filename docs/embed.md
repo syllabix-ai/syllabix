@@ -25,7 +25,7 @@ What each tag contains is on the git tag and its [GitHub Release](https://github
 | --- | --- | --- | --- |
 | **1 — Sidecar binary** | Ready | Run a GitHub Release binary (usual) or `cargo install --git`. Put `syllabix.yaml` in the working directory. | Electron / Tauri / Python / CI. No custom STT/LLM. A Release needs no compile; `cargo install --git` does. |
 | **2 — Embed the live loop** | Ready | `run_live` / `run_live_with_controls` + `LoopEvent` | In-process Rust host that wants the shipped conversation loop. |
-| **3 — Compose stages** | Preview | Implement `Vad` / `Stt` / `Llm` / `Tts` / `AudioCapture` / `AudioSink` and call `run_loop` | Bring your own engine (often only the LLM). |
+| **3 — Compose stages** | Preview | Implement `Vad` / `Stt` / `Llm` / `Tts` / `AudioCapture` / `AudioSink`, swap them on a `Session`, and run | Bring your own engine (often only the LLM). |
 
 Ready = used by the CLI, bugfixes only. Preview = on `main`, may churn.
 
@@ -90,18 +90,23 @@ Treat only this list as the supported crate-root surface. Other `pub use` items 
 
 ## Lane 3 — Compose stages
 
-Implement the stage you want to replace. Call `load_real_providers` for the stages you keep, then `run_loop` (iterator of `AudioFrame`) or `run_loop_captured` (an `AudioCapture`). Arguments ([`real.rs`](../crates/syllabix-core/src/real.rs)):
+Build a `Session` from yaml (`Session::from_config`) or `Session::v0()`.
+Stages you do not set load like `run_live`: Silero, the configured
+speech-to-text / language model / text-to-speech from the cache, native
+mic and speakers. Swap only the stages you own.
 
-```text
-load_real_providers(
-    cache: &ModelCache,                 // ModelCache::v0()
-    fetcher: &dyn Fetcher,              // &HttpFetcher
-    progress: &mut dyn Progress,        // &mut StderrProgress
-    cancel: &Cancel,
-    config: &AgentConfig,
-    llm_api_key: Option<&zeroize::Zeroizing<String>>,
-) -> Result<(SileroVad, LiveStt, LiveLlm, LiveTts)>
+```rust
+use syllabix_core::{AgentConfig, Cancel, Session};
+
+let config = AgentConfig::resolve_for_run(&std::env::current_dir()?)?;
+Session::from_config(&config)
+    .with_llm(EchoLlm)
+    .run(Cancel::new())?;
 ```
+
+You do not wire `load_real_providers`, `HttpFetcher`, or `NativeCapture`
+by hand. Those still exist if you want the lower-level seam; see
+[`real.rs`](../crates/syllabix-core/src/real.rs).
 
 ```rust
 use syllabix_core::{Cancel, Llm, Result, TokenChunk, Transcript};
@@ -134,14 +139,15 @@ impl Llm for EchoLlm {
 }
 ```
 
-The trait impl above is covered by `crates/syllabix-core/examples/custom-llm.rs`: a CI-checked copy that wires `EchoLlm` into `PipelineStages` with fixture VAD/STT/TTS/sink and `run_loop` (`cargo clippy --workspace --all-targets` compiles examples, so the supported API cannot bitrot). Production hosts typically keep the stages they do not replace from `load_real_providers`.
+The trait impl above is covered by `crates/syllabix-core/examples/custom-llm.rs`. That file uses in-memory fixtures so CI can run without a microphone (`cargo clippy --workspace --all-targets` compiles examples, so the supported API cannot bitrot). Production hosts usually swap only the LLM as above.
 
-Wire `EchoLlm` into `PipelineStages` with the VAD/STT/TTS you loaded (or your own impls) and a sink. Native mic/speaker types live under `syllabix_core::audio` and are **not** in the Lane 2 freeze list.
+A yaml `pipeline.llm.provider: online` still needs `SYLLABIX_LLM_API_KEY` when the LLM slot is the default. A custom `Llm` does not. Native mic/speaker types live under `syllabix_core::audio` and are **not** in the Lane 2 freeze list.
 
 ### Supported types (Lane 3, additional)
 
 | Type / function | Role |
 | --- | --- |
+| `Session` | Builder: defaults for every stage; `with_vad` / `with_stt` / `with_llm` / `with_tts` / `with_capture` / `with_sink` / `with_frames` then `run`. |
 | `Vad`, `Stt`, `Llm`, `Tts` | Pipeline stages. |
 | `AudioCapture`, `AudioSink` | Mic (or fixture) and speakers (or collector). |
 | `run_loop` / `run_loop_captured` | In-memory cascade; blocks until workers join. |

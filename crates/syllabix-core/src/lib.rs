@@ -7,8 +7,8 @@
 //! loops with lightweight fakes. Model weights live in the first-run cache
 //! rather than the executable.
 //!
-//! Hosts that embed this crate: see `docs/embed.md`. Only the Lane 2 and Lane 3
-//! lists on that page are a stability promise.
+//! Hosts that embed this crate: see `docs/embed.md` (`Session` for Lane 3).
+//! Only the Lane 2 and Lane 3 lists on that page are a stability promise.
 
 pub mod audio;
 pub mod models;
@@ -41,6 +41,7 @@ mod queue;
 mod qwen_asr;
 mod real;
 mod sandbox;
+mod session;
 mod skills;
 mod speech_text;
 mod stt;
@@ -125,6 +126,7 @@ pub use sandbox::{
 pub use sandbox::{
     BubblewrapSandboxProvider, LandlockSandboxProvider, LinuxSandboxProvider, LinuxSandboxRunner,
 };
+pub use session::Session;
 pub use skills::{
     builtin_root, DiscoveredSkill, SkillDiagnostic, SkillDiscovery, SkillInput, SkillManifest,
     SkillRoot, SkillSource, SkillsConfig, MAX_SKILL_DESCRIPTION_BYTES, MAX_SKILL_FILE_BYTES,
