@@ -143,6 +143,9 @@ impl AudioCapture for DynCapture {
 /// before [`Session::run`]. An online LLM in yaml still fails fast on a
 /// missing `SYLLABIX_LLM_API_KEY`, but only when that slot is left as the
 /// default (a custom [`Llm`] does not need the key).
+/// Without the `ggml` feature, every ML stage must be swapped or `run`
+/// returns a config error. Without `device-audio`, capture or frames and a
+/// sink must be set. `run_live` and default mic/speakers need those features.
 ///
 /// Typical Lane 3 host — keep the shipped stack, replace only the LLM:
 ///
@@ -344,7 +347,7 @@ enum ResolvedInput {
 
 type BoxedStages = (Box<dyn Vad>, Box<dyn Stt>, Box<dyn Llm>, Box<dyn Tts>);
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 fn resolve_ml(
     config: &AgentConfig,
     cancel: &Cancel,
@@ -355,9 +358,13 @@ fn resolve_ml(
     tts: Option<Box<dyn Tts>>,
 ) -> Result<BoxedStages> {
     use crate::models::{HttpFetcher, ModelCache, StderrProgress};
+    #[cfg(feature = "cloud-llm")]
     use crate::openai::PROVIDER_NAME;
-    use crate::real::{build_llm, build_stt, build_tts, LiveLlm};
+    #[cfg(feature = "cloud-llm")]
+    use crate::real::LiveLlm;
+    use crate::real::{build_llm, build_stt, build_tts};
     use crate::vad::SileroVad;
+    #[cfg(feature = "cloud-llm")]
     use crate::Error;
 
     let need_cache = vad.is_none() || stt.is_none() || llm.is_none() || tts.is_none();
@@ -390,6 +397,7 @@ fn resolve_ml(
         None => {
             let cache = cache.as_ref().expect("cache when loading default LLM");
             let built = build_llm(cache, &fetcher, &mut progress, cancel, config, llm_api_key)?;
+            #[cfg(feature = "cloud-llm")]
             if let LiveLlm::Cloud(cloud) = &built {
                 match cloud.warm_up(cancel) {
                     Ok(()) => eprintln!("cloud: endpoint ready"),
@@ -413,6 +421,25 @@ fn resolve_ml(
         }
     };
     Ok((vad, stt, llm, tts))
+}
+
+#[cfg(all(not(coverage), not(feature = "ggml")))]
+fn resolve_ml(
+    _config: &AgentConfig,
+    _cancel: &Cancel,
+    _llm_api_key: Option<&Zeroizing<String>>,
+    vad: Option<Box<dyn Vad>>,
+    stt: Option<Box<dyn Stt>>,
+    llm: Option<Box<dyn Llm>>,
+    tts: Option<Box<dyn Tts>>,
+) -> Result<BoxedStages> {
+    match (vad, stt, llm, tts) {
+        (Some(vad), Some(stt), Some(llm), Some(tts)) => Ok((vad, stt, llm, tts)),
+        _ => Err(crate::Error::Config {
+            field: "session".into(),
+            message: "default VAD/STT/LLM/TTS require the `ggml` feature; swap every ML stage or enable `ggml`".into(),
+        }),
+    }
 }
 
 #[cfg(coverage)]
@@ -449,7 +476,7 @@ fn resolve_ml(
     ))
 }
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "device-audio"))]
 fn resolve_io(
     config: &AgentConfig,
     events: &Option<Sender<LoopEvent>>,
@@ -499,7 +526,7 @@ fn resolve_io(
     }
 }
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "device-audio"))]
 fn default_playback(
     watch: Option<crate::turn_debug::PlaybackWatch>,
 ) -> Result<crate::audio::NativePlayback> {
@@ -508,6 +535,24 @@ fn default_playback(
         Ok(NativePlayback::open_with_echo_and_watch(watch)?.0)
     } else {
         NativePlayback::open()
+    }
+}
+
+#[cfg(all(not(coverage), not(feature = "device-audio")))]
+fn resolve_io(
+    _config: &AgentConfig,
+    _events: &Option<Sender<LoopEvent>>,
+    _turn_debug: Option<&TurnDebug>,
+    input: Input,
+    sink: Option<Box<dyn AudioSink>>,
+) -> Result<(ResolvedInput, Box<dyn AudioSink>)> {
+    match (input, sink) {
+        (Input::Capture(capture), Some(sink)) => Ok((ResolvedInput::Capture(capture), sink)),
+        (Input::Frames(frames), Some(sink)) => Ok((ResolvedInput::Frames(frames), sink)),
+        _ => Err(crate::Error::Config {
+            field: "session".into(),
+            message: "default mic/speakers require the `device-audio` feature; set capture or frames and a sink, or enable `device-audio`".into(),
+        }),
     }
 }
 
@@ -540,8 +585,9 @@ fn resolve_io(
 mod tests {
     use super::*;
     use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
-    use crate::openai::API_KEY_ENV;
     use crate::Error;
+
+    const API_KEY_ENV: &str = "SYLLABIX_LLM_API_KEY";
 
     struct FrameCapture {
         frames: std::vec::IntoIter<AudioFrame>,

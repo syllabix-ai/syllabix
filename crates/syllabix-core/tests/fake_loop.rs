@@ -4,16 +4,12 @@ use std::thread;
 use std::time::Duration;
 
 use syllabix_core::{
-    audio::{
-        device_ring_capacity_samples, i16_to_f32, EchoCalibration, EchoController, EchoReference,
-        SampleRing, AEC_FRAME_SAMPLES,
-    },
     audio::{read_wav, PcmFormat},
     run_loop, run_loop_captured, scripted_frames, AudioCapture, AudioSink, BuiltinDefaults, Cancel,
     CollectingSink, Error, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt, FakeTts,
     FakeVad, LoopConfig, LoopMode, PipelineStages, PlaybackWatch, QueueCaps, Result,
-    RuntimeControls, ScriptedStt, SynthesizedAudio, TimelineAnchor, TokenChunk, Transcript, Tts,
-    TurnDebug, TurnId, Vad, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    RuntimeControls, ScriptedStt, SynthesizedAudio, TimelineAnchor, Transcript, TurnDebug, TurnId,
+    Vad, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
 fn run_with(
@@ -1189,6 +1185,7 @@ fn barge_in_stops_a_blocked_previous_tts_play() {
 
 /// Live mic after SpeechEnd: keep producing frames so the VAD queue can fill
 /// while default `run` pauses VAD for the assistant reply.
+#[cfg(feature = "device-audio")]
 struct LiveMicWithAec {
     echo: EchoController,
     seq: u64,
@@ -1196,6 +1193,15 @@ struct LiveMicWithAec {
     calibration: std::sync::Arc<std::sync::Mutex<EchoCalibration>>,
 }
 
+#[cfg(feature = "device-audio")]
+use syllabix_core::audio::{
+    device_ring_capacity_samples, i16_to_f32, EchoCalibration, EchoController, EchoReference,
+    SampleRing, AEC_FRAME_SAMPLES,
+};
+#[cfg(feature = "device-audio")]
+use syllabix_core::TokenChunk;
+
+#[cfg(feature = "device-audio")]
 impl AudioCapture for LiveMicWithAec {
     fn name(&self) -> &'static str {
         "aec-mic"
@@ -1230,9 +1236,11 @@ impl AudioCapture for LiveMicWithAec {
 
 /// One first-TTS burst longer than the 200 ms speaker-copy ring, paced like a
 /// device callback (10 ms blocks). Real agent audio, not silence.
+#[cfg(feature = "device-audio")]
 struct FirstReplyTts;
 
-impl Tts for FirstReplyTts {
+#[cfg(feature = "device-audio")]
+impl syllabix_core::Tts for FirstReplyTts {
     fn name(&self) -> &'static str {
         BuiltinDefaults::v0().tts.as_str()
     }
@@ -1259,10 +1267,12 @@ impl Tts for FirstReplyTts {
     }
 }
 
+#[cfg(feature = "device-audio")]
 struct SpeakerCallbackSink {
     ring: std::sync::Arc<SampleRing>,
 }
 
+#[cfg(feature = "device-audio")]
 impl AudioSink for SpeakerCallbackSink {
     fn play(&mut self, audio: SynthesizedAudio, cancel: &Cancel) -> Result<()> {
         if cancel.is_shutdown() {
@@ -1286,6 +1296,7 @@ impl AudioSink for SpeakerCallbackSink {
     fn interrupt(&mut self) {}
 }
 
+#[cfg(feature = "device-audio")]
 #[test]
 fn first_tts_does_not_lose_speaker_copy_while_vad_is_paused() {
     let cap = device_ring_capacity_samples(DEFAULT_SAMPLE_RATE_HZ, DEFAULT_CHANNELS);

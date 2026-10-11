@@ -1,7 +1,7 @@
 #[cfg(coverage)]
 include!("real_coverage.rs");
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 mod production {
     //! Load configured native and online providers from the model cache and environment.
     //!
@@ -18,6 +18,7 @@ mod production {
     use crate::llm::LlamaLlm;
     use crate::models::{Fetcher, ModelCache, Progress};
     use crate::moonshine::MoonshineStt;
+    #[cfg(feature = "cloud-llm")]
     use crate::openai::{OpenAiLlm, OpenAiSettings, API_KEY_ENV, PROVIDER_NAME};
     use crate::providers::Llm;
     use crate::stt::WhisperStt;
@@ -31,6 +32,7 @@ mod production {
         /// In-process GGUF engine (default).
         Local(LlamaLlm),
         /// User-keyed OpenAI-compatible endpoint.
+        #[cfg(feature = "cloud-llm")]
         Cloud(OpenAiLlm),
     }
 
@@ -38,6 +40,7 @@ mod production {
         fn name(&self) -> &'static str {
             match self {
                 Self::Local(llm) => llm.name(),
+                #[cfg(feature = "cloud-llm")]
                 Self::Cloud(llm) => llm.name(),
             }
         }
@@ -45,6 +48,7 @@ mod production {
         fn debug_meta(&self) -> Option<LlmDebugMeta> {
             match self {
                 Self::Local(llm) => llm.debug_meta(),
+                #[cfg(feature = "cloud-llm")]
                 Self::Cloud(llm) => llm.debug_meta(),
             }
         }
@@ -52,6 +56,7 @@ mod production {
         fn take_tool_events(&mut self) -> Vec<crate::types::ToolTurnEvent> {
             match self {
                 Self::Local(llm) => llm.take_tool_events(),
+                #[cfg(feature = "cloud-llm")]
                 Self::Cloud(llm) => llm.take_tool_events(),
             }
         }
@@ -65,6 +70,7 @@ mod production {
         ) -> Result<()> {
             match self {
                 Self::Local(llm) => llm.generate(history, user, cancel, on_token),
+                #[cfg(feature = "cloud-llm")]
                 Self::Cloud(llm) => llm.generate(history, user, cancel, on_token),
             }
         }
@@ -273,6 +279,7 @@ mod production {
             build_stt(cache, fetcher, progress, cancel, config)?.with_language(&config.language)?;
         let llm = build_llm(cache, fetcher, progress, cancel, config, llm_api_key)?;
         let tts = build_tts(cache, fetcher, progress, cancel, config)?;
+        #[cfg(feature = "cloud-llm")]
         if let LiveLlm::Cloud(llm) = &llm {
             match llm.warm_up(cancel) {
                 Ok(()) => eprintln!("cloud: endpoint ready"),
@@ -370,14 +377,27 @@ mod production {
                 .with_developer_permissions(config.llm_developer_permissions.clone()),
             )),
             crate::LlmProvider::Online => {
-                let key = llm_api_key.ok_or_else(|| Error::Config {
-                    field: API_KEY_ENV.into(),
-                    message: format!("is required when pipeline.llm.provider is {PROVIDER_NAME}"),
-                })?;
-                Ok(LiveLlm::Cloud(
-                    OpenAiLlm::new(OpenAiSettings::from_config(config), key.clone())
-                        .with_skill_context(skill_context),
-                ))
+                #[cfg(feature = "cloud-llm")]
+                {
+                    let key = llm_api_key.ok_or_else(|| Error::Config {
+                        field: API_KEY_ENV.into(),
+                        message: format!(
+                            "is required when pipeline.llm.provider is {PROVIDER_NAME}"
+                        ),
+                    })?;
+                    Ok(LiveLlm::Cloud(
+                        OpenAiLlm::new(OpenAiSettings::from_config(config), key.clone())
+                            .with_skill_context(skill_context),
+                    ))
+                }
+                #[cfg(not(feature = "cloud-llm"))]
+                {
+                    let _ = (llm_api_key, skill_context);
+                    Err(Error::Config {
+                        field: "pipeline.llm.provider".into(),
+                        message: "online LLM requires the `cloud-llm` feature".into(),
+                    })
+                }
             }
         }
     }
@@ -386,6 +406,7 @@ mod production {
     mod tests {
         use super::*;
         use crate::models::{BlockedFetcher, Manifest, NoProgress};
+        #[cfg(feature = "cloud-llm")]
         use crate::openai::DEFAULT_LLM_BASE_URL;
         use std::path::PathBuf;
 
@@ -426,6 +447,7 @@ mod production {
             assert!(matches!(err, Error::ModelCache { .. }));
         }
 
+        #[cfg(feature = "cloud-llm")]
         #[test]
         fn cloud_llm_needs_no_weights_but_requires_the_key() {
             let mut config = crate::AgentConfig::v0();
@@ -485,5 +507,5 @@ mod production {
     }
 }
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 pub use production::*;

@@ -103,7 +103,8 @@ every reported `src/**/*.rs` file. Production-only native modules are excluded
 by the coverage configuration; pure helpers remain in the normal modules.
 
 Weekly native coverage (separate from the unit gate; see #174) measures
-production native providers with real weights:
+production native providers with real weights. `--features native-inference`
+turns on `ggml` plus those tests; ONNX (`ort`) is always built in.
 
 ```bash
 SYLLABIX_NATIVE_MODELS=whisper-small,lfm2.5-2.6b,pocket-tts \

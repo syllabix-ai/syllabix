@@ -1,9 +1,11 @@
 //! In-process whisper.cpp speech-to-text for completed VAD utterances.
 
+#[cfg(feature = "ggml")]
 use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "ggml")]
 use syllabix_native::{DecodeError, WhisperContext};
 
 use crate::defaults::{BuiltinDefaults, SttModel};
@@ -36,12 +38,23 @@ impl Clone for WhisperStt {
 
 impl WhisperStt {
     /// Load a ggml model from disk.
+    #[cfg(feature = "ggml")]
     pub fn from_model_path(path: impl AsRef<Path>, model: SttModel) -> Result<Self> {
         let decoder = WhisperDecoder::load(path.as_ref())?;
         Ok(Self {
             decoder: Arc::new(Mutex::new(Box::new(decoder))),
             model,
             language: STT_LANGUAGE.to_string(),
+        })
+    }
+
+    /// Without `ggml` there is no whisper.cpp frontend.
+    #[cfg(not(feature = "ggml"))]
+    pub fn from_model_path(path: impl AsRef<Path>, model: SttModel) -> Result<Self> {
+        let _ = (path, model);
+        Err(Error::Provider {
+            provider: "whisper.cpp",
+            message: "whisper.cpp inference requires the `ggml` feature".into(),
         })
     }
 
@@ -147,10 +160,12 @@ trait Decoder: Send {
     fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<(String, String)>;
 }
 
+#[cfg(feature = "ggml")]
 struct WhisperDecoder {
     ctx: WhisperContext,
 }
 
+#[cfg(feature = "ggml")]
 impl WhisperDecoder {
     fn load(path: &Path) -> Result<Self> {
         let ctx = WhisperContext::load(path).map_err(|message| Error::Provider {
@@ -161,6 +176,7 @@ impl WhisperDecoder {
     }
 }
 
+#[cfg(feature = "ggml")]
 impl Decoder for WhisperDecoder {
     fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<(String, String)> {
         if cancel.is_shutdown() {
@@ -193,6 +209,7 @@ impl Decoder for WhisperDecoder {
     }
 }
 
+#[cfg(feature = "ggml")]
 unsafe extern "C" fn abort_on_shutdown(user_data: *mut c_void) -> bool {
     if user_data.is_null() {
         return false;
@@ -201,6 +218,7 @@ unsafe extern "C" fn abort_on_shutdown(user_data: *mut c_void) -> bool {
     unsafe { (*(user_data as *const Cancel)).is_shutdown() }
 }
 
+#[cfg(feature = "ggml")]
 fn thread_count() -> i32 {
     std::thread::available_parallelism()
         .map(|n| n.get().min(4) as i32)

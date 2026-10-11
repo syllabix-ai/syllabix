@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 use syllabix_native::{DecodeError, QwenAsrContext, QwenTtsBackend};
 
 use crate::defaults::TtsCompute;
@@ -53,13 +53,13 @@ impl Clone for QwenAsrStt {
 
 impl QwenAsrStt {
     /// Load decoder GGUF + mmproj from disk with default Auto placement.
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "ggml"))]
     pub fn from_paths(model: impl AsRef<Path>, mmproj: impl AsRef<Path>) -> Result<Self> {
         Self::from_paths_with_compute(model, mmproj, TtsCompute::Auto)
     }
 
     /// Load with an explicit [`TtsCompute`] placement (same ids as Qwen TTS).
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "ggml"))]
     pub fn from_paths_with_compute(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
@@ -74,23 +74,24 @@ impl QwenAsrStt {
         })
     }
 
-    /// Coverage never opens GGUF weights; keep the constructors as callable
-    /// seams for cache and provider-error tests.
-    #[cfg(coverage)]
+    /// Coverage never opens GGUF weights; without `ggml` there is no ggml.
+    #[cfg(any(coverage, not(feature = "ggml")))]
     pub fn from_paths(model: impl AsRef<Path>, mmproj: impl AsRef<Path>) -> Result<Self> {
         Self::from_paths_with_compute(model, mmproj, TtsCompute::Auto)
     }
 
-    #[cfg(coverage)]
+    #[cfg(any(coverage, not(feature = "ggml")))]
     pub fn from_paths_with_compute(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
         compute: TtsCompute,
     ) -> Result<Self> {
         let _ = (model, mmproj, compute);
-        Err(provider(
-            "Qwen3-ASR inference is not loaded in coverage tests.",
-        ))
+        Err(provider(if cfg!(coverage) {
+            "Qwen3-ASR inference is not loaded in coverage tests."
+        } else {
+            "Qwen3-ASR inference requires the `ggml` feature"
+        }))
     }
 
     /// Resolve the 0.6B pair from the manifest cache, then load. Only these
@@ -200,13 +201,13 @@ trait Decoder: Send {
 
 /// Native model loading lives behind `cfg(not(coverage))` so llvm-cov never
 /// counts unhit ggml FFI. Native inference tests still compile this path.
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 struct NativeDecoder {
     ctx: QwenAsrContext,
     backend: QwenTtsBackend,
 }
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 impl NativeDecoder {
     fn load(model: &Path, mmproj: &Path, compute: TtsCompute) -> Result<Self> {
         let n_threads = std::thread::available_parallelism()
@@ -220,7 +221,7 @@ impl NativeDecoder {
     }
 }
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 fn backend_attempts(compute: TtsCompute) -> Result<&'static [QwenTtsBackend]> {
     const CPU: &[QwenTtsBackend] = &[QwenTtsBackend::Cpu];
     const METAL: &[QwenTtsBackend] = &[QwenTtsBackend::Metal];
@@ -255,7 +256,7 @@ fn backend_attempts(compute: TtsCompute) -> Result<&'static [QwenTtsBackend]> {
     })
 }
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 fn load_first_backend<T, E>(
     attempts: &[QwenTtsBackend],
     mut load: impl FnMut(QwenTtsBackend) -> std::result::Result<T, E>,
@@ -270,7 +271,7 @@ fn load_first_backend<T, E>(
     Err(last_error.expect("Qwen ASR backend attempt list is never empty"))
 }
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 impl Decoder for NativeDecoder {
     fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<String> {
         if cancel.is_shutdown() {
@@ -293,7 +294,7 @@ impl Decoder for NativeDecoder {
     }
 }
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 unsafe extern "C" fn abort_on_shutdown(user_data: *mut std::ffi::c_void) -> bool {
     unsafe { (*(user_data as *const Cancel)).is_shutdown() }
 }
