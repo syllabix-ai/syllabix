@@ -263,7 +263,7 @@ Hosts that embed `syllabix-core` ship Syllabix code plus vendored audio/ML and f
 | --- | --- | --- |
 | Syllabix (`syllabix`, `syllabix-core`) | Apache-2.0 | Keep [LICENSE](../LICENSE). |
 | Sonora (WebRTC AEC3) | BSD 3-Clause | Copy the Sonora / WebRTC notice from [NOTICE](../NOTICE) into your NOTICE. |
-| llama.cpp, whisper.cpp, ggml | MIT | Vendored; see `vendor/*/LICENSE`. |
+| llama.cpp, whisper.cpp, ggml | MIT | Vendored; see `crates/syllabix-native/vendor/*/LICENSE`. |
 | ONNX Runtime (`ort`) | MIT | Transitive. |
 | Default VAD (Silero) | MIT | Fetched into the cache. |
 | Default STT (Whisper `small`) | MIT (OpenAI Whisper) | Fetched into the cache. |

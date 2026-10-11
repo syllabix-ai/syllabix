@@ -10,8 +10,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/shim_vulkan.cpp");
     println!("cargo:rerun-if-changed=src/shim_asr.c");
     println!("cargo:rerun-if-changed=include/syllabix_native.h");
-    println!("cargo:rerun-if-changed=../../vendor/llama.cpp");
-    println!("cargo:rerun-if-changed=../../vendor/whisper.cpp");
+    println!("cargo:rerun-if-changed=vendor/llama.cpp");
+    println!("cargo:rerun-if-changed=vendor/whisper.cpp");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
     println!("cargo:rerun-if-env-changed=SYLLABIX_GGML_VULKAN");
 

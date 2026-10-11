@@ -50,7 +50,7 @@ First use of each model id downloads pinned weights over HTTPS, checks SHA-256, 
 | --- | --- |
 | `crates/syllabix` | CLI, TUI, `run` / `init` |
 | `crates/syllabix-core` | Pipeline, audio I/O, VAD/STT/LLM/TTS, yaml, sandbox |
-| `vendor/` | ggml / llama.cpp / whisper.cpp pins |
+| `crates/syllabix-native/vendor/` | ggml / llama.cpp / whisper.cpp pins |
 | `docs/` | This documentation tree |
 
 How we measure the loop: [reference profiles](reference-profiles.md).

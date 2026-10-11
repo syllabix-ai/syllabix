@@ -87,7 +87,7 @@ The TUI reports STT, TTFT, TTFB, and total per turn (legacy enqueue-based
 clocks, unchanged since row 25). The finer, device-true numbers come from the
 row-34 timeline sidecars — see §10. Record them from profile A runs when
 claiming speedups; do not quote wall-clock numbers from CI. LLM tok/s
-comparisons belong in `vendor/llama-bench.md`.
+comparisons belong in `crates/syllabix-native/vendor/llama-bench.md`.
 
 ## 6. Coverage and native inference (profile B)
 
