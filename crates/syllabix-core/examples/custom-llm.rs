@@ -7,8 +7,9 @@
 //!
 //! Companion VAD / STT / TTS / sink types are in-example fixtures so this
 //! binary compiles and runs without opening a microphone or fetching the
-//! launch-stack weights. Production hosts typically keep those stages as
-//! `Session` defaults and swap only the LLM.
+//! launch-stack weights. This example therefore builds with
+//! `default-features = false`. A host that keeps Session’s shipped engines or
+//! the real mic still needs `ggml` / `device-audio`.
 
 use std::sync::mpsc::channel;
 

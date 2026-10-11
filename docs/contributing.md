@@ -25,10 +25,12 @@ loads live in non-coverage modules, while pure helpers stay in the normal
 modules. Large mock suites use sibling `*_tests.rs` modules, which
 `cargo-llvm-cov` ignores as test harness code.
 
-Exclusive extra native suites (not the default `cargo test --workspace` bar):
+Exclusive extra native suites (not the default `cargo test --workspace` bar).
+`--features native-inference` turns on `ggml` and the tests that download
+and run the real models (GGUF and ONNX). ONNX (`ort`) is always built in.
 
 ```bash
-SYLLABIX_NATIVE_MODELS=qwen3-0.6 cargo test -p syllabix-core --test native_inference
+SYLLABIX_NATIVE_MODELS=qwen3-0.6 cargo test -p syllabix-core --features native-inference --test native_inference
 ```
 
 ## Models
@@ -187,8 +189,10 @@ constants, and the sandbox/G2P helpers leave the crate root.
 
 Per-PR CI (`ci.yml`) runs on GitHub-hosted Linux: fmt, clippy, and llvm-cov
 ≥85% workspace lines and ≥85% lines in every reported `src/**/*.rs` file,
-without loading native weights. PR template and harness-evidence checks also
-run on hosted Linux.
+without loading native weights. A **sdk no-native** job
+`cargo check`s `syllabix-core` with `--no-default-features` on a runner
+without CMake (`setup-linux.sh` is skipped). PR template and harness-evidence
+checks also run on hosted Linux.
 
 The **git-consumer** workflow (`git-consumer.yml`) pretends to be another repo.
 It depends on `syllabix-core` from git: a `v*` tag when one exists, otherwise
@@ -202,7 +206,8 @@ Weekly CI runs `cargo test --workspace` on Linux / Windows (hosted) and macOS
 A separate weekly **native coverage** workflow (`native-tests.yml`, job
 `coverage-native`) runs launch-stack weights under
 `cargo llvm-cov --no-cfg-coverage --release` with
-`-p syllabix-core --features native-inference --test native_inference`.
+`-p syllabix-core --features native-inference --test native_inference`
+(`native-inference` turns on `ggml`; ONNX stays always-on).
 It defaults to the self-hosted Mac (Metal / Apple Silicon); `workflow_dispatch`
 can override the pool to `ubuntu-latest`. Reports upload as
 `coverage-cobertura-native`. No native percentage floor yet — baseline first

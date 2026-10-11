@@ -2,9 +2,18 @@
 
 Other repos can use Syllabix without forking `pipeline.rs`. The default product is still `syllabix run`.
 
+Most apps use the defaults (same as `syllabix run`). Building them needs CMake and a C++ compiler.
+
 ```toml
 [dependencies]
 syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.0" }
+```
+
+If your app brings its own speech-to-text, LLM, and text-to-speech, turn the defaults off. Then you don't need CMake:
+
+```toml
+[dependencies]
+syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.0", default-features = false }
 ```
 
 ```bash
@@ -28,6 +37,24 @@ What each tag contains is on the git tag and its [GitHub Release](https://github
 | **3 — Compose stages** | Preview | Implement `Vad` / `Stt` / `Llm` / `Tts` / `AudioCapture` / `AudioSink`, swap them on a `Session`, and run | Bring your own engine (often only the LLM). |
 
 Ready = used by the CLI, bugfixes only. Preview = on `main`, may churn.
+
+## Cargo features
+
+`syllabix-core` defaults to the same build as `syllabix run`: local speech engines, microphone and speakers, and the online LLM adapter. With `default-features = false` you get `run_loop`, the provider traits, the fakes, and `Session` if you supply every stage yourself. That path does not run CMake and does not compile whisper.cpp / llama.cpp.
+
+| Feature | On by default? | Who should enable it | What it turns on |
+| --- | --- | --- | --- |
+| `full` | yes (`default`) | Lane 2, and Lane 3 hosts that still use shipped engines or the real mic/speakers | `ggml` + `device-audio` + `cloud-llm`. `run_live`, `load_real_providers`, and `Session` defaults. |
+| `ggml` | via `full` | Lane 3 that still loads this crate’s Whisper / local LLM / Qwen engines | Optional `syllabix-native` (CMake + C++). |
+| `device-audio` | via `full` | Lane 3 that still uses the real microphone and speakers | Device I/O and echo cancellation (`NativeCapture` / `NativePlayback`). |
+| `cloud-llm` | via `full` | Hosts whose yaml uses `pipeline.llm.provider: online` with `load_real_providers` | `LiveLlm::Cloud` in the real loader. Crate-root `OpenAiLlm` always compiles. |
+| `native-inference` | no | Contributors running the slow model tests (`native_inference`) | Turns on `ggml` plus the tests that download and run the real models (GGUF and ONNX). ONNX (`ort`) is always built in; this feature does not switch it on. |
+
+**Lane 3 that implements every stage** (see `examples/custom-llm.rs`): `default-features = false`.  
+**Lane 3 that swaps only the LLM and keeps the other defaults:** keep `full` (or at least `ggml` + `device-audio`). That still compiles whisper.cpp.  
+**Lane 2 `run_live`:** `full` (or `ggml` + `device-audio`).
+
+Do not enable `ggml` unless you have the [Host compile](#host-compile) toolchain.
 
 ## Lane 1 — Sidecar binary
 
@@ -79,14 +106,21 @@ Treat only this list as the supported crate-root surface. Other `pub use` items 
 | Type / function | Role |
 | --- | --- |
 | `AgentConfig` | Validated yaml / built-in stack (`v0`, `resolve_for_run`, `load_path`, `parse_yaml`). |
-| `run_live` | Load weights, open default mic/speakers, run until shutdown or capture ends (`config`, `Cancel`, `Option<Sender<LoopEvent>>`, barge-in `bool`). |
-| `run_live_with_controls` | `run_live_with_controls(config, cancel, Some(tx), controls)`. |
 | `Cancel` | Shutdown and in-flight generation cancel. |
 | `RuntimeControls` | Barge-in and mic mute while the loop is running. |
 | `LoopEvent` | Ready, user/partial/assistant text, thinking, AEC, tools, timings, playback. |
 | `LoopReport` | Completed turns, queue occupancy, cancelled/skipped. |
 | `Error` / `Result` | Recoverable failures; `Error::exit_code` matches the CLI. |
 | `ModelCache` / `cache_root` | First-run weight cache (`ModelCache::v0()` is the product cache). |
+
+### Supported types (Lane 2, needs `full`)
+
+These crate-root names exist only when the `full` feature is on (`ggml` + `device-audio`). They are still the supported Lane 2 surface.
+
+| Type / function | Role |
+| --- | --- |
+| `run_live` | Load weights, open default mic/speakers, run until shutdown or capture ends (`config`, `Cancel`, `Option<Sender<LoopEvent>>`, barge-in `bool`). |
+| `run_live_with_controls` | `run_live_with_controls(config, cancel, Some(tx), controls)`. |
 
 ## Lane 3 — Compose stages
 
@@ -139,7 +173,7 @@ impl Llm for EchoLlm {
 }
 ```
 
-The trait impl above is covered by `crates/syllabix-core/examples/custom-llm.rs`. That file uses in-memory fixtures so CI can run without a microphone (`cargo clippy --workspace --all-targets` compiles examples, so the supported API cannot bitrot). Production hosts usually swap only the LLM as above.
+The trait impl above is covered by `crates/syllabix-core/examples/custom-llm.rs`. That file uses in-memory fixtures so CI can run without a microphone (`cargo clippy --workspace --all-targets` compiles examples, so the supported API cannot bitrot). A host that swaps only the LLM and keeps the other `Session` defaults still needs the `ggml` and `device-audio` features (on by default). Skipping CMake is only for hosts that supply every stage themselves.
 
 A yaml `pipeline.llm.provider: online` still needs `SYLLABIX_LLM_API_KEY` when the LLM slot is the default. A custom `Llm` does not. Native mic/speaker types live under `syllabix_core::audio` and are **not** in the Lane 2 freeze list.
 
@@ -152,13 +186,20 @@ A yaml `pipeline.llm.provider: online` still needs `SYLLABIX_LLM_API_KEY` when t
 | `AudioCapture`, `AudioSink` | Mic (or fixture) and speakers (or collector). |
 | `run_loop` / `run_loop_captured` | In-memory cascade; blocks until workers join. |
 | `PipelineStages`, `LoopConfig` | Arguments to `run_loop`. |
-| `load_real_providers` | Silero + configured STT/LLM/TTS from the cache. |
 
 Do not fork `pipeline.rs`. Swap a trait impl instead.
 
+### Supported types (Lane 3, needs `full`)
+
+`load_real_providers` is crate-root only with the `ggml` feature (on via `full`).
+
+| Type / function | Role |
+| --- | --- |
+| `load_real_providers` | Silero + configured STT/LLM/TTS from the cache. |
+
 ## Host compile
 
-If you embed Syllabix in your own Rust app (Lane 2 or Lane 3), your machine compiles the C++ speech libraries that ship with Syllabix. You need CMake and a C++ compiler. The first compile takes several minutes. If you only run a downloaded Syllabix binary (Lane 1), skip this section. A Lane 1 `cargo install --git` build compiles the CLI, so it needs the same packages ([install — Install from git](install.md#install-from-git)).
+If you embed Syllabix in your own Rust app (Lane 2 or Lane 3), your machine compiles the C++ speech libraries that ship with Syllabix. You need CMake and a C++ compiler. The first compile takes several minutes. Lane 3 hosts that set `default-features = false` and supply every stage themselves skip that compile. If you only run a downloaded Syllabix binary (Lane 1), skip this section. A Lane 1 `cargo install --git` build compiles the CLI, so it needs the same packages ([install — Install from git](install.md#install-from-git)).
 
 Same packages as [install — Compile](install.md#compile). This repo’s Linux setup script also installs extra tools used only in our tests; those are called out below.
 

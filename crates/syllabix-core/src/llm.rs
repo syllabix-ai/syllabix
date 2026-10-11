@@ -2,10 +2,16 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 use std::time::Duration;
 
-use syllabix_native::ChatMessage;
+/// Chat turn passed to the llama.cpp engine. Kept local so scripted tests
+/// compile without `syllabix-native` (no CMake).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
 
 use crate::cancel::Cancel;
 use crate::defaults::BuiltinDefaults;
@@ -168,7 +174,7 @@ impl Clone for LlamaLlm {
 
 impl LlamaLlm {
     /// Load a GGUF from disk.
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "ggml"))]
     pub fn from_model_path(path: impl AsRef<Path>) -> Result<Self> {
         let engine = native::LlamaEngine::load(path.as_ref())?;
         Ok(Self {
@@ -189,14 +195,18 @@ impl LlamaLlm {
         })
     }
 
-    /// Coverage never loads native GGUF weights; keep the constructor as a
-    /// callable seam for tests that validate cache and provider errors.
-    #[cfg(coverage)]
+    /// Coverage never loads native GGUF weights; without `ggml` there is no
+    /// ggml frontend. Keep the constructor as a callable seam for tests.
+    #[cfg(any(coverage, not(feature = "ggml")))]
     pub fn from_model_path(path: impl AsRef<Path>) -> Result<Self> {
         let _ = path;
         Err(Error::Provider {
             provider: BuiltinDefaults::v0().llm.as_str(),
-            message: "llama.cpp inference is not loaded in coverage tests".into(),
+            message: if cfg!(coverage) {
+                "llama.cpp inference is not loaded in coverage tests".into()
+            } else {
+                "llama.cpp inference requires the `ggml` feature".into()
+            },
         })
     }
 
@@ -962,7 +972,7 @@ trait Engine: Send {
     }
 }
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 mod native {
     use super::*;
     use std::os::raw::c_void;
@@ -970,6 +980,16 @@ mod native {
     use std::time::Instant;
 
     use syllabix_native::{LlamaContext, LlamaError, LlamaGenerate};
+
+    fn ffi_messages(messages: &[ChatMessage]) -> Vec<syllabix_native::ChatMessage> {
+        messages
+            .iter()
+            .map(|message| syllabix_native::ChatMessage {
+                role: message.role.clone(),
+                content: message.content.clone(),
+            })
+            .collect()
+    }
 
     /// End a stalled local generation promptly, rather than leaving the TUI
     /// on an unfinished turn. This belongs with the native callback that
@@ -998,7 +1018,7 @@ mod native {
             append_thinking_off_suffix: bool,
         ) -> Result<usize> {
             self.ctx
-                .prompt_token_count(messages, append_thinking_off_suffix)
+                .prompt_token_count(&ffi_messages(messages), append_thinking_off_suffix)
                 .map_err(|err| Error::Provider {
                     provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
                     message: format!("{err:?}"),
@@ -1017,9 +1037,10 @@ mod native {
             }
             let abort = GenerationAbort::new(cancel);
             let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
+            let messages = ffi_messages(messages);
             let outcome = unsafe {
                 self.ctx.generate(
-                    messages,
+                    &messages,
                     LlamaGenerate {
                         append_thinking_off_suffix,
                         n_threads: thread_count(),
@@ -1059,9 +1080,10 @@ mod native {
             let abort = GenerationAbort::new(cancel);
             let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
             let c_tools = tools_json.to_string();
+            let messages = ffi_messages(messages);
             let outcome = unsafe {
                 self.ctx.generate_with_tools(
-                    messages,
+                    &messages,
                     &c_tools,
                     LlamaGenerate {
                         append_thinking_off_suffix,
@@ -1101,9 +1123,10 @@ mod native {
             let abort = GenerationAbort::new(cancel);
             let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
             let c_tools = tools_json.to_string();
+            let messages = ffi_messages(messages);
             let outcome = unsafe {
                 self.ctx.generate_with_lfm_tools(
-                    messages,
+                    &messages,
                     &c_tools,
                     LlamaGenerate {
                         append_thinking_off_suffix: false,

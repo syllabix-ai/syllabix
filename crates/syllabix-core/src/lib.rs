@@ -22,6 +22,7 @@ mod executor;
 mod fake;
 mod g2p;
 mod language;
+#[cfg(all(feature = "ggml", feature = "device-audio"))]
 mod live;
 mod llm;
 mod memory;
@@ -77,6 +78,7 @@ pub use fake::{
     FakeTts, FakeVad, LlmCall, ScriptedStt,
 };
 pub use g2p::{english_to_ipa, english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
+#[cfg(all(feature = "ggml", feature = "device-audio"))]
 pub use live::{run_live, run_live_with_controls};
 pub use llm::{
     is_v0_llm_model, render_system_prompt, render_system_prompt_with_skills, system_prompt_for,
@@ -116,6 +118,7 @@ pub use policy::{resolve_effective, Enforcement, ExecutionPlan, PolicyDeny, Prov
 pub use providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
 pub use queue::{bounded, BoundedReceiver, BoundedSender, Occupancy, QueueReport, QueueStats};
 pub use qwen_asr::{QwenAsrStt, ASR_ASSET, ASR_MMPROJ_ASSET};
+#[cfg(any(coverage, feature = "ggml"))]
 pub use real::{build_llm, build_stt, build_tts, load_real_providers, LiveLlm, LiveStt, LiveTts};
 #[cfg(all(target_os = "macos", not(coverage)))]
 pub use sandbox::MacOsSandboxProvider;
@@ -159,11 +162,12 @@ pub use vad::{
 };
 
 /// Force-link the whisper.cpp and llama.cpp frontends into the executable.
+#[cfg(feature = "ggml")]
 pub fn ensure_shared_ggml_frontends() -> bool {
     syllabix_native::frontends_linked()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ggml"))]
 mod shared_ggml_tests {
     #[test]
     fn llama_and_whisper_frontends_share_one_ggml() {

@@ -29,9 +29,17 @@ fn tts_backend_id<T: 'static>(tts: &T) -> Option<&str> {
     if let Some(qwen) = provider.downcast_ref::<crate::tts::QwenTts>() {
         return qwen.backend_id();
     }
-    provider
-        .downcast_ref::<crate::real::LiveTts>()
-        .and_then(crate::real::LiveTts::backend_id)
+    #[cfg(any(coverage, feature = "ggml"))]
+    {
+        provider
+            .downcast_ref::<crate::real::LiveTts>()
+            .and_then(crate::real::LiveTts::backend_id)
+    }
+    #[cfg(not(any(coverage, feature = "ggml")))]
+    {
+        let _ = provider;
+        None
+    }
 }
 
 /// How the loop should finish.

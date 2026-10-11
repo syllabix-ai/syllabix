@@ -13,13 +13,24 @@ keywords = ["voice-agent", "speech-to-speech", "whisper", "vad", "tts"]
 categories = ["multimedia::audio", "artificial-intelligence"]
 
 [features]
-# Native inference fetches and executes the launch-model stack. Keep it
-# opt-in so cross-platform build/test CI stays fast and network-independent.
-native-inference = []
+# Same graph as `syllabix run`. The CLI and existing hosts keep this default.
+default = ["full"]
+# Session defaults, run_live, and load_real_providers (engines + devices + cloud LLM).
+full = ["ggml", "device-audio", "cloud-llm"]
+# Optional CMake build of whisper.cpp / llama.cpp via syllabix-native.
+ggml = ["dep:syllabix-native"]
+# Optional microphone/speaker I/O plus echo cancellation (ALSA headers on Linux).
+device-audio = ["dep:cpal", "dep:sonora"]
+# Cloud LLM variant in load_real_providers only. OpenAiLlm always compiles.
+cloud-llm = []
+# Turns on `ggml` plus the slow tests that download and run the real models
+# (both GGUF and ONNX). ONNX support (`ort`) is always built in; this
+# feature does not switch it on.
+native-inference = ["ggml"]
 
 [dependencies]
 thiserror.workspace = true
-cpal.workspace = true
+cpal = { workspace = true, optional = true }
 sha2.workspace = true
 ureq.workspace = true
 url.workspace = true
@@ -35,8 +46,8 @@ serde_json.workspace = true
 tokenizers.workspace = true
 htmd.workspace = true
 tracing.workspace = true
-syllabix-native.workspace = true
-sonora.workspace = true
+syllabix-native = { workspace = true, optional = true }
+sonora = { workspace = true, optional = true }
 # Kokoro G2P: Misaki US lexicon in-process. default-features includes
 # espeak-ng (GPL + extra dylib) — keep that off.
 misaki-rs = { version = "=0.3.0", default-features = false }
@@ -58,6 +69,23 @@ sha2.workspace = true
 name = "native_inference"
 path = "tests/native_inference/main.rs"
 required-features = ["native-inference"]
+
+[[test]]
+name = "audio_io"
+path = "tests/audio_io.rs"
+required-features = ["device-audio"]
+
+[[test]]
+name = "harness-quality"
+path = "tests/harness-quality.rs"
+required-features = ["ggml", "cloud-llm"]
+
+[[example]]
+name = "embed-loop"
+required-features = ["full"]
+
+[[example]]
+name = "custom-llm"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

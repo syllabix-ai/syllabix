@@ -5,8 +5,10 @@
 
 mod convert;
 mod devices;
+#[cfg(feature = "device-audio")]
 mod echo;
 mod fixture;
+#[cfg(feature = "device-audio")]
 mod native;
 mod ring;
 mod wav;
@@ -18,11 +20,13 @@ pub use convert::{
 pub use devices::{
     input_privacy_hint, select_input, select_output, DeviceChoice, DeviceInfo, DeviceInventory,
 };
+#[cfg(feature = "device-audio")]
 pub use echo::{EchoCalibration, EchoController, EchoRecording, EchoReference, AEC_FRAME_SAMPLES};
 pub use fixture::{
     play_fixture_to_device_pcm, record_fixture_to_frames, DrainStats, DrainingPlayback,
     FixtureCapture, FixturePlayback,
 };
+#[cfg(feature = "device-audio")]
 pub use native::{
     backend_name, probe_device_names, NativeCapture, NativePlayback, SelectedCpalDevice,
 };

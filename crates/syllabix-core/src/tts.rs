@@ -14,13 +14,13 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(not(coverage))]
 use ort::session::Session;
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "ggml"))]
 use syllabix_native::{QwenTtsBackend, QwenTtsContext, QwenTtsError};
 
 #[cfg(not(coverage))]
 use crate::audio::{f32_to_i16, PcmConverter, PcmFormat};
 use crate::cancel::Cancel;
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), any(feature = "ggml", test)))]
 use crate::defaults::TtsCompute;
 use crate::defaults::{BuiltinDefaults, TtsModel};
 use crate::error::{Error, Result};
@@ -314,7 +314,7 @@ impl Clone for QwenTts {
 impl QwenTts {
     /// Load the backbone GGUF + mmproj from disk and speak `language`.
     /// `selected` picks the loaded weight for logs and the diagnostics sidecar.
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "ggml"))]
     pub fn from_paths(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
@@ -336,7 +336,7 @@ impl QwenTts {
     /// [`QwenTts::from_paths`] with a pinned sampler seed. The native
     /// round-trip test uses this so fixtures reproduce; runtime callers use
     /// the random-seed path above.
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "ggml"))]
     pub fn from_paths_with_seed(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
@@ -357,7 +357,7 @@ impl QwenTts {
     /// Load with explicit compute placement. `Auto` attempts the complete
     /// Metal warm-up on Apple Silicon and reconstructs the engine on CPU if
     /// that attempt fails.
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "ggml"))]
     pub fn from_paths_with_seed_and_compute(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
@@ -379,7 +379,7 @@ impl QwenTts {
 
     /// Resolve the selected Qwen3-TTS backbone plus its matching mmproj from
     /// the manifest cache, then load. Only the selected pair is fetched.
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "ggml"))]
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -506,8 +506,10 @@ trait WaveformEngine: Send {
     }
 }
 
+#[cfg(all(not(coverage), feature = "ggml"))]
+use native::NativeQwen;
 #[cfg(not(coverage))]
-use native::{NativeQwen, OrtKokoro};
+use native::OrtKokoro;
 
 /// Native model loading and inference live in a whole-module boundary. The
 /// coverage build still compiles the sentence/chunking logic above, but never
@@ -516,6 +518,7 @@ use native::{NativeQwen, OrtKokoro};
 mod native {
     use super::*;
 
+    #[cfg(feature = "ggml")]
     pub(super) fn backend_attempts(compute: TtsCompute) -> Result<&'static [QwenTtsBackend]> {
         const CPU: &[QwenTtsBackend] = &[QwenTtsBackend::Cpu];
         const METAL: &[QwenTtsBackend] = &[QwenTtsBackend::Metal];
@@ -536,10 +539,12 @@ mod native {
         })
     }
 
+    #[cfg(feature = "ggml")]
     fn vulkan_device_present() -> bool {
         syllabix_native::vulkan_device_count() > 0
     }
 
+    #[cfg(any(feature = "ggml", test))]
     #[derive(Debug, PartialEq, Eq)]
     pub(super) enum Attempts {
         Cpu,
@@ -552,6 +557,7 @@ mod native {
     /// Same device rule as STT/LLM offload: Vulkan is attempted only when the
     /// build has it and the exception-safe probe finds a device. The probe is
     /// lazy so CPU and Metal selections never touch the Vulkan loader.
+    #[cfg(any(feature = "ggml", test))]
     pub(super) fn attempts_for(
         compute: TtsCompute,
         vulkan_compiled: bool,
@@ -581,6 +587,7 @@ mod native {
         }
     }
 
+    #[cfg(feature = "ggml")]
     pub(super) fn load_first_backend<T, E>(
         attempts: &[QwenTtsBackend],
         mut load: impl FnMut(QwenTtsBackend) -> std::result::Result<T, E>,
@@ -693,6 +700,7 @@ mod native {
 
     /// Qwen3-TTS waveform engine over the shared ggml native path. One sentence
     /// per call; the underlying context keeps no cross-sentence state.
+    #[cfg(feature = "ggml")]
     pub(super) struct NativeQwen {
         ctx: QwenTtsContext,
         lang: String,
@@ -700,6 +708,7 @@ mod native {
         pub(super) backend: QwenTtsBackend,
     }
 
+    #[cfg(feature = "ggml")]
     impl NativeQwen {
         pub(super) fn load_with_seed(
             model: &Path,
@@ -731,6 +740,7 @@ mod native {
         }
     }
 
+    #[cfg(feature = "ggml")]
     impl WaveformEngine for NativeQwen {
         fn has_voice_anchor(&self) -> bool {
             self.voice_active
@@ -834,6 +844,7 @@ mod native {
         }
     }
 
+    #[cfg(feature = "ggml")]
     unsafe extern "C" fn abort_on_shutdown(user_data: *mut std::ffi::c_void) -> bool {
         if user_data.is_null() {
             return false;
@@ -857,6 +868,7 @@ mod native {
     }
 
     /// Convert an engine's native-rate mono PCM to the 16 kHz pipeline format.
+    #[cfg(any(feature = "ggml", test))]
     pub(super) fn resample_i16_to_v0(samples: &[i16], rate_hz: i32) -> Vec<i16> {
         let f32_pcm: Vec<f32> = samples.iter().map(|s| f32::from(*s) / 32_767.0).collect();
         let mut conv = PcmConverter::new(
@@ -1168,7 +1180,7 @@ mod tests {
         assert_eq!(tts.model_id(), Some("qwen3-tts-1.7b-base"));
     }
 
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "ggml"))]
     #[test]
     fn qwen_auto_backend_order_and_retry_are_deterministic() {
         let attempts = native::backend_attempts(TtsCompute::Auto).unwrap();
@@ -1200,7 +1212,7 @@ mod tests {
         assert_eq!(seen, [QwenTtsBackend::Metal, QwenTtsBackend::Cpu]);
     }
 
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "ggml"))]
     #[test]
     fn qwen_forced_backend_is_a_single_attempt() {
         assert_eq!(
@@ -1319,7 +1331,7 @@ mod tests {
         assert!(chunks[0].is_last);
     }
 
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "ggml"))]
     #[test]
     fn qwen_from_cache_requires_both_assets() {
         let root = std::env::temp_dir().join(format!(
