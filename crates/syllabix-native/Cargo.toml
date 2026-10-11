@@ -5,9 +5,33 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish.workspace = true
+publish = true
 rust-version.workspace = true
 description = "Shared ggml plus whisper.cpp and llama.cpp frontends"
+readme = "README.md"
+# Ship README, Apache-2.0 LICENSE, NOTICE, and the vendored engine trees
+# (including their MIT LICENSE files). Keep mtmd-debug.h, miniaudio.h,
+# stb_image.h, CMake files, and ggml-vulkan feature-tests shaders.
+# The ! lines skip upstream tests/examples/pocs and model blobs if those
+# ever land in vendor/; they do not match feature-tests/.
+include = [
+    "src/**",
+    "include/**",
+    "build.rs",
+    "CMakeLists.txt",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "vendor/README.md",
+    "vendor/llama.cpp/**",
+    "vendor/whisper.cpp/**",
+    "!vendor/**/tests/**",
+    "!vendor/**/examples/**",
+    "!vendor/**/pocs/**",
+    "!vendor/**/*.gguf",
+    "!vendor/**/*.bin",
+    "!vendor/**/*.onnx",
+]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(syllabix_ggml_vulkan)'] }
