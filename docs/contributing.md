@@ -174,6 +174,21 @@ GitHub Releases. The crates.io job is `.github/workflows/crates-io.yml`.
 Before pushing a tag, you can rehearse it from the Actions tab (crates.io
 workflow, Run workflow, enter the tag); nothing is uploaded.
 
+Create a GitHub Release by pushing the tag only. Do not click "Create a
+new release" on the GitHub Releases page. If you publish that empty
+release, GitHub locks the name and this workflow cannot attach the
+binaries. A leftover draft is fine: the workflow will upload onto it.
+This repo uses immutable releases. Once a version's tag name has been
+used for a published release, GitHub never lets that name come back, even
+if you delete the release.
+
+If that already happened, recover from the Actions tab: open the Release
+workflow, Run workflow, pick the existing tag as the branch/tag, and fill
+`release_name` with a name that does not start with `v` (for example
+`app-v0.1.1`). The job builds from that tag and publishes the binaries
+under the new name at the same commit. Leave `release_name` empty to
+package artifacts without publishing.
+
 GitHub Release files are the four artifact names plus `SHA256SUMS`. `.github/workflows/release.yml` publishes them on `v*` tags. Pull requests do not package dist binaries. If Actions cannot run, build each target with `scripts/package-release.sh` and attach with `scripts/publish-release.sh v0.1.0`.
 
 ```bash
