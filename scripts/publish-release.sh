@@ -4,6 +4,9 @@
 #
 # Requires gh with permission to create releases. This script does not
 # build the Darwin/Windows matrices; copy those files into dist/ first.
+#
+# Same rules as .github/workflows/release.yml: never delete a release.
+# Immutable releases lock a published name forever.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -48,21 +51,47 @@ if [[ "${#sidecars[@]}" -eq 0 ]]; then
 fi
 
 if ! command -v gh >/dev/null 2>&1; then
-  echo "gh is not on PATH. Create the release in the GitHub UI and attach:" >&2
-  printf '  %s\n' "${files[@]}" "${sidecars[@]}" >&2
+  echo "gh is not on PATH. Install GitHub CLI, then re-run this script." >&2
+  printf '  would attach: %s\n' "${files[@]}" "${sidecars[@]}" >&2
   exit 1
 fi
 
-# Replace an existing release for the same tag (e.g. empty UI draft) without
-# deleting the git tag (--cleanup-tag is intentionally omitted).
+notes="Single-file Syllabix binaries. Download for your OS, chmod +x, then ./syllabix run. Weights fetch on first run into the local cache. Verify with SHA256SUMS. No Python, pip, or API key."
+
+# A brand-new draft can 404 for a second or two when we try to publish it.
+publish_now() {
+  local n=0
+  while (( n < 5 )); do
+    if gh release edit "${tag}" --draft=false; then
+      return 0
+    fi
+    n=$((n + 1))
+    echo "could not publish ${tag} yet (try ${n}/5); waiting for the draft to show up"
+    sleep 2
+  done
+  echo "gave up publishing ${tag}" >&2
+  return 1
+}
+
 if gh release view "${tag}" >/dev/null 2>&1; then
-  echo "release ${tag} already exists; deleting so assets can be replaced"
-  gh release delete "${tag}" --yes
+  is_draft="$(gh release view "${tag}" --json isDraft --jq .isDraft)"
+  if [[ "${is_draft}" == true ]]; then
+    gh release upload "${tag}" "${files[@]}" "${sidecars[@]}" --clobber
+    publish_now
+    exit 0
+  fi
+  echo "A published GitHub Release already exists for ${tag}." >&2
+  echo "Someone created it by hand in the GitHub Releases page. This script has to create the release itself so the binaries are attached before GitHub locks the name." >&2
+  echo "Once a name is used for a published release, GitHub never lets that name come back." >&2
+  echo "Next time, push only the tag and let the Release workflow create the release." >&2
+  exit 1
 fi
 
-echo "gh release create ${tag} (cwd files below)"
+echo "gh release create --draft ${tag} (cwd files below)"
 gh release create "${tag}" \
   "${files[@]}" \
   "${sidecars[@]}" \
+  --draft \
   --title "${tag}" \
-  --notes "Single-file Syllabix binaries. Download for your OS, chmod +x, then ./syllabix run. Weights fetch on first run into the local cache. Verify with SHA256SUMS. No Python, pip, or API key."
+  --notes "${notes}"
+publish_now

@@ -1,11 +1,23 @@
 name: Release
 
-# Tags publish a release; manual runs package artifacts without publishing.
+# Tags publish a GitHub Release. Manual runs package artifacts and, unless
+# release_name is set, publish nothing. Do not create the release in the
+# GitHub UI: this workflow has to create it. Immutable releases lock a
+# tag name forever once published, even if you delete the release later.
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_name:
+        description: >-
+          Recovery GitHub Release name, for example app-v0.1.1. Use this
+          when the v* tag name was already used by a published release.
+          Leave empty to package artifacts without publishing. Must not
+          start with v.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -68,10 +80,15 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # Tag pushes always publish. A manual run publishes only when
+  # release_name is set (recovery for a burned tag name). An empty
+  # manual run still packages artifacts and skips this job.
   publish:
     name: GitHub Release
     needs: package
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+      || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_name != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -90,22 +107,88 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NAME: ${{ github.event.inputs.release_name }}
         run: |
-          tag="${GITHUB_REF_NAME}"
+          # Immutable releases: GitHub never lets a published tag name come
+          # back. Deleting a published release and creating it again fails
+          # with HTTP 422. Never call `gh release delete`. Create as a draft,
+          # attach files, then publish so the release is complete before it
+          # locks.
+          notes="Single-file Syllabix binaries. Download for your OS, chmod +x, then \`./syllabix run\`. Weights fetch on first run into the local cache. Verify with SHA256SUMS. No Python, pip, or API key."
           files=(dist/syllabix-Linux-x86_64 dist/syllabix-Darwin-arm64 dist/syllabix-Darwin-x86_64 dist/syllabix-Windows-x86_64.exe dist/SHA256SUMS)
           for f in "${files[@]}"; do
             test -f "${f}"
           done
           shopt -s nullglob
           sidecars=(dist/*.repro.json)
-          # Tag pushes / re-runs can race a UI-created empty release for the
-          # same tag; replace it so publish stays idempotent without deleting
-          # the git tag (--cleanup-tag is intentionally omitted).
-          if gh release view "${tag}" >/dev/null 2>&1; then
-            gh release delete "${tag}" --yes
+
+          # A brand-new draft can 404 for a second or two when we try to
+          # publish it. Retry instead of failing the whole release.
+          publish_now() {
+            local tag="$1"
+            local n=0
+            while (( n < 5 )); do
+              if gh release edit "${tag}" --draft=false; then
+                return 0
+              fi
+              n=$((n + 1))
+              echo "could not publish ${tag} yet (try ${n}/5); waiting for the draft to show up"
+              sleep 2
+            done
+            echo "gave up publishing ${tag}" >&2
+            return 1
+          }
+
+          publish_draft() {
+            local tag="$1"
+            shift
+            gh release create "${tag}" \
+              "${files[@]}" \
+              "${sidecars[@]}" \
+              --draft \
+              --title "${tag}" \
+              --notes "${notes}" \
+              "$@"
+            publish_now "${tag}"
+          }
+
+          if [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
+            # Spaces-only is the same as leaving the box empty: package only.
+            tag="$(printf '%s' "${RELEASE_NAME:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            if [[ -z "${tag}" ]]; then
+              echo "release_name is empty; packaging artifacts only"
+              exit 0
+            fi
+            # A name starting with v would create a v* tag and fire
+            # crates-io.yml and this workflow again.
+            if [[ "${tag}" == v* ]]; then
+              echo "release_name '${tag}' starts with v. Use a name like app-v0.1.1 so GitHub does not create another v* tag (that would start both release workflows again)." >&2
+              exit 1
+            fi
+            if gh release view "${tag}" >/dev/null 2>&1; then
+              echo "A GitHub Release named ${tag} already exists. Pick a different release_name." >&2
+              exit 1
+            fi
+            # Point the new name at the commit this run was started on
+            # (the maintainer picks the original tag in the Run workflow menu).
+            publish_draft "${tag}" --target "${GITHUB_SHA}"
+            exit 0
           fi
-          gh release create "${tag}" \
-            "${files[@]}" \
-            "${sidecars[@]}" \
-            --title "${tag}" \
-            --notes "Single-file Syllabix binaries. Download for your OS, chmod +x, then \`./syllabix run\`. Weights fetch on first run into the local cache. Verify with SHA256SUMS. No Python, pip, or API key."
+
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            is_draft="$(gh release view "${tag}" --json isDraft --jq .isDraft)"
+            if [[ "${is_draft}" == true ]]; then
+              # A leftover draft can still receive files; publishing it then locks it.
+              gh release upload "${tag}" "${files[@]}" "${sidecars[@]}" --clobber
+              publish_now "${tag}"
+              exit 0
+            fi
+            echo "A published GitHub Release already exists for ${tag}." >&2
+            echo "Someone created it by hand in the GitHub Releases page. This workflow has to create the release itself so the binaries are attached before GitHub locks the name." >&2
+            echo "Once a name is used for a published release, GitHub never lets that name come back." >&2
+            echo "Next time, push only the tag and let this workflow create the release." >&2
+            exit 1
+          fi
+
+          publish_draft "${tag}"
