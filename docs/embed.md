@@ -26,7 +26,17 @@ The SDK (`syllabix-core`) and the CLI (`syllabix`) share one version: `[workspac
 
 Pin `tag = "vX.Y.Z"`. Do not track `main` or a branch. `main` can change without a version bump.
 
-What each tag contains is on the git tag and its [GitHub Release](https://github.com/syllabix-ai/syllabix/releases). Maintainers cut tags as described in [contributing — Packaging](contributing.md#packaging-maintainers).
+What each tag contains is on the git tag and its [GitHub Release](https://github.com/syllabix-ai/syllabix/releases). Maintainers cut tags as described in [contributing — Packaging](contributing.md#packaging-maintainers). Hosts: [Compatibility](#compatibility).
+
+## Compatibility
+
+Pin a git tag. Before moving to a newer tag, read its [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) notes, because any release may change the supported API until Syllabix is published on crates.io. Version rules will be set then.
+
+The supported API is only the freeze lists on this page: [Lane 2](#supported-types-lane-2), [Lane 2 with `full`](#supported-types-lane-2-needs-full), [Lane 3](#supported-types-lane-3-additional), and [Lane 3 with `full`](#supported-types-lane-3-needs-full). These are names that are always at the crate root, plus the ones that exist only with `full`.
+
+CI checks this list.
+
+Items in named modules (`testing`, `g2p`, `sandbox`, and the rest) and the `*_ASSET` constants are **not** covered unless a freeze list names them.
 
 ## Three lanes
 
@@ -36,7 +46,7 @@ What each tag contains is on the git tag and its [GitHub Release](https://github
 | **2 — Embed the live loop** | Ready | `run_live` / `run_live_with_controls` + `LoopEvent` | In-process Rust host that wants the shipped conversation loop. |
 | **3 — Compose stages** | Preview | Implement `Vad` / `Stt` / `Llm` / `Tts` / `AudioCapture` / `AudioSink`, swap them on a `Session`, and run | Bring your own engine (often only the LLM). |
 
-Ready = used by the CLI, bugfixes only. Preview = on `main`, may churn.
+Ready = used by the CLI. Preview = less proven. Pin a git tag ([Compatibility](#compatibility)).
 
 ## Cargo features
 
@@ -54,7 +64,7 @@ Ready = used by the CLI, bugfixes only. Preview = on `main`, may churn.
 **Lane 3 that swaps only the LLM and keeps the other defaults:** keep `full` (or at least `ggml` + `device-audio`). That still compiles whisper.cpp.  
 **Lane 2 `run_live`:** `full` (or `ggml` + `device-audio`).
 
-Do not enable `ggml` unless you have the [Host compile](#host-compile) toolchain.
+Do not enable `ggml` unless you have the [Host compile](#host-compile) toolchain. Hosts should not enable `native-inference`.
 
 ## Lane 1 — Sidecar binary
 
