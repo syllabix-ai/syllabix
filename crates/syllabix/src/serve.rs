@@ -1,23 +1,28 @@
 //! `syllabix serve`: localhost HTTP worker for speech weights.
 //!
 //! `serve stt` loads one yaml finalize model (`whisper-*` / `qwen3-asr-0.6`) and
-//! answers OpenAI `POST /v1/audio/transcriptions`. `serve tts` still health-only.
+//! answers OpenAI `POST /v1/audio/transcriptions`. `serve tts` loads Pocket,
+//! Kokoro, or Qwen and answers `POST /v1/audio/speech` (full body or
+//! `stream_format=audio`).
 //! Bind defaults to loopback. `SYLLABIX_SERVE_TOKEN` is required unless the bind
 //! is loopback and the variable is unset (dev only).
 
-use std::io::Read;
+use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use serde::Deserialize;
 use serde_json::json;
 use syllabix_core::audio::{
-    f32_to_i16, i16_to_f32, read_wav, FrameSplitter, PcmConverter, PcmFormat, WavPcm,
+    f32_to_i16, i16_to_f32, read_wav, write_wav, FrameSplitter, PcmConverter, PcmFormat, WavPcm,
 };
-use syllabix_core::defaults::SttModel;
-use syllabix_core::types::{TurnId, DEFAULT_SAMPLE_RATE_HZ};
-use syllabix_core::{Cancel, Error, Result, Stt, Transcript, Utterance};
+use syllabix_core::defaults::{SttModel, TtsModel};
+use syllabix_core::remote_tts::openai_pcm_format;
+use syllabix_core::types::{GenerationId, TokenChunk, TurnId, DEFAULT_SAMPLE_RATE_HZ};
+use syllabix_core::{Cancel, Error, Result, Stt, Transcript, Tts, Utterance};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::cli::ServeCommand;
@@ -55,6 +60,7 @@ pub struct ServeState {
     job: Mutex<()>,
     waiters: AtomicUsize,
     stt: Mutex<Option<Box<dyn Stt + Send>>>,
+    tts: Mutex<Option<Box<dyn Tts + Send>>>,
 }
 
 impl ServeState {
@@ -67,12 +73,19 @@ impl ServeState {
             job: Mutex::new(()),
             waiters: AtomicUsize::new(0),
             stt: Mutex::new(None),
+            tts: Mutex::new(None),
         }
     }
 
     /// Attach a finalize STT engine (tests inject a stub; `execute` loads weights).
     pub fn with_stt(self, stt: Box<dyn Stt + Send>) -> Self {
         *self.stt.lock().unwrap_or_else(|err| err.into_inner()) = Some(stt);
+        self
+    }
+
+    /// Attach a TTS engine (tests inject a stub; `execute` loads weights).
+    pub fn with_tts(self, tts: Box<dyn Tts + Send>) -> Self {
+        *self.tts.lock().unwrap_or_else(|err| err.into_inner()) = Some(tts);
         self
     }
 
@@ -179,6 +192,9 @@ pub fn execute(command: ServeCommand) -> Result<()> {
     if kind == ServeKind::Stt {
         state = state.with_stt(load_local_stt(&model)?);
     }
+    if kind == ServeKind::Tts {
+        state = state.with_tts(load_local_tts(&model)?);
+    }
     let server = listen(addr)?;
     let bound = bound_addr(&server)?;
     tracing::info!(
@@ -188,10 +204,9 @@ pub fn execute(command: ServeCommand) -> Result<()> {
         auth = state.token.is_some(),
         "serving"
     );
-    let routes = if kind == ServeKind::Stt {
-        "GET /health, POST /v1/audio/transcriptions"
-    } else {
-        "GET /health"
+    let routes = match kind {
+        ServeKind::Stt => "GET /health, POST /v1/audio/transcriptions",
+        ServeKind::Tts => "GET /health, POST /v1/audio/speech",
     };
     eprintln!(
         "syllabix serve {:?}: {} on {bound} ({routes})",
@@ -239,6 +254,86 @@ fn load_local_stt(model: &str) -> Result<Box<dyn Stt + Send>> {
         let cancel = Cancel::new();
         let stt = build_stt(&cache, &HttpFetcher, &mut progress, &cancel, &config, None)?;
         Ok(Box::new(stt))
+    }
+}
+
+/// Yaml TTS menu ids this worker can load.
+pub fn validate_tts_model(model: &str) -> Result<TtsModel> {
+    TtsModel::parse(model).ok_or_else(|| Error::Config {
+        field: "serve.tts.model".into(),
+        message: format!("{model:?} is not a yaml TTS id"),
+    })
+}
+
+fn load_local_tts(model: &str) -> Result<Box<dyn Tts + Send>> {
+    let parsed = validate_tts_model(model)?;
+    #[cfg(coverage)]
+    {
+        let _ = parsed;
+        return Ok(Box::new(FixedTts {
+            chunks: vec![vec![1, 2, 3, 4]],
+        }));
+    }
+    #[cfg(not(coverage))]
+    {
+        use syllabix_core::models::{HttpFetcher, ModelCache, StderrProgress};
+        use syllabix_core::real::build_tts;
+        use syllabix_core::AgentConfig;
+        let mut config = AgentConfig::v0();
+        config.tts_model = parsed;
+        config.tts_model_id = model.to_string();
+        let cache = ModelCache::v0();
+        let mut progress = StderrProgress::new();
+        let cancel = Cancel::new();
+        let tts = build_tts(&cache, &HttpFetcher, &mut progress, &cancel, &config, None)?;
+        Ok(Box::new(tts))
+    }
+}
+
+#[cfg(any(test, coverage))]
+struct FixedTts {
+    chunks: Vec<Vec<i16>>,
+}
+
+#[cfg(any(test, coverage))]
+impl Tts for FixedTts {
+    fn name(&self) -> &'static str {
+        "serve-tts"
+    }
+
+    fn synthesize_chunk(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+    ) -> Result<Vec<syllabix_core::SynthesizedAudio>> {
+        let mut out = Vec::new();
+        self.synthesize_chunk_into(token, cancel, &mut |audio| {
+            out.push(audio);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    fn synthesize_chunk_into(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(syllabix_core::SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        let last = self.chunks.len().saturating_sub(1);
+        for (i, samples) in self.chunks.iter().enumerate() {
+            on_audio(syllabix_core::SynthesizedAudio {
+                turn: token.turn,
+                generation: token.generation,
+                index: i as u32,
+                samples: samples.clone(),
+                is_last: token.is_last && i == last,
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -339,6 +434,10 @@ pub fn handle_request(mut request: Request, state: &ServeState) {
         if let Err(err) = request.respond(response) {
             tracing::debug!("serve response failed: {err}");
         }
+        return;
+    }
+    if method == Method::Post && path == "/v1/audio/speech" {
+        handle_speech(request, state);
         return;
     }
     if let Err(err) = request.respond(json_status(404, "not found")) {
@@ -636,11 +735,265 @@ fn transcription_json(
     json_response(200, body)
 }
 
+#[derive(Debug, Deserialize)]
+struct SpeechRequest {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    input: String,
+    #[serde(default)]
+    voice: String,
+    #[serde(default)]
+    response_format: String,
+    #[serde(default)]
+    stream_format: String,
+}
+
+fn handle_speech(mut request: Request, state: &ServeState) {
+    if state.kind != ServeKind::Tts {
+        let _ = request.respond(json_status(404, "not found"));
+        return;
+    }
+    let mut body = Vec::new();
+    if let Err(err) = request
+        .as_reader()
+        .take(MAX_BODY_BYTES + 1)
+        .read_to_end(&mut body)
+    {
+        let _ = request.respond(json_status(400, &format!("failed to read body: {err}")));
+        return;
+    }
+    if body.len() as u64 > MAX_BODY_BYTES {
+        let _ = request.respond(json_status(400, "body too large"));
+        return;
+    }
+    let req: SpeechRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(err) => {
+            let _ = request.respond(json_status(400, &format!("malformed JSON: {err}")));
+            return;
+        }
+    };
+    if req.input.trim().is_empty() {
+        let _ = request.respond(json_status(400, "input is empty"));
+        return;
+    }
+    let _voice = req.voice;
+    if !req.model.is_empty() && req.model != state.model {
+        tracing::warn!(
+            requested = %req.model,
+            worker = %state.model,
+            "speech model does not match the worker; using loaded weights"
+        );
+    }
+    let stream = req.stream_format == "audio";
+    let wav = req.response_format == "wav";
+    let permit = match acquire_job(state) {
+        Ok(permit) => permit,
+        Err(status) => {
+            let _ = request.respond(json_status(status, error_message(status)));
+            return;
+        }
+    };
+    let token = TokenChunk {
+        turn: TurnId(0),
+        generation: GenerationId(0),
+        index: 0,
+        text: req.input,
+        is_last: true,
+    };
+    let cancel = Cancel::new();
+    if stream && !wav {
+        {
+            let slot = state.tts.lock().unwrap_or_else(|err| err.into_inner());
+            if slot.is_none() {
+                drop(permit);
+                let _ = request.respond(json_status(404, "not found"));
+                return;
+            }
+        }
+        let mut encoder = match OpenaiPcmEncoder::new() {
+            Ok(encoder) => encoder,
+            Err(err) => {
+                drop(permit);
+                let _ = request.respond(json_status(500, &err.to_string()));
+                return;
+            }
+        };
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let mut slot = state.tts.lock().unwrap_or_else(|err| err.into_inner());
+                if let Some(tts) = slot.as_mut() {
+                    let _ = tts.synthesize_chunk_into(&token, &cancel, &mut |audio| {
+                        let mut bytes = encoder.push(&audio.samples);
+                        if audio.is_last {
+                            bytes.extend(encoder.finish());
+                        }
+                        if !bytes.is_empty() && tx.send(bytes).is_err() {
+                            cancel.shutdown();
+                            return Err(Error::Cancelled);
+                        }
+                        Ok(())
+                    });
+                    let tail = encoder.finish();
+                    if !tail.is_empty() && tx.send(tail).is_err() {
+                        cancel.shutdown();
+                    }
+                }
+                drop(tx);
+            });
+            let header = Header::from_bytes(&b"Content-Type"[..], &b"application/octet-stream"[..])
+                .expect("content-type");
+            let response = Response::new(
+                StatusCode(200),
+                vec![header],
+                ChannelReader {
+                    rx,
+                    buf: Vec::new(),
+                },
+                None,
+                None,
+            );
+            if let Err(err) = request.respond(response) {
+                tracing::debug!("serve speech stream failed: {err}");
+            }
+        });
+        drop(permit);
+        return;
+    }
+    let mut samples = Vec::new();
+    let result = {
+        let mut slot = state.tts.lock().unwrap_or_else(|err| err.into_inner());
+        let Some(tts) = slot.as_mut() else {
+            drop(permit);
+            let _ = request.respond(json_status(404, "not found"));
+            return;
+        };
+        tts.synthesize_chunk_into(&token, &cancel, &mut |audio| {
+            samples.extend_from_slice(&audio.samples);
+            Ok(())
+        })
+    };
+    drop(permit);
+    if let Err(err) = result {
+        let status = if matches!(err, Error::Cancelled) {
+            499
+        } else {
+            500
+        };
+        let _ = request.respond(json_status(status, &err.to_string()));
+        return;
+    }
+    let bytes = if wav {
+        let wav = WavPcm {
+            format: PcmFormat::v0(),
+            samples,
+        };
+        let mut buf = Vec::new();
+        if let Err(err) = write_wav(&mut buf, &wav) {
+            let _ = request.respond(json_status(500, &err.to_string()));
+            return;
+        }
+        buf
+    } else {
+        match upsample_to_openai_pcm(&samples) {
+            Ok(pcm) => pcm16le(&pcm),
+            Err(err) => {
+                let _ = request.respond(json_status(500, &err.to_string()));
+                return;
+            }
+        }
+    };
+    let ctype = if wav {
+        "audio/wav"
+    } else {
+        "application/octet-stream"
+    };
+    let header = Header::from_bytes(&b"Content-Type"[..], ctype.as_bytes()).expect("content-type");
+    let response = Response::from_data(bytes)
+        .with_status_code(StatusCode(200))
+        .with_header(header);
+    if let Err(err) = request.respond(response) {
+        tracing::debug!("serve speech failed: {err}");
+    }
+}
+
+fn pcm16le(samples: &[i16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(samples.len() * 2);
+    for sample in samples {
+        out.extend_from_slice(&sample.to_le_bytes());
+    }
+    out
+}
+
+/// Local engines emit 16 kHz; OpenAI `response_format=pcm` is 24 kHz mono.
+fn upsample_to_openai_pcm(samples: &[i16]) -> Result<Vec<i16>> {
+    let mut encoder = OpenaiPcmEncoder::new()?;
+    let mut out = encoder.push_samples(samples);
+    out.extend(encoder.finish_samples());
+    Ok(out)
+}
+
+struct OpenaiPcmEncoder {
+    converter: PcmConverter,
+    finished: bool,
+}
+
+impl OpenaiPcmEncoder {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            converter: PcmConverter::new(PcmFormat::v0(), openai_pcm_format())?,
+            finished: false,
+        })
+    }
+
+    fn push_samples(&mut self, samples: &[i16]) -> Vec<i16> {
+        f32_to_i16(&self.converter.push(&i16_to_f32(samples)))
+    }
+
+    fn finish_samples(&mut self) -> Vec<i16> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.finished = true;
+        f32_to_i16(&self.converter.flush())
+    }
+
+    fn push(&mut self, samples: &[i16]) -> Vec<u8> {
+        pcm16le(&self.push_samples(samples))
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        pcm16le(&self.finish_samples())
+    }
+}
+
+struct ChannelReader {
+    rx: Receiver<Vec<u8>>,
+    buf: Vec<u8>,
+}
+
+impl Read for ChannelReader {
+    fn read(&mut self, dest: &mut [u8]) -> io::Result<usize> {
+        if self.buf.is_empty() {
+            match self.rx.recv() {
+                Ok(chunk) => self.buf = chunk,
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = dest.len().min(self.buf.len());
+        dest[..n].copy_from_slice(&self.buf[..n]);
+        self.buf.drain(..n);
+        Ok(n)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::net::TcpStream;
+    use std::net::{Shutdown, TcpStream};
     use std::sync::Arc;
     use std::thread;
     use std::time::{Duration, Instant};
@@ -1188,6 +1541,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tts_model_menu_is_yaml_ids() {
+        validate_tts_model("pocket-tts").expect("pocket");
+        validate_tts_model("kokoro").expect("kokoro");
+        validate_tts_model("qwen3-0.6").expect("qwen");
+        validate_tts_model("nope").expect_err("unknown");
+    }
+
+    #[test]
+    fn openai_pcm_is_24khz_from_16khz_pipeline() {
+        let src = vec![1_000i16, -1_000, 2_000, -2_000];
+        let out = upsample_to_openai_pcm(&src).expect("upsample");
+        assert!(
+            out.len() > src.len(),
+            "24 kHz must hold more samples than 16 kHz: {} vs {}",
+            out.len(),
+            src.len()
+        );
+        assert_eq!(
+            openai_pcm_format().sample_rate_hz,
+            syllabix_core::remote_tts::OPENAI_PCM_SAMPLE_RATE_HZ
+        );
+        assert_eq!(syllabix_core::remote_tts::OPENAI_PCM_SAMPLE_RATE_HZ, 24_000);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn speech_post(addr: SocketAddr, json: &str) -> (u16, Vec<u8>) {
+        let host = addr.to_string();
+        let mut req = format!(
+            "POST /v1/audio/speech HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            json.len()
+        )
+        .into_bytes();
+        req.extend_from_slice(json.as_bytes());
+        let mut stream = TcpStream::connect(addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(&req).expect("write");
+        let mut buf = Vec::new();
+        let _ = stream.read_to_end(&mut buf);
+        let status = buf
+            .split(|&b| b == b'\n')
+            .next()
+            .and_then(|line| std::str::from_utf8(line).ok())
+            .and_then(|t| t.split_whitespace().nth(1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        (status, buf)
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn transcriptions_rejects_bad_body_and_missing_engine() {
@@ -1217,5 +1621,310 @@ mod tests {
         assert_eq!(status, 404, "{body}");
         stop.store(true, Ordering::SeqCst);
         let _ = handle.join();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn speech_returns_full_pcm_body() {
+        let state = ServeState::new(ServeKind::Tts, "pocket-tts".into(), None).with_tts(Box::new(
+            FixedTts {
+                chunks: vec![vec![1, 2], vec![3, 4]],
+            },
+        ));
+        let (addr, stop, handle) = spawn_server(state);
+        wait_up(addr);
+        let (status, resp) = speech_post(
+            addr,
+            r#"{"model":"pocket-tts","input":"Hello there.","response_format":"pcm"}"#,
+        );
+        stop.store(true, Ordering::SeqCst);
+        let _ = handle.join();
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&resp));
+        let expected = pcm16le(&upsample_to_openai_pcm(&[1, 2, 3, 4]).expect("upsample"));
+        let body = http_payload(&resp);
+        assert_eq!(body, expected, "{}", String::from_utf8_lossy(&resp));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn speech_stream_format_audio_is_chunked_pcm() {
+        let state = ServeState::new(ServeKind::Tts, "qwen3-0.6".into(), None).with_tts(Box::new(
+            FixedTts {
+                chunks: vec![vec![9], vec![8]],
+            },
+        ));
+        let (addr, stop, handle) = spawn_server(state);
+        wait_up(addr);
+        let (status, resp) = speech_post(
+            addr,
+            r#"{"model":"qwen3-0.6","input":"Hello.","stream_format":"audio"}"#,
+        );
+        stop.store(true, Ordering::SeqCst);
+        let _ = handle.join();
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&resp));
+        let text = String::from_utf8_lossy(&resp);
+        assert!(text.to_ascii_lowercase().contains("chunked"), "{text}");
+        let expected = pcm16le(&upsample_to_openai_pcm(&[9, 8]).expect("upsample"));
+        assert_eq!(http_payload(&resp), expected, "{text}");
+    }
+
+    #[cfg(target_os = "linux")]
+    struct WatchTts {
+        chunks: usize,
+        produced: Arc<AtomicUsize>,
+        cancelled: Arc<AtomicBool>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Tts for WatchTts {
+        fn name(&self) -> &'static str {
+            "watch-tts"
+        }
+
+        fn synthesize_chunk(
+            &mut self,
+            token: &TokenChunk,
+            cancel: &Cancel,
+        ) -> Result<Vec<syllabix_core::SynthesizedAudio>> {
+            let mut out = Vec::new();
+            self.synthesize_chunk_into(token, cancel, &mut |audio| {
+                out.push(audio);
+                Ok(())
+            })?;
+            Ok(out)
+        }
+
+        fn synthesize_chunk_into(
+            &mut self,
+            token: &TokenChunk,
+            cancel: &Cancel,
+            on_audio: &mut dyn FnMut(syllabix_core::SynthesizedAudio) -> Result<()>,
+        ) -> Result<()> {
+            for i in 0..self.chunks {
+                if cancel.is_shutdown() {
+                    self.cancelled.store(true, Ordering::SeqCst);
+                    return Err(Error::Cancelled);
+                }
+                let result = on_audio(syllabix_core::SynthesizedAudio {
+                    turn: token.turn,
+                    generation: token.generation,
+                    index: i as u32,
+                    samples: vec![i as i16; 16_384],
+                    is_last: token.is_last && i + 1 == self.chunks,
+                });
+                if let Err(err) = result {
+                    if matches!(err, Error::Cancelled) {
+                        self.cancelled.store(true, Ordering::SeqCst);
+                    }
+                    return Err(err);
+                }
+                self.produced.fetch_add(1, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(20));
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dropping_speech_stream_cancels_synthesis() {
+        let produced = Arc::new(AtomicUsize::new(0));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let state = ServeState::new(ServeKind::Tts, "pocket-tts".into(), None).with_tts(Box::new(
+            WatchTts {
+                chunks: 12,
+                produced: Arc::clone(&produced),
+                cancelled: Arc::clone(&cancelled),
+            },
+        ));
+        let (addr, stop, handle) = spawn_server(state);
+        wait_up(addr);
+        let json = r#"{"model":"pocket-tts","input":"Hello there.","stream_format":"audio"}"#;
+        let host = addr.to_string();
+        let mut req = format!(
+            "POST /v1/audio/speech HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            json.len()
+        )
+        .into_bytes();
+        req.extend_from_slice(json.as_bytes());
+        let mut stream = TcpStream::connect(addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        stream.write_all(&req).expect("write");
+        let started = Instant::now() + Duration::from_secs(2);
+        let mut buf = [0u8; 256];
+        while produced.load(Ordering::SeqCst) == 0 && Instant::now() < started {
+            let _ = stream.read(&mut buf);
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            produced.load(Ordering::SeqCst) >= 1,
+            "synthesis never started"
+        );
+        let _ = stream.shutdown(Shutdown::Both);
+        drop(stream);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !cancelled.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        stop.store(true, Ordering::SeqCst);
+        let _ = handle.join();
+        assert!(
+            cancelled.load(Ordering::SeqCst),
+            "dropped stream should cancel synthesis (produced {})",
+            produced.load(Ordering::SeqCst)
+        );
+        assert!(
+            produced.load(Ordering::SeqCst) < 12,
+            "synthesis kept running after drop: {}",
+            produced.load(Ordering::SeqCst)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn speech_wav_header_is_16khz() {
+        let state = ServeState::new(ServeKind::Tts, "pocket-tts".into(), None).with_tts(Box::new(
+            FixedTts {
+                chunks: vec![vec![1, 2, 3, 4]],
+            },
+        ));
+        let (addr, stop, handle) = spawn_server(state);
+        wait_up(addr);
+        let (status, resp) = speech_post(
+            addr,
+            r#"{"model":"pocket-tts","input":"Hello.","response_format":"wav"}"#,
+        );
+        stop.store(true, Ordering::SeqCst);
+        let _ = handle.join();
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&resp));
+        let body = http_payload(&resp);
+        assert!(
+            body.starts_with(b"RIFF"),
+            "{}",
+            String::from_utf8_lossy(&resp)
+        );
+        assert!(body.len() >= 28, "{}", String::from_utf8_lossy(&resp));
+        let rate = u32::from_le_bytes(body[24..28].try_into().expect("rate"));
+        assert_eq!(rate, DEFAULT_SAMPLE_RATE_HZ);
+        assert_eq!(DEFAULT_SAMPLE_RATE_HZ, 16_000);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn speech_rejects_empty_malformed_queue_and_missing_engine() {
+        let (addr, stop, handle) =
+            spawn_server(ServeState::new(ServeKind::Tts, "pocket-tts".into(), None));
+        wait_up(addr);
+        let (status, resp) = speech_post(addr, r#"{"model":"pocket-tts","input":"   "}"#);
+        assert_eq!(status, 400, "{}", String::from_utf8_lossy(&resp));
+        let (status, resp) = speech_post(addr, "{");
+        assert_eq!(status, 400, "{}", String::from_utf8_lossy(&resp));
+        let (status, resp) = speech_post(addr, r#"{"model":"other","input":"Hi"}"#);
+        assert_eq!(status, 404, "{}", String::from_utf8_lossy(&resp));
+        stop.store(true, Ordering::SeqCst);
+        let _ = handle.join();
+
+        let full = ServeState::new(ServeKind::Tts, "pocket-tts".into(), None).with_tts(Box::new(
+            FixedTts {
+                chunks: vec![vec![1]],
+            },
+        ));
+        full.fill_queue();
+        let (addr2, stop2, handle2) = spawn_server(full);
+        wait_up(addr2);
+        let (status, resp) = speech_post(addr2, r#"{"model":"pocket-tts","input":"Hi"}"#);
+        stop2.store(true, Ordering::SeqCst);
+        let _ = handle2.join();
+        assert_eq!(status, 503, "{}", String::from_utf8_lossy(&resp));
+        assert!(
+            String::from_utf8_lossy(&resp).contains("busy"),
+            "{}",
+            String::from_utf8_lossy(&resp)
+        );
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_tts_loader_returns_stub() {
+        let mut tts = load_local_tts("pocket-tts").expect("stub");
+        let token = TokenChunk {
+            turn: TurnId(0),
+            generation: GenerationId(0),
+            index: 0,
+            text: String::from("hi"),
+            is_last: true,
+        };
+        let chunks = tts
+            .synthesize_chunk(&token, &Cancel::new())
+            .expect("synthesize");
+        assert_eq!(chunks[0].samples, vec![1, 2, 3, 4]);
+        assert!(load_local_tts("nope").is_err(), "unknown");
+    }
+
+    #[test]
+    fn fixed_tts_cancels_and_encoder_flushes_once() {
+        let mut tts = FixedTts {
+            chunks: vec![vec![1]],
+        };
+        let cancel = Cancel::new();
+        cancel.shutdown();
+        let token = TokenChunk {
+            turn: TurnId(0),
+            generation: GenerationId(0),
+            index: 0,
+            text: String::from("hi"),
+            is_last: true,
+        };
+        let err = tts
+            .synthesize_chunk(&token, &cancel)
+            .expect_err("cancelled");
+        assert!(matches!(err, Error::Cancelled));
+
+        let mut encoder = OpenaiPcmEncoder::new().expect("encoder");
+        let _ = encoder.push_samples(&[1, 2, 3, 4]);
+        let first = encoder.finish_samples();
+        let second = encoder.finish_samples();
+        assert!(!first.is_empty());
+        assert!(second.is_empty());
+        assert_eq!(
+            openai_pcm_format().sample_rate_hz,
+            syllabix_core::remote_tts::OPENAI_PCM_SAMPLE_RATE_HZ
+        );
+    }
+
+    fn http_payload(resp: &[u8]) -> Vec<u8> {
+        let Some(idx) = find_bytes(resp, b"\r\n\r\n") else {
+            return Vec::new();
+        };
+        let headers = String::from_utf8_lossy(&resp[..idx]).to_ascii_lowercase();
+        let body = &resp[idx + 4..];
+        if headers.contains("chunked") {
+            decode_chunked(body)
+        } else {
+            body.to_vec()
+        }
+    }
+
+    fn decode_chunked(mut src: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let Some(nl) = find_bytes(src, b"\r\n") else {
+                break;
+            };
+            let size_txt = std::str::from_utf8(&src[..nl]).unwrap_or("0").trim();
+            let size = usize::from_str_radix(size_txt, 16).unwrap_or(0);
+            src = &src[nl + 2..];
+            if size == 0 {
+                break;
+            }
+            if src.len() < size {
+                break;
+            }
+            out.extend_from_slice(&src[..size]);
+            src = src.get(size + 2..).unwrap_or(&[]);
+        }
+        out
     }
 }
