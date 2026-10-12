@@ -43,79 +43,11 @@ jobs:
       # Version comes from the git tag (vX.Y.Z → X.Y.Z), or from the
       # workflow_dispatch tag input on a dry run. Written into Cargo.toml
       # for this job only; do not bump versions in a commit.
+      # Same rewrite as release.yml (scripts/set-crate-versions.py).
       - name: Set crate versions from tag
         env:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: |
-          python3 - <<'PY'
-          import os, pathlib, re, sys
-
-          tag = os.environ.get("RELEASE_TAG", "")
-          if not tag.startswith("v"):
-              sys.exit(f"tag {tag!r} must start with v")
-          version = tag[1:]
-          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
-              sys.exit(f"tag {tag!r} is not a plain vX.Y.Z version")
-
-          root = pathlib.Path("Cargo.toml")
-          text = root.read_text()
-          lines = text.splitlines(keepends=True)
-          in_pkg = False
-          replaced_pkg = False
-          out = []
-          for line in lines:
-              if line.strip() == "[workspace.package]":
-                  in_pkg = True
-                  out.append(line)
-                  continue
-              if in_pkg and line.startswith("["):
-                  in_pkg = False
-              if in_pkg and re.match(r"^version\s*=", line) and not replaced_pkg:
-                  out.append(f'version = "{version}"\n')
-                  replaced_pkg = True
-                  continue
-              out.append(line)
-          if not replaced_pkg:
-              sys.exit("could not find [workspace.package] version")
-          text = "".join(out)
-          text, n = re.subn(
-              r'syllabix-native = \{ path = "crates/syllabix-native", version = "[^"]+" \}',
-              f'syllabix-native = {{ path = "crates/syllabix-native", version = "{version}" }}',
-              text,
-              count=1,
-          )
-          if n != 1:
-              sys.exit("could not find syllabix-native version requirement")
-          root.write_text(text)
-
-          # Keep Cargo.lock in sync so `cargo publish --locked` still works.
-          lock_path = pathlib.Path("Cargo.lock")
-          names = {"syllabix", "syllabix-core", "syllabix-native"}
-          lock_out = []
-          pending = None
-          lock_n = 0
-          for line in lock_path.read_text().splitlines(keepends=True):
-              m = re.match(r'^name = "([^"]+)"\s*$', line)
-              if m and m.group(1) in names:
-                  pending = m.group(1)
-                  lock_out.append(line)
-                  continue
-              if pending and re.match(r"^version = ", line):
-                  lock_out.append(f'version = "{version}"\n')
-                  lock_n += 1
-                  pending = None
-                  continue
-              pending = None
-              lock_out.append(line)
-          if lock_n != 3:
-              sys.exit(f"expected 3 workspace crate versions in Cargo.lock, got {lock_n}")
-          lock_path.write_text("".join(lock_out))
-
-          env_file = os.environ["GITHUB_ENV"]
-          with open(env_file, "a", encoding="utf-8") as fh:
-              fh.write(f"VERSION={version}\n")
-          print(f"tag={tag} publish_version={version}")
-          PY
+        run: python3 scripts/set-crate-versions.py --from-tag "${RELEASE_TAG}"
 
       - name: Dry-run publish syllabix-native
         if: github.event_name == 'workflow_dispatch'

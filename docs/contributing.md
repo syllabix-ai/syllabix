@@ -152,8 +152,9 @@ Three packages share one version: the library other apps use
 (`syllabix-core`), the on-device speech build it compiles (`syllabix-native`),
 and the `syllabix` command. Push a tag named `vX.Y.Z`. The version comes
 from the tag; don't bump Cargo.toml by hand. That tag is the GitHub Release
-and the crates.io publish of `syllabix-core` / `syllabix-native`. Other apps
-normally depend with `syllabix-core = "0.1"`; a git pin (`tag = "vX.Y.Z"`,
+and the crates.io publish of `syllabix-core` / `syllabix-native`. App
+binaries from the GitHub Release report the same version (`./syllabix --version`).
+Other apps normally depend with `syllabix-core = "0.1"`; a git pin (`tag = "vX.Y.Z"`,
 or unreleased `main`) is optional. Release notes are on the tag and the
 GitHub Release. If you are embedding Syllabix in another app, see
 [`embed.md`](embed.md).

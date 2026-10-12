@@ -60,6 +60,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-dist-${{ matrix.name }}
+      # Each OS runner checks out the repo independently. Rewrite here,
+      # before the dist build, so every artifact reports the release
+      # version. The edit is not committed.
+      - name: Set crate versions from tag
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_name || '' }}
+        run: |
+          if [[ "${EVENT_NAME}" == "push" && "${REF}" == refs/tags/v* ]]; then
+            python3 scripts/set-crate-versions.py --from-tag "${REF_NAME}"
+          elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            name="$(printf '%s' "${RELEASE_NAME:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            if [[ -n "${name}" ]]; then
+              python3 scripts/set-crate-versions.py --from-release-name "${name}"
+            else
+              # Package-only manual run: leave Cargo.toml at the checkout version.
+              python3 scripts/set-crate-versions.py --print-current
+            fi
+          else
+            echo "unexpected event ${EVENT_NAME} ref ${REF}" >&2
+            exit 1
+          fi
       - name: Package dist artifact
         shell: bash
         run: |
@@ -72,7 +97,10 @@ jobs:
             scripts/check-dynamic-libs.sh "${artifact}"
             scripts/check-one-ggml.sh "${artifact}"
           fi
-          scripts/check-clean-artifact.sh "${artifact}"
+          # VERSION is set by the previous step via GITHUB_ENV (tag, recovery
+          # name, or the checkout version on a package-only run).
+          EXPECTED_VERSION="${VERSION:?missing VERSION from Set crate versions}" \
+            scripts/check-clean-artifact.sh "${artifact}"
       - name: Upload dist artifact
         uses: actions/upload-artifact@v6
         with:

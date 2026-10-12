@@ -108,7 +108,27 @@ if run_help "${copied}" run --help | grep -q -- "--turn-debug"; then
 fi
 run_help "${copied}" run --help | grep -q -- "--barge-in"
 echo "== --version =="
-run_help "${copied}" --version | grep -q "syllabix"
+# env -i so this is the same isolated exec as --help. Strip CR for Windows.
+# Avoid `head` in the pipeline: with pipefail, a SIGPIPE from closing the
+# pipe early can fail the job even when --version succeeded.
+version_line="$(run_help "${copied}" --version | tr -d '\r')"
+version_line="${version_line%%$'\n'*}"
+if [[ -n "${EXPECTED_VERSION:-}" ]]; then
+  # Release packaging sets EXPECTED_VERSION to the tag (vX.Y.Z → X.Y.Z)
+  # or the trailing vX.Y.Z of a recovery release_name. Matching against
+  # Cargo.toml alone would pass if the rewrite were skipped, because the
+  # checkout stays at 0.1.0. This check is skipped when the artifact is
+  # not native (see skip_exec above), including macos-x64 on arm64.
+  want="syllabix ${EXPECTED_VERSION}"
+  if [[ "${version_line}" != "${want}" ]]; then
+    echo "--version printed '${version_line}', expected '${want}'" >&2
+    exit 1
+  fi
+  echo "${version_line}"
+elif ! grep -q "syllabix" <<<"${version_line}"; then
+  echo "--version did not print syllabix: '${version_line}'" >&2
+  exit 1
+fi
 
 if command -v docker >/dev/null 2>&1 && [[ "${SYLLABIX_DOCKER_CLEAN:-}" == "1" ]]; then
   echo "== docker ubuntu clean image =="
