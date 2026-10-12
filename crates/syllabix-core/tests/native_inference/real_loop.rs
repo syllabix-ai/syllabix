@@ -14,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+use syllabix_core::llm::LFM25_230M_ASSET;
 use syllabix_core::memory::{process_rss_bytes, LOOP_RSS_GROWTH_CEILING_BYTES};
 use syllabix_core::models::{HttpFetcher, StderrProgress};
 use syllabix_core::types::FRAME_SAMPLES;
@@ -24,7 +25,7 @@ use syllabix_core::{
     PipelineStages, Result, RuntimeControls,
 };
 
-use crate::{hex, native, skip_unless_launch_stack};
+use crate::{hex, launch_stack_selected, native, native_model_selected};
 
 const SPEECH_SHA256: &str = "e72f1ccf42dc827252141e927a0969793169fbe8039392e207285aa306f09daa";
 const REAL_TURNS: usize = 6;
@@ -174,7 +175,20 @@ fn turn_summaries(
 
 #[test]
 fn six_real_turns_complete_within_queue_and_memory_bounds() {
-    skip_unless_launch_stack!();
+    // Default launch stack (2.6B trio, including unset SYLLABIX_NATIVE_MODELS):
+    // run the loop on lfm2.5-2.6b via n.llm(). Weekly CI sets whisper-small
+    // + lfm2.5-230m + pocket-tts instead; run the same completion check on
+    // 230m via the dedicated LFM slot. Other id lists skip.
+    let weekly_230m_stack = !launch_stack_selected()
+        && native_model_selected("whisper-small")
+        && native_model_selected("pocket-tts")
+        && native_model_selected(LFM25_230M_ASSET);
+    if !launch_stack_selected() && !weekly_230m_stack {
+        eprintln!(
+            "skipping six-turn native test (needs whisper-small, pocket-tts, and lfm2.5-2.6b or lfm2.5-230m in SYLLABIX_NATIVE_MODELS)"
+        );
+        return;
+    }
     let mut n = native();
     // Fresh Silero session: GRU hangover on the shared instance would stall later turns.
     let vad = SileroVad::from_cache(
@@ -186,7 +200,11 @@ fn six_real_turns_complete_within_queue_and_memory_bounds() {
     .expect("load Silero for six-turn");
     // Warm providers before the RSS baseline so growth measures the loop, not loads.
     let stt = n.stt().clone();
-    let llm = n.llm().clone();
+    let llm = if weekly_230m_stack {
+        n.lfm_asset_mut(LFM25_230M_ASSET).clone()
+    } else {
+        n.llm().clone()
+    };
     let tts = n.take_tts();
     let warmup_rss = process_rss_bytes();
 

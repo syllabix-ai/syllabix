@@ -107,15 +107,15 @@ production native providers with real weights. `--features native-inference`
 turns on `ggml` plus those tests; ONNX (`ort`) is always built in.
 
 ```bash
-SYLLABIX_NATIVE_MODELS=whisper-small,lfm2.5-2.6b,pocket-tts \
+SYLLABIX_NATIVE_MODELS=whisper-small,lfm2.5-230m,pocket-tts \
   cargo llvm-cov --no-cfg-coverage --release \
     -p syllabix-core --features native-inference --test native_inference \
     --cobertura --output-path coverage-native.xml
 ```
 
-CI runs that lane via `native-tests.yml` on the self-hosted Mac by default;
-override the pool to `ubuntu-latest` via `workflow_dispatch` when the Mac is
-offline. No native percentage floor yet.
+CI runs that lane via `native-tests.yml` on `ubuntu-latest` by default;
+override the pool to the self-hosted Mac via `workflow_dispatch` for manual
+runs. No native percentage floor yet.
 
 ## 7. 3-minute gate (profile C)
 
