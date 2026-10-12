@@ -225,20 +225,6 @@ macro_rules! skip_unless_any_model {
 #[cfg(not(coverage))]
 pub(crate) use skip_unless_any_model;
 
-#[cfg(not(coverage))]
-macro_rules! skip_unless_launch_stack {
-    () => {
-        if !crate::launch_stack_selected() {
-            eprintln!(
-                "skipping launch-stack native test (needs small, lfm2.5-2.6b, pocket-tts in SYLLABIX_NATIVE_MODELS)"
-            );
-            return;
-        }
-    };
-}
-#[cfg(not(coverage))]
-pub(crate) use skip_unless_launch_stack;
-
 /// Load TTS through the same builder production uses, driven by
 /// [`AgentConfig::v0`] (today: Pocket TTS). Suites that need another TTS id
 /// (Kokoro, Qwen) construct that engine themselves.

@@ -2,24 +2,24 @@ name: Weekly native tests
 
 # Launch-stack native inference with real weights and --no-cfg-coverage.
 # Separate from weekly.yml (unit coverage + OS matrix) and from the per-PR
-# gate in ci.yml. Default runner is the self-hosted Mac (0 billed minutes);
-# workflow_dispatch may override to ubuntu-latest. No percentage floor yet —
+# gate in ci.yml. Default runner is ubuntu-latest; workflow_dispatch may
+# override to the self-hosted Mac. No percentage floor yet —
 # establish a baseline from uploaded reports before enforcing a native-
 # specific gate (see #174).
 
 on:
   schedule:
-    # After weekly.yml (06:00) so the self-hosted Mac is not contended.
+    # After weekly.yml (06:00).
     - cron: "0 08 * * 1" # Mondays 08:00 UTC
   workflow_dispatch:
     inputs:
       pool:
-        description: "Runner pool (default: self-hosted Mac; ubuntu-latest for hosted Linux)"
+        description: "Runner pool (default: hosted Linux; self-hosted Mac for manual runs)"
         type: choice
-        default: '["self-hosted", "macOS"]'
+        default: '["ubuntu-latest"]'
         options:
-          - '["self-hosted", "macOS"]'
           - '["ubuntu-latest"]'
+          - '["self-hosted", "macOS"]'
 
 permissions:
   contents: read
@@ -29,8 +29,9 @@ env:
   RUSTFLAGS: "-D warnings"
   SYLLABIX_CACHE_DIR: ${{ github.workspace }}/.syllabix-cache
   RUSTUP_INIT_SKIP_PATH_CHECK: yes
-  # Launch-stack ids from native_inference::LAUNCH_NATIVE_IDS.
-  SYLLABIX_NATIVE_MODELS: whisper-small,lfm2.5-2.6b,pocket-tts
+  # Weekly native-eval ids for hosted Linux. Not LAUNCH_NATIVE_IDS and not
+  # product `syllabix run` (those stay lfm2.5-2.6b).
+  SYLLABIX_NATIVE_MODELS: whisper-small,lfm2.5-230m,pocket-tts
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -39,7 +40,7 @@ concurrency:
 jobs:
   coverage-native:
     name: native coverage
-    runs-on: ${{ fromJSON(inputs.pool || '["self-hosted", "macOS"]') }}
+    runs-on: ${{ fromJSON(inputs.pool || '["ubuntu-latest"]') }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
@@ -66,14 +67,14 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-pocket-tts
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov@0.8.7
       # Cache only on hosted Linux. Self-hosted keeps target/ on disk; the
       # rust-cache save upload alone can dominate wall time (see ci.yml).
       - uses: Swatinem/rust-cache@v2
-        if: contains(inputs.pool || '', 'ubuntu-latest')
+        if: runner.os == 'Linux'
         with:
           key: native-coverage
       - name: Clear stale coverage profiles

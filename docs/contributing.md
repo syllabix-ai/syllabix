@@ -248,7 +248,7 @@ A separate weekly **native coverage** workflow (`native-tests.yml`, job
 `cargo llvm-cov --no-cfg-coverage --release` with
 `-p syllabix-core --features native-inference --test native_inference`
 (`native-inference` turns on `ggml`; ONNX stays always-on).
-It defaults to the self-hosted Mac (Metal / Apple Silicon); `workflow_dispatch`
-can override the pool to `ubuntu-latest`. Reports upload as
+It defaults to `ubuntu-latest`; `workflow_dispatch` can override the
+pool to the self-hosted Mac. Reports upload as
 `coverage-cobertura-native`. No native percentage floor yet — baseline first
 (#174).
