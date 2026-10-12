@@ -27,8 +27,6 @@ Default models: Whisper `small` (STT), LFM2.5-2.6B (local small LLM), and Pocket
 ```bash
 # macOS / Linux
 curl -L https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-$(uname -s)-$(uname -m) -o syllabix
-curl -L https://github.com/syllabix-ai/syllabix/releases/latest/download/SHA256SUMS -o SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
 chmod +x syllabix
 ./syllabix run
 ```
@@ -36,8 +34,6 @@ chmod +x syllabix
 ```powershell
 # Windows PowerShell
 curl.exe -L https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-Windows-x86_64.exe -o syllabix.exe
-curl.exe -L https://github.com/syllabix-ai/syllabix/releases/latest/download/SHA256SUMS -o SHA256SUMS
-certutil -hashfile syllabix.exe SHA256    # compare against the SHA256SUMS line
 .\syllabix.exe run
 ```
 
