@@ -22,7 +22,7 @@ Include in every report:
 
 ## Security
 
-Syllabix is a local voice agent. The default `run` path keeps microphone audio on the machine after the model cache is filled. An optional online LLM (`pipeline.llm.provider: online`) sends **transcript text only** to the endpoint you set; put the key in `SYLLABIX_LLM_API_KEY`, never in yaml or a `.env` file.
+Syllabix is a local voice agent. The default `run` path keeps microphone audio on the machine after the model cache is filled. Optional online stages send only what that stage needs (LLM: transcript text; STT: utterance WAV; TTS: sentence text). Keys stay in the environment (`SYLLABIX_LLM_API_KEY` / `SYLLABIX_STT_API_KEY` / `SYLLABIX_TTS_API_KEY`), never yaml or a `.env` file.
 
 Do **not** open a public GitHub issue for a security bug, a leaked key, or a sandbox escape.
 

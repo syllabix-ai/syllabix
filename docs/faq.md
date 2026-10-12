@@ -20,7 +20,7 @@ Not if AEC holds on your laptop speakers. Let the ~10 s calibration finish befor
 
 ## Where do API keys go?
 
-Nowhere in yaml, and nowhere in a `.env` file. Only `SYLLABIX_LLM_API_KEY` in the environment, and only when yaml sets `pipeline.llm.provider: online`. Default local `run` needs no key.
+Nowhere in yaml, and nowhere in a `.env` file. Online LLM uses `SYLLABIX_LLM_API_KEY`; online STT uses `SYLLABIX_STT_API_KEY`; online TTS uses `SYLLABIX_TTS_API_KEY`. Default local `run` needs no key.
 
 ## Download or compile?
 
@@ -32,4 +32,4 @@ Yes. `syllabix init`, edit `pipeline.*.model` in `syllabix.yaml`. Catalogue: [en
 
 ## Does audio leave the machine?
 
-Not on the default local stack once weights are cached. An online LLM sends transcript text only; the mic stream stays local.
+Not on the default local stack once weights are cached. An online LLM sends transcript text only. Online STT posts each finished utterance WAV; online TTS posts each finished sentence. The live mic stream stays on-device. Details: [architecture](architecture.md#what-leaves-the-machine), [engines](engines.md#tts).
