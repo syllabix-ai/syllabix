@@ -1,6 +1,7 @@
 #[cfg(not(coverage))]
 mod bench;
 mod cli;
+mod serve;
 pub mod tui;
 
 use clap::Parser;
@@ -46,6 +47,7 @@ fn default_filter_for(command: &cli::Commands) -> &'static str {
         cli::Commands::BenchAsrWorker { .. } => "info",
         cli::Commands::BenchTtsWorker { .. } => "info",
         cli::Commands::BenchLlmWorker { .. } => "info",
+        cli::Commands::Serve { .. } => "info",
     }
 }
 
@@ -103,6 +105,15 @@ mod tests {
             default_filter_for(&cli::Commands::BenchLlmWorker {
                 out: PathBuf::from("worker.jsonl"),
                 model: String::from("lfm2.5-2.6b"),
+            }),
+            "info"
+        );
+        assert_eq!(
+            default_filter_for(&cli::Commands::Serve {
+                command: cli::ServeCommand::Stt {
+                    bind: String::from(serve::DEFAULT_STT_BIND),
+                    model: String::from(serve::DEFAULT_STT_MODEL),
+                }
             }),
             "info"
         );

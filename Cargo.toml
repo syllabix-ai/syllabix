@@ -50,6 +50,8 @@ htmd = "=0.5.5"
 ort-sys = "=2.0.0-rc.9"
 # Live `run` UI is crossterm (inline status/transcript), not a widget TUI.
 crossterm = "=0.27.0"
+# Blocking HTTP listen for `syllabix serve`. No async runtime.
+tiny_http = "=0.12.0"
 # One CPU-only ggml, shared by whisper.cpp and llama.cpp. GPU/Metal/CUDA
 # stay off so the binary keeps the declared dynamic-library set.
 # path for this checkout; version so crates.io can resolve syllabix-core.
