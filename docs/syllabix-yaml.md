@@ -48,7 +48,7 @@ First `run` fetches only the selected model ids (~2.2 GB for the default stack).
 
 ## Local vs online
 
-Each of STT, LLM, and TTS is `local` (in-process, the default) or `online` (an OpenAI-compatible `base_url`). Default `run` stays fully local. API keys never go in yaml.
+Each of STT, LLM, and TTS is `local` (in-process, the default) or `online` (an OpenAI-compatible `base_url`). Default `run` stays fully local. API keys never go in yaml. `base_url` may be a hosted Audio API or [`syllabix serve`](cli.md#serve) on the LAN (`http://127.0.0.1:8091/v1` STT, `:8092` TTS).
 
 | Stage | `local` | `online` |
 | --- | --- | --- |

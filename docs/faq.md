@@ -32,4 +32,4 @@ Yes. `syllabix init`, edit `pipeline.*.model` in `syllabix.yaml`. Catalogue: [en
 
 ## Does audio leave the machine?
 
-Not on the default local stack once weights are cached. An online LLM sends transcript text only. Online STT posts each finished utterance WAV; online TTS posts each finished sentence. The live mic stream stays on-device. Details: [architecture](architecture.md#what-leaves-the-machine), [engines](engines.md#tts).
+No, not for a normal local `run` after the models are already downloaded. An online LLM sends only the transcript text. Online STT sends each finished clip as a WAV file; online TTS sends each finished sentence. The live microphone stays on this computer. `syllabix serve` puts the models on a shared worker; each desk still sends only those clips or sentences, not the live mic. Details: [architecture](architecture.md#what-leaves-the-machine), [CLI serve](cli.md#serve), [engines](engines.md#tts).
