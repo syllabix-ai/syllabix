@@ -43,7 +43,7 @@ To use a released git tag instead of crates.io:
 
 ```toml
 [dependencies]
-syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.0" }
+syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.1" }
 ```
 
 The `syllabix` CLI is not on crates.io. Install it from

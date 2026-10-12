@@ -203,7 +203,7 @@ GitHub Release files are the four artifact names plus `SHA256SUMS`. `.github/wor
 
 `cargo build -p syllabix --profile dist` is thin-LTO, one codegen unit, debuginfo stripped. Default `release` is unchanged for `ci-local.sh`.
 
-After a Release is published, validate the documented download path: `SMOKE_RELEASE_URL=https://github.com/syllabix-ai/syllabix/releases/download/<tag> scripts/smoke-setup.sh syllabix-Linux-x86_64` (repeat per OS you can touch).
+After a Release is published, validate the documented download path: `SMOKE_RELEASE_URL=https://github.com/syllabix-ai/syllabix/releases/download/<tag> scripts/smoke-setup.sh syllabix-Linux-x86_64` (repeat per OS you can touch). The release workflow also opens a PR syncing the `vX.Y.Z` pins in the install docs (`scripts/sync-release-pins.sh`); merge it after the release.
 
 Linux contributors who hit a missing ALSA link need `libasound2-dev`.
 

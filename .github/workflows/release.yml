@@ -220,3 +220,79 @@ jobs:
           fi
 
           publish_draft "${tag}"
+
+  # After a version tag publishes, open a PR that syncs the release-tag
+  # pins in the install docs to that tag. The docs use exact tags because
+  # Cargo has no "latest tag" syntax; without this job the pins go stale
+  # one release later. A human still merges the PR (never auto-merged).
+  sync-pins:
+    name: Open release-pins PR
+    needs: publish
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # A tag push checks out the tag; the pins live on main.
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - name: Sync pins and open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          ./scripts/sync-release-pins.sh "${tag}"
+          if git diff --quiet; then
+            echo "release pins already in sync for ${tag}"
+            exit 0
+          fi
+          branch="docs/release-pins-${tag}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Fetch into the remote-tracking ref so --force-with-lease below
+          # compares against the remote branch instead of overwriting it
+          # blindly (a bare `git fetch origin <branch>` only writes
+          # FETCH_HEAD, which the lease does not check).
+          git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}" 2>/dev/null || true
+          git checkout -B "${branch}"
+          # Stage whatever the script changed: the file list lives in the
+          # script, so a second copy here could silently drop a file.
+          git add -u
+          git commit -m "Sync release pins to ${tag}" -m "Automated by the sync-pins job in release.yml. Merge after the ${tag} release."
+          git push --force-with-lease origin "${branch}"
+          if [ "$(gh pr list --head "${branch}" --json number --jq 'length')" -gt 0 ]; then
+            echo "pins PR already open for ${tag}"
+          else
+            # Each body line is its own quoted argument starting right after
+            # the quote, so the generated body has flush-left headings.
+            # (Indenting a multi-line "--body \"...\"" string would indent
+            # the headings too, and `pr template check` anchors on `^##`.
+            # A flush-left heredoc is not an option either: column-0 lines
+            # terminate the YAML `|` block.)
+            body="$(printf '%s\n' \
+              '# Pull request' \
+              '' \
+              '## What changed' \
+              '' \
+              "Automated pin sync to ${tag} via \`scripts/sync-release-pins.sh\` after the ${tag} tag push. Review the pin diff, then merge." \
+              '' \
+              '## How verified' \
+              '' \
+              '- [x] `cargo fmt --all -- --check`' \
+              '- [x] `cargo clippy --workspace --all-targets -- -D warnings`' \
+              '' \
+              '## Harness-quality evidence' \
+              '' \
+              '- [ ] Harness quality check run manually (needed only if related files are touched, see `docs/contributing.md`).' \
+              '' \
+              '## AI attribution' \
+              '' \
+              'AI-Agent: none' \
+              'AI-Model: N/A')"
+            gh pr create --base main --head "${branch}" \
+              --title "Sync release pins to ${tag}" \
+              --body "${body}"
+          fi

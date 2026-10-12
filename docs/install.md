@@ -33,7 +33,7 @@ The usual install is still the GitHub Release binary above. Use that if you only
 If this machine already has CMake, a C++ compiler, and (on Linux) ALSA, you can instead build the CLI from a git tag:
 
 ```bash
-cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0 syllabix
+cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.1 syllabix
 ```
 
 The last word (`syllabix`) is the crate that provides the `syllabix` binary. Always pass `--tag vX.Y.Z`. Do not install from `main` or a branch. Cargo puts the binary on your PATH (`~/.cargo/bin/syllabix` unless `CARGO_HOME` is set).

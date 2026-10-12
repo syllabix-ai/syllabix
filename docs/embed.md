@@ -33,7 +33,7 @@ To use a released git tag instead of crates.io:
 
 ```toml
 [dependencies]
-syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.0" }
+syllabix-core = { git = "https://github.com/syllabix-ai/syllabix.git", tag = "v0.1.1" }
 ```
 
 The `syllabix` CLI is not on crates.io. Install it from a [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) or `cargo install --git` (Lane 1).
@@ -89,7 +89,7 @@ The usual Lane 1 install is a [GitHub Release](https://github.com/syllabix-ai/sy
 If this machine already has a C++ compiler and CMake, you can instead install from a git tag:
 
 ```bash
-cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0 syllabix
+cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.1 syllabix
 ```
 
 Always pass `--tag vX.Y.Z`. Do not install from `main`. This builds the on-device speech libraries, so you need the packages under [Host compile](#host-compile) (same list: [install — Compile](install.md#compile)). More notes: [install — Install from git](install.md#install-from-git).
