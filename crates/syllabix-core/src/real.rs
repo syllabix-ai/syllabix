@@ -330,8 +330,6 @@ mod production {
                     config.tts_compute,
                 )?)),
             },
-            // Config parsing rejects `online`; this arm keeps the builder total
-            // for hand-built configurations and reports where inference runs.
             crate::defaults::TtsProvider::Online => Err(Error::Config {
                 field: "pipeline.tts.provider".into(),
                 message: "online TTS is not supported yet; use provider \"local\"".into(),
@@ -492,6 +490,24 @@ mod production {
                 format!("{DEFAULT_LLM_BASE_URL}/chat/completions")
             );
             assert_eq!(meta.provider, "online");
+        }
+
+        #[test]
+        fn online_tts_fails_clearly_without_fetching_weights() {
+            let mut config = crate::AgentConfig::v0();
+            config.tts = crate::defaults::TtsProvider::Online;
+            config.tts_base_url = Some("http://127.0.0.1:8092/v1".into());
+            let err = build_tts(
+                &empty_manifest_cache("online-tts"),
+                &BlockedFetcher::default(),
+                &mut NoProgress,
+                &Cancel::new(),
+                &config,
+            )
+            .err()
+            .expect("online TTS is not implemented yet");
+            assert!(err.to_string().contains("pipeline.tts.provider"), "{err}");
+            assert!(err.to_string().contains("not supported yet"), "{err}");
         }
 
         #[test]
