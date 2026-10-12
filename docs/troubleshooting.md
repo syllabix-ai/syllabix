@@ -2,9 +2,10 @@
 
 | Symptom | What to do |
 | --- | --- |
-| Downloaded binary won't verify | Re-download the artifact and `SHA256SUMS` from the same Release; the checksum must pass before you run. |
-| macOS: “cannot be opened because Apple cannot check it for malicious software” | After checksum verify: right-click → Open, or `xattr -d com.apple.quarantine syllabix`. See [install.md](install.md). |
-| Windows SmartScreen warning | More info → Run anyway, after the hash matches `SHA256SUMS`. |
+| Downloaded app won't run | Missing `chmod +x`, macOS Gatekeeper, or Windows SmartScreen. See the rows below. |
+| macOS: “cannot be opened because Apple cannot check it for malicious software” | Right-click → Open, or `xattr -d com.apple.quarantine syllabix`. See [install.md](install.md). |
+| Windows SmartScreen warning | More info → Run anyway. |
+| Hash doesn't match `SHA256SUMS` | Re-download both files from the same Release and [check again](#check-that-your-download-isnt-damaged-optional). |
 | macOS asks to approve microphone access | Grant it once in System Settings → Privacy & Security → Microphone. |
 | `error: No speakers found` / no microphone | `syllabix run` needs input **and** output devices at launch. Check OS sound settings, then rerun. On a headless box, ensure both devices are available. |
 | The agent interrupts itself on laptop speakers | Full-duplex AEC3 is on by default and calibrates automatically for ~10 s; let calibration finish before speaking. If it still self-interrupts, use headphones and include the device names from the startup line in a bug report. |
@@ -15,3 +16,16 @@
 | `SYLLABIX_LLM_API_KEY is required…` at `run` start | Yaml selects `pipeline.llm.provider: online`. Supply the key for one run (`SYLLABIX_LLM_API_KEY=sk-… syllabix run`) or export it. Keys are never read from yaml. Switch the provider back to `local` for the on-device LLM. |
 | Every reply is "Sorry, I could not reach the language model." | The cloud turn failed (bad key → HTTP 401, endpoint down, or idle timeout) and spoke its fallback instead of hanging. Check the key, `base_url`, and the endpoint; diagnostics sidecars carry the endpoint and request id. |
 | Linux build fails linking ALSA | Contributors need `libasound2-dev`. Users of the Release binary never compile anything. |
+
+## Check that your download isn't damaged (optional)
+
+Check the SHA-256 of the file for your platform against the latest release's SHA256SUMS.
+
+| Platform | File |
+| --- | --- |
+| Linux x86_64 | [`syllabix-Linux-x86_64`](https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-Linux-x86_64) |
+| macOS Apple Silicon | [`syllabix-Darwin-arm64`](https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-Darwin-arm64) |
+| macOS Intel | [`syllabix-Darwin-x86_64`](https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-Darwin-x86_64) |
+| Windows x64 | [`syllabix-Windows-x86_64.exe`](https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-Windows-x86_64.exe) |
+
+Latest checksums: [`SHA256SUMS`](https://github.com/syllabix-ai/syllabix/releases/latest/download/SHA256SUMS)

@@ -5,8 +5,6 @@
 ```bash
 # macOS / Linux
 curl -L https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-$(uname -s)-$(uname -m) -o syllabix
-curl -L https://github.com/syllabix-ai/syllabix/releases/latest/download/SHA256SUMS -o SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
 chmod +x syllabix
 ./syllabix run
 ```
@@ -14,21 +12,19 @@ chmod +x syllabix
 ```powershell
 # Windows PowerShell
 curl.exe -L https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-Windows-x86_64.exe -o syllabix.exe
-curl.exe -L https://github.com/syllabix-ai/syllabix/releases/latest/download/SHA256SUMS -o SHA256SUMS
-certutil -hashfile syllabix.exe SHA256    # compare the hash to the line for syllabix-Windows-x86_64.exe
 .\syllabix.exe run
 ```
 
 `uname -s` / `uname -m` map to the names below (`Linux`/`x86_64`, `Darwin`/`arm64`, `Darwin`/`x86_64`).
 
-| Target | Artifact |
+| Computer | File to download |
 | --- | --- |
 | Linux x64 | `syllabix-Linux-x86_64` |
 | macOS Apple Silicon | `syllabix-Darwin-arm64` |
 | macOS Intel | `syllabix-Darwin-x86_64` |
 | Windows x64 | `syllabix-Windows-x86_64.exe` |
 
-Verify the checksum before running.
+Optional: to confirm the file matches the release, see [Check that your download isn't damaged (optional)](troubleshooting.md#check-that-your-download-isnt-damaged-optional).
 
 ## Install from git
 
@@ -65,7 +61,7 @@ Later runs reuse the cache offline. `--help` and `init` do not download weights.
 A curl-downloaded unsigned binary is quarantined. Until release artifacts are signed and notarized, a clean Mac typically shows “cannot be opened because Apple cannot check it for malicious software.”
 
 1. Finder: right-click the binary → **Open** → confirm.
-2. Or, after checksum verify:
+2. Or:
 
 ```bash
 xattr -d com.apple.quarantine syllabix
@@ -74,7 +70,7 @@ xattr -d com.apple.quarantine syllabix
 
 ## Windows SmartScreen
 
-On first open, SmartScreen may warn that the app is unrecognized. Choose **More info** → **Run anyway** after the checksum matches `SHA256SUMS`.
+On first open, SmartScreen may warn that the app is unrecognized. Choose **More info** → **Run anyway**.
 
 ## Microphone
 
