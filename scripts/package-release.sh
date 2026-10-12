@@ -34,8 +34,11 @@ if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
 fi
 export RUSTFLAGS="${RUSTFLAGS:--D warnings} --remap-path-prefix=${root}=."
 
-echo "== cargo build -p syllabix --profile dist --target ${target} =="
-cargo build -p syllabix --profile dist --target "${target}"
+echo "== cargo build -p syllabix --profile dist --locked --target ${target} =="
+# --locked: ship the committed lockfile. Tag-time CI rewrites the three
+# workspace crate versions in Cargo.lock in this job only (same as
+# crates.io publish) so the lock still matches the rewritten Cargo.toml.
+cargo build -p syllabix --profile dist --locked --target "${target}"
 
 src_dir="${CARGO_TARGET_DIR:-${root}/target}/${target}/dist"
 src="${src_dir}/syllabix"
