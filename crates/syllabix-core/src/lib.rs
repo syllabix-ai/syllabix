@@ -32,6 +32,8 @@ pub mod qwen_asr;
 pub mod real;
 #[cfg(feature = "cloud")]
 pub mod remote_stt;
+#[cfg(feature = "cloud")]
+pub mod remote_tts;
 pub mod sandbox;
 pub mod skills;
 pub mod speech_text;
