@@ -931,4 +931,36 @@ mod tests {
         assert!(err.to_string().contains("no samples"), "{err}");
         assert!(!handle.join().expect("listener"));
     }
+
+    #[test]
+    fn session_loopback_transcribes_one_scripted_turn_without_a_mic() {
+        use crate::session::Session;
+        use crate::testing::{scripted_frames, CollectingSink, FakeLlm, FakeTts, FakeVad};
+
+        let (endpoint, handle) = serve_one(|stream, request| {
+            let text = String::from_utf8_lossy(request);
+            assert!(text.contains("POST /v1/audio/transcriptions"), "{text}");
+            assert!(find(request, b"RIFF").is_some(), "utterance WAV");
+            write_response(
+                stream,
+                "HTTP/1.1 200 OK",
+                &[("Content-Type", "application/json")],
+                r#"{"text":"loopback hello","language":"en"}"#,
+            )
+            .expect("write");
+        });
+        let report = Session::v0()
+            .with_vad(FakeVad::new())
+            .with_stt(test_stt(endpoint))
+            .with_llm(FakeLlm::new())
+            .with_tts(FakeTts)
+            .with_sink(CollectingSink::default())
+            .with_frames(scripted_frames(1, 2, 1))
+            .run(Cancel::new())
+            .expect("session loopback");
+        assert_eq!(report.turns.len(), 1);
+        assert_eq!(report.turns[0].user_text, "loopback hello");
+        assert_eq!(report.skipped_turns, 0);
+        let _ = handle.join();
+    }
 }
