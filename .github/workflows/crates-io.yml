@@ -30,9 +30,8 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      # Trusted publishing later: rust-lang/crates-io-auth-action exchanges
-      # this OIDC token for a short-lived crates.io token. Only the push
-      # auth step below requests it.
+      # rust-lang/crates-io-auth-action exchanges this OIDC token for a
+      # short-lived crates.io token. Only the push auth step below requests it.
       id-token: write
     steps:
       - uses: actions/checkout@v6
@@ -65,32 +64,22 @@ jobs:
         # until that version is on crates.io, so this only lists the tarball.
         run: cargo package -p syllabix-core --allow-dirty --no-verify --list
 
-      # Boolean via env: GitHub does not allow secrets in `if:`. This step
-      # (and the secret) only runs on a tag push, never on a dry run.
-      - name: Detect crates.io token
-        id: token
-        if: github.event_name == 'push'
-        env:
-          HAS_CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
-        run: echo "has=${HAS_CARGO_REGISTRY_TOKEN}" >> "$GITHUB_OUTPUT"
-
-      # Prefer a stored API token (needed for the first publish, before
-      # trusted publishing can be configured for the crate). If that secret
-      # is empty, exchange GitHub OIDC for a crates.io token.
+      # Tag push only. A manual dry run never uploads and must not request
+      # a crates.io token.
       - name: Authenticate with crates.io (trusted publishing)
         id: auth
-        if: github.event_name == 'push' && steps.token.outputs.has != 'true'
+        if: github.event_name == 'push'
         uses: rust-lang/crates-io-auth-action@v1
 
       # Native first: core's crates.io Cargo.toml depends on it by version.
       - name: Publish syllabix-native
         if: github.event_name == 'push'
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           VERSION: ${{ env.VERSION }}
         run: |
           if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
-            echo "no crates.io token: set CARGO_REGISTRY_TOKEN or trusted publishing" >&2
+            echo "no crates.io token from trusted publishing" >&2
             exit 1
           fi
           # A re-run after a successful upload would fail: crates.io never
@@ -138,7 +127,7 @@ jobs:
       - name: Publish syllabix-core
         if: github.event_name == 'push'
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           VERSION: ${{ env.VERSION }}
         run: |
           # Same skip as native: a re-run must not fail after a successful upload.
