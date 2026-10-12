@@ -358,13 +358,13 @@ fn resolve_ml(
     tts: Option<Box<dyn Tts>>,
 ) -> Result<BoxedStages> {
     use crate::models::{HttpFetcher, ModelCache, StderrProgress};
-    #[cfg(feature = "cloud-llm")]
+    #[cfg(feature = "cloud")]
     use crate::openai::PROVIDER_NAME;
-    #[cfg(feature = "cloud-llm")]
+    #[cfg(feature = "cloud")]
     use crate::real::LiveLlm;
     use crate::real::{build_llm, build_stt, build_tts};
     use crate::vad::SileroVad;
-    #[cfg(feature = "cloud-llm")]
+    #[cfg(feature = "cloud")]
     use crate::Error;
 
     let need_cache = vad.is_none() || stt.is_none() || llm.is_none() || tts.is_none();
@@ -397,7 +397,7 @@ fn resolve_ml(
         None => {
             let cache = cache.as_ref().expect("cache when loading default LLM");
             let built = build_llm(cache, &fetcher, &mut progress, cancel, config, llm_api_key)?;
-            #[cfg(feature = "cloud-llm")]
+            #[cfg(feature = "cloud")]
             if let LiveLlm::Cloud(cloud) = &built {
                 match cloud.warm_up(cancel) {
                     Ok(()) => eprintln!("cloud: endpoint ready"),

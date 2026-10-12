@@ -106,7 +106,7 @@ jobs:
         run: ./scripts/setup-linux.sh
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: cargo check ggml without cloud-llm
+      - name: cargo check ggml without cloud
         run: cargo check -p syllabix-core --no-default-features --features ggml --all-targets
 
   # Lane 3 hosts that set default-features = false must compile without the
@@ -133,8 +133,8 @@ jobs:
           echo "cmake is not on PATH"
       - name: cargo check syllabix-core without default features
         run: cargo check -p syllabix-core --no-default-features --all-targets
-      - name: cargo check cloud-llm without CMake / whisper.cpp
-        run: cargo check -p syllabix-core --no-default-features --features cloud-llm --all-targets
+      - name: cargo check cloud without CMake / whisper.cpp
+        run: cargo check -p syllabix-core --no-default-features --features cloud --all-targets
       - name: cargo test supported API without default features
         run: cargo test -p syllabix-core --no-default-features --test supported_api -- --nocapture
 
