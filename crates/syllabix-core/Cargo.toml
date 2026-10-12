@@ -29,7 +29,7 @@ full = ["ggml", "device-audio", "cloud"]
 ggml = ["dep:syllabix-native"]
 # Optional microphone/speaker I/O plus echo cancellation (ALSA headers on Linux).
 device-audio = ["dep:cpal", "dep:sonora"]
-# Cloud (online) adapters in load_real_providers. OpenAiLlm always compiles; RemoteStt needs this feature.
+# Cloud (online) adapters in load_real_providers. OpenAiLlm always compiles; RemoteStt / RemoteTts need this feature.
 cloud = []
 # Turns on `ggml` plus the slow tests that download and run the real models
 # (both GGUF and ONNX). ONNX support (`ort`) is always built in; this

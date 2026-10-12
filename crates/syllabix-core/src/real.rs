@@ -8,8 +8,10 @@ mod production {
     //! The LLM slot is a [`LiveLlm`]: the in-process llama.cpp GGUF engine by
     //! default, or the user-keyed online adapter when YAML selects
     //! `pipeline.llm.provider: online`. STT can be local or `provider: online`
-    //! ([`crate::remote_stt::RemoteStt`]); VAD, AEC, and TTS stay local. When STT
+    //! ([`crate::remote_stt::RemoteStt`]) and TTS can be local or `provider: online`
+    //! ([`crate::remote_tts::RemoteTts`]). VAD and AEC stay local. When STT
     //! is online, utterance WAV leaves the machine and no STT weights are fetched.
+    //! When TTS is online, reply text leaves the machine and no TTS weights are fetched.
 
     use zeroize::Zeroizing;
 
@@ -25,6 +27,8 @@ mod production {
     use crate::providers::Llm;
     #[cfg(feature = "cloud")]
     use crate::remote_stt::{RemoteStt, RemoteSttSettings};
+    #[cfg(feature = "cloud")]
+    use crate::remote_tts::{RemoteTts, RemoteTtsSettings};
     use crate::stt::WhisperStt;
     use crate::tts::{KokoroTts, QwenTts};
     use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, Transcript, Utterance};
@@ -87,6 +91,9 @@ mod production {
         Qwen(QwenTts),
         /// Pocket TTS through ONNX Runtime, used by default.
         Pocket(Box<PocketTts>),
+        /// OpenAI-compatible speech endpoint. No local TTS weights.
+        #[cfg(feature = "cloud")]
+        Remote(RemoteTts),
     }
 
     impl LiveTts {
@@ -96,6 +103,8 @@ mod production {
             match self {
                 Self::Qwen(tts) => tts.backend_id(),
                 Self::Kokoro(_) | Self::Pocket(_) => None,
+                #[cfg(feature = "cloud")]
+                Self::Remote(_) => None,
             }
         }
     }
@@ -106,6 +115,8 @@ mod production {
                 Self::Kokoro(tts) => tts.name(),
                 Self::Qwen(tts) => tts.name(),
                 Self::Pocket(tts) => tts.name(),
+                #[cfg(feature = "cloud")]
+                Self::Remote(tts) => tts.name(),
             }
         }
 
@@ -114,6 +125,8 @@ mod production {
                 Self::Kokoro(tts) => tts.model_id(),
                 Self::Qwen(tts) => tts.model_id(),
                 Self::Pocket(tts) => tts.model_id(),
+                #[cfg(feature = "cloud")]
+                Self::Remote(tts) => tts.model_id(),
             }
         }
 
@@ -126,6 +139,8 @@ mod production {
                 Self::Kokoro(tts) => tts.synthesize_chunk(token, cancel),
                 Self::Qwen(tts) => tts.synthesize_chunk(token, cancel),
                 Self::Pocket(tts) => tts.synthesize_chunk(token, cancel),
+                #[cfg(feature = "cloud")]
+                Self::Remote(tts) => tts.synthesize_chunk(token, cancel),
             }
         }
 
@@ -139,6 +154,8 @@ mod production {
                 Self::Kokoro(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
                 Self::Qwen(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
                 Self::Pocket(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
+                #[cfg(feature = "cloud")]
+                Self::Remote(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
             }
         }
     }
@@ -312,10 +329,10 @@ mod production {
     /// Load Silero, the configured STT engine, and the configured language and
     /// speech models.
     ///
-    /// `llm_api_key` / `stt_api_key` carry already-resolved environment keys
-    /// (`run_live` fails fast before this point when the config needs one and it
-    /// is missing). Local providers ignore them; online providers require them.
-    /// Online STT never touches the model cache.
+    /// `llm_api_key` / `stt_api_key` / `tts_api_key` carry already-resolved
+    /// environment keys (`run_live` fails fast before this point when the config
+    /// needs one and it is missing). Local providers ignore them; online
+    /// providers require them. Online STT and TTS never touch the model cache.
     #[allow(clippy::too_many_arguments)]
     pub fn load_real_providers(
         cache: &ModelCache,
@@ -325,6 +342,7 @@ mod production {
         config: &AgentConfig,
         llm_api_key: Option<&Zeroizing<String>>,
         stt_api_key: Option<&Zeroizing<String>>,
+        tts_api_key: Option<&Zeroizing<String>>,
     ) -> Result<(SileroVad, LiveStt, LiveLlm, LiveTts)> {
         let vad = SileroVad::from_cache(cache, fetcher, progress, cancel)?
             .with_settings(config.vad_settings());
@@ -332,7 +350,7 @@ mod production {
         let stt = build_stt(cache, fetcher, progress, cancel, config, stt_api_key)?
             .with_language(&config.language)?;
         let llm = build_llm(cache, fetcher, progress, cancel, config, llm_api_key)?;
-        let tts = build_tts(cache, fetcher, progress, cancel, config)?;
+        let tts = build_tts(cache, fetcher, progress, cancel, config, tts_api_key)?;
         #[cfg(feature = "cloud")]
         if let LiveLlm::Cloud(llm) = &llm {
             match llm.warm_up(cancel) {
@@ -363,17 +381,36 @@ mod production {
                 }
             }
         }
+        #[cfg(feature = "cloud")]
+        if let LiveTts::Remote(tts) = &tts {
+            match tts.warm_up(cancel) {
+                Ok(()) => eprintln!("cloud: TTS endpoint ready"),
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(err) => {
+                    tracing::warn!(
+                        provider = crate::remote_tts::PROVIDER_NAME,
+                        error = %err,
+                        "cloud TTS warm-up failed"
+                    );
+                    eprintln!(
+                        "cloud: could not verify TTS endpoint; continuing — the first spoken reply may fail"
+                    );
+                }
+            }
+        }
         Ok((vad, stt, llm, tts))
     }
 
     /// Build just the TTS slot from config. Only the selected provider's weights
     /// are fetched; selecting other models does not fetch Qwen GGUFs.
+    /// Online TTS never touches the model cache.
     pub fn build_tts(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
         progress: &mut dyn Progress,
         cancel: &Cancel,
         config: &AgentConfig,
+        tts_api_key: Option<&Zeroizing<String>>,
     ) -> Result<LiveTts> {
         match config.tts {
             crate::defaults::TtsProvider::Local => match config.tts_model {
@@ -393,10 +430,31 @@ mod production {
                     config.tts_compute,
                 )?)),
             },
-            crate::defaults::TtsProvider::Online => Err(Error::Config {
-                field: "pipeline.tts.provider".into(),
-                message: "online TTS is not supported yet; use provider \"local\"".into(),
-            }),
+            crate::defaults::TtsProvider::Online => {
+                #[cfg(feature = "cloud")]
+                {
+                    let _ = (cache, fetcher, progress, cancel);
+                    let key = tts_api_key.ok_or_else(|| Error::Config {
+                        field: crate::config::TTS_API_KEY_ENV.into(),
+                        message: format!(
+                            "is required when pipeline.tts.provider is {}",
+                            crate::remote_tts::PROVIDER_NAME
+                        ),
+                    })?;
+                    Ok(LiveTts::Remote(RemoteTts::new(
+                        RemoteTtsSettings::from_config(config)?,
+                        key.clone(),
+                    )))
+                }
+                #[cfg(not(feature = "cloud"))]
+                {
+                    let _ = (cache, fetcher, progress, cancel, tts_api_key);
+                    Err(Error::Config {
+                        field: "pipeline.tts.provider".into(),
+                        message: "online TTS requires the `cloud` feature".into(),
+                    })
+                }
+            }
         }
     }
 
@@ -510,6 +568,7 @@ mod production {
                 &crate::AgentConfig::v0(),
                 None,
                 None,
+                None,
             ) {
                 Err(err) => err,
                 Ok(_) => panic!("empty manifest should fail"),
@@ -556,22 +615,63 @@ mod production {
             assert_eq!(meta.provider, "online");
         }
 
+        #[cfg(feature = "cloud")]
         #[test]
-        fn online_tts_fails_clearly_without_fetching_weights() {
+        fn online_tts_needs_no_weights_but_requires_the_key() {
+            use crate::providers::Tts;
+
             let mut config = crate::AgentConfig::v0();
             config.tts = crate::defaults::TtsProvider::Online;
             config.tts_base_url = Some("http://127.0.0.1:8092/v1".into());
-            let err = build_tts(
+
+            let err = match build_tts(
+                &empty_manifest_cache("online-tts-nokey"),
+                &BlockedFetcher::default(),
+                &mut NoProgress,
+                &Cancel::new(),
+                &config,
+                None,
+            ) {
+                Err(err) => err,
+                Ok(_) => panic!("missing key fails fast"),
+            };
+            assert!(
+                err.to_string().contains(crate::config::TTS_API_KEY_ENV),
+                "{err}"
+            );
+
+            let tts = build_tts(
+                &empty_manifest_cache("online-tts-ok"),
+                &BlockedFetcher::default(),
+                &mut NoProgress,
+                &Cancel::new(),
+                &config,
+                Some(&Zeroizing::new("sk-tts".to_string())),
+            )
+            .expect("online TTS slot builds without any weights");
+            assert!(matches!(tts, LiveTts::Remote(_)));
+            assert_eq!(tts.name(), crate::remote_tts::PROVIDER_NAME);
+            assert_eq!(tts.model_id(), Some("pocket-tts"));
+        }
+
+        #[cfg(not(feature = "cloud"))]
+        #[test]
+        fn online_tts_requires_the_cloud_feature() {
+            let mut config = crate::AgentConfig::v0();
+            config.tts = crate::defaults::TtsProvider::Online;
+            config.tts_base_url = Some("http://127.0.0.1:8092/v1".into());
+            let err = match build_tts(
                 &empty_manifest_cache("online-tts"),
                 &BlockedFetcher::default(),
                 &mut NoProgress,
                 &Cancel::new(),
                 &config,
-            )
-            .err()
-            .expect("online TTS is not implemented yet");
-            assert!(err.to_string().contains("pipeline.tts.provider"), "{err}");
-            assert!(err.to_string().contains("not supported yet"), "{err}");
+                None,
+            ) {
+                Err(err) => err,
+                Ok(_) => panic!("online TTS needs cloud"),
+            };
+            assert!(err.to_string().contains("`cloud` feature"), "{err}");
         }
 
         #[cfg(feature = "cloud")]

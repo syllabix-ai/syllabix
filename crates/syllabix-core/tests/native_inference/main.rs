@@ -239,6 +239,7 @@ fn load_launch_tts() -> LiveTts {
         &mut progress,
         &cancel,
         &AgentConfig::v0(),
+        None,
     )
     .expect("load launch-default TTS from AgentConfig::v0()")
 }

@@ -275,7 +275,7 @@ pub(crate) fn run_tts_worker(out: PathBuf, model: String) -> Result<()> {
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
     let memory_before_load = required_rss("before TTS model load")?;
-    let mut tts = build_tts(&cache, &HttpFetcher, &mut progress, &cancel, &config)?;
+    let mut tts = build_tts(&cache, &HttpFetcher, &mut progress, &cancel, &config, None)?;
     let memory_after_load = required_rss("after TTS model load")?;
     let records = benchmark_tts(
         &mut tts,
