@@ -2,7 +2,7 @@
   <img src="docs/assets/logo.png" alt="Syllabix" width="220">
 </p>
 
-[![Version](https://img.shields.io/badge/version-v0.1.0-blue)](https://github.com/syllabix-ai/syllabix/releases)
+[![Version](https://img.shields.io/badge/version-v0.1.1-blue)](https://github.com/syllabix-ai/syllabix/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE)
 [![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](./docs/install.md)
 [![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)](./docs/install.md)
@@ -49,7 +49,7 @@ Blocked by macOS Gatekeeper or Windows SmartScreen? See [docs/install.md](docs/i
 Those GitHub Release files are the usual install. Building from git is optional:
 
 ```bash
-cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0 syllabix
+cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.1 syllabix
 ```
 
 Always pass `--tag vX.Y.Z`. Do not install from `main`. You need CMake, a C++ compiler, and on Linux ALSA — see [Compile](docs/install.md#compile). Full notes: [install from git](docs/install.md#install-from-git).

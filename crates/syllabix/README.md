@@ -9,7 +9,7 @@ This crate is not on crates.io (`publish = false`). Prefer a
 compile the CLI from a git tag:
 
 ```bash
-cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.0 syllabix
+cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.1 syllabix
 ```
 
 The CLI and the SDK (`syllabix-core`) share that version. Do not track `main`.
