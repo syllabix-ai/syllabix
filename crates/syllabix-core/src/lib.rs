@@ -30,6 +30,8 @@ pub mod queue;
 pub mod qwen_asr;
 #[cfg(any(coverage, feature = "ggml"))]
 pub mod real;
+#[cfg(feature = "cloud")]
+pub mod remote_stt;
 pub mod sandbox;
 pub mod skills;
 pub mod speech_text;
