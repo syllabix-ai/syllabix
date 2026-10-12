@@ -303,6 +303,20 @@ impl Session {
         } else {
             None
         };
+        let stt_api_key = if stt.is_none() && config.stt == crate::defaults::SttProvider::Online {
+            #[cfg(feature = "cloud")]
+            {
+                Some(crate::remote_stt::resolve_api_key(|name| {
+                    std::env::var(name).ok()
+                })?)
+            }
+            #[cfg(not(feature = "cloud"))]
+            {
+                None
+            }
+        } else {
+            None
+        };
         let turn_debug = TurnDebug::from_config(&config)?;
         let controls = controls.unwrap_or_else(|| {
             RuntimeControls::with_auto_timeout(
@@ -311,8 +325,16 @@ impl Session {
                 config.auto_timeout_exit_ms,
             )
         });
-        let (vad, stt, llm, tts) =
-            resolve_ml(&config, &cancel, llm_api_key.as_ref(), vad, stt, llm, tts)?;
+        let (vad, stt, llm, tts) = resolve_ml(
+            &config,
+            &cancel,
+            llm_api_key.as_ref(),
+            stt_api_key.as_ref(),
+            vad,
+            stt,
+            llm,
+            tts,
+        )?;
         let (input, sink) = resolve_io(&config, &events, turn_debug.as_ref(), input, sink)?;
         if let Some(events) = &events {
             let _ = events.send(LoopEvent::Ready);
@@ -348,10 +370,12 @@ enum ResolvedInput {
 type BoxedStages = (Box<dyn Vad>, Box<dyn Stt>, Box<dyn Llm>, Box<dyn Tts>);
 
 #[cfg(all(not(coverage), feature = "ggml"))]
+#[allow(clippy::too_many_arguments)]
 fn resolve_ml(
     config: &AgentConfig,
     cancel: &Cancel,
     llm_api_key: Option<&Zeroizing<String>>,
+    stt_api_key: Option<&Zeroizing<String>>,
     vad: Option<Box<dyn Vad>>,
     stt: Option<Box<dyn Stt>>,
     llm: Option<Box<dyn Llm>>,
@@ -360,9 +384,9 @@ fn resolve_ml(
     use crate::models::{HttpFetcher, ModelCache, StderrProgress};
     #[cfg(feature = "cloud")]
     use crate::openai::PROVIDER_NAME;
-    #[cfg(feature = "cloud")]
-    use crate::real::LiveLlm;
     use crate::real::{build_llm, build_stt, build_tts};
+    #[cfg(feature = "cloud")]
+    use crate::real::{LiveLlm, LiveStt};
     use crate::vad::SileroVad;
     #[cfg(feature = "cloud")]
     use crate::Error;
@@ -386,10 +410,26 @@ fn resolve_ml(
         Some(stt) => stt,
         None => {
             let cache = cache.as_ref().expect("cache when loading default STT");
-            Box::new(
-                build_stt(cache, &fetcher, &mut progress, cancel, config)?
-                    .with_language(&config.language)?,
-            )
+            let built = build_stt(cache, &fetcher, &mut progress, cancel, config, stt_api_key)?
+                .with_language(&config.language)?;
+            #[cfg(feature = "cloud")]
+            if let LiveStt::Remote(remote) = &built {
+                match remote.warm_up(cancel) {
+                    Ok(()) => eprintln!("cloud: STT endpoint ready"),
+                    Err(Error::Cancelled) => return Err(Error::Cancelled),
+                    Err(err) => {
+                        tracing::warn!(
+                            provider = crate::remote_stt::PROVIDER_NAME,
+                            error = %err,
+                            "cloud STT warm-up failed"
+                        );
+                        eprintln!(
+                            "cloud: could not verify STT endpoint; continuing — the first transcript may fail"
+                        );
+                    }
+                }
+            }
+            Box::new(built)
         }
     };
     let llm = match llm {
@@ -424,10 +464,12 @@ fn resolve_ml(
 }
 
 #[cfg(all(not(coverage), not(feature = "ggml")))]
+#[allow(clippy::too_many_arguments)]
 fn resolve_ml(
     _config: &AgentConfig,
     _cancel: &Cancel,
     _llm_api_key: Option<&Zeroizing<String>>,
+    _stt_api_key: Option<&Zeroizing<String>>,
     vad: Option<Box<dyn Vad>>,
     stt: Option<Box<dyn Stt>>,
     llm: Option<Box<dyn Llm>>,
@@ -443,10 +485,12 @@ fn resolve_ml(
 }
 
 #[cfg(coverage)]
+#[allow(clippy::too_many_arguments)]
 fn resolve_ml(
     config: &AgentConfig,
     _cancel: &Cancel,
     llm_api_key: Option<&Zeroizing<String>>,
+    stt_api_key: Option<&Zeroizing<String>>,
     vad: Option<Box<dyn Vad>>,
     stt: Option<Box<dyn Stt>>,
     llm: Option<Box<dyn Llm>>,
@@ -467,6 +511,7 @@ fn resolve_ml(
         config.diagnostics_timestamps,
         config.diagnostics_audio,
         llm_api_key.is_some(),
+        stt_api_key.is_some(),
     );
     Ok((
         vad.unwrap_or_else(|| Box::new(FakeVad::new())),

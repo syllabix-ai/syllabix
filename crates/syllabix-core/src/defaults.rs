@@ -62,13 +62,13 @@ impl VadProvider {
 
 /// Speech-to-text execution models. `Local` runs weights in-process;
 /// `Online` points at an OpenAI-compatible transcriptions endpoint
-/// (`pipeline.stt.base_url`). Runtime support lands in a follow-up; yaml
-/// already accepts the same `local` / `online` words as [`LlmProvider`].
+/// (`pipeline.stt.base_url`). Online STT posts finished utterances and does
+/// not fetch STT weights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SttProvider {
     /// In-process STT. The selected model chooses Whisper, Moonshine, or Qwen-ASR.
     Local,
-    /// OpenAI-compatible remote endpoint. Yaml-accepted; runtime not supported yet.
+    /// OpenAI-compatible remote transcriptions endpoint.
     Online,
 }
 

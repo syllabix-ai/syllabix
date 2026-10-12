@@ -18,8 +18,9 @@ use crate::turn_debug::TurnDebug;
 ///
 /// A cloud LLM config (`pipeline.llm.provider: online`) must already carry its
 /// key in the `SYLLABIX_LLM_API_KEY` environment variable; a missing or empty
-/// key fails here — before any device opens or any weight loads. Default
-/// keyless runs never read it.
+/// key fails here — before any device opens or any weight loads. Online STT
+/// (`pipeline.stt.provider: online`) does the same with `SYLLABIX_STT_API_KEY`.
+/// Default keyless runs never read them.
 ///
 /// Under `cfg(coverage)` this is a one-turn fake loop so llvm-cov does not
 /// load whisper.cpp / llama.cpp / Kokoro weights or open devices.
@@ -54,8 +55,31 @@ pub fn run_live_with_controls(
         }
         crate::defaults::LlmProvider::Local => None,
     };
+    let stt_api_key = match config.stt {
+        crate::defaults::SttProvider::Online => {
+            #[cfg(feature = "cloud")]
+            {
+                Some(crate::remote_stt::resolve_api_key(|name| {
+                    std::env::var(name).ok()
+                })?)
+            }
+            #[cfg(not(feature = "cloud"))]
+            {
+                None
+            }
+        }
+        crate::defaults::SttProvider::Local => None,
+    };
     let turn_debug = TurnDebug::from_config(config)?;
-    run_live_inner(config, cancel, events, turn_debug, controls, llm_api_key)
+    run_live_inner(
+        config,
+        cancel,
+        events,
+        turn_debug,
+        controls,
+        llm_api_key,
+        stt_api_key,
+    )
 }
 
 #[cfg(not(coverage))]
@@ -66,6 +90,7 @@ fn run_live_inner(
     turn_debug: Option<TurnDebug>,
     controls: RuntimeControls,
     llm_api_key: Option<Zeroizing<String>>,
+    stt_api_key: Option<Zeroizing<String>>,
 ) -> Result<LoopReport> {
     use crate::audio::{NativeCapture, NativePlayback};
     use crate::defaults::BuiltinDefaults;
@@ -83,6 +108,7 @@ fn run_live_inner(
         &cancel,
         config,
         llm_api_key.as_ref(),
+        stt_api_key.as_ref(),
     )?;
     let watch = turn_debug
         .as_ref()
@@ -130,6 +156,7 @@ fn run_live_inner(
     turn_debug: Option<TurnDebug>,
     controls: RuntimeControls,
     llm_api_key: Option<Zeroizing<String>>,
+    stt_api_key: Option<Zeroizing<String>>,
 ) -> Result<LoopReport> {
     use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
     use crate::pipeline::{run_loop, LoopConfig, PipelineStages};
@@ -147,6 +174,7 @@ fn run_live_inner(
         config.diagnostics_timestamps,
         config.diagnostics_audio,
         llm_api_key.is_some(),
+        stt_api_key.is_some(),
     );
     let watch = turn_debug
         .as_ref()
