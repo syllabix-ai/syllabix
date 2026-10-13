@@ -1,16 +1,19 @@
-name: Weekly native tests
+name: Native inference
 
 # Launch-stack native inference with real weights and --no-cfg-coverage.
-# Separate from weekly.yml (unit coverage + OS matrix) and from the per-PR
+# Separate from weekly.yml (unit coverage + OS matrix) and from the unit
 # gate in ci.yml. Default runner is ubuntu-latest; workflow_dispatch may
 # override to the self-hosted Mac. No percentage floor yet —
 # establish a baseline from uploaded reports before enforcing a native-
 # specific gate (see #174).
 
 on:
-  schedule:
-    # After weekly.yml (06:00).
-    - cron: "0 08 * * 1" # Mondays 08:00 UTC
+  push:
+    branches: [main]
+  pull_request:
+    # ready_for_review: a draft skips the job, and marking it ready fires
+    # only this type — without it the PR keeps a stale SKIPPED check.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       pool:
@@ -29,7 +32,7 @@ env:
   RUSTFLAGS: "-D warnings"
   SYLLABIX_CACHE_DIR: ${{ github.workspace }}/.syllabix-cache
   RUSTUP_INIT_SKIP_PATH_CHECK: yes
-  # Weekly native-eval ids for hosted Linux. Not LAUNCH_NATIVE_IDS and not
+  # Native-eval ids for hosted Linux. Not LAUNCH_NATIVE_IDS and not
   # product `syllabix run` (those stay lfm2.5-2.6b).
   SYLLABIX_NATIVE_MODELS: whisper-small,lfm2.5-230m,pocket-tts
 
@@ -39,50 +42,98 @@ concurrency:
 
 jobs:
   coverage-native:
-    name: native coverage
+    name: native inference
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ${{ fromJSON(inputs.pool || '["ubuntu-latest"]') }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
+      # Path filter lives in the job so a required check still reports on
+      # docs-only PRs. Two-dot diffs against refs/pull/<n>/head: checkout is
+      # fetch-depth 1, so A...B needs a merge-base the clone often lacks, and
+      # git fetch origin $PR_HEAD misses fork heads.
+      - name: Detect native-related path changes
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "push" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags origin "$PR_BASE" "pull/${PR_NUMBER}/head:pr-head"
+            changed="$(git diff --name-only "$PR_BASE" pr-head)"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            git fetch --no-tags origin "$BEFORE" "$AFTER"
+            changed="$(git diff --name-only "$BEFORE" "$AFTER")"
+          fi
+          echo "$changed"
+          if echo "$changed" | grep -Eq '^(crates/|Cargo\.toml$|Cargo\.lock$|scripts/setup-linux\.sh$|scripts/setup-macos\.sh$|scripts/ci-local\.sh$|\.github/workflows/native-tests\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No native, engine, or related paths changed; skipping native inference."
+          fi
+      - name: Skip native inference (paths unchanged)
+        if: steps.gate.outputs.run != 'true'
+        run: echo "Docs-only or unrelated diff; native inference steps skipped so this check still reports."
       - uses: dtolnay/rust-toolchain@1.91.0
+        if: steps.gate.outputs.run == 'true'
         with:
           components: llvm-tools-preview
       - name: Prefer rustup over Homebrew rustc
-        if: runner.os == 'macOS'
+        if: steps.gate.outputs.run == 'true' && runner.os == 'macOS'
         run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       - name: Compile dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: steps.gate.outputs.run == 'true' && runner.os == 'Linux'
         run: ./scripts/setup-linux.sh
       # Ubuntu 24.04 AppArmor blocks CAP_NET_ADMIN inside unprivileged userns,
       # so bwrap --unshare-net fails with RTM_NEWADDR and sandbox tests fail.
       - name: Allow bubblewrap user namespaces
-        if: runner.os == 'Linux'
+        if: steps.gate.outputs.run == 'true' && runner.os == 'Linux'
         run: |
           if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       - name: Compile dependencies (macOS)
-        if: runner.os == 'macOS'
+        if: steps.gate.outputs.run == 'true' && runner.os == 'macOS'
         run: ./scripts/setup-macos.sh
       - uses: actions/cache@v4
+        if: steps.gate.outputs.run == 'true'
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts
+          # Busts when manifest.rs changes (any pin, not only native-eval).
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts-${{ hashFiles('crates/syllabix-core/src/models/manifest.rs') }}
+          restore-keys: |
+            syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts-
+            syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts
       - uses: taiki-e/install-action@v2
+        if: steps.gate.outputs.run == 'true'
         with:
           tool: cargo-llvm-cov@0.8.7
       # Cache only on hosted Linux. Self-hosted keeps target/ on disk; the
       # rust-cache save upload alone can dominate wall time (see ci.yml).
       - uses: Swatinem/rust-cache@v2
-        if: runner.os == 'Linux'
+        if: steps.gate.outputs.run == 'true' && runner.os == 'Linux'
         with:
           key: native-coverage
       - name: Clear stale coverage profiles
+        if: steps.gate.outputs.run == 'true'
         run: |
           if [ -d target/llvm-cov-target ]; then
             find target/llvm-cov-target -type f \( -name '*.profraw' -o -name '*.profdata' \) -delete
           fi
       - name: Run native inference with coverage
+        if: steps.gate.outputs.run == 'true'
         run: |
           cargo llvm-cov --no-cfg-coverage --release --no-clean \
             -p syllabix-core --features native-inference --test native_inference \
@@ -90,6 +141,7 @@ jobs:
           # LCOV keeps usable line tables when Cobertura conversion is empty.
           cargo llvm-cov report --release --lcov --output-path coverage-native.lcov
       - name: Store native coverage report
+        if: steps.gate.outputs.run == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: coverage-cobertura-native
