@@ -18,7 +18,7 @@ mod production {
     use crate::llm::LlamaLlm;
     use crate::models::{Fetcher, ModelCache, Progress};
     use crate::moonshine::MoonshineStt;
-    #[cfg(feature = "cloud-llm")]
+    #[cfg(feature = "cloud")]
     use crate::openai::{OpenAiLlm, OpenAiSettings, API_KEY_ENV, PROVIDER_NAME};
     use crate::pocket_tts::PocketTts;
     use crate::providers::Llm;
@@ -32,7 +32,7 @@ mod production {
         /// In-process GGUF engine (default).
         Local(LlamaLlm),
         /// User-keyed OpenAI-compatible endpoint.
-        #[cfg(feature = "cloud-llm")]
+        #[cfg(feature = "cloud")]
         Cloud(OpenAiLlm),
     }
 
@@ -40,7 +40,7 @@ mod production {
         fn name(&self) -> &'static str {
             match self {
                 Self::Local(llm) => llm.name(),
-                #[cfg(feature = "cloud-llm")]
+                #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.name(),
             }
         }
@@ -48,7 +48,7 @@ mod production {
         fn debug_meta(&self) -> Option<LlmDebugMeta> {
             match self {
                 Self::Local(llm) => llm.debug_meta(),
-                #[cfg(feature = "cloud-llm")]
+                #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.debug_meta(),
             }
         }
@@ -56,7 +56,7 @@ mod production {
         fn take_tool_events(&mut self) -> Vec<crate::types::ToolTurnEvent> {
             match self {
                 Self::Local(llm) => llm.take_tool_events(),
-                #[cfg(feature = "cloud-llm")]
+                #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.take_tool_events(),
             }
         }
@@ -70,7 +70,7 @@ mod production {
         ) -> Result<()> {
             match self {
                 Self::Local(llm) => llm.generate(history, user, cancel, on_token),
-                #[cfg(feature = "cloud-llm")]
+                #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.generate(history, user, cancel, on_token),
             }
         }
@@ -281,7 +281,7 @@ mod production {
             build_stt(cache, fetcher, progress, cancel, config)?.with_language(&config.language)?;
         let llm = build_llm(cache, fetcher, progress, cancel, config, llm_api_key)?;
         let tts = build_tts(cache, fetcher, progress, cancel, config)?;
-        #[cfg(feature = "cloud-llm")]
+        #[cfg(feature = "cloud")]
         if let LiveLlm::Cloud(llm) = &llm {
             match llm.warm_up(cancel) {
                 Ok(()) => eprintln!("cloud: endpoint ready"),
@@ -379,7 +379,7 @@ mod production {
                 .with_developer_permissions(config.llm_developer_permissions.clone()),
             )),
             crate::defaults::LlmProvider::Online => {
-                #[cfg(feature = "cloud-llm")]
+                #[cfg(feature = "cloud")]
                 {
                     let key = llm_api_key.ok_or_else(|| Error::Config {
                         field: API_KEY_ENV.into(),
@@ -392,12 +392,12 @@ mod production {
                             .with_skill_context(skill_context),
                     ))
                 }
-                #[cfg(not(feature = "cloud-llm"))]
+                #[cfg(not(feature = "cloud"))]
                 {
                     let _ = (llm_api_key, skill_context);
                     Err(Error::Config {
                         field: "pipeline.llm.provider".into(),
-                        message: "online LLM requires the `cloud-llm` feature".into(),
+                        message: "online LLM requires the `cloud` feature".into(),
                     })
                 }
             }
@@ -408,7 +408,7 @@ mod production {
     mod tests {
         use super::*;
         use crate::models::{BlockedFetcher, Manifest, NoProgress};
-        #[cfg(feature = "cloud-llm")]
+        #[cfg(feature = "cloud")]
         use crate::openai::DEFAULT_LLM_BASE_URL;
         use std::path::PathBuf;
 
@@ -449,9 +449,9 @@ mod production {
             assert!(matches!(err, Error::ModelCache { .. }));
         }
 
-        #[cfg(feature = "cloud-llm")]
+        #[cfg(feature = "cloud")]
         #[test]
-        fn cloud_llm_needs_no_weights_but_requires_the_key() {
+        fn cloud_needs_no_weights_but_requires_the_key() {
             let mut config = crate::AgentConfig::v0();
             config.llm = crate::defaults::LlmProvider::Online;
             config.llm_model = "gpt-4o-mini".into();

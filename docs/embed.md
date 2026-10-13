@@ -70,10 +70,10 @@ Ready = used by the CLI. Preview = less proven. Depend from crates.io ([Compatib
 
 | Feature | On by default? | Who should enable it | What it turns on |
 | --- | --- | --- | --- |
-| `full` | yes (`default`) | Lane 2, and Lane 3 hosts that still use shipped engines or the real mic/speakers | `ggml` + `device-audio` + `cloud-llm`. `run_live`, `load_real_providers`, and `Session` defaults. |
+| `full` | yes (`default`) | Lane 2, and Lane 3 hosts that still use shipped engines or the real mic/speakers | `ggml` + `device-audio` + `cloud`. `run_live`, `load_real_providers`, and `Session` defaults. |
 | `ggml` | via `full` | Lane 3 that still loads this crate’s Whisper / local LLM / Qwen engines | Optional `syllabix-native` (CMake + C++). |
 | `device-audio` | via `full` | Lane 3 that still uses the real microphone and speakers | Device I/O and echo cancellation (`NativeCapture` / `NativePlayback`). |
-| `cloud-llm` | via `full` | Hosts whose yaml uses `pipeline.llm.provider: online` with `load_real_providers` | `LiveLlm::Cloud` in the real loader. `openai::OpenAiLlm` always compiles. |
+| `cloud` | via `full` | Hosts whose yaml uses `pipeline.llm.provider: online` with `load_real_providers` | `LiveLlm::Cloud` in the real loader. `openai::OpenAiLlm` always compiles. |
 | `native-inference` | no | Contributors running the slow model tests (`native_inference`) | Turns on `ggml` plus the tests that download and run the real models (GGUF and ONNX). ONNX (`ort`) is always built in; this feature does not switch it on. |
 
 **Lane 3 that implements every stage** (see `examples/custom-llm.rs`): `default-features = false`.  

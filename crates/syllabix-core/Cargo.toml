@@ -23,14 +23,14 @@ categories = ["multimedia::audio", "artificial-intelligence"]
 [features]
 # Same graph as `syllabix run`. The CLI and existing hosts keep this default.
 default = ["full"]
-# Session defaults, run_live, and load_real_providers (engines + devices + cloud LLM).
-full = ["ggml", "device-audio", "cloud-llm"]
+# Session defaults, run_live, and load_real_providers (engines + devices + cloud).
+full = ["ggml", "device-audio", "cloud"]
 # Optional CMake build of whisper.cpp / llama.cpp via syllabix-native.
 ggml = ["dep:syllabix-native"]
 # Optional microphone/speaker I/O plus echo cancellation (ALSA headers on Linux).
 device-audio = ["dep:cpal", "dep:sonora"]
-# Cloud LLM variant in load_real_providers only. OpenAiLlm always compiles.
-cloud-llm = []
+# Cloud (online) adapters in load_real_providers only. OpenAiLlm always compiles.
+cloud = []
 # Turns on `ggml` plus the slow tests that download and run the real models
 # (both GGUF and ONNX). ONNX support (`ort`) is always built in; this
 # feature does not switch it on.
@@ -86,7 +86,7 @@ required-features = ["device-audio"]
 [[test]]
 name = "harness-quality"
 path = "tests/harness-quality.rs"
-required-features = ["ggml", "cloud-llm"]
+required-features = ["ggml", "cloud"]
 
 [[example]]
 name = "embed-loop"
