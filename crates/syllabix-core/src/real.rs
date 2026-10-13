@@ -7,8 +7,9 @@ mod production {
     //!
     //! The LLM slot is a [`LiveLlm`]: the in-process llama.cpp GGUF engine by
     //! default, or the user-keyed online adapter when YAML selects
-    //! `pipeline.llm.provider: openai`. VAD, AEC, STT, and TTS stay local either
-    //! way; only transcript text reaches the cloud endpoint.
+    //! `pipeline.llm.provider: online`. STT can be local or `provider: online`
+    //! ([`crate::remote_stt::RemoteStt`]); VAD, AEC, and TTS stay local. When STT
+    //! is online, utterance WAV leaves the machine and no STT weights are fetched.
 
     use zeroize::Zeroizing;
 
@@ -22,6 +23,8 @@ mod production {
     use crate::openai::{OpenAiLlm, OpenAiSettings, API_KEY_ENV, PROVIDER_NAME};
     use crate::pocket_tts::PocketTts;
     use crate::providers::Llm;
+    #[cfg(feature = "cloud")]
+    use crate::remote_stt::{RemoteStt, RemoteSttSettings};
     use crate::stt::WhisperStt;
     use crate::tts::{KokoroTts, QwenTts};
     use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, Transcript, Utterance};
@@ -148,6 +151,9 @@ mod production {
         Moonshine(Box<MoonshineStt>),
         /// Qwen3-ASR 0.6B through the shared ggml (finalize only).
         Qwen(Box<crate::qwen_asr::QwenAsrStt>),
+        /// OpenAI-compatible transcriptions endpoint. No local STT weights.
+        #[cfg(feature = "cloud")]
+        Remote(RemoteStt),
     }
 
     impl crate::providers::Stt for LiveStt {
@@ -156,6 +162,8 @@ mod production {
                 Self::Whisper(stt) => stt.name(),
                 Self::Moonshine(stt) => stt.name(),
                 Self::Qwen(stt) => stt.name(),
+                #[cfg(feature = "cloud")]
+                Self::Remote(stt) => stt.name(),
             }
         }
 
@@ -164,6 +172,8 @@ mod production {
                 Self::Whisper(stt) => stt.transcribe(utterance, cancel),
                 Self::Moonshine(stt) => stt.transcribe(utterance, cancel),
                 Self::Qwen(stt) => stt.transcribe(utterance, cancel),
+                #[cfg(feature = "cloud")]
+                Self::Remote(stt) => stt.transcribe(utterance, cancel),
             }
         }
 
@@ -176,6 +186,8 @@ mod production {
                 Self::Whisper(stt) => stt.start_turn(turn, cancel),
                 Self::Moonshine(stt) => stt.start_turn(turn, cancel),
                 Self::Qwen(stt) => stt.start_turn(turn, cancel),
+                #[cfg(feature = "cloud")]
+                Self::Remote(stt) => stt.start_turn(turn, cancel),
             }
         }
 
@@ -188,6 +200,8 @@ mod production {
                 Self::Whisper(stt) => stt.push_frame(frame, cancel),
                 Self::Moonshine(stt) => stt.push_frame(frame, cancel),
                 Self::Qwen(stt) => stt.push_frame(frame, cancel),
+                #[cfg(feature = "cloud")]
+                Self::Remote(stt) => stt.push_frame(frame, cancel),
             }
         }
 
@@ -196,6 +210,8 @@ mod production {
                 Self::Whisper(stt) => stt.cancel_turn(turn),
                 Self::Moonshine(stt) => stt.cancel_turn(turn),
                 Self::Qwen(stt) => stt.cancel_turn(turn),
+                #[cfg(feature = "cloud")]
+                Self::Remote(stt) => stt.cancel_turn(turn),
             }
         }
     }
@@ -208,6 +224,8 @@ mod production {
             match self {
                 Self::Qwen(stt) => stt.backend_id(),
                 Self::Whisper(_) | Self::Moonshine(_) => None,
+                #[cfg(feature = "cloud")]
+                Self::Remote(_) => None,
             }
         }
 
@@ -217,18 +235,22 @@ mod production {
                 Self::Whisper(stt) => Ok(Self::Whisper(stt.with_language(language)?)),
                 Self::Moonshine(stt) => Ok(Self::Moonshine(stt)),
                 Self::Qwen(stt) => Ok(Self::Qwen(Box::new(stt.with_language(language)?))),
+                #[cfg(feature = "cloud")]
+                Self::Remote(stt) => Ok(Self::Remote(stt.with_language(language))),
             }
         }
     }
 
     /// Build just the STT slot from config. Only the selected engine's weights
     /// are fetched; selecting Moonshine never fetches Whisper GGMLs and vice versa.
+    /// Online STT never touches the model cache.
     pub fn build_stt(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
         progress: &mut dyn Progress,
         cancel: &Cancel,
         config: &AgentConfig,
+        stt_api_key: Option<&Zeroizing<String>>,
     ) -> Result<LiveStt> {
         match config.stt {
             crate::defaults::SttProvider::Local => match config.stt_model {
@@ -260,18 +282,41 @@ mod production {
                     )?,
                 ))),
             },
-            crate::defaults::SttProvider::Online => Err(Error::Config {
-                field: "pipeline.stt.provider".into(),
-                message: "online STT is not supported yet; use provider \"local\"".into(),
-            }),
+            crate::defaults::SttProvider::Online => {
+                #[cfg(feature = "cloud")]
+                {
+                    let _ = (cache, fetcher, progress, cancel);
+                    let key = stt_api_key.ok_or_else(|| Error::Config {
+                        field: crate::config::STT_API_KEY_ENV.into(),
+                        message: format!(
+                            "is required when pipeline.stt.provider is {}",
+                            crate::remote_stt::PROVIDER_NAME
+                        ),
+                    })?;
+                    Ok(LiveStt::Remote(RemoteStt::new(
+                        RemoteSttSettings::from_config(config)?,
+                        key.clone(),
+                    )))
+                }
+                #[cfg(not(feature = "cloud"))]
+                {
+                    let _ = (cache, fetcher, progress, cancel, stt_api_key);
+                    Err(Error::Config {
+                        field: "pipeline.stt.provider".into(),
+                        message: "online STT requires the `cloud` feature".into(),
+                    })
+                }
+            }
         }
     }
     /// Load Silero, the configured STT engine, and the configured language and
     /// speech models.
     ///
-    /// `llm_api_key` carries the already-resolved `SYLLABIX_LLM_API_KEY` value
+    /// `llm_api_key` / `stt_api_key` carry already-resolved environment keys
     /// (`run_live` fails fast before this point when the config needs one and it
-    /// is missing). The local provider ignores it; the cloud provider requires it.
+    /// is missing). Local providers ignore them; online providers require them.
+    /// Online STT never touches the model cache.
+    #[allow(clippy::too_many_arguments)]
     pub fn load_real_providers(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -279,12 +324,13 @@ mod production {
         cancel: &Cancel,
         config: &AgentConfig,
         llm_api_key: Option<&Zeroizing<String>>,
+        stt_api_key: Option<&Zeroizing<String>>,
     ) -> Result<(SileroVad, LiveStt, LiveLlm, LiveTts)> {
         let vad = SileroVad::from_cache(cache, fetcher, progress, cancel)?
             .with_settings(config.vad_settings());
-        // Only the selected STT engine is fetched; the rest of the menu stays on disk.
-        let stt =
-            build_stt(cache, fetcher, progress, cancel, config)?.with_language(&config.language)?;
+        // Only the selected local STT engine is fetched; online STT skips the cache.
+        let stt = build_stt(cache, fetcher, progress, cancel, config, stt_api_key)?
+            .with_language(&config.language)?;
         let llm = build_llm(cache, fetcher, progress, cancel, config, llm_api_key)?;
         let tts = build_tts(cache, fetcher, progress, cancel, config)?;
         #[cfg(feature = "cloud")]
@@ -296,6 +342,23 @@ mod production {
                     tracing::warn!(provider = PROVIDER_NAME, error = %err, "cloud warm-up failed");
                     eprintln!(
                         "cloud: could not verify endpoint; continuing — the first reply may fail"
+                    );
+                }
+            }
+        }
+        #[cfg(feature = "cloud")]
+        if let LiveStt::Remote(stt) = &stt {
+            match stt.warm_up(cancel) {
+                Ok(()) => eprintln!("cloud: STT endpoint ready"),
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(err) => {
+                    tracing::warn!(
+                        provider = crate::remote_stt::PROVIDER_NAME,
+                        error = %err,
+                        "cloud STT warm-up failed"
+                    );
+                    eprintln!(
+                        "cloud: could not verify STT endpoint; continuing — the first transcript may fail"
                     );
                 }
             }
@@ -446,6 +509,7 @@ mod production {
                 &Cancel::new(),
                 &crate::AgentConfig::v0(),
                 None,
+                None,
             ) {
                 Err(err) => err,
                 Ok(_) => panic!("empty manifest should fail"),
@@ -510,22 +574,64 @@ mod production {
             assert!(err.to_string().contains("not supported yet"), "{err}");
         }
 
+        #[cfg(feature = "cloud")]
         #[test]
-        fn online_stt_fails_clearly_without_fetching_weights() {
+        fn online_stt_needs_no_weights_but_requires_the_key() {
+            use crate::providers::Stt;
+
             let mut config = crate::AgentConfig::v0();
             config.stt = crate::defaults::SttProvider::Online;
             config.stt_base_url = Some("http://127.0.0.1:8091/v1".into());
-            let err = build_stt(
+
+            let err = match build_stt(
+                &empty_manifest_cache("online-stt-nokey"),
+                &BlockedFetcher::default(),
+                &mut NoProgress,
+                &Cancel::new(),
+                &config,
+                None,
+            ) {
+                Err(err) => err,
+                Ok(_) => panic!("missing key fails fast"),
+            };
+            assert!(
+                err.to_string().contains(crate::config::STT_API_KEY_ENV),
+                "{err}"
+            );
+
+            let stt = build_stt(
+                &empty_manifest_cache("online-stt-ok"),
+                &BlockedFetcher::default(),
+                &mut NoProgress,
+                &Cancel::new(),
+                &config,
+                Some(&Zeroizing::new("sk-stt".to_string())),
+            )
+            .expect("online STT slot builds without any weights");
+            assert!(matches!(stt, LiveStt::Remote(_)));
+            assert_eq!(stt.name(), crate::remote_stt::PROVIDER_NAME);
+            let stt = stt.with_language("fr").expect("language");
+            assert_eq!(stt.name(), crate::remote_stt::PROVIDER_NAME);
+        }
+
+        #[cfg(not(feature = "cloud"))]
+        #[test]
+        fn online_stt_requires_the_cloud_feature() {
+            let mut config = crate::AgentConfig::v0();
+            config.stt = crate::defaults::SttProvider::Online;
+            config.stt_base_url = Some("http://127.0.0.1:8091/v1".into());
+            let err = match build_stt(
                 &empty_manifest_cache("online-stt"),
                 &BlockedFetcher::default(),
                 &mut NoProgress,
                 &Cancel::new(),
                 &config,
-            )
-            .err()
-            .expect("online STT is not implemented yet");
-            assert!(err.to_string().contains("pipeline.stt.provider"), "{err}");
-            assert!(err.to_string().contains("not supported yet"), "{err}");
+                None,
+            ) {
+                Err(err) => err,
+                Ok(_) => panic!("online STT needs cloud"),
+            };
+            assert!(err.to_string().contains("`cloud` feature"), "{err}");
         }
 
         #[test]

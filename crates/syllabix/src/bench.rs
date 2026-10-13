@@ -188,7 +188,7 @@ pub(crate) fn run_asr_worker(out: PathBuf, model: String) -> Result<()> {
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
     let memory_before_load = required_rss("before ASR model load")?;
-    let mut stt = build_stt(&cache, &HttpFetcher, &mut progress, &cancel, &config)?
+    let mut stt = build_stt(&cache, &HttpFetcher, &mut progress, &cancel, &config, None)?
         .with_language(&config.language)?;
     let memory_after_load = required_rss("after ASR model load")?;
     let records = benchmark_stt(
