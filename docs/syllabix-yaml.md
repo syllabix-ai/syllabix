@@ -46,6 +46,16 @@ pipeline:
 
 First `run` fetches only the selected model ids (~2.2 GB for the default stack). Model catalogue (ids, sources, machine needs): [engines.md](engines.md). The rest of this page walks every key in order.
 
+## Local vs online
+
+Each of STT, LLM, and TTS is `local` (in-process, the default) or `online` (an OpenAI-compatible `base_url`). Default `run` stays fully local. API keys never go in yaml.
+
+| Stage | `local` | `online` |
+| --- | --- | --- |
+| STT | In-process. Ids: [engines](engines.md#stt). | `provider: online` + `base_url` ([same rules](#base_url)). Runtime is not supported yet. Key: `SYLLABIX_STT_API_KEY` (environment only). |
+| LLM | GGUF in-process. | OpenAI-compatible `chat/completions`. Key: `SYLLABIX_LLM_API_KEY` (self-hosted Ollama may not need a real one; [API key](#api-key-environment-not-yaml)). See [`base_url`](#base_url). |
+| TTS | In-process. Ids: [engines](engines.md#tts). | `provider: online` + `base_url` ([same rules](#base_url)). Runtime is not supported yet. Key: `SYLLABIX_TTS_API_KEY` (environment only). |
+
 ## `name`
 
 Display label for the agent. Default: `demo-agent`.
@@ -105,11 +115,18 @@ Recommended to be higher than `min_speech_ms`.
 
 ### `provider`
 
-Only `local` (in-process). Required. Other providers are a placeholder for future support and fail at load.
+`local` (default, in-process) or `online`.
+
+- `local` — in-process. Ids: [engines](engines.md#stt).
+- `online` — OpenAI-compatible transcriptions endpoint. See [Local vs online](#local-vs-online). `base_url` uses the [LLM rules](#base_url). Runtime is not supported yet.
 
 ### `model`
 
-Ids and sources: [engines](engines.md#stt). Unknown ids fail at load. First `run` fetches only the id you pick. Measured latency and memory: [workload benchmark](workload_benchmark/workload_benchmark.md#stt).
+**Local** ids: [engines](engines.md#stt). Unknown local ids fail at load. First `run` fetches only the id you pick.
+
+**Online:** any id the endpoint serves.
+
+Measured latency and memory for local ids: [workload benchmark](workload_benchmark/workload_benchmark.md#stt).
 
 ### `language`
 
@@ -218,11 +235,16 @@ Omitting `developer_permissions` uses `read-only`, `none`, and `none`.
 
 ### `provider`
 
-Only `local` (in-process). Required. `online` is a placeholder for future support and fails at load.
+`local` (default, in-process) or `online`.
+
+- `local` — in-process. Ids: [engines](engines.md#tts).
+- `online` — OpenAI-compatible speech endpoint. See [Local vs online](#local-vs-online). `base_url` uses the [LLM rules](#base_url). Runtime is not supported yet.
 
 ### `model`
 
-Ids and sources: [engines](engines.md#tts). Unknown ids fail at load. Non-default ids are fetched on first use. Pocket TTS accepts no user voice data.
+**Local** ids: [engines](engines.md#tts). Unknown local ids fail at load. Non-default ids are fetched on first use. Pocket TTS accepts no user voice data.
+
+**Online:** any id the endpoint serves.
 
 Measured latency and memory for each TTS id: [workload benchmark](workload_benchmark/workload_benchmark.md#tts).
 
