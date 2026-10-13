@@ -22,6 +22,8 @@ pub const CONFIG_FILE_NAME: &str = "syllabix.yaml";
 
 /// Environment variable for an online STT API key. Never read from yaml.
 pub const STT_API_KEY_ENV: &str = "SYLLABIX_STT_API_KEY";
+/// Environment variable for an online TTS API key. Never read from yaml.
+pub const TTS_API_KEY_ENV: &str = "SYLLABIX_TTS_API_KEY";
 
 /// Default idle duration before the mic auto-mutes (`auto-timeout.mic_mute_ms`).
 pub const DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS: u32 = 180_000;
@@ -82,10 +84,16 @@ pub struct AgentConfig {
     /// Explicit repository/global skill roots.
     /// The built-in read-only root is added by skill discovery.
     pub skills: SkillsConfig,
-    /// TTS provider (`local`; `online` is reserved and rejected).
+    /// TTS provider.
     pub tts: TtsProvider,
-    /// TTS model id (`kokoro`, `qwen3-0.6`, `qwen3-1.7`, or `pocket-tts`).
+    /// Local TTS engine when `provider: local`. Unused for `provider: online`.
     pub tts_model: TtsModel,
+    /// Yaml `pipeline.tts.model`: local menu id, or any non-empty id when online.
+    pub tts_model_id: String,
+    /// OpenAI-compatible endpoint (`pipeline.tts.base_url`). Required for
+    /// `provider: online`, forbidden for `provider: local`; the API key never
+    /// lives here.
+    pub tts_base_url: Option<String>,
     /// Qwen3-TTS compute placement (`auto`, `cpu`, `metal`, or `vulkan`).
     pub tts_compute: TtsCompute,
     /// TTS language code (`en`). Qwen3-TTS speaks this language; Kokoro
@@ -138,6 +146,8 @@ impl AgentConfig {
             skills: SkillsConfig::default(),
             tts: defaults.tts,
             tts_model: defaults.tts_model,
+            tts_model_id: defaults.tts_model.as_str().to_string(),
+            tts_base_url: None,
             tts_compute: TtsCompute::Auto,
             tts_language: "en".to_string(),
             diagnostics_timestamps: false,
@@ -240,7 +250,7 @@ pipeline:
     provider: {tts}
     model: {tts_model}
     language: {tts_language}
-{tts_compute_line}{diagnostics_block}{skills_block}",
+{tts_compute_line}{tts_base_url_line}{diagnostics_block}{skills_block}",
             name = self.name,
             vad = self.vad.as_str(),
             vad_threshold = self.vad_threshold,
@@ -268,9 +278,14 @@ pipeline:
             developer_harness_line = developer_harness_line,
             developer_permissions_block = developer_permissions_block,
             tts = self.tts.as_str(),
-            tts_model = self.tts_model.as_str(),
+            tts_model = self.tts_model_id,
             tts_language = self.tts_language,
             tts_compute_line = tts_compute_line,
+            tts_base_url_line = self
+                .tts_base_url
+                .as_deref()
+                .map(|url| format!("    base_url: {url}\n"))
+                .unwrap_or_default(),
             diagnostics_block = diagnostics_block,
             skills_block = skills_block,
         )
@@ -522,18 +537,24 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     let llm_developer_permissions = parse_developer_permissions(llm, llm_developer_harness)?;
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
+    deny_yaml_api_key(tts, "pipeline.tts", TTS_API_KEY_ENV)?;
     deny_unknown(
         tts,
         "pipeline.tts",
-        &["provider", "model", "language", "compute"],
+        &["provider", "model", "language", "compute", "base_url"],
     )?;
-    // `local` runs weights in-process. `online` is reserved and rejected until
-    // an online TTS implementation exists.
     let tts_provider = parse_tts(required_string(tts, "pipeline.tts.provider", "provider")?)?;
-    let tts_model = parse_tts_model(
-        tts_provider,
-        required_string(tts, "pipeline.tts.model", "model")?,
-    )?;
+    let tts_model_raw = required_string(tts, "pipeline.tts.model", "model")?;
+    let (tts_model, tts_model_id) = match tts_provider {
+        TtsProvider::Local => {
+            let model = parse_tts_model(tts_model_raw)?;
+            (model, model.as_str().to_string())
+        }
+        TtsProvider::Online => (
+            TtsModel::PocketTts,
+            parse_online_model_id("pipeline.tts.model", tts_model_raw)?,
+        ),
+    };
     // Qwen3-TTS speaks this language; Kokoro ignores it. `auto` is an
     // STT concept and stays rejected here.
     let tts_language = match optional_string(tts, "pipeline.tts", "language")? {
@@ -546,6 +567,12 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         })?,
         None => TtsCompute::Auto,
     };
+    if tts_provider == TtsProvider::Online && tts_compute != TtsCompute::Auto {
+        return Err(Error::Config {
+            field: "pipeline.tts.compute".into(),
+            message: "is only valid with local qwen3-0.6 or qwen3-1.7".into(),
+        });
+    }
     if tts_compute != TtsCompute::Auto && !matches!(tts_model, TtsModel::Qwen06 | TtsModel::Qwen17)
     {
         return Err(Error::Config {
@@ -553,6 +580,12 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
             message: "is only valid with qwen3-0.6 or qwen3-1.7".into(),
         });
     }
+    let tts_base_url = resolve_online_base_url(
+        tts,
+        "pipeline.tts.base_url",
+        "pipeline.tts.provider",
+        tts_provider == TtsProvider::Online,
+    )?;
 
     // Diagnostics are configured here instead of with a CLI flag. `audio: true`
     // implies `timestamps: true` — WAVs always ship with their sidecar.
@@ -590,6 +623,8 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         skills,
         tts: tts_provider,
         tts_model,
+        tts_model_id,
+        tts_base_url,
         tts_compute,
         tts_language,
         diagnostics_timestamps,
@@ -1121,33 +1156,21 @@ fn deny_yaml_api_key(map: &serde_yaml::Mapping, prefix: &str, env_name: &str) ->
 fn parse_tts(value: &str) -> Result<TtsProvider> {
     match value {
         "local" => Ok(TtsProvider::Local),
-        "online" => Err(Error::Config {
-            field: "pipeline.tts.provider".into(),
-            message: "online TTS is not supported yet (weights never leave the machine today); \
-                      use provider \"local\""
-                .into(),
-        }),
-        other => Err(unsupported("pipeline.tts.provider", other, "local")),
+        "online" => Ok(TtsProvider::Online),
+        other => Err(unsupported("pipeline.tts.provider", other, "local, online")),
     }
 }
 
-/// `pipeline.tts.model`: the local weight menu. `pocket-tts` is the default;
-/// other model identifiers fetch their assets on first use only.
-fn parse_tts_model(provider: TtsProvider, value: &str) -> Result<TtsModel> {
-    match provider {
-        TtsProvider::Local => TtsModel::parse(value).ok_or_else(|| {
-            unsupported(
-                "pipeline.tts.model",
-                value,
-                "kokoro, qwen3-0.6, qwen3-1.7, pocket-tts",
-            )
-        }),
-        // parse_tts already rejected `online`; this arm keeps the type total.
-        TtsProvider::Online => Err(Error::Config {
-            field: "pipeline.tts.provider".into(),
-            message: "online TTS is not supported yet; use provider \"local\"".into(),
-        }),
-    }
+/// `pipeline.tts.model` for `provider: local`. Online ids are any non-empty
+/// string (`parse_online_model_id`).
+fn parse_tts_model(value: &str) -> Result<TtsModel> {
+    TtsModel::parse(value).ok_or_else(|| {
+        unsupported(
+            "pipeline.tts.model",
+            value,
+            "kokoro, qwen3-0.6, qwen3-1.7, pocket-tts",
+        )
+    })
 }
 
 /// `pipeline.tts.language`: same supported-code vocabulary as STT, but `auto`
@@ -2416,18 +2439,110 @@ pipeline:
         assert!(err.to_string().contains("only valid with qwen3"), "{err}");
     }
 
+    fn online_tts_yaml(base_url: &str) -> String {
+        format!(
+            r#"
+name: demo-agent
+pipeline:
+  vad:
+    provider: silero
+  stt:
+    provider: local
+    model: whisper-small
+    language: en
+  llm:
+    provider: local
+    model: lfm2.5-2.6b
+  tts:
+    provider: online
+    model: pocket-tts
+    language: en
+    base_url: {base_url}
+"#
+        )
+    }
+
     #[test]
-    fn online_tts_fails_fast_with_the_posture_hint() {
-        let yaml = AgentConfig::v0().to_yaml().replace(
-            "  tts:\n    provider: local",
-            "  tts:\n    provider: online",
+    fn online_tts_yaml_round_trips_and_stays_local_by_default() {
+        let url = "http://127.0.0.1:8092/v1";
+        let cfg = AgentConfig::parse_yaml(&online_tts_yaml(url)).unwrap();
+        assert_eq!(cfg.tts, TtsProvider::Online);
+        assert_eq!(cfg.tts_model_id, "pocket-tts");
+        assert_eq!(cfg.tts_base_url.as_deref(), Some(url));
+        assert_eq!(cfg.stt, SttProvider::Local);
+        let round = AgentConfig::parse_yaml(&cfg.to_yaml()).unwrap();
+        assert_eq!(round, cfg);
+        assert!(cfg.to_yaml().contains(&format!("base_url: {url}")));
+        let defaults = AgentConfig::v0();
+        assert_eq!(defaults.tts, TtsProvider::Local);
+        assert!(defaults.tts_base_url.is_none());
+    }
+
+    #[test]
+    fn online_tts_accepts_any_non_empty_model_id() {
+        let yaml = online_tts_yaml("https://api.openai.com/v1")
+            .replace("model: pocket-tts", "model: tts-1");
+        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(cfg.tts, TtsProvider::Online);
+        assert_eq!(cfg.tts_model_id, "tts-1");
+        let yaml = online_tts_yaml("https://api.groq.com/openai/v1")
+            .replace("model: pocket-tts", "model: playai-tts");
+        assert_eq!(
+            AgentConfig::parse_yaml(&yaml).unwrap().tts_model_id,
+            "playai-tts"
+        );
+        let err = AgentConfig::parse_yaml(
+            &online_tts_yaml("http://127.0.0.1:8092/v1")
+                .replace("model: pocket-tts", "model: \"   \""),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("pipeline.tts.model"), "{err}");
+        assert!(err.to_string().contains("non-empty"), "{err}");
+    }
+
+    #[test]
+    fn online_tts_requires_a_base_url_and_rejects_it_for_local() {
+        let err = AgentConfig::parse_yaml(
+            &online_tts_yaml("http://127.0.0.1:8092/v1")
+                .replace("    base_url: http://127.0.0.1:8092/v1\n", ""),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("pipeline.tts.base_url"), "{err}");
+        assert!(err.to_string().contains("required"), "{err}");
+
+        let tts_only = AgentConfig::v0().to_yaml().replace(
+            "  tts:\n    provider: local\n    model: pocket-tts\n    language: en\n",
+            "  tts:\n    provider: local\n    model: pocket-tts\n    language: en\n    base_url: http://127.0.0.1:8092/v1\n",
+        );
+        let err = AgentConfig::parse_yaml(&tts_only).unwrap_err();
+        assert!(err.to_string().contains("pipeline.tts.base_url"), "{err}");
+        assert!(err.to_string().contains("online"), "{err}");
+    }
+
+    #[test]
+    fn online_tts_rejects_yaml_api_keys() {
+        for key in ["api_key", "key", "token"] {
+            let yaml = online_tts_yaml("http://127.0.0.1:8092/v1").replace(
+                "    base_url: http://127.0.0.1:8092/v1\n",
+                &format!("    base_url: http://127.0.0.1:8092/v1\n    {key}: secret\n"),
+            );
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("pipeline.tts.{key}")),
+                "{key}: {err}"
+            );
+            assert!(err.to_string().contains(TTS_API_KEY_ENV), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn online_tts_rejects_local_compute() {
+        let yaml = online_tts_yaml("http://127.0.0.1:8092/v1").replace(
+            "    model: pocket-tts\n    language: en\n",
+            "    model: qwen3-0.6\n    language: en\n    compute: cpu\n",
         );
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
-        assert!(err.to_string().contains("pipeline.tts.provider"), "{err}");
-        assert!(err.to_string().contains("not supported yet"), "{err}");
-        // Even a valid model id cannot sneak through an unsupported posture.
-        let yaml = yaml.replace("model: pocket-tts", "model: qwen3-0.6");
-        assert!(AgentConfig::parse_yaml(&yaml).is_err());
+        assert!(err.to_string().contains("pipeline.tts.compute"), "{err}");
     }
 
     #[test]
