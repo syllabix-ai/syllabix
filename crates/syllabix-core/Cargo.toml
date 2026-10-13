@@ -42,7 +42,6 @@ cpal = { workspace = true, optional = true }
 sha2.workspace = true
 ureq.workspace = true
 url.workspace = true
-idna.workspace = true
 zeroize.workspace = true
 jobserver.workspace = true
 getrandom.workspace = true

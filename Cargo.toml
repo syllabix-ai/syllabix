@@ -17,8 +17,8 @@ publish = false
 # Keep the dependency graph deterministic across the target matrix.
 clap = { version = "=4.5.23", features = ["derive"] }
 thiserror = "=2.0.17"
-tracing = "=0.1.41"
-tracing-subscriber = { version = "=0.3.19", features = ["env-filter"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 syllabix-core = { path = "crates/syllabix-core" }
 assert_cmd = "=2.0.16"
 predicates = "=3.1.2"
@@ -27,14 +27,13 @@ sonora = "=0.2.0"
 # Keep the CoreAudio bindings aligned with cpal 0.15.
 coreaudio-sys = "=0.2.16"
 # rustls-backed HTTP so the binary does not pick up libssl.
-# ureq 2.12 + url 2.5.4 pull idna 1.x / edition 2024, which Cargo 1.83 cannot parse.
+# Stay on ureq 2.x; rustls is selected through Cargo.lock.
 ureq = { version = "=2.10.1", default-features = false, features = ["tls"] }
 sha2 = "=0.10.8"
-url = "=2.5.2"
-idna = "=0.5.0"
+url = "=2.5.8"
 zeroize = "=1.8.1"
-# jobserver 0.1.33+ pulls getrandom 0.3/0.4 (edition 2024) on Windows.
-jobserver = "=0.1.32"
+jobserver = "=0.1.35"
+# Direct getrandom 0.2 for pocket-tts; 0.4 is a different API.
 getrandom = "=0.2.17"
 # Exact serialization pins keep generated config stable.
 serde = { version = "=1.0.217", features = ["derive"] }
