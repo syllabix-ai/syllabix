@@ -58,5 +58,5 @@ If you are writing a review/comment, begin the comment with:
 Example: `[claude-sonnet-4-6 via cursor]`. Never post as an unattributed human.
 
 When working on PR comments: reply to every review thread and resolve it
-once addressed. No thread left unreplied. Resolving fires no workflow
-event, so afterwards edit the PR body to re-run the threads check.
+once addressed. No thread left unreplied. GitHub branch protection
+enforces resolved conversations.
