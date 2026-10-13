@@ -20,6 +20,9 @@ use crate::vad::{VadSettings, END_SILENCE, MIN_SPEECH, SPEECH_THRESHOLD, WHISPER
 /// File name written by `init` and optionally read by `run`.
 pub const CONFIG_FILE_NAME: &str = "syllabix.yaml";
 
+/// Environment variable for an online STT API key. Never read from yaml.
+pub const STT_API_KEY_ENV: &str = "SYLLABIX_STT_API_KEY";
+
 /// Default idle duration before the mic auto-mutes (`auto-timeout.mic_mute_ms`).
 pub const DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS: u32 = 180_000;
 /// Default idle duration before `run` exits (`auto-timeout.exit_ms`).
@@ -42,8 +45,14 @@ pub struct AgentConfig {
     pub vad_preroll_ms: u32,
     /// STT provider.
     pub stt: SttProvider,
-    /// STT model id.
+    /// Local STT engine when `provider: local`. Unused for `provider: online`.
     pub stt_model: SttModel,
+    /// Yaml `pipeline.stt.model`: local menu id, or any non-empty id when online.
+    pub stt_model_id: String,
+    /// OpenAI-compatible endpoint (`pipeline.stt.base_url`). Required for
+    /// `provider: online`, forbidden for `provider: local`; the API key never
+    /// lives here.
+    pub stt_base_url: Option<String>,
     /// Qwen3-ASR compute placement (`auto`, `cpu`, `metal`, or `vulkan`).
     pub stt_compute: TtsCompute,
     /// STT language code: a whisper-supported ISO code or `auto`.
@@ -115,6 +124,8 @@ impl AgentConfig {
             vad_preroll_ms: WHISPER_PREROLL.as_millis() as u32,
             stt: defaults.stt,
             stt_model: defaults.stt_model,
+            stt_model_id: defaults.stt_model.as_str().to_string(),
+            stt_base_url: None,
             stt_compute: TtsCompute::Auto,
             language: defaults.language.to_string(),
             llm: defaults.llm,
@@ -220,7 +231,7 @@ pipeline:
     provider: {stt}
     model: {stt_model}
 {stt_compute_line}    language: {language}
-  llm:
+{stt_base_url_line}  llm:
     provider: {llm}
     model: {llm_model}
     thinking: {thinking}
@@ -237,9 +248,14 @@ pipeline:
             vad_end_silence_ms = self.vad_end_silence_ms,
             vad_preroll_ms = self.vad_preroll_ms,
             stt = self.stt.as_str(),
-            stt_model = self.stt_model.as_str(),
+            stt_model = self.stt_model_id,
             stt_compute_line = stt_compute_line,
             language = self.language,
+            stt_base_url_line = self
+                .stt_base_url
+                .as_deref()
+                .map(|url| format!("    base_url: {url}\n"))
+                .unwrap_or_default(),
             llm = self.llm.as_str(),
             llm_model = self.llm_model,
             thinking = self.thinking,
@@ -396,13 +412,24 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     )?;
 
     let stt = mapping(required(pipeline, "pipeline.stt", "stt")?, "pipeline.stt")?;
+    deny_yaml_api_key(stt, "pipeline.stt", STT_API_KEY_ENV)?;
     deny_unknown(
         stt,
         "pipeline.stt",
-        &["provider", "model", "language", "compute"],
+        &["provider", "model", "language", "compute", "base_url"],
     )?;
     let stt_provider = parse_stt(required_string(stt, "pipeline.stt.provider", "provider")?)?;
-    let stt_model = parse_stt_model(required_string(stt, "pipeline.stt.model", "model")?)?;
+    let stt_model_raw = required_string(stt, "pipeline.stt.model", "model")?;
+    let (stt_model, stt_model_id) = match stt_provider {
+        SttProvider::Local => {
+            let model = parse_stt_model(stt_model_raw)?;
+            (model, model.as_str().to_string())
+        }
+        SttProvider::Online => (
+            SttModel::Small,
+            parse_online_model_id("pipeline.stt.model", stt_model_raw)?,
+        ),
+    };
     let language = parse_language(required_string(stt, "pipeline.stt.language", "language")?)?;
     let stt_compute = match optional_string(stt, "pipeline.stt", "compute")? {
         Some(value) => TtsCompute::parse(&value).ok_or_else(|| {
@@ -410,12 +437,24 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         })?,
         None => TtsCompute::Auto,
     };
+    if stt_provider == SttProvider::Online && stt_compute != TtsCompute::Auto {
+        return Err(Error::Config {
+            field: "pipeline.stt.compute".into(),
+            message: "is only valid with local qwen3-asr-0.6".into(),
+        });
+    }
     if stt_compute != TtsCompute::Auto && !stt_model.is_qwen_asr() {
         return Err(Error::Config {
             field: "pipeline.stt.compute".into(),
             message: "is only valid with qwen3-asr-0.6".into(),
         });
     }
+    let stt_base_url = resolve_online_base_url(
+        stt,
+        "pipeline.stt.base_url",
+        "pipeline.stt.provider",
+        stt_provider == SttProvider::Online,
+    )?;
     // Moonshine is English-only: any other language (including `auto`) would
     // mistranslate the `{language}` prompt pin, so reject it here where the
     // field is named.
@@ -427,6 +466,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     }
 
     let llm = mapping(required(pipeline, "pipeline.llm", "llm")?, "pipeline.llm")?;
+    deny_yaml_api_key(llm, "pipeline.llm", crate::openai::API_KEY_ENV)?;
     deny_unknown(
         llm,
         "pipeline.llm",
@@ -462,7 +502,12 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     // The endpoint is explicit for `online` providers such as OpenAI, Groq, Ollama,
     // vLLM, llama-server); the key may not live here either way —
     // `SYLLABIX_LLM_API_KEY` env only, never yaml, never `.env`.
-    let llm_base_url = resolve_llm_base_url(llm, llm_provider)?;
+    let llm_base_url = resolve_online_base_url(
+        llm,
+        "pipeline.llm.base_url",
+        "pipeline.llm.provider",
+        llm_provider == LlmProvider::Online,
+    )?;
     let llm_developer_harness = optional_bool(llm, "pipeline.llm", "developer_harness", false)?;
     let local_lfm_harness =
         llm_provider == LlmProvider::Local && llm_model == crate::llm::LFM25_2_6B_ASSET;
@@ -531,6 +576,8 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         vad_preroll_ms,
         stt: stt_provider,
         stt_model,
+        stt_model_id,
+        stt_base_url,
         stt_compute,
         language,
         llm: llm_provider,
@@ -950,7 +997,19 @@ fn parse_vad(value: &str) -> Result<VadProvider> {
 fn parse_stt(value: &str) -> Result<SttProvider> {
     match value {
         "local" => Ok(SttProvider::Local),
-        other => Err(unsupported("pipeline.stt.provider", other, "local")),
+        "online" => Ok(SttProvider::Online),
+        other => Err(unsupported("pipeline.stt.provider", other, "local, online")),
+    }
+}
+
+fn parse_online_model_id(field: &str, value: &str) -> Result<String> {
+    if value.trim().is_empty() {
+        Err(Error::Config {
+            field: field.into(),
+            message: "must be a non-empty model id".into(),
+        })
+    } else {
+        Ok(value.to_string())
     }
 }
 
@@ -1014,38 +1073,49 @@ fn parse_llm_model(provider: LlmProvider, value: &str) -> Result<String> {
     }
 }
 
-/// `pipeline.llm.base_url`: required (non-empty) for `provider: online`,
-/// forbidden for `provider: local` — the local engine has nothing to point at.
-fn resolve_llm_base_url(
+/// `base_url` on an STT/LLM/TTS block: required (non-empty) for
+/// `provider: online`, forbidden for `provider: local`.
+fn resolve_online_base_url(
     map: &serde_yaml::Mapping,
-    provider: LlmProvider,
+    field: &str,
+    provider_field: &str,
+    online: bool,
 ) -> Result<Option<String>> {
-    match provider {
-        LlmProvider::Local => {
-            if map.get("base_url").is_some() {
-                return Err(Error::Config {
-                    field: "pipeline.llm.base_url".into(),
-                    message: "is only valid when pipeline.llm.provider is online".into(),
-                });
-            }
-            Ok(None)
+    if !online {
+        if map.get("base_url").is_some() {
+            return Err(Error::Config {
+                field: field.into(),
+                message: format!("is only valid when {provider_field} is online"),
+            });
         }
-        LlmProvider::Online => {
-            let value = map.get("base_url").ok_or_else(|| Error::Config {
-                field: "pipeline.llm.base_url".into(),
-                message: "is required when pipeline.llm.provider is online".into(),
-            })?;
-            let raw = value.as_str().ok_or_else(|| Error::Config {
-                field: "pipeline.llm.base_url".into(),
-                message: "must be a string".into(),
-            })?;
-            crate::openai::validate_base_url(raw).map_err(|message| Error::Config {
-                field: "pipeline.llm.base_url".into(),
-                message,
-            })?;
-            Ok(Some(raw.to_string()))
+        return Ok(None);
+    }
+    let value = map.get("base_url").ok_or_else(|| Error::Config {
+        field: field.into(),
+        message: format!("is required when {provider_field} is online"),
+    })?;
+    let raw = value.as_str().ok_or_else(|| Error::Config {
+        field: field.into(),
+        message: "must be a string".into(),
+    })?;
+    crate::openai::validate_base_url(raw).map_err(|message| Error::Config {
+        field: field.into(),
+        message,
+    })?;
+    Ok(Some(raw.to_string()))
+}
+
+/// API keys are environment-only. Name the env var when yaml tries to hold one.
+fn deny_yaml_api_key(map: &serde_yaml::Mapping, prefix: &str, env_name: &str) -> Result<()> {
+    for key in ["api_key", "key", "token"] {
+        if map.get(key).is_some() {
+            return Err(Error::Config {
+                field: format!("{prefix}.{key}"),
+                message: format!("API keys never live in yaml; set {env_name} in the environment"),
+            });
         }
     }
+    Ok(())
 }
 
 fn parse_tts(value: &str) -> Result<TtsProvider> {
@@ -1947,6 +2017,148 @@ pipeline:
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.base_url"), "{err}");
         assert!(err.to_string().contains("must be a string"), "{err}");
+    }
+
+    fn online_stt_yaml(base_url: &str) -> String {
+        format!(
+            r#"
+name: demo-agent
+pipeline:
+  vad:
+    provider: silero
+  stt:
+    provider: online
+    model: whisper-small
+    language: en
+    base_url: {base_url}
+  llm:
+    provider: local
+    model: lfm2.5-2.6b
+  tts:
+    provider: local
+    model: pocket-tts
+"#
+        )
+    }
+
+    #[test]
+    fn online_stt_yaml_round_trips_and_stays_local_by_default() {
+        let url = "http://127.0.0.1:8091/v1";
+        let cfg = AgentConfig::parse_yaml(&online_stt_yaml(url)).unwrap();
+        assert_eq!(cfg.stt, SttProvider::Online);
+        assert_eq!(cfg.stt_model_id, "whisper-small");
+        assert_eq!(cfg.stt_base_url.as_deref(), Some(url));
+        assert_eq!(cfg.llm, LlmProvider::Local);
+        assert_eq!(cfg.tts, TtsProvider::Local);
+        let round = AgentConfig::parse_yaml(&cfg.to_yaml()).unwrap();
+        assert_eq!(round, cfg);
+        assert!(cfg.to_yaml().contains(&format!("base_url: {url}")));
+        let defaults = AgentConfig::v0();
+        assert_eq!(defaults.stt, SttProvider::Local);
+        assert!(defaults.stt_base_url.is_none());
+        assert!(!defaults.to_yaml().contains("base_url"));
+    }
+
+    #[test]
+    fn online_stt_accepts_any_non_empty_model_id() {
+        let yaml = online_stt_yaml("https://api.groq.com/openai/v1")
+            .replace("model: whisper-small", "model: whisper-large-v3");
+        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(cfg.stt, SttProvider::Online);
+        assert_eq!(cfg.stt_model_id, "whisper-large-v3");
+        let yaml = online_stt_yaml("https://api.openai.com/v1")
+            .replace("model: whisper-small", "model: whisper-1");
+        assert_eq!(
+            AgentConfig::parse_yaml(&yaml).unwrap().stt_model_id,
+            "whisper-1"
+        );
+        let err = AgentConfig::parse_yaml(
+            &online_stt_yaml("http://127.0.0.1:8091/v1")
+                .replace("model: whisper-small", "model: \"   \""),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("pipeline.stt.model"), "{err}");
+        assert!(err.to_string().contains("non-empty"), "{err}");
+    }
+
+    #[test]
+    fn online_stt_requires_a_base_url_and_rejects_it_for_local() {
+        let err = AgentConfig::parse_yaml(
+            &online_stt_yaml("http://127.0.0.1:8091/v1")
+                .replace("    base_url: http://127.0.0.1:8091/v1\n", ""),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("pipeline.stt.base_url"), "{err}");
+        assert!(err.to_string().contains("required"), "{err}");
+
+        let yaml = AgentConfig::v0().to_yaml().replace(
+            "    language: en\n  llm:",
+            "    language: en\n    base_url: http://127.0.0.1:8091/v1\n  llm:",
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.stt.base_url"), "{err}");
+        assert!(err.to_string().contains("online"), "{err}");
+    }
+
+    #[test]
+    fn online_stt_base_url_must_be_an_absolute_http_url() {
+        for bad in [
+            "api.example.com/v1",
+            "ftp://api.example.com",
+            "https://user:pass@api.example.com",
+            "",
+        ] {
+            let err = AgentConfig::parse_yaml(&online_stt_yaml(bad)).unwrap_err();
+            assert!(
+                err.to_string().contains("pipeline.stt.base_url"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn online_stt_rejects_yaml_api_keys() {
+        for key in ["api_key", "key", "token"] {
+            let yaml = online_stt_yaml("http://127.0.0.1:8091/v1").replace(
+                "    base_url: http://127.0.0.1:8091/v1\n",
+                &format!("    base_url: http://127.0.0.1:8091/v1\n    {key}: secret\n"),
+            );
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("pipeline.stt.{key}")),
+                "{key}: {err}"
+            );
+            assert!(err.to_string().contains(STT_API_KEY_ENV), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn online_llm_rejects_yaml_api_keys() {
+        for key in ["api_key", "key", "token"] {
+            let yaml = online_yaml("gpt-4o-mini", "https://api.openai.com/v1").replace(
+                "base_url: https://api.openai.com/v1\n",
+                &format!("base_url: https://api.openai.com/v1\n    {key}: secret\n"),
+            );
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("pipeline.llm.{key}")),
+                "{key}: {err}"
+            );
+            assert!(
+                err.to_string().contains(crate::openai::API_KEY_ENV),
+                "{key}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn online_stt_rejects_local_compute() {
+        let yaml = online_stt_yaml("http://127.0.0.1:8091/v1").replace(
+            "    model: whisper-small\n    language: en\n",
+            "    model: qwen3-asr-0.6\n    language: en\n    compute: cpu\n",
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.stt.compute"), "{err}");
     }
 
     #[test]

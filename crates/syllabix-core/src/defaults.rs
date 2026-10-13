@@ -60,11 +60,16 @@ impl VadProvider {
     }
 }
 
-/// Speech-to-text implementation.
+/// Speech-to-text execution models. `Local` runs weights in-process;
+/// `Online` points at an OpenAI-compatible transcriptions endpoint
+/// (`pipeline.stt.base_url`). Runtime support lands in a follow-up; yaml
+/// already accepts the same `local` / `online` words as [`LlmProvider`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SttProvider {
-    /// In-process STT. The selected model chooses Whisper or Moonshine.
+    /// In-process STT. The selected model chooses Whisper, Moonshine, or Qwen-ASR.
     Local,
+    /// OpenAI-compatible remote endpoint. Yaml-accepted; runtime not supported yet.
+    Online,
 }
 
 impl SttProvider {
@@ -72,6 +77,7 @@ impl SttProvider {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
+            Self::Online => "online",
         }
     }
 }
@@ -393,11 +399,13 @@ mod tests {
     fn one_provider_per_layer() {
         assert_eq!(VadProvider::Silero.as_str(), "silero");
         assert_eq!(SttProvider::Local.as_str(), "local");
+        assert_eq!(SttProvider::Online.as_str(), "online");
         assert_eq!(LlmProvider::Local.as_str(), "local");
         assert_eq!(LlmProvider::Online.as_str(), "online");
         assert_eq!(TtsProvider::Local.as_str(), "local");
         assert_eq!(TtsProvider::Online.as_str(), "online");
         // The zero-config stack stays on-device; online is yaml opt-in only.
+        assert_eq!(BuiltinDefaults::v0().stt, SttProvider::Local);
         assert_eq!(BuiltinDefaults::v0().llm, LlmProvider::Local);
         assert_eq!(BuiltinDefaults::v0().tts, TtsProvider::Local);
     }

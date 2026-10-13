@@ -230,34 +230,40 @@ mod production {
         cancel: &Cancel,
         config: &AgentConfig,
     ) -> Result<LiveStt> {
-        match config.stt_model {
-            crate::defaults::SttModel::Small
-            | crate::defaults::SttModel::Medium
-            | crate::defaults::SttModel::LargeV3Turbo
-            | crate::defaults::SttModel::MediumQ5_0
-            | crate::defaults::SttModel::LargeV3TurboQ5_0 => Ok(LiveStt::Whisper(
-                WhisperStt::from_cache(cache, fetcher, progress, cancel, config.stt_model)?,
-            )),
-            crate::defaults::SttModel::MoonshineStreamingSmall
-            | crate::defaults::SttModel::MoonshineStreamingMedium => {
-                Ok(LiveStt::Moonshine(Box::new(MoonshineStt::from_cache(
-                    cache,
-                    fetcher,
-                    progress,
-                    cancel,
-                    config.stt_model,
-                )?)))
-            }
-            crate::defaults::SttModel::QwenAsr06 => Ok(LiveStt::Qwen(Box::new(
-                crate::qwen_asr::QwenAsrStt::from_cache(
-                    cache,
-                    fetcher,
-                    progress,
-                    cancel,
-                    config.stt_model,
-                    config.stt_compute,
-                )?,
-            ))),
+        match config.stt {
+            crate::defaults::SttProvider::Local => match config.stt_model {
+                crate::defaults::SttModel::Small
+                | crate::defaults::SttModel::Medium
+                | crate::defaults::SttModel::LargeV3Turbo
+                | crate::defaults::SttModel::MediumQ5_0
+                | crate::defaults::SttModel::LargeV3TurboQ5_0 => Ok(LiveStt::Whisper(
+                    WhisperStt::from_cache(cache, fetcher, progress, cancel, config.stt_model)?,
+                )),
+                crate::defaults::SttModel::MoonshineStreamingSmall
+                | crate::defaults::SttModel::MoonshineStreamingMedium => {
+                    Ok(LiveStt::Moonshine(Box::new(MoonshineStt::from_cache(
+                        cache,
+                        fetcher,
+                        progress,
+                        cancel,
+                        config.stt_model,
+                    )?)))
+                }
+                crate::defaults::SttModel::QwenAsr06 => Ok(LiveStt::Qwen(Box::new(
+                    crate::qwen_asr::QwenAsrStt::from_cache(
+                        cache,
+                        fetcher,
+                        progress,
+                        cancel,
+                        config.stt_model,
+                        config.stt_compute,
+                    )?,
+                ))),
+            },
+            crate::defaults::SttProvider::Online => Err(Error::Config {
+                field: "pipeline.stt.provider".into(),
+                message: "online STT is not supported yet; use provider \"local\"".into(),
+            }),
         }
     }
     /// Load Silero, the configured STT engine, and the configured language and
@@ -486,6 +492,24 @@ mod production {
                 format!("{DEFAULT_LLM_BASE_URL}/chat/completions")
             );
             assert_eq!(meta.provider, "online");
+        }
+
+        #[test]
+        fn online_stt_fails_clearly_without_fetching_weights() {
+            let mut config = crate::AgentConfig::v0();
+            config.stt = crate::defaults::SttProvider::Online;
+            config.stt_base_url = Some("http://127.0.0.1:8091/v1".into());
+            let err = build_stt(
+                &empty_manifest_cache("online-stt"),
+                &BlockedFetcher::default(),
+                &mut NoProgress,
+                &Cancel::new(),
+                &config,
+            )
+            .err()
+            .expect("online STT is not implemented yet");
+            assert!(err.to_string().contains("pipeline.stt.provider"), "{err}");
+            assert!(err.to_string().contains("not supported yet"), "{err}");
         }
 
         #[test]
