@@ -225,7 +225,14 @@ only required when those features are on.
 
 Per-PR CI (`ci.yml`) runs on GitHub-hosted Linux: fmt, clippy, and llvm-cov
 ≥85% workspace lines and ≥85% lines in every reported `src/**/*.rs` file,
-without loading native weights. A **sdk no-native** job
+without loading native weights. A **native inference** check
+(`native-tests.yml`) runs the real `whisper-small`, `lfm2.5-230m`,
+and `pocket-tts` weights on pull requests and pushes to `main` on
+`ubuntu-latest`. It runs when crates, lockfiles, setup scripts, or that
+workflow change; docs-only PRs skip the heavy steps so the check still
+reports. Model weights are cached with `actions/cache`, keyed on those
+ids plus a hash of `manifest.rs`.
+A **sdk no-native** job
 `cargo check`s `syllabix-core` with `--no-default-features` on a runner
 without CMake (`setup-linux.sh` is skipped). A Linux-only **crates.io
 package** job runs `cargo package -p syllabix-native` with verify (builds
@@ -243,12 +250,9 @@ the commit under test. It then compiles
 Weekly CI runs `cargo test --workspace` on Linux / Windows (hosted) and macOS
 (self-hosted Apple Silicon), including launch-stack native inference.
 
-A separate weekly **native coverage** workflow (`native-tests.yml`, job
-`coverage-native`) runs launch-stack weights under
+The native inference check runs those weights under
 `cargo llvm-cov --no-cfg-coverage --release` with
 `-p syllabix-core --features native-inference --test native_inference`
-(`native-inference` turns on `ggml`; ONNX stays always-on).
-It defaults to `ubuntu-latest`; `workflow_dispatch` can override the
-pool to the self-hosted Mac. Reports upload as
+(`native-inference` turns on `ggml`; ONNX stays always-on). Reports upload as
 `coverage-cobertura-native`. No native percentage floor yet — baseline first
 (#174).

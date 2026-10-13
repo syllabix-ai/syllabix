@@ -113,9 +113,9 @@ SYLLABIX_NATIVE_MODELS=whisper-small,lfm2.5-230m,pocket-tts \
     --cobertura --output-path coverage-native.xml
 ```
 
-CI runs that lane via `native-tests.yml` on `ubuntu-latest` by default;
-override the pool to the self-hosted Mac via `workflow_dispatch` for manual
-runs. No native percentage floor yet.
+CI runs that lane via `native-tests.yml` on `ubuntu-latest` by default
+(pull requests, pushes to `main`, and `workflow_dispatch`). No native
+percentage floor yet.
 
 ## 7. 3-minute gate (profile C)
 

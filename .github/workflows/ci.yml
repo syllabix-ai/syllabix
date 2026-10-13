@@ -172,8 +172,10 @@ jobs:
         # from the packaged files.
         run: cargo package -p syllabix-core --no-verify --list
 
-  # The cross-platform test matrix (linux/windows/macos + Intel cross-build)
-  # lives in weekly.yml: scheduled Mondays or on demand via workflow_dispatch.
+  # Real-weight native inference is native-tests.yml (PRs, main, and
+  # manual dispatch). The cross-platform test matrix (linux/windows/macos
+  # + Intel cross-build) lives in weekly.yml: scheduled Mondays or on
+  # demand via workflow_dispatch.
   # Dist packaging and GitHub Release attach remain in release.yml (v* tags
   # only). crates.io publish is crates-io.yml (also v* tags). PR CI still
   # does not package dist binaries.

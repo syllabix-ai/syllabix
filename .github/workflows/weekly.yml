@@ -4,8 +4,8 @@ name: Weekly full check
 # macOS on the self-hosted runner (Apple Silicon, 0 billed minutes). When
 # the Mac is offline, manually dispatch with the hosted pool for that run.
 # The per-PR fast gate (fmt / clippy / coverage) lives in ci.yml on
-# GitHub-hosted Linux. Native-weight coverage is a separate weekly
-# workflow: native-tests.yml.
+# GitHub-hosted Linux. Native-weight coverage is native-tests.yml
+# (PRs, main, and manual dispatch).
 
 on:
   schedule:
