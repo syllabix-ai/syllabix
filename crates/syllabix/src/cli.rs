@@ -85,6 +85,35 @@ pub enum Commands {
         #[arg(long, value_name = "ID")]
         model: String,
     },
+    /// Serve local STT or TTS weights over OpenAI Audio HTTP.
+    Serve {
+        #[command(subcommand)]
+        command: ServeCommand,
+    },
+}
+
+/// `syllabix serve` workers. Weights load in later PRs; this slice listens and
+/// answers `GET /health`.
+#[derive(Debug, Subcommand)]
+pub enum ServeCommand {
+    /// Bind a speech-to-text worker (`POST /v1/audio/transcriptions` later).
+    Stt {
+        /// Listen address. Default is loopback.
+        #[arg(long, default_value = crate::serve::DEFAULT_STT_BIND)]
+        bind: String,
+        /// Yaml STT model id advertised on `/health`.
+        #[arg(long, default_value = crate::serve::DEFAULT_STT_MODEL)]
+        model: String,
+    },
+    /// Bind a text-to-speech worker (`POST /v1/audio/speech` later).
+    Tts {
+        /// Listen address. Default is loopback.
+        #[arg(long, default_value = crate::serve::DEFAULT_TTS_BIND)]
+        bind: String,
+        /// Yaml TTS model id advertised on `/health`.
+        #[arg(long, default_value = crate::serve::DEFAULT_TTS_MODEL)]
+        model: String,
+    },
 }
 
 /// Dispatch a parsed CLI invocation.
@@ -110,6 +139,7 @@ pub fn execute(cli: Cli) -> Result<()> {
         Commands::BenchTtsWorker { .. } => Err(Error::not_implemented("bench")),
         #[cfg(coverage)]
         Commands::BenchLlmWorker { .. } => Err(Error::not_implemented("bench")),
+        Commands::Serve { command } => crate::serve::execute(command),
     }
 }
 
@@ -312,8 +342,45 @@ mod tests {
         let help = command.render_help().to_string();
         assert!(help.contains("run"), "{help}");
         assert!(help.contains("init"), "{help}");
-        assert!(!help.contains("serve"), "{help}");
+        assert!(help.contains("serve"), "{help}");
         assert!(!help.contains("bench"), "{help}");
+    }
+
+    #[test]
+    fn parses_serve_stt_defaults() {
+        let cli = Cli::try_parse_from(["syllabix", "serve", "stt"]).expect("parse serve stt");
+        match cli.command {
+            Commands::Serve {
+                command: ServeCommand::Stt { bind, model },
+            } => {
+                assert_eq!(bind, crate::serve::DEFAULT_STT_BIND);
+                assert_eq!(model, crate::serve::DEFAULT_STT_MODEL);
+            }
+            _ => panic!("expected serve stt"),
+        }
+    }
+
+    #[test]
+    fn parses_serve_tts_bind_and_model() {
+        let cli = Cli::try_parse_from([
+            "syllabix",
+            "serve",
+            "tts",
+            "--bind",
+            "127.0.0.1:0",
+            "--model",
+            "kokoro",
+        ])
+        .expect("parse serve tts");
+        match cli.command {
+            Commands::Serve {
+                command: ServeCommand::Tts { bind, model },
+            } => {
+                assert_eq!(bind, "127.0.0.1:0");
+                assert_eq!(model, "kokoro");
+            }
+            _ => panic!("expected serve tts"),
+        }
     }
 
     #[test]
@@ -443,8 +510,7 @@ mod tests {
 
     #[test]
     fn unknown_subcommand_is_rejected() {
-        let err =
-            Cli::try_parse_from(["syllabix", "serve"]).expect_err("serve is not a v0 command");
+        let err = Cli::try_parse_from(["syllabix", "not-a-command"]).expect_err("unknown");
         let message = err.to_string();
         assert!(
             message.contains("unrecognized subcommand") || message.contains("unexpected"),

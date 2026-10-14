@@ -17,7 +17,8 @@ fn help_exits_zero_and_lists_commands() {
         .success()
         .stdout(str::contains("Usage:"))
         .stdout(str::contains("run"))
-        .stdout(str::contains("init"));
+        .stdout(str::contains("init"))
+        .stdout(str::contains("serve"));
 }
 
 #[test]
