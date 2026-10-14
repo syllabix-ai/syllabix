@@ -1,8 +1,9 @@
 //! OpenAI-compatible `audio/speech` adapter for one finished sentence.
 //!
 //! Sentence buffering stays on the endpoint. Each completed sentence is posted
-//! to `POST {base_url}/audio/speech` and the full audio body becomes one
-//! [`SynthesizedAudio`] chunk. The API key comes from the environment only
+//! to `POST {base_url}/audio/speech` with `stream_format=audio` so the first
+//! PCM can play before the rest of the body arrives. Barge-in drops the
+//! in-flight request. The API key comes from the environment only
 //! ([`crate::config::TTS_API_KEY_ENV`]).
 //! Cancel, connect/idle timeouts, and a best-effort warm-up match [`crate::openai`].
 
@@ -259,10 +260,21 @@ impl RemoteTts {
                 self.state.reset();
                 return Err(Error::Cancelled);
             }
-            let samples = self.post_speech(&sentence, cancel)?;
-            let is_last = token.is_last && i == last_i;
-            emitted_final |= is_last;
-            on_audio(self.state.emit(samples, token, is_last))?;
+            let is_last_sentence = token.is_last && i == last_i;
+            let mut state = std::mem::take(&mut self.state);
+            let mut emitted = emitted_final;
+            let result = self.post_speech(
+                &sentence,
+                cancel,
+                is_last_sentence,
+                &mut |samples, is_last| {
+                    emitted |= is_last;
+                    on_audio(state.emit(samples, token, is_last))
+                },
+            );
+            self.state = state;
+            emitted_final = emitted;
+            result?;
         }
         if token.is_last && !emitted_final {
             on_audio(self.state.emit(vec![0; 16], token, true))?;
@@ -270,14 +282,20 @@ impl RemoteTts {
         Ok(())
     }
 
-    fn post_speech(&self, sentence: &str, cancel: &Cancel) -> Result<Vec<i16>> {
+    fn post_speech(
+        &self,
+        sentence: &str,
+        cancel: &Cancel,
+        is_last_sentence: bool,
+        on_samples: &mut dyn FnMut(Vec<i16>, bool) -> Result<()>,
+    ) -> Result<()> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
         let body = speech_json(&self.settings.model, sentence, &self.settings.voice);
         let generation = cancel.generation();
         let abandon = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = mpsc::channel::<Result<Vec<u8>>>();
+        let (tx, rx) = mpsc::channel::<Result<WorkerMsg>>();
         let worker = SpeechWorker {
             agent: self.agent.clone(),
             endpoint: self.settings.endpoint.clone(),
@@ -295,13 +313,21 @@ impl RemoteTts {
             })?;
         let _abandon_on_drop = AbandonOnDrop(abandon);
 
-        let idle_since = Instant::now();
-        let bytes = loop {
+        let mut idle_since = Instant::now();
+        let mut decoder = SpeechStream::default();
+        loop {
             if cancel.is_stale(generation) || cancel.is_shutdown() {
                 return Err(Error::Cancelled);
             }
             match rx.recv_timeout(POLL_TICK) {
-                Ok(Ok(bytes)) => break bytes,
+                Ok(Ok(WorkerMsg::Chunk(bytes))) => {
+                    idle_since = Instant::now();
+                    let samples = decoder.push(&bytes)?;
+                    if !samples.is_empty() {
+                        on_samples(samples, false)?;
+                    }
+                }
+                Ok(Ok(WorkerMsg::Done)) => break,
                 Ok(Err(err)) => return Err(err),
                 Err(RecvTimeoutError::Timeout) => {
                     if idle_since.elapsed() >= self.timeouts.idle {
@@ -318,8 +344,14 @@ impl RemoteTts {
                     });
                 }
             }
-        };
-        decode_speech_body(&bytes)
+        }
+        let tail = decoder.finish()?;
+        if !tail.is_empty() {
+            on_samples(tail, is_last_sentence)?;
+        } else if is_last_sentence {
+            on_samples(vec![0; 16], true)?;
+        }
+        Ok(())
     }
 }
 
@@ -344,6 +376,15 @@ impl Tts for RemoteTts {
         })?;
         Ok(out)
     }
+
+    fn synthesize_chunk_into(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        self.synthesize_sentences(token, cancel, on_audio)
+    }
 }
 
 fn build_agent(timeouts: OpenAiTimeouts) -> Agent {
@@ -354,18 +395,23 @@ fn build_agent(timeouts: OpenAiTimeouts) -> Agent {
         .build()
 }
 
+enum WorkerMsg {
+    Chunk(Vec<u8>),
+    Done,
+}
+
 struct SpeechWorker {
     agent: Agent,
     endpoint: String,
     api_key: String,
     body: String,
     abandon: Arc<AtomicBool>,
-    tx: mpsc::Sender<Result<Vec<u8>>>,
+    tx: mpsc::Sender<Result<WorkerMsg>>,
 }
 
 impl SpeechWorker {
     fn run(self) {
-        let send = |event: Result<Vec<u8>>| {
+        let send = |event: Result<WorkerMsg>| {
             let _ = self.tx.send(event);
         };
         if self.abandon.load(Ordering::SeqCst) {
@@ -395,7 +441,7 @@ impl SpeechWorker {
             return;
         }
         let mut reader = response.into_reader();
-        let mut buf = Vec::new();
+        let mut total = 0u64;
         let mut chunk = [0u8; 2048];
         loop {
             if self.abandon.load(Ordering::SeqCst) {
@@ -404,14 +450,15 @@ impl SpeechWorker {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if buf.len().saturating_add(n) as u64 > MAX_RESPONSE_BYTES {
+                    total = total.saturating_add(n as u64);
+                    if total > MAX_RESPONSE_BYTES {
                         send(Err(Error::Provider {
                             provider: PROVIDER_NAME,
                             message: "speech body exceeded 16 MiB".into(),
                         }));
                         return;
                     }
-                    buf.extend_from_slice(&chunk[..n]);
+                    send(Ok(WorkerMsg::Chunk(chunk[..n].to_vec())));
                 }
                 Err(err)
                     if err.kind() == std::io::ErrorKind::WouldBlock
@@ -428,7 +475,90 @@ impl SpeechWorker {
                 }
             }
         }
-        send(Ok(buf));
+        send(Ok(WorkerMsg::Done));
+    }
+}
+
+/// Incremental decoder for a speech body: raw PCM16 streams as it arrives
+/// through a held 24 kHz → 16 kHz converter; a WAV body is held until the
+/// response finishes so the header can be read.
+#[derive(Default)]
+struct SpeechStream {
+    buf: Vec<u8>,
+    kind: StreamKind,
+    converter: Option<PcmConverter>,
+}
+
+#[derive(Default)]
+enum StreamKind {
+    #[default]
+    Unknown,
+    Pcm,
+    Wav,
+}
+
+impl SpeechStream {
+    fn push(&mut self, bytes: &[u8]) -> Result<Vec<i16>> {
+        self.buf.extend_from_slice(bytes);
+        self.classify();
+        match self.kind {
+            StreamKind::Pcm => self.take_pcm_frames(),
+            StreamKind::Unknown | StreamKind::Wav => Ok(Vec::new()),
+        }
+    }
+
+    fn finish(mut self) -> Result<Vec<i16>> {
+        self.classify();
+        match self.kind {
+            StreamKind::Wav | StreamKind::Unknown => {
+                if self.buf.is_empty() {
+                    Ok(Vec::new())
+                } else {
+                    decode_speech_body(&self.buf)
+                }
+            }
+            StreamKind::Pcm => {
+                let mut samples = self.take_pcm_frames()?;
+                if !self.buf.is_empty() {
+                    return Err(Error::Provider {
+                        provider: PROVIDER_NAME,
+                        message: "PCM speech body is not a whole number of 16-bit samples".into(),
+                    });
+                }
+                if let Some(converter) = self.converter.as_mut() {
+                    samples.extend(f32_to_i16(&converter.flush()));
+                }
+                Ok(samples)
+            }
+        }
+    }
+
+    fn classify(&mut self) {
+        if !matches!(self.kind, StreamKind::Unknown) || self.buf.len() < 4 {
+            return;
+        }
+        self.kind = if self.buf.starts_with(b"RIFF") {
+            StreamKind::Wav
+        } else {
+            StreamKind::Pcm
+        };
+    }
+
+    fn take_pcm_frames(&mut self) -> Result<Vec<i16>> {
+        let n = self.buf.len() / 2 * 2;
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let taken: Vec<u8> = self.buf.drain(..n).collect();
+        let pcm = pcm16le(&taken)?;
+        if self.converter.is_none() {
+            self.converter = Some(PcmConverter::new(openai_pcm_format(), PcmFormat::v0())?);
+        }
+        let converter = self
+            .converter
+            .as_mut()
+            .expect("converter is initialized above");
+        Ok(f32_to_i16(&converter.push(&i16_to_f32(&pcm))))
     }
 }
 
@@ -467,7 +597,8 @@ fn speech_json(model: &str, input: &str, voice: &str) -> String {
     let mut body = serde_json::json!({
         "model": model,
         "input": input,
-        "response_format": "wav",
+        "response_format": "pcm",
+        "stream_format": "audio",
     });
     if !voice.is_empty() {
         body["voice"] = serde_json::Value::String(voice.to_string());
@@ -522,6 +653,7 @@ mod tests {
     use crate::types::GenerationId;
     use std::io::Write;
     use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
     use std::time::Duration;
 
     const TEST_KEY: &str = "sk-tts-test";
@@ -640,6 +772,17 @@ mod tests {
         vec![1, -2, 3, -4, 5, 6, 7, 8]
     }
 
+    fn openai_pcm_samples() -> Vec<i16> {
+        (1..=48).map(|i| i * 200).collect()
+    }
+
+    fn openai_pcm_bytes() -> Vec<u8> {
+        openai_pcm_samples()
+            .into_iter()
+            .flat_map(|s| s.to_le_bytes())
+            .collect()
+    }
+
     fn wav_bytes() -> Vec<u8> {
         let wav = WavPcm {
             format: PcmFormat::v0(),
@@ -719,13 +862,13 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_posts_one_sentence_and_maps_wav() {
+    fn synthesize_posts_one_sentence_and_maps_pcm() {
         let (endpoint, handle) = serve_one(|stream, _| {
             write_bytes(
                 stream,
                 "HTTP/1.1 200 OK",
-                &[("Content-Type", "audio/wav")],
-                &wav_bytes(),
+                &[("Content-Type", "application/octet-stream")],
+                &openai_pcm_bytes(),
             )
             .expect("write");
         });
@@ -733,9 +876,15 @@ mod tests {
         let chunks = tts
             .synthesize_chunk(&token("Hello there.", true), &Cancel::new())
             .expect("synthesize");
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].samples, pcm_samples());
-        assert!(chunks[0].is_last);
+        let expected =
+            resample_to_pipeline(&openai_pcm_format(), &openai_pcm_samples()).expect("resample");
+        let spoken: Vec<i16> = chunks
+            .iter()
+            .flat_map(|chunk| chunk.samples.iter().copied())
+            .collect();
+        assert_eq!(&spoken[..expected.len()], expected.as_slice());
+        assert!(spoken[expected.len()..].iter().all(|s| *s == 0));
+        assert!(chunks.last().expect("audio").is_last);
         assert_eq!(tts.name(), PROVIDER_NAME);
         assert_eq!(tts.model_id(), Some("pocket-tts"));
 
@@ -746,11 +895,8 @@ mod tests {
         assert!(text.contains("\"model\":\"pocket-tts\""), "{text}");
         assert!(text.contains("\"input\":\"Hello there.\""), "{text}");
         assert!(text.contains("\"voice\":\"alloy\""), "{text}");
-        assert!(text.contains("\"response_format\":\"wav\""), "{text}");
-        assert!(
-            !text.contains("stream_format"),
-            "full-body client omits stream_format: {text}"
-        );
+        assert!(text.contains("\"response_format\":\"pcm\""), "{text}");
+        assert!(text.contains("\"stream_format\":\"audio\""), "{text}");
     }
 
     #[test]
@@ -761,6 +907,26 @@ mod tests {
         let expected = resample_to_pipeline(&openai_pcm_format(), &src).expect("resample");
         assert_eq!(out, expected);
         assert_ne!(out, src);
+    }
+
+    #[test]
+    fn streamed_pcm_resamples_across_chunks() {
+        let src = openai_pcm_samples();
+        let bytes = openai_pcm_bytes();
+        let mut stream = SpeechStream::default();
+        let mid = bytes.len() / 2;
+        let mut out = stream.push(&bytes[..mid]).expect("first");
+        out.extend(stream.push(&bytes[mid..]).expect("rest"));
+        out.extend(stream.finish().expect("flush"));
+        let expected = decode_speech_body(&bytes).expect("full body");
+        assert_eq!(out, expected);
+        let isolated_first =
+            resample_to_pipeline(&openai_pcm_format(), &src[..src.len() / 2]).expect("isolated");
+        assert_ne!(
+            &out[..isolated_first.len().min(out.len())],
+            isolated_first.as_slice(),
+            "chunk-local resample would drop converter state"
+        );
     }
 
     #[test]
@@ -898,6 +1064,76 @@ mod tests {
                 || err.to_string().contains("exited without a verdict"),
             "{err}"
         );
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn first_audio_arrives_before_the_body_finishes() {
+        let (first_written, first_rx) = mpsc::channel();
+        let (go, go_rx) = mpsc::channel();
+        let (endpoint, handle) = serve_one(move |stream, _| {
+            let body = openai_pcm_bytes();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .expect("headers");
+            let first = &body[..48];
+            stream
+                .write_all(format!("{:x}\r\n", first.len()).as_bytes())
+                .expect("chunk size");
+            stream.write_all(first).expect("first pcm");
+            stream.write_all(b"\r\n").expect("chunk end");
+            stream.flush().expect("flush first");
+            first_written.send(()).expect("signal first");
+            go_rx.recv().expect("wait to finish");
+            let rest = &body[48..];
+            stream
+                .write_all(format!("{:x}\r\n", rest.len()).as_bytes())
+                .expect("rest size");
+            stream.write_all(rest).expect("rest");
+            stream.write_all(b"\r\n0\r\n\r\n").expect("last chunk");
+            stream.flush().expect("flush rest");
+        });
+        let (audio_tx, audio_rx) = mpsc::channel();
+        let mut tts = test_tts(endpoint);
+        let worker = std::thread::spawn(move || {
+            tts.synthesize_chunk_into(&token("Hello.", true), &Cancel::new(), &mut |audio| {
+                let _ = audio_tx.send(audio.samples.len());
+                Ok(())
+            })
+        });
+        first_rx.recv().expect("server wrote first bytes");
+        let first_len = audio_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("client heard first audio before the rest of the body");
+        assert!(first_len > 0);
+        go.send(()).expect("release remainder");
+        worker.join().expect("client").expect("synthesize");
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn barge_in_drops_the_in_flight_request() {
+        let (started, started_rx) = mpsc::channel();
+        let (endpoint, handle) = serve_one(move |stream, _| {
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 64\r\n\r\n")
+                .expect("headers");
+            stream.flush().expect("flush");
+            started.send(()).expect("started");
+            std::thread::sleep(Duration::from_millis(800));
+        });
+        let cancel = Cancel::new();
+        let cancel_for_worker = cancel.clone();
+        let mut tts = test_tts(endpoint);
+        let worker = std::thread::spawn(move || {
+            tts.synthesize_chunk(&token("Hello.", true), &cancel_for_worker)
+        });
+        started_rx.recv().expect("headers flushed");
+        cancel.cancel_generation();
+        let err = worker.join().expect("client").expect_err("barge-in");
+        assert!(matches!(err, Error::Cancelled), "{err}");
         let _ = handle.join();
     }
 }
