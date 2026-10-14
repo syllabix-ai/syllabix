@@ -18,9 +18,9 @@ mod production {
     use crate::cancel::Cancel;
     use crate::config::AgentConfig;
     use crate::error::{Error, Result};
-    use crate::llm::LlamaLlm;
     #[cfg(feature = "cloud")]
-    use crate::models::resolve_goose_binary;
+    use crate::goose::{skill_file_list, GooseAgent, GooseStart};
+    use crate::llm::LlamaLlm;
     use crate::models::{Fetcher, ModelCache, Progress};
     use crate::moonshine::MoonshineStt;
     #[cfg(feature = "cloud")]
@@ -43,10 +43,9 @@ mod production {
         /// User-keyed OpenAI-compatible endpoint.
         #[cfg(feature = "cloud")]
         Cloud(OpenAiLlm),
-        /// Goose agent (`pipeline.agent: goose`). Downloads the pinned CLI;
-        /// replies are not implemented yet.
+        /// Goose runs the reply (`pipeline.agent: goose`).
         #[cfg(feature = "cloud")]
-        Goose,
+        Goose(GooseAgent),
     }
 
     impl Llm for LiveLlm {
@@ -56,7 +55,7 @@ mod production {
                 #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.name(),
                 #[cfg(feature = "cloud")]
-                Self::Goose => "goose",
+                Self::Goose(llm) => llm.name(),
             }
         }
 
@@ -66,7 +65,7 @@ mod production {
                 #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.debug_meta(),
                 #[cfg(feature = "cloud")]
-                Self::Goose => None,
+                Self::Goose(llm) => llm.debug_meta(),
             }
         }
 
@@ -76,7 +75,7 @@ mod production {
                 #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.take_tool_events(),
                 #[cfg(feature = "cloud")]
-                Self::Goose => Vec::new(),
+                Self::Goose(llm) => llm.take_tool_events(),
             }
         }
 
@@ -92,7 +91,7 @@ mod production {
                 #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.generate(history, user, cancel, on_token),
                 #[cfg(feature = "cloud")]
-                Self::Goose => Err(goose_not_implemented()),
+                Self::Goose(llm) => llm.generate(history, user, cancel, on_token),
             }
         }
     }
@@ -472,18 +471,10 @@ mod production {
         }
     }
 
-    fn goose_not_implemented() -> Error {
-        Error::Config {
-            field: "pipeline.agent".into(),
-            message: "goose agent is not implemented yet".into(),
-        }
-    }
-
     /// Build just the LLM slot from config. The cloud path never touches the
     /// model cache — no GGUF is fetched or loaded for a cloud run.
-    /// `pipeline.agent: goose` is online-only. This path downloads the pinned
-    /// Goose CLI; `generate()` still errors because the agent is not
-    /// implemented yet.
+    /// `pipeline.agent: goose` is online-only: after the pinned Goose CLI is on
+    /// disk, this starts the Goose backend for replies.
     pub fn build_llm(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -493,7 +484,6 @@ mod production {
         llm_api_key: Option<&Zeroizing<String>>,
     ) -> Result<LiveLlm> {
         if config.agent == crate::defaults::AgentBackend::Goose {
-            let _ = llm_api_key;
             if config.llm != crate::defaults::LlmProvider::Online {
                 return Err(Error::Config {
                     field: "pipeline.agent".into(),
@@ -502,13 +492,43 @@ mod production {
             }
             #[cfg(feature = "cloud")]
             {
-                resolve_goose_binary(cache, fetcher, progress, cancel)?;
-                return Ok(LiveLlm::Goose);
+                let key = llm_api_key.ok_or_else(|| Error::Config {
+                    field: API_KEY_ENV.into(),
+                    message: format!("is required when pipeline.llm.provider is {PROVIDER_NAME}"),
+                })?;
+                let binary = crate::goose::resolve_goose_exe(cache, fetcher, progress, cancel)?;
+                let workspace =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let discovery = config.discover_skills(&workspace);
+                for diagnostic in &discovery.diagnostics {
+                    tracing::warn!(
+                        code = %diagnostic.code,
+                        path = diagnostic
+                            .path
+                            .as_deref()
+                            .map(std::path::Path::display)
+                            .map(|path| path.to_string())
+                            .unwrap_or_else(|| "<skills-root>".into()),
+                        message = %diagnostic.message,
+                        "local skill ignored"
+                    );
+                }
+                return Ok(LiveLlm::Goose(GooseAgent::start(GooseStart {
+                    binary,
+                    cache: crate::goose::goose_path_root(cache),
+                    config: config.clone(),
+                    api_key: key.clone(),
+                    workspace,
+                    skill_list: skill_file_list(&discovery),
+                })?));
             }
             #[cfg(not(feature = "cloud"))]
             {
-                let _ = (cache, fetcher, progress, cancel);
-                return Err(goose_not_implemented());
+                let _ = (cache, fetcher, progress, cancel, llm_api_key);
+                return Err(Error::Config {
+                    field: "pipeline.agent".into(),
+                    message: "goose requires the `cloud` feature".into(),
+                });
             }
         }
         let skill_context = if config.llm_developer_harness {
@@ -684,7 +704,7 @@ mod production {
             #[cfg(not(feature = "cloud"))]
             {
                 assert!(err.to_string().contains("pipeline.agent"), "{err}");
-                assert!(err.to_string().contains("not implemented yet"), "{err}");
+                assert!(err.to_string().contains("cloud"), "{err}");
                 assert_eq!(fetcher.hits.load(std::sync::atomic::Ordering::SeqCst), 0);
             }
         }
@@ -719,20 +739,63 @@ mod production {
 
         #[cfg(feature = "cloud")]
         #[test]
-        fn goose_slot_reports_agent_not_implemented() {
-            let mut llm = LiveLlm::Goose;
-            assert_eq!(llm.name(), "goose");
-            assert!(llm.debug_meta().is_none());
-            assert!(llm.take_tool_events().is_empty());
-            let transcript = Transcript {
-                turn: crate::TurnId(0),
-                text: String::new(),
-                language: String::new(),
+        fn goose_online_build_llm_returns_the_goose_slot() {
+            let binary = {
+                let dir = std::env::temp_dir().join(format!(
+                    "syllabix-real-goose-bin-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                ));
+                std::fs::create_dir_all(&dir).unwrap();
+                let path = dir.join("goose");
+                std::fs::write(
+                    &path,
+                    concat!(
+                        "#!/usr/bin/env python3\n",
+                        "import json,sys\n",
+                        "def send(o):\n",
+                        "    sys.stdout.write(json.dumps(o)+'\\n'); sys.stdout.flush()\n",
+                        "for raw in sys.stdin:\n",
+                        "    raw=raw.strip()\n",
+                        "    if not raw: continue\n",
+                        "    m=json.loads(raw); method=m.get('method'); i=m.get('id')\n",
+                        "    if method=='initialize': send({'jsonrpc':'2.0','id':i,'result':{'protocolVersion':1}})\n",
+                        "    elif method=='session/new': send({'jsonrpc':'2.0','id':i,'result':{'sessionId':'s'}})\n",
+                        "    elif method and i is not None: send({'jsonrpc':'2.0','id':i,'result':{}})\n",
+                    ),
+                )
+                .unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+                    perms.set_mode(0o755);
+                    std::fs::set_permissions(&path, perms).unwrap();
+                }
+                path
             };
-            let err = llm
-                .generate(&[], &transcript, &Cancel::new(), &mut |_| Ok(()))
-                .expect_err("goose generate is not implemented yet");
-            assert!(err.to_string().contains("not implemented yet"), "{err}");
+            let mut config = crate::AgentConfig::v0();
+            config.agent = crate::defaults::AgentBackend::Goose;
+            config.llm = crate::defaults::LlmProvider::Online;
+            config.llm_model = "gpt-4o-mini".into();
+            let _guard = crate::goose::GooseBinGuard::set(binary);
+            let llm = build_llm(
+                &empty_manifest_cache("goose-slot"),
+                &BlockedFetcher::default(),
+                &mut NoProgress,
+                &Cancel::new(),
+                &config,
+                Some(&Zeroizing::new("sk-x".to_string())),
+            )
+            .expect("live goose slot");
+            assert!(matches!(llm, LiveLlm::Goose(_)));
+            assert_eq!(llm.name(), "goose");
+            let meta = llm.debug_meta().expect("meta");
+            assert_eq!(meta.provider, "goose");
+            assert_eq!(meta.model, "gpt-4o-mini");
         }
 
         #[cfg(feature = "cloud")]
