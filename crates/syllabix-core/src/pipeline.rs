@@ -11,8 +11,14 @@ use crate::cancel::Cancel;
 use crate::defaults::{BuiltinDefaults, QueueCaps};
 use crate::error::{Error, Result};
 use crate::providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
+#[cfg(feature = "device-audio")]
+use crate::queue::Occupancy;
 use crate::queue::{bounded, BoundedSender, QueueReport};
+#[cfg(feature = "device-audio")]
+use crate::s2s::{DuplexS2s, S2sEvent};
 use crate::turn_debug::{TimelineAnchor, TurnDebug};
+#[cfg(feature = "device-audio")]
+use crate::types::GenerationId;
 use crate::types::{
     AudioFrame, CompletedTurn, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId,
     TurnTimings, Utterance, VadEvent,
@@ -1021,6 +1027,338 @@ where
     })
 }
 
+/// Run capture → AEC3 → [`DuplexS2s::push`], and poll → sink plus AEC3 far-end.
+///
+/// Mute replaces outgoing samples with silence so the backend still sees a
+/// continuous clock. Silero is not run. The loop does not infer a user
+/// interruption from capture energy. [`run_loop`] is unchanged.
+#[cfg(feature = "device-audio")]
+pub fn run_duplex_loop<C, K, D>(
+    config: LoopConfig,
+    capture: C,
+    mut sink: K,
+    s2s: D,
+    cancel: Cancel,
+) -> Result<LoopReport>
+where
+    C: AudioCapture + 'static,
+    K: AudioSink + 'static,
+    D: DuplexS2s + 'static,
+{
+    let s2s = Arc::new(s2s);
+    let aec = DuplexAec::new()?;
+    let shared = Shared::new(
+        config.events.clone(),
+        config.turn_debug.clone(),
+        config.controls.clone(),
+        s2s.name(),
+        None,
+        None,
+    );
+    config.controls.arm_idle();
+    let mut joins: Vec<JoinHandle<()>> = Vec::new();
+
+    {
+        let cancel = cancel.clone();
+        let shared = Arc::clone(&shared);
+        let live = Arc::clone(&shared.live_tasks);
+        let s2s = Arc::clone(&s2s);
+        let aec = aec.clone();
+        joins.push(spawn("syllabix-s2s-capture", live, move || {
+            duplex_capture_loop(capture, s2s, aec, &cancel, &shared);
+        }));
+    }
+
+    {
+        let cancel = cancel.clone();
+        let shared = Arc::clone(&shared);
+        let live = Arc::clone(&shared.live_tasks);
+        let s2s = Arc::clone(&s2s);
+        let aec = aec.clone();
+        let mode = config.mode;
+        joins.push(spawn("syllabix-s2s-poll", live, move || {
+            duplex_poll_loop(&mut sink, s2s, aec, mode, &cancel, &shared);
+        }));
+    }
+
+    let task_count = joins.len();
+    let mut panic_msg = None;
+    for handle in joins {
+        if let Err(payload) = handle.join() {
+            panic_msg = Some(panic_message(payload));
+            cancel.shutdown();
+        }
+    }
+
+    let tasks_still_running = shared.live_tasks.load(Ordering::SeqCst);
+    if let Some(message) = panic_msg {
+        return Err(Error::WorkerPanic { message });
+    }
+    if let Some(err) = shared.take_fail() {
+        match err {
+            Error::Cancelled => {}
+            other => return Err(other),
+        }
+    }
+    if let Some(debug) = &config.turn_debug {
+        debug.finish_open()?;
+    }
+
+    Ok(LoopReport {
+        turns: Vec::new(),
+        queues: idle_queue_report(),
+        dropped_stt_partials: 0,
+        tasks_exited: task_count,
+        tasks_still_running,
+        cancelled: cancel.is_shutdown(),
+        skipped_turns: 0,
+    })
+}
+
+#[cfg(feature = "device-audio")]
+fn idle_queue_report() -> QueueReport {
+    QueueReport {
+        frames: idle_occupancy("frames"),
+        utterances: idle_occupancy("utterances"),
+        stt_partials: idle_occupancy("stt_partials"),
+        transcripts: idle_occupancy("transcripts"),
+        tokens: idle_occupancy("tokens"),
+        audio: idle_occupancy("audio"),
+    }
+}
+
+#[cfg(feature = "device-audio")]
+fn idle_occupancy(name: &'static str) -> Occupancy {
+    Occupancy {
+        name,
+        capacity: 1,
+        current: 0,
+        high_water: 0,
+        sent: 0,
+        received: 0,
+    }
+}
+
+#[cfg(feature = "device-audio")]
+#[derive(Clone)]
+struct DuplexAec {
+    echo: Arc<Mutex<crate::audio::EchoController>>,
+    ring: Arc<crate::audio::SampleRing>,
+}
+
+#[cfg(feature = "device-audio")]
+impl DuplexAec {
+    fn new() -> Result<Self> {
+        use crate::audio::{
+            device_ring_capacity_samples, EchoController, EchoReference, PcmFormat, SampleRing,
+        };
+        use crate::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ};
+
+        let ring = Arc::new(SampleRing::new(device_ring_capacity_samples(
+            DEFAULT_SAMPLE_RATE_HZ,
+            DEFAULT_CHANNELS,
+        )));
+        let reference = EchoReference::new(Arc::clone(&ring), PcmFormat::v0());
+        let mut echo = EchoController::new(reference)?;
+        echo.start_render_pump();
+        Ok(Self {
+            echo: Arc::new(Mutex::new(echo)),
+            ring,
+        })
+    }
+
+    fn clean_frames(
+        &self,
+        frame: AudioFrame,
+        split: &mut crate::audio::FrameSplitter,
+        shared: &Shared,
+        echo_status: &mut crate::audio::EchoCalibration,
+    ) -> Result<Vec<AudioFrame>> {
+        use crate::audio::{f32_to_i16, i16_to_f32, EchoCalibration};
+
+        let clean = self
+            .echo
+            .lock()
+            .expect("duplex echo")
+            .process_capture(&i16_to_f32(&frame.samples))?;
+        let status = self.echo.lock().expect("duplex echo").calibration();
+        if status != *echo_status {
+            let (active, restart_required) = match status {
+                EchoCalibration::WaitingForPlayback | EchoCalibration::Calibrating => {
+                    (false, false)
+                }
+                EchoCalibration::Active => (true, false),
+                EchoCalibration::Degraded => (false, true),
+            };
+            shared.emit(LoopEvent::Aec {
+                active,
+                restart_required,
+            });
+            *echo_status = status;
+        }
+        split.push(&f32_to_i16(&clean))
+    }
+
+    fn feed_far_end(&self, samples: &[i16], cancel: &Cancel) -> Result<()> {
+        use crate::audio::i16_to_f32;
+        self.ring
+            .push_slice_cancellable(&i16_to_f32(samples), cancel, GenerationId(0))
+    }
+}
+
+#[cfg(feature = "device-audio")]
+fn duplex_capture_loop<C, D>(
+    mut capture: C,
+    s2s: Arc<D>,
+    aec: DuplexAec,
+    cancel: &Cancel,
+    shared: &Shared,
+) where
+    C: AudioCapture,
+    D: DuplexS2s,
+{
+    use crate::audio::{EchoCalibration, FrameSplitter};
+
+    let mut split = FrameSplitter::new();
+    let mut echo_status = EchoCalibration::WaitingForPlayback;
+    loop {
+        if cancel.is_shutdown() {
+            return;
+        }
+        match shared.controls.poll_auto_timeout() {
+            AutoTimeoutAction::Exit => {
+                cancel.shutdown();
+                return;
+            }
+            AutoTimeoutAction::MicMute | AutoTimeoutAction::None => {}
+        }
+        match capture.next_frame(cancel) {
+            Ok(Some(frame)) => {
+                let outgoing = match aec.clean_frames(frame, &mut split, shared, &mut echo_status) {
+                    Ok(frames) => frames,
+                    Err(Error::Cancelled) => return,
+                    Err(err) => {
+                        shared.fail(err, cancel);
+                        return;
+                    }
+                };
+                for mut frame in outgoing {
+                    if shared.controls.mic_muted() {
+                        for sample in &mut frame.samples {
+                            *sample = 0;
+                        }
+                    }
+                    ignore_cancel(s2s.push(frame, cancel), shared, cancel);
+                    if cancel.is_shutdown() {
+                        return;
+                    }
+                }
+            }
+            Ok(None) => {
+                match split.flush() {
+                    Ok(rest) => {
+                        for mut frame in rest {
+                            if shared.controls.mic_muted() {
+                                for sample in &mut frame.samples {
+                                    *sample = 0;
+                                }
+                            }
+                            ignore_cancel(s2s.push(frame, cancel), shared, cancel);
+                        }
+                    }
+                    Err(Error::Cancelled) => {}
+                    Err(err) => shared.fail(err, cancel),
+                }
+                cancel.shutdown();
+                return;
+            }
+            Err(Error::Cancelled) => return,
+            Err(err) => {
+                shared.fail(err, cancel);
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(feature = "device-audio")]
+fn duplex_poll_loop<K, D>(
+    sink: &mut K,
+    s2s: Arc<D>,
+    aec: DuplexAec,
+    mode: LoopMode,
+    cancel: &Cancel,
+    shared: &Shared,
+) where
+    K: AudioSink,
+    D: DuplexS2s,
+{
+    let mut index = 0_u32;
+    let mut played = 0_usize;
+    loop {
+        if cancel.is_shutdown() {
+            return;
+        }
+        match s2s.poll(cancel) {
+            Ok(S2sEvent::Audio(frame)) => {
+                let samples = frame.samples;
+                let audio = SynthesizedAudio {
+                    turn: TurnId(0),
+                    generation: GenerationId(0),
+                    index,
+                    samples: samples.clone(),
+                    is_last: false,
+                };
+                index = index.saturating_add(1);
+                match sink.play(audio, cancel) {
+                    Ok(()) => {
+                        match aec.feed_far_end(&samples, cancel) {
+                            Ok(()) => {}
+                            Err(Error::Cancelled) => {
+                                if cancel.is_shutdown() {
+                                    return;
+                                }
+                            }
+                            Err(err) => {
+                                shared.fail(err, cancel);
+                                return;
+                            }
+                        }
+                        shared.emit(LoopEvent::Playback { playing: true });
+                        played += 1;
+                        maybe_stop_after(mode, played, cancel);
+                    }
+                    Err(Error::Cancelled) => {
+                        if cancel.is_shutdown() {
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        shared.fail(err, cancel);
+                        return;
+                    }
+                }
+            }
+            Ok(S2sEvent::Text(_)) => {}
+            Ok(S2sEvent::Error { message }) => {
+                shared.fail(
+                    Error::Provider {
+                        provider: s2s.name(),
+                        message,
+                    },
+                    cancel,
+                );
+                return;
+            }
+            Err(Error::Cancelled) => return,
+            Err(err) => {
+                shared.fail(err, cancel);
+                return;
+            }
+        }
+    }
+}
+
 fn spawn(
     name: &str,
     live: Arc<AtomicUsize>,
@@ -1612,6 +1950,8 @@ mod tests {
     use crate::fake::{
         scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad, ScriptedStt,
     };
+    #[cfg(feature = "device-audio")]
+    use crate::s2s::{DuplexS2s, S2sEvent};
     use crate::types::TurnId;
 
     struct PartialStt {
@@ -2466,5 +2806,319 @@ mod tests {
             "empty STT must not open the LLM/TTS/sink stages"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(feature = "device-audio")]
+    #[derive(Clone, Default)]
+    struct SharedCollectingSink {
+        chunks: Arc<Mutex<Vec<SynthesizedAudio>>>,
+        interrupted: Arc<AtomicUsize>,
+    }
+
+    #[cfg(feature = "device-audio")]
+    impl AudioSink for SharedCollectingSink {
+        fn play(&mut self, audio: SynthesizedAudio, cancel: &Cancel) -> Result<()> {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            self.chunks.lock().expect("chunks").push(audio);
+            Ok(())
+        }
+
+        fn interrupt(&mut self) {
+            self.interrupted.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(feature = "device-audio")]
+    fn duplex_frames(count: usize, sample: i16) -> Vec<AudioFrame> {
+        (0..count)
+            .map(|seq| {
+                AudioFrame::new(
+                    seq as u64,
+                    crate::types::DEFAULT_SAMPLE_RATE_HZ,
+                    crate::types::DEFAULT_CHANNELS,
+                    vec![sample; crate::types::FRAME_SAMPLES],
+                )
+                .expect("duplex fixture frame")
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "device-audio")]
+    struct ImmediateCapture {
+        frames: std::vec::IntoIter<AudioFrame>,
+    }
+
+    #[cfg(feature = "device-audio")]
+    impl AudioCapture for ImmediateCapture {
+        fn name(&self) -> &'static str {
+            "duplex-fixture"
+        }
+
+        fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<AudioFrame>> {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            Ok(self.frames.next())
+        }
+    }
+
+    #[cfg(feature = "device-audio")]
+    struct ScriptedS2s {
+        events: std::sync::Mutex<std::collections::VecDeque<S2sEvent>>,
+        pushes: std::sync::Mutex<Vec<AudioFrame>>,
+    }
+
+    #[cfg(feature = "device-audio")]
+    impl ScriptedS2s {
+        fn events(events: impl Into<Vec<S2sEvent>>) -> Self {
+            Self {
+                events: std::sync::Mutex::new(std::collections::VecDeque::from(events.into())),
+                pushes: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[cfg(feature = "device-audio")]
+    impl DuplexS2s for Arc<ScriptedS2s> {
+        fn name(&self) -> &'static str {
+            DuplexS2s::name(&**self)
+        }
+
+        fn push(&self, frame: AudioFrame, cancel: &Cancel) -> Result<()> {
+            DuplexS2s::push(&**self, frame, cancel)
+        }
+
+        fn poll(&self, cancel: &Cancel) -> Result<S2sEvent> {
+            DuplexS2s::poll(&**self, cancel)
+        }
+    }
+
+    #[cfg(feature = "device-audio")]
+    impl DuplexS2s for ScriptedS2s {
+        fn name(&self) -> &'static str {
+            "scripted-s2s"
+        }
+
+        fn push(&self, frame: AudioFrame, cancel: &Cancel) -> Result<()> {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            self.pushes.lock().expect("pushes").push(frame);
+            Ok(())
+        }
+
+        fn poll(&self, cancel: &Cancel) -> Result<S2sEvent> {
+            loop {
+                if cancel.is_shutdown() {
+                    return Err(Error::Cancelled);
+                }
+                if let Some(event) = self.events.lock().expect("events").pop_front() {
+                    return Ok(event);
+                }
+                thread::sleep(POLL);
+            }
+        }
+    }
+
+    #[cfg(feature = "device-audio")]
+    #[test]
+    fn duplex_loop_echoes_fake_s2s_audio_to_the_sink() {
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let sink = SharedCollectingSink::default();
+        let chunks = Arc::clone(&sink.chunks);
+        let interrupted = Arc::clone(&sink.interrupted);
+        let report = super::run_duplex_loop(
+            LoopConfig {
+                mode: LoopMode::StopAfterTurns(2),
+                events: Some(events_tx),
+                ..LoopConfig::default()
+            },
+            IterCapture {
+                iter: duplex_frames(8, 1_200).into_iter(),
+            },
+            sink,
+            crate::s2s::FakeS2s::new(Duration::from_millis(5)),
+            Cancel::new(),
+        )
+        .expect("duplex loop");
+        assert_eq!(report.tasks_exited, 2);
+        assert_eq!(report.tasks_still_running, 0);
+        assert!(report.turns.is_empty());
+        assert_eq!(report.skipped_turns, 0);
+        assert_eq!(interrupted.load(Ordering::SeqCst), 0);
+        let played = chunks.lock().expect("chunks").clone();
+        assert!(
+            played.len() >= 2,
+            "FakeS2s should echo capture into the sink, got {}",
+            played.len()
+        );
+        assert!(
+            played
+                .iter()
+                .any(|chunk| chunk.samples.iter().any(|s| *s != 0)),
+            "echoed audio should keep capture energy, got {played:?}"
+        );
+        let events: Vec<_> = events_rx.try_iter().collect();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LoopEvent::Playback { playing: true })),
+            "expected playback, got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LoopEvent::Aec { .. })),
+            "polled audio must feed the AEC3 far-end, got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, LoopEvent::User { .. })),
+            "duplex must not infer user turns from VAD: {events:?}"
+        );
+    }
+
+    #[cfg(feature = "device-audio")]
+    #[test]
+    fn duplex_mute_pushes_silence() {
+        let controls = RuntimeControls::new(false);
+        controls.mute_mic();
+        let s2s = Arc::new(ScriptedS2s::events(vec![S2sEvent::Text(String::from(
+            "hi",
+        ))]));
+        let report = super::run_duplex_loop(
+            LoopConfig {
+                mode: LoopMode::UntilInputEnds,
+                controls: controls.clone(),
+                ..LoopConfig::default()
+            },
+            ImmediateCapture {
+                frames: duplex_frames(4, 9_000).into_iter(),
+            },
+            CollectingSink::default(),
+            Arc::clone(&s2s),
+            Cancel::new(),
+        )
+        .expect("muted duplex");
+        assert_eq!(report.tasks_exited, 2);
+        let pushed = s2s.pushes.lock().expect("pushes").clone();
+        assert!(
+            !pushed.is_empty(),
+            "mute must still push so the stream keeps a clock"
+        );
+        assert!(
+            pushed
+                .iter()
+                .all(|frame| frame.samples.iter().all(|s| *s == 0)),
+            "muted capture must be silence, got {pushed:?}"
+        );
+    }
+
+    #[cfg(feature = "device-audio")]
+    #[test]
+    fn duplex_poll_error_stops_the_loop() {
+        let err = super::run_duplex_loop(
+            LoopConfig::default(),
+            ImmediateCapture {
+                frames: duplex_frames(1, 1).into_iter(),
+            },
+            CollectingSink::default(),
+            ScriptedS2s::events(vec![S2sEvent::Error {
+                message: String::from("boom"),
+            }]),
+            Cancel::new(),
+        )
+        .expect_err("s2s error");
+        match err {
+            Error::Provider { provider, message } => {
+                assert_eq!(provider, "scripted-s2s");
+                assert_eq!(message, "boom");
+            }
+            other => panic!("expected provider error, got {other}"),
+        }
+    }
+
+    #[cfg(feature = "device-audio")]
+    #[test]
+    fn duplex_cancel_joins_workers() {
+        let cancel = Cancel::new();
+        cancel.shutdown();
+        let report = super::run_duplex_loop(
+            LoopConfig::default(),
+            ImmediateCapture {
+                frames: duplex_frames(4, 3).into_iter(),
+            },
+            CollectingSink::default(),
+            crate::s2s::FakeS2s::new(Duration::from_secs(30)),
+            cancel,
+        )
+        .expect("cancelled duplex");
+        assert!(report.cancelled);
+        assert_eq!(report.tasks_exited, 2);
+        assert_eq!(report.tasks_still_running, 0);
+    }
+
+    #[cfg(feature = "device-audio")]
+    #[test]
+    fn duplex_far_end_feed_blocks_instead_of_overrunning() {
+        let aec = super::DuplexAec::new().expect("aec");
+        let cancel = Cancel::new();
+        let burst = vec![8_000i16; aec.ring.capacity().saturating_mul(2)];
+        aec.feed_far_end(&burst, &cancel).expect("feed");
+        assert_eq!(
+            aec.ring.overruns(),
+            0,
+            "poll-thread far-end must wait on the ring, not try_push_slice-drop"
+        );
+    }
+
+    #[cfg(feature = "device-audio")]
+    struct FailAfterDelaySink;
+
+    #[cfg(feature = "device-audio")]
+    impl AudioSink for FailAfterDelaySink {
+        fn play(&mut self, _audio: SynthesizedAudio, cancel: &Cancel) -> Result<()> {
+            if cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            thread::sleep(Duration::from_millis(20));
+            Err(Error::Provider {
+                provider: "fail-sink",
+                message: "refused playback".into(),
+            })
+        }
+    }
+
+    #[cfg(feature = "device-audio")]
+    #[test]
+    fn duplex_does_not_feed_far_end_when_play_fails() {
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let err = super::run_duplex_loop(
+            LoopConfig {
+                events: Some(events_tx),
+                ..LoopConfig::default()
+            },
+            ImmediateCapture {
+                frames: duplex_frames(4, 9_000).into_iter(),
+            },
+            FailAfterDelaySink,
+            crate::s2s::FakeS2s::new(Duration::ZERO),
+            Cancel::new(),
+        )
+        .expect_err("play failed");
+        match err {
+            Error::Provider { provider, .. } => assert_eq!(provider, "fail-sink"),
+            other => panic!("expected fail-sink, got {other}"),
+        }
+        let events: Vec<_> = events_rx.try_iter().collect();
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, LoopEvent::Aec { .. })),
+            "failed play must not leave a ghost far-end, got {events:?}"
+        );
     }
 }

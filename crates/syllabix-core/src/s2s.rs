@@ -1,8 +1,8 @@
 //! Blocking speech-to-speech duplex backend.
 //!
 //! This module is not re-exported at the crate root and is not on the
-//! supported-API lists. The duplex loop, jitter buffer, and Moshi client
-//! are later spike PRs.
+//! supported-API lists. The jitter buffer and Moshi client are later spike
+//! PRs; the duplex loop is [`crate::pipeline::run_duplex_loop`].
 
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
