@@ -31,6 +31,9 @@ ggml = ["dep:syllabix-native"]
 device-audio = ["dep:cpal", "dep:sonora"]
 # Cloud (online) adapters in load_real_providers. OpenAiLlm always compiles; RemoteStt / RemoteTts need this feature.
 cloud = []
+# Moshi websocket Ogg/Opus at 24 kHz. Off by default; not part of `full` or `cloud`.
+# Needs a libopus (C) install (`libopus-dev` on Debian/Ubuntu).
+s2s-opus = ["dep:opus", "dep:ogg"]
 # Turns on `ggml` plus the slow tests that download and run the real models
 # (both GGUF and ONNX). ONNX support (`ort`) is always built in; this
 # feature does not switch it on.
@@ -60,6 +63,8 @@ sonora = { workspace = true, optional = true }
 misaki-rs = { version = "=0.3.0", default-features = false }
 # Pure-Rust SentencePiece reader for Pocket TTS's pinned tokenizer.model.
 sentencepiece-rs = "=0.2.2"
+opus = { workspace = true, optional = true }
+ogg = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Landlock LSM helpers for the Linux sandbox fallback (#125 Phase 3).
