@@ -7,8 +7,8 @@ use std::time::Duration;
 use serde_yaml::Value;
 
 use crate::defaults::{
-    BuiltinDefaults, LlmProvider, SttModel, SttProvider, TtsCompute, TtsModel, TtsProvider,
-    VadProvider,
+    AgentBackend, BuiltinDefaults, LlmProvider, SttModel, SttProvider, TtsCompute, TtsModel,
+    TtsProvider, VadProvider,
 };
 use crate::error::{Error, Result};
 use crate::language::is_supported as is_supported_language;
@@ -59,6 +59,9 @@ pub struct AgentConfig {
     pub stt_compute: TtsCompute,
     /// STT language code: a whisper-supported ISO code or `auto`.
     pub language: String,
+    /// `pipeline.agent` (`builtin` or `goose`). Default `builtin`.
+    /// `goose` requires `pipeline.llm.provider: online`.
+    pub agent: AgentBackend,
     /// LLM provider.
     pub llm: LlmProvider,
     /// LLM model id (`lfm2.5-2.6b`, `lfm2.5-350m`, `lfm2.5-230m`, `llama-3.2-1b`, `qwen3.5-0.8b`, or `qwen3.5-2b`).
@@ -136,6 +139,7 @@ impl AgentConfig {
             stt_base_url: None,
             stt_compute: TtsCompute::Auto,
             language: defaults.language.to_string(),
+            agent: AgentBackend::Builtin,
             llm: defaults.llm,
             llm_model: defaults.llm_model.to_string(),
             thinking: defaults.llm_thinking,
@@ -227,11 +231,16 @@ impl AgentConfig {
         } else {
             format!("    compute: {}\n", self.tts_compute.as_str())
         };
+        let agent_line = if self.agent == AgentBackend::Builtin {
+            String::new()
+        } else {
+            format!("  agent: {}\n", self.agent.as_str())
+        };
         format!(
             "\
 name: {name}
 pipeline:
-  vad:
+{agent_line}  vad:
     provider: {vad}
     threshold: {vad_threshold}
     min_speech_ms: {vad_min_speech_ms}
@@ -260,6 +269,7 @@ pipeline:
             stt = self.stt.as_str(),
             stt_model = self.stt_model_id,
             stt_compute_line = stt_compute_line,
+            agent_line = agent_line,
             language = self.language,
             stt_base_url_line = self
                 .stt_base_url
@@ -385,7 +395,11 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         root.get("pipeline").ok_or_else(|| missing("pipeline"))?,
         "pipeline",
     )?;
-    deny_unknown(pipeline, "pipeline", &["vad", "stt", "llm", "tts"])?;
+    deny_unknown(pipeline, "pipeline", &["agent", "vad", "stt", "llm", "tts"])?;
+    let agent = match optional_string(pipeline, "pipeline", "agent")? {
+        Some(value) => parse_agent(&value)?,
+        None => AgentBackend::Builtin,
+    };
 
     let vad = mapping(required(pipeline, "pipeline.vad", "vad")?, "pipeline.vad")?;
     deny_unknown(
@@ -535,6 +549,12 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         });
     }
     let llm_developer_permissions = parse_developer_permissions(llm, llm_developer_harness)?;
+    if agent == AgentBackend::Goose && llm_provider != LlmProvider::Online {
+        return Err(Error::Config {
+            field: "pipeline.agent".into(),
+            message: "goose requires pipeline.llm.provider: online".into(),
+        });
+    }
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
     deny_yaml_api_key(tts, "pipeline.tts", TTS_API_KEY_ENV)?;
@@ -613,6 +633,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         stt_base_url,
         stt_compute,
         language,
+        agent,
         llm: llm_provider,
         llm_model: llm_model.to_string(),
         thinking,
@@ -1078,6 +1099,14 @@ fn parse_llm(value: &str) -> Result<LlmProvider> {
     }
 }
 
+fn parse_agent(value: &str) -> Result<AgentBackend> {
+    match value {
+        "builtin" => Ok(AgentBackend::Builtin),
+        "goose" => Ok(AgentBackend::Goose),
+        other => Err(unsupported("pipeline.agent", other, "builtin, goose")),
+    }
+}
+
 /// `pipeline.llm.model`: the four binary-supported GGUF ids for `local`; any
 /// non-empty id for `online` (the endpoint decides what it serves).
 fn parse_llm_model(provider: LlmProvider, value: &str) -> Result<String> {
@@ -1228,7 +1257,58 @@ mod tests {
         assert!(yaml.contains("min_speech_ms: 100"));
         assert!(yaml.contains("end_silence_ms: 350"));
         assert!(yaml.contains("preroll_ms: 200"));
+        assert!(
+            !yaml.contains("agent:"),
+            "init yaml omits the builtin agent default"
+        );
         assert_eq!(AgentConfig::parse_yaml(&yaml).unwrap(), AgentConfig::v0());
+        assert_eq!(AgentConfig::v0().agent, AgentBackend::Builtin);
+    }
+
+    #[test]
+    fn pipeline_agent_defaults_to_builtin_and_accepts_goose_online() {
+        let yaml = AgentConfig::v0().to_yaml();
+        let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(parsed.agent, AgentBackend::Builtin);
+        let explicit = yaml.replacen("pipeline:\n", "pipeline:\n  agent: builtin\n", 1);
+        let parsed = AgentConfig::parse_yaml(&explicit).unwrap();
+        assert_eq!(parsed.agent, AgentBackend::Builtin);
+        let goose = online_yaml("gpt-4o-mini", "https://api.openai.com/v1").replacen(
+            "pipeline:\n",
+            "pipeline:\n  agent: goose\n",
+            1,
+        );
+        let parsed = AgentConfig::parse_yaml(&goose).unwrap();
+        assert_eq!(parsed.agent, AgentBackend::Goose);
+        assert_eq!(parsed.llm, LlmProvider::Online);
+        let dumped = parsed.to_yaml();
+        assert!(dumped.contains("agent: goose"));
+        assert_eq!(
+            AgentConfig::parse_yaml(&dumped).unwrap().agent,
+            AgentBackend::Goose
+        );
+    }
+
+    #[test]
+    fn pipeline_agent_goose_requires_online_llm() {
+        let yaml =
+            AgentConfig::v0()
+                .to_yaml()
+                .replacen("pipeline:\n", "pipeline:\n  agent: goose\n", 1);
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.agent"), "{err}");
+        assert!(err.to_string().contains("online"), "{err}");
+    }
+
+    #[test]
+    fn pipeline_agent_unknown_value_is_named() {
+        let yaml =
+            AgentConfig::v0()
+                .to_yaml()
+                .replacen("pipeline:\n", "pipeline:\n  agent: cursor\n", 1);
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.agent"), "{err}");
+        assert!(err.to_string().contains("builtin, goose"), "{err}");
     }
 
     #[test]

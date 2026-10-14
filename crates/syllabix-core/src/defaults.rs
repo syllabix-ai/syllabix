@@ -190,6 +190,26 @@ impl LlmProvider {
     }
 }
 
+/// `pipeline.agent` yaml value. Default `Builtin`.
+/// `Goose` is rejected unless `pipeline.llm.provider` is `online`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentBackend {
+    /// `builtin` (default).
+    Builtin,
+    /// `goose`. Rejected unless the LLM provider is `online`.
+    Goose,
+}
+
+impl AgentBackend {
+    /// Config / log name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Builtin => "builtin",
+            Self::Goose => "goose",
+        }
+    }
+}
+
 /// TTS execution models. `Local` runs weights in-process — Kokoro ONNX,
 /// Pocket TTS, or Qwen3-TTS through the shared llama.cpp/ggml path;
 /// `Online` points at an OpenAI-compatible speech endpoint
