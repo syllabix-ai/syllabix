@@ -15,6 +15,7 @@
 | STT text does not match what you said | Enable `diagnostics: {timestamps: true, audio: true}`, then listen to `utterance.wav` (what Whisper received, including the 200 ms onset preroll) versus `clean.wav` (post-AEC). If `utterance.wav` sounds wrong but `clean.wav` sounds right, report the sidecar `stt_text` plus both files. |
 | `SYLLABIX_LLM_API_KEY is required…` at `run` start | Yaml selects `pipeline.llm.provider: online`. Supply the key for one run (`SYLLABIX_LLM_API_KEY=sk-… syllabix run`) or export it. Keys are never read from yaml. Switch the provider back to `local` for the on-device LLM. |
 | `SYLLABIX_STT_API_KEY is required…` / `SYLLABIX_TTS_API_KEY is required…` | Yaml selects online STT or TTS. Export that stage's key. Keys are never read from yaml. |
+| `SYLLABIX_SERVE_TOKEN is required…` | `syllabix serve` on a non-loopback bind needs that env var. Loopback may omit it. [CLI serve](cli.md#serve). |
 | Every reply is "Sorry, I could not reach the language model." | The cloud turn failed (bad key → HTTP 401, endpoint down, or idle timeout) and spoke its fallback instead of hanging. Check the key, `base_url`, and the endpoint; diagnostics sidecars carry the endpoint and request id. |
 | Linux build fails linking ALSA | Contributors need `libasound2-dev`. Users of the Release binary never compile anything. |
 

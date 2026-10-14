@@ -18,7 +18,7 @@ This page is positioning, not a benchmark. End-to-end latency and interrupt p95 
 | **Laptop speaker echo** | **WebRTC AEC3 integrated in the native runtime** | Browser or WebRTC paths can use client AEC | Usually handled by the client or transport path | You own the audio stack |
 | **Interruptions** | `run --barge-in`: cancel playback, flush queued audio, and keep the new turn | Supported in realtime paths | Framework/runtime support; application behavior is configurable | You implement the conversation loop |
 | **Configuration surface** | None for the first run; optional `syllabix.yaml` later | Broad backend and CLI surface | Application code plus framework configuration | Several independent tools and configurations |
-| **WebRTC / SIP / server runtime** | No `serve`, SIP, or SFU in this repo today | Realtime and transport modes are available | **Core strength** | No conversation runtime |
+| **WebRTC / SIP / server runtime** | Optional `syllabix serve` for STT/TTS weights (OpenAI Audio REST, localhost by default). No SIP or SFU. Conversation stays on `run`. | Realtime and transport modes are available | **Core strength** | No conversation runtime |
 
 ## When to use which
 
