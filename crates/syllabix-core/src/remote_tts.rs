@@ -42,8 +42,9 @@ const POLL_TICK: Duration = Duration::from_millis(100);
 /// Bound a speech body so a misbehaving endpoint cannot fill RAM.
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 /// OpenAI `response_format=pcm` is 24 kHz mono PCM16. Endpoints that ignore
-/// `response_format=wav` still land here.
-const OPENAI_PCM_SAMPLE_RATE_HZ: u32 = 24_000;
+/// `response_format=wav` still land here. The worker (`syllabix serve tts`)
+/// emits this rate for raw PCM so the client can resample to 16 kHz.
+pub const OPENAI_PCM_SAMPLE_RATE_HZ: u32 = 24_000;
 
 /// `{base}/audio/speech`, tolerating a trailing slash.
 pub fn join_speech_endpoint(base: &str) -> String {
@@ -606,7 +607,8 @@ fn speech_json(model: &str, input: &str, voice: &str) -> String {
     body.to_string()
 }
 
-fn openai_pcm_format() -> PcmFormat {
+/// Wire layout for OpenAI-compatible raw PCM (`response_format=pcm`).
+pub fn openai_pcm_format() -> PcmFormat {
     PcmFormat {
         sample_rate_hz: OPENAI_PCM_SAMPLE_RATE_HZ,
         channels: DEFAULT_CHANNELS,

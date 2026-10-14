@@ -105,7 +105,7 @@ pub enum ServeCommand {
         #[arg(long, default_value = crate::serve::DEFAULT_STT_MODEL)]
         model: String,
     },
-    /// Bind a text-to-speech worker (`POST /v1/audio/speech` later).
+    /// Bind a text-to-speech worker (`POST /v1/audio/speech`).
     Tts {
         /// Listen address. Default is loopback.
         #[arg(long, default_value = crate::serve::DEFAULT_TTS_BIND)]
