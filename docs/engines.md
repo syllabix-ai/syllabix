@@ -43,6 +43,8 @@ Share downloads across the CLI and embed hosts by leaving the variable unset or 
 | `moonshine-streaming-medium` | Larger English-only streaming ASR (~590 MB) | pinned ONNX export; see NOTICE |
 | `qwen3-asr-0.6` | Qwen3-ASR 0.6B via llama.cpp mtmd; finalize only (~1.0 GB). Optional `pipeline.stt.compute` (auto/cpu/metal/vulkan), same placement as Qwen TTS. | https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF |
 
+`pipeline.stt.provider: online` posts each finished utterance to OpenAI-compatible `POST /v1/audio/transcriptions`. No STT weights are fetched. Key: `SYLLABIX_STT_API_KEY`.
+
 ## LLM
 
 Local menu (unknown ids fail at load):
@@ -66,5 +68,9 @@ Local menu (unknown ids fail at load):
 | `kokoro` | Kokoro ONNX + default voice (~310 MB) | https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX |
 | `qwen3-0.6` | Qwen3-TTS 0.6B + speech tokenizer | https://huggingface.co/mradermacher/Qwen3-TTS-12Hz-0.6B-Base-GGUF |
 | `qwen3-1.7` | Qwen3-TTS 1.7B + speech tokenizer | https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF |
+
+`pipeline.tts.provider: online` posts each finished sentence to OpenAI-compatible `POST /v1/audio/speech` (`stream_format=audio`). No TTS weights are fetched. Key: `SYLLABIX_TTS_API_KEY`. Yaml: [local vs online](syllabix-yaml.md#local-vs-online).
+
+Hosted endpoints that speak this Audio REST (not OpenAI Realtime): [OpenAI speech-to-text](https://platform.openai.com/docs/guides/speech-to-text) / [text-to-speech](https://platform.openai.com/docs/guides/text-to-speech), [Groq speech-to-text](https://console.groq.com/docs/speech-to-text) / [text-to-speech](https://console.groq.com/docs/text-to-speech), [whisper.cpp whisper-server](https://github.com/ggml-org/whisper.cpp/tree/master/examples/server), [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI). Default `run` stays local. Yaml: [local vs online](syllabix-yaml.md#local-vs-online).
 
 Contributor pins, ggml patches, and llama-bench: [contributing.md](contributing.md#models).

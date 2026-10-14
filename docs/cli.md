@@ -21,7 +21,7 @@ Start a local voice conversation. Zero config: no yaml file and no API key.
 
 `syllabix.yaml` in the current working directory is loaded if present. Missing file is not an error. Diagnostics are yaml-only — there is no `--turn-debug` flag. See [diagnostics](diagnostics.md).
 
-Online LLM (`pipeline.llm.provider: online`) reads `SYLLABIX_LLM_API_KEY` from the environment at `run` start.
+Online stages read keys from the environment at `run` start: `SYLLABIX_LLM_API_KEY`, `SYLLABIX_STT_API_KEY`, `SYLLABIX_TTS_API_KEY`. Never yaml. See [syllabix.yaml](syllabix-yaml.md#local-vs-online).
 
 ## `init [DIR]`
 
