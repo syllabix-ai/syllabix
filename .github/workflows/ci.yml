@@ -109,6 +109,32 @@ jobs:
       - name: cargo check ggml without cloud
         run: cargo check -p syllabix-core --no-default-features --features ggml --all-targets
 
+  # Optional libopus path for the Moshi codec. Off in default `full` / `cloud`
+  # builds so `syllabix run` does not link libopus.
+  s2s-opus:
+    name: s2s-opus
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          components: clippy
+      - name: Compile dependencies (Linux)
+        run: ./scripts/setup-linux.sh
+      - name: Install libopus
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: s2s-opus
+      - name: clippy s2s-opus
+        run: cargo clippy -p syllabix-core --features s2s-opus --all-targets -- -D warnings
+      - name: cargo check s2s-opus without default features
+        run: cargo check -p syllabix-core --no-default-features --features s2s-opus --all-targets
+      - name: test s2s-opus
+        run: cargo test -p syllabix-core --features s2s-opus --lib s2s::codec
+
   # Lane 3 hosts that set default-features = false must compile without the
   # CMake / whisper.cpp toolchain. This job does not run setup-linux.sh and hides cmake.
   sdk-no-native:
