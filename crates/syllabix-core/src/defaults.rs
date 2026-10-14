@@ -190,6 +190,26 @@ impl LlmProvider {
     }
 }
 
+/// Conversation runtime (`pipeline.mode`). Default `cascade` is STT → LLM → TTS.
+/// `s2s` is a sibling full-duplex path; yaml accepts it, runtime does not yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineMode {
+    /// Mic → AEC3 → VAD → STT → LLM → TTS → sink. Default `run`.
+    Cascade,
+    /// Full-duplex speech-to-speech. Parsed from yaml; not implemented yet.
+    S2s,
+}
+
+impl PipelineMode {
+    /// Config / log name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cascade => "cascade",
+            Self::S2s => "s2s",
+        }
+    }
+}
+
 /// TTS execution models. `Local` runs weights in-process — Kokoro ONNX,
 /// Pocket TTS, or Qwen3-TTS through the shared llama.cpp/ggml path;
 /// `Online` points at an OpenAI-compatible speech endpoint
@@ -405,6 +425,8 @@ mod tests {
         assert_eq!(LlmProvider::Online.as_str(), "online");
         assert_eq!(TtsProvider::Local.as_str(), "local");
         assert_eq!(TtsProvider::Online.as_str(), "online");
+        assert_eq!(PipelineMode::Cascade.as_str(), "cascade");
+        assert_eq!(PipelineMode::S2s.as_str(), "s2s");
         // The zero-config stack stays on-device; online is yaml opt-in only.
         assert_eq!(BuiltinDefaults::v0().stt, SttProvider::Local);
         assert_eq!(BuiltinDefaults::v0().llm, LlmProvider::Local);

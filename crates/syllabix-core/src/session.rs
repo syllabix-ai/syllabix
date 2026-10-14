@@ -285,6 +285,7 @@ impl Session {
 
     /// Load any remaining default stages and run until the loop finishes.
     pub fn run(self, cancel: Cancel) -> Result<LoopReport> {
+        self.config.ensure_mode_supported()?;
         let Session {
             config,
             events,
@@ -709,6 +710,22 @@ mod tests {
             .expect("fake session");
         assert_eq!(report.turns.len(), 1);
         assert_eq!(report.tasks_still_running, 0);
+    }
+
+    #[test]
+    fn s2s_mode_is_not_supported_yet() {
+        let mut config = AgentConfig::v0();
+        config.mode = crate::defaults::PipelineMode::S2s;
+        config.s2s = Some(crate::config::S2sConfig {
+            base_url: "http://127.0.0.1:8998".into(),
+            tls_insecure: false,
+            send_audio_off_device: false,
+        });
+        let err = swapped(Session::from_config(&config))
+            .run(Cancel::new())
+            .expect_err("s2s");
+        assert!(err.to_string().contains("pipeline.mode"), "{err}");
+        assert!(err.to_string().contains("not supported yet"), "{err}");
     }
 
     #[test]

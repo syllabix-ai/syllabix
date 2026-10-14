@@ -50,6 +50,7 @@ pub fn run_live_with_controls(
     events: Option<Sender<LoopEvent>>,
     controls: RuntimeControls,
 ) -> Result<LoopReport> {
+    config.ensure_mode_supported()?;
     let llm_api_key = match config.llm {
         crate::defaults::LlmProvider::Online => {
             Some(resolve_api_key(|name| std::env::var(name).ok())?)
@@ -228,6 +229,20 @@ mod tests {
     #[test]
     fn live_entry_uses_v0_language() {
         assert_eq!(AgentConfig::v0().language, "en");
+    }
+
+    #[test]
+    fn s2s_mode_is_not_supported_yet() {
+        let mut config = AgentConfig::v0();
+        config.mode = crate::defaults::PipelineMode::S2s;
+        config.s2s = Some(crate::config::S2sConfig {
+            base_url: "http://127.0.0.1:8998".into(),
+            tls_insecure: false,
+            send_audio_off_device: false,
+        });
+        let err = super::run_live(&config, crate::Cancel::new(), None, false).expect_err("s2s");
+        assert!(err.to_string().contains("pipeline.mode"), "{err}");
+        assert!(err.to_string().contains("not supported yet"), "{err}");
     }
 
     #[cfg(coverage)]
