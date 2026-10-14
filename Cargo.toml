@@ -61,6 +61,16 @@ syllabix-native = { path = "crates/syllabix-native", version = "0.1.0" }
 # Optional Moshi Ogg/Opus path (`s2s-opus`). Off by default; not under `cloud`.
 opus = "=0.4.0"
 ogg = "=0.9.1"
+# Blocking websocket for MoshiWsS2s (`s2s-opus`). rustls, no libssl.
+tungstenite = { version = "=0.24.0", default-features = false, features = [
+    "handshake",
+    "rustls-tls-webpki-roots",
+] }
+rustls = { version = "=0.23.45", default-features = false, features = [
+    "std",
+    "tls12",
+    "ring",
+] }
 
 # Installable artifacts (V0_LAUNCH sequence 22). Default `release` stays the
 # CI / `ci-local.sh` profile so everyday checks do not pay thin LTO.

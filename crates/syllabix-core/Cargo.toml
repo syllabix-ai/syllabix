@@ -33,7 +33,7 @@ device-audio = ["dep:cpal", "dep:sonora"]
 cloud = []
 # Moshi websocket Ogg/Opus at 24 kHz. Off by default; not part of `full` or `cloud`.
 # Needs a libopus (C) install (`libopus-dev` on Debian/Ubuntu).
-s2s-opus = ["dep:opus", "dep:ogg"]
+s2s-opus = ["dep:opus", "dep:ogg", "dep:tungstenite", "dep:rustls"]
 # Turns on `ggml` plus the slow tests that download and run the real models
 # (both GGUF and ONNX). ONNX support (`ort`) is always built in; this
 # feature does not switch it on.
@@ -65,6 +65,8 @@ misaki-rs = { version = "=0.3.0", default-features = false }
 sentencepiece-rs = "=0.2.2"
 opus = { workspace = true, optional = true }
 ogg = { workspace = true, optional = true }
+tungstenite = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Landlock LSM helpers for the Linux sandbox fallback (#125 Phase 3).

@@ -1,6 +1,8 @@
 //! Host-facing conversation session: defaults for every stage, swap before run.
 
 use std::sync::mpsc::Sender;
+#[cfg(feature = "s2s-opus")]
+use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
 
@@ -285,6 +287,9 @@ impl Session {
 
     /// Load any remaining default stages and run until the loop finishes.
     pub fn run(self, cancel: Cancel) -> Result<LoopReport> {
+        if self.config.mode == crate::defaults::PipelineMode::S2s {
+            return run_s2s(self, cancel);
+        }
         self.config.ensure_mode_supported()?;
         let Session {
             config,
@@ -376,6 +381,118 @@ impl Session {
             }
         }
     }
+}
+
+fn run_s2s(session: Session, cancel: Cancel) -> Result<LoopReport> {
+    session.config.ensure_mode_supported()?;
+    #[cfg(not(feature = "s2s-opus"))]
+    {
+        let _ = (session, cancel);
+        Err(crate::config::s2s_unsupported_error(false))
+    }
+    #[cfg(feature = "s2s-opus")]
+    {
+        use crate::pipeline::run_duplex_loop;
+        use crate::s2s::MoshiWsS2s;
+
+        let Session {
+            config,
+            events,
+            barge_in,
+            controls,
+            mode,
+            sink,
+            input,
+            ..
+        } = session;
+        let s2s = config.s2s.as_ref().ok_or_else(|| crate::Error::Config {
+            field: "pipeline.s2s".into(),
+            message: "is required when pipeline.mode is s2s".into(),
+        })?;
+        let api_key = crate::s2s::moshi::s2s_api_key_from_env();
+        let backend = MoshiWsS2s::connect(s2s, api_key, &cancel)?;
+        let turn_debug = TurnDebug::from_config(&config)?;
+        let controls = controls.unwrap_or_else(|| {
+            RuntimeControls::with_auto_timeout(
+                barge_in,
+                config.auto_timeout_mic_mute_ms,
+                config.auto_timeout_exit_ms,
+            )
+        });
+        let (input, sink) = resolve_io(&config, &events, turn_debug.as_ref(), input, sink)?;
+        if let Some(events) = &events {
+            let _ = events.send(LoopEvent::Ready);
+        }
+        let loop_config = LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode,
+            events,
+            turn_debug,
+            controls,
+        };
+        match input {
+            ResolvedInput::Frames(frames) => run_duplex_loop(
+                loop_config,
+                IterFrames {
+                    frames: frames.into_iter(),
+                    next_due: None,
+                },
+                DynSink(sink),
+                backend,
+                cancel,
+            ),
+            ResolvedInput::Capture(capture) => run_duplex_loop(
+                loop_config,
+                DynCapture(capture),
+                DynSink(sink),
+                backend,
+                cancel,
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "s2s-opus")]
+struct IterFrames {
+    frames: std::vec::IntoIter<AudioFrame>,
+    next_due: Option<Instant>,
+}
+
+#[cfg(feature = "s2s-opus")]
+impl AudioCapture for IterFrames {
+    fn name(&self) -> &'static str {
+        "frames"
+    }
+
+    fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<AudioFrame>> {
+        if cancel.is_shutdown() {
+            return Err(crate::Error::Cancelled);
+        }
+        let Some(frame) = self.frames.next() else {
+            return Ok(None);
+        };
+        let due = self.next_due.unwrap_or_else(Instant::now);
+        while Instant::now() < due {
+            if cancel.is_shutdown() {
+                return Err(crate::Error::Cancelled);
+            }
+            std::thread::sleep(
+                due.saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(5)),
+            );
+        }
+        self.next_due = Some(due + pcm_wall_time(&frame));
+        Ok(Some(frame))
+    }
+}
+
+#[cfg(feature = "s2s-opus")]
+fn pcm_wall_time(frame: &AudioFrame) -> Duration {
+    let hz = u64::from(frame.sample_rate_hz.max(1));
+    let channels = u64::from(frame.channels.max(1));
+    Duration::from_nanos(
+        (frame.samples.len() as u64).saturating_mul(1_000_000_000) / hz.saturating_mul(channels),
+    )
 }
 
 enum ResolvedInput {
@@ -712,6 +829,35 @@ mod tests {
         assert_eq!(report.tasks_still_running, 0);
     }
 
+    #[cfg(feature = "s2s-opus")]
+    #[test]
+    fn iter_frames_paces_at_pcm_wall_time() {
+        let frame = AudioFrame::new(
+            0,
+            crate::types::DEFAULT_SAMPLE_RATE_HZ,
+            crate::types::DEFAULT_CHANNELS,
+            vec![0; crate::types::FRAME_SAMPLES],
+        )
+        .expect("frame");
+        let dur = pcm_wall_time(&frame);
+        assert!(dur >= Duration::from_millis(30), "{dur:?}");
+        let mut capture = IterFrames {
+            frames: vec![frame.clone(), frame].into_iter(),
+            next_due: None,
+        };
+        let cancel = Cancel::new();
+        let started = Instant::now();
+        assert!(capture.next_frame(&cancel).expect("first").is_some());
+        assert!(capture.next_frame(&cancel).expect("second").is_some());
+        assert!(
+            started.elapsed() >= dur,
+            "second frame must wait a full PCM quantum, elapsed {:?}",
+            started.elapsed()
+        );
+        assert!(capture.next_frame(&cancel).expect("end").is_none());
+    }
+
+    #[cfg(not(feature = "s2s-opus"))]
     #[test]
     fn s2s_mode_is_not_supported_yet() {
         let mut config = AgentConfig::v0();

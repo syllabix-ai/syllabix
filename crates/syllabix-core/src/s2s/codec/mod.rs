@@ -146,20 +146,24 @@ impl MoshiMessage {
             return Ok(None);
         };
         match kind {
-            MessageType::Handshake => {
-                if payload.len() != 8 {
-                    return Err(framing_err(format!(
-                        "handshake payload is {} bytes, expected 8",
-                        payload.len()
-                    )));
+            MessageType::Handshake => match payload.len() {
+                // Python moshi sends `MT=0` with an empty payload.
+                0 => Ok(Some(Self::Handshake {
+                    protocol_version: 0,
+                    model_version: 0,
+                })),
+                8 => {
+                    let protocol_version = u32::from_le_bytes(payload[0..4].try_into().expect("4"));
+                    let model_version = u32::from_le_bytes(payload[4..8].try_into().expect("4"));
+                    Ok(Some(Self::Handshake {
+                        protocol_version,
+                        model_version,
+                    }))
                 }
-                let protocol_version = u32::from_le_bytes(payload[0..4].try_into().expect("4"));
-                let model_version = u32::from_le_bytes(payload[4..8].try_into().expect("4"));
-                Ok(Some(Self::Handshake {
-                    protocol_version,
-                    model_version,
-                }))
-            }
+                n => Err(framing_err(format!(
+                    "handshake payload is {n} bytes, expected 0 or 8"
+                ))),
+            },
             MessageType::Audio => Ok(Some(Self::Audio(payload.to_vec()))),
             MessageType::Text => Ok(Some(Self::Text(utf8("text", payload)?))),
             MessageType::Control => {
@@ -301,6 +305,13 @@ mod tests {
 
     #[test]
     fn truncated_handshake_and_control_are_errors() {
+        assert_eq!(
+            MoshiMessage::decode(&[0]).expect("python handshake"),
+            Some(MoshiMessage::Handshake {
+                protocol_version: 0,
+                model_version: 0,
+            })
+        );
         let short = MoshiMessage::decode(&[0, 1, 2, 3]).expect_err("short handshake");
         assert!(short.to_string().contains("handshake"));
         let long = MoshiMessage::decode(&[0; 10]).expect_err("long handshake");

@@ -28,6 +28,11 @@ serde.workspace = true
 serde_json.workspace = true
 tiny_http.workspace = true
 
+[features]
+# Optional Moshi Ogg/Opus path. Off by default; not part of syllabix-core's
+# `full` graph, so default `syllabix run` does not link libopus.
+s2s-opus = ["syllabix-core/s2s-opus"]
+
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true
