@@ -96,7 +96,7 @@ pub enum Commands {
 /// answers `GET /health`.
 #[derive(Debug, Subcommand)]
 pub enum ServeCommand {
-    /// Bind a speech-to-text worker (`POST /v1/audio/transcriptions` later).
+    /// Bind a speech-to-text worker (`POST /v1/audio/transcriptions`).
     Stt {
         /// Listen address. Default is loopback.
         #[arg(long, default_value = crate::serve::DEFAULT_STT_BIND)]
