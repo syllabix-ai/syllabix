@@ -133,7 +133,7 @@ jobs:
       - name: cargo check s2s-opus without default features
         run: cargo check -p syllabix-core --no-default-features --features s2s-opus --all-targets
       - name: test s2s-opus
-        run: cargo test -p syllabix-core --features s2s-opus --lib s2s::codec
+        run: cargo test -p syllabix-core --features s2s-opus --lib s2s
 
   # Lane 3 hosts that set default-features = false must compile without the
   # CMake / whisper.cpp toolchain. This job does not run setup-linux.sh and hides cmake.

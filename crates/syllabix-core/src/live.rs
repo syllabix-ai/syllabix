@@ -51,6 +51,9 @@ pub fn run_live_with_controls(
     controls: RuntimeControls,
 ) -> Result<LoopReport> {
     config.ensure_mode_supported()?;
+    if config.mode == crate::defaults::PipelineMode::S2s {
+        return run_live_s2s(config, cancel, events, controls);
+    }
     let llm_api_key = match config.llm {
         crate::defaults::LlmProvider::Online => {
             Some(resolve_api_key(|name| std::env::var(name).ok())?)
@@ -98,6 +101,66 @@ pub fn run_live_with_controls(
         stt_api_key,
         tts_api_key,
     )
+}
+
+fn run_live_s2s(
+    config: &AgentConfig,
+    cancel: Cancel,
+    events: Option<Sender<LoopEvent>>,
+    controls: RuntimeControls,
+) -> Result<LoopReport> {
+    #[cfg(not(all(feature = "s2s-opus", feature = "device-audio", not(coverage))))]
+    {
+        let _ = (config, cancel, events, controls);
+        Err(crate::config::s2s_unsupported_error(true))
+    }
+    #[cfg(all(feature = "s2s-opus", feature = "device-audio", not(coverage)))]
+    {
+        use crate::audio::{NativeCapture, NativePlayback};
+        use crate::defaults::BuiltinDefaults;
+        use crate::pipeline::{run_duplex_loop, LoopConfig, LoopMode};
+        use crate::s2s::MoshiWsS2s;
+        use crate::turn_debug::PlaybackWatch;
+
+        let s2s = config.s2s.as_ref().ok_or_else(|| crate::Error::Config {
+            field: "pipeline.s2s".into(),
+            message: "is required when pipeline.mode is s2s".into(),
+        })?;
+        let api_key = crate::s2s::moshi::s2s_api_key_from_env();
+        let backend = MoshiWsS2s::connect(s2s, api_key, &cancel)?;
+        let turn_debug = TurnDebug::from_config(config)?;
+        let watch = turn_debug
+            .as_ref()
+            .map(|debug| PlaybackWatch::new(debug.clone()));
+        let wants_wavs = turn_debug
+            .as_ref()
+            .is_some_and(|debug| debug.collects_audio());
+        let (sink, echo_reference) = NativePlayback::open_with_echo_and_watch(watch)?;
+        let mut capture = NativeCapture::open_with_echo_and_events(echo_reference, events.clone())?;
+        if wants_wavs {
+            capture.enable_pcm_tap();
+        }
+        eprintln!(
+            "mic: {}  speaker: {}  agent: {}  s2s: moshi",
+            capture.device_name, sink.device_name, config.name
+        );
+        if let Some(events) = &events {
+            let _ = events.send(LoopEvent::Ready);
+        }
+        run_duplex_loop(
+            LoopConfig {
+                defaults: BuiltinDefaults::v0(),
+                mode: LoopMode::UntilInputEnds,
+                events,
+                turn_debug,
+                controls,
+            },
+            capture,
+            sink,
+            backend,
+            cancel,
+        )
+    }
 }
 
 #[cfg(not(coverage))]
@@ -231,6 +294,7 @@ mod tests {
         assert_eq!(AgentConfig::v0().language, "en");
     }
 
+    #[cfg(not(feature = "s2s-opus"))]
     #[test]
     fn s2s_mode_is_not_supported_yet() {
         let mut config = AgentConfig::v0();

@@ -390,11 +390,8 @@ pipeline:
 
     /// Fail fast when yaml selected a runtime that this build does not run yet.
     pub fn ensure_mode_supported(&self) -> Result<()> {
-        if self.mode == PipelineMode::S2s {
-            return Err(Error::Config {
-                field: "pipeline.mode".into(),
-                message: "s2s is not supported yet".into(),
-            });
+        if self.mode == PipelineMode::S2s && !cfg!(feature = "s2s-opus") {
+            return Err(s2s_unsupported_error(false));
         }
         Ok(())
     }
@@ -413,6 +410,35 @@ pipeline:
 impl Default for AgentConfig {
     fn default() -> Self {
         Self::v0()
+    }
+}
+
+/// Explain why `pipeline.mode: s2s` cannot run in this build.
+///
+/// Session WAV/Frames only needs `s2s-opus`. Live mic/speakers also need
+/// `device-audio` (`need_device_audio`).
+pub(crate) fn s2s_unsupported_message(need_device_audio: bool) -> String {
+    let mut missing = Vec::new();
+    if !cfg!(feature = "s2s-opus") {
+        missing.push("s2s-opus");
+    }
+    if need_device_audio && !cfg!(feature = "device-audio") {
+        missing.push("device-audio");
+    }
+    match missing.as_slice() {
+        [] => "s2s is not supported yet".into(),
+        [one] => format!("s2s is not supported yet (needs the {one} feature)"),
+        many => format!(
+            "s2s is not supported yet (needs the {} features)",
+            many.join(" and ")
+        ),
+    }
+}
+
+pub(crate) fn s2s_unsupported_error(need_device_audio: bool) -> Error {
+    Error::Config {
+        field: "pipeline.mode".into(),
+        message: s2s_unsupported_message(need_device_audio),
     }
 }
 
@@ -1362,7 +1388,31 @@ mod tests {
             AgentConfig::parse_yaml(&dumped).unwrap().mode,
             PipelineMode::S2s
         );
+        #[cfg(not(feature = "s2s-opus"))]
         parsed.ensure_mode_supported().expect_err("s2s runtime");
+        #[cfg(feature = "s2s-opus")]
+        parsed.ensure_mode_supported().expect("s2s with opus");
+    }
+
+    #[test]
+    fn s2s_unsupported_message_names_the_missing_feature() {
+        let frames = s2s_unsupported_message(false);
+        let live = s2s_unsupported_message(true);
+        #[cfg(not(feature = "s2s-opus"))]
+        {
+            assert!(frames.contains("s2s-opus"), "{frames}");
+            assert!(live.contains("s2s-opus"), "{live}");
+        }
+        #[cfg(not(feature = "device-audio"))]
+        {
+            assert!(!frames.contains("device-audio"), "{frames}");
+            assert!(live.contains("device-audio"), "{live}");
+        }
+        #[cfg(all(feature = "s2s-opus", feature = "device-audio"))]
+        {
+            assert_eq!(frames, "s2s is not supported yet");
+            assert_eq!(live, "s2s is not supported yet");
+        }
     }
 
     #[test]

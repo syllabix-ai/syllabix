@@ -11,20 +11,25 @@ use crate::cancel::Cancel;
 use crate::defaults::{BuiltinDefaults, QueueCaps};
 use crate::error::{Error, Result};
 use crate::providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
-#[cfg(feature = "device-audio")]
-use crate::queue::Occupancy;
-use crate::queue::{bounded, BoundedSender, QueueReport};
-#[cfg(feature = "device-audio")]
+use crate::queue::{bounded, BoundedSender, Occupancy, QueueReport};
 use crate::s2s::{DuplexS2s, JitterBuffer, S2sEvent};
 use crate::turn_debug::{TimelineAnchor, TurnDebug};
-#[cfg(feature = "device-audio")]
-use crate::types::GenerationId;
 use crate::types::{
-    AudioFrame, CompletedTurn, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId,
-    TurnTimings, Utterance, VadEvent,
+    AudioFrame, CompletedTurn, GenerationId, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript,
+    TurnId, TurnTimings, Utterance, VadEvent,
 };
 
 const POLL: Duration = Duration::from_millis(5);
+/// After WAV/Frames capture ends, keep sending silence so Moshi can reply.
+#[cfg(not(test))]
+const DUPLEX_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const DUPLEX_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
+/// Stop draining once playback has been idle this long (reply finished).
+#[cfg(not(test))]
+const DUPLEX_DRAIN_IDLE: Duration = Duration::from_millis(500);
+#[cfg(test)]
+const DUPLEX_DRAIN_IDLE: Duration = Duration::from_millis(40);
 /// Empty or whitespace Whisper text must not start LLM/TTS.
 pub fn is_blank_stt(text: &str) -> bool {
     text.trim().is_empty()
@@ -1032,7 +1037,8 @@ where
 /// Mute replaces outgoing samples with silence so the backend still sees a
 /// continuous clock. Silero is not run. The loop does not infer a user
 /// interruption from capture energy. [`run_loop`] is unchanged.
-#[cfg(feature = "device-audio")]
+///
+/// AEC3 runs only with `device-audio`. WAV/Frames S2S still works without it.
 pub fn run_duplex_loop<C, K, D>(
     config: LoopConfig,
     capture: C,
@@ -1065,8 +1071,9 @@ where
         let live = Arc::clone(&shared.live_tasks);
         let s2s = Arc::clone(&s2s);
         let aec = aec.clone();
+        let jitter = Arc::clone(&jitter);
         joins.push(spawn("syllabix-s2s-capture", live, move || {
-            duplex_capture_loop(capture, s2s, aec, &cancel, &shared);
+            duplex_capture_loop(capture, s2s, aec, jitter, &cancel, &shared);
         }));
     }
 
@@ -1126,7 +1133,6 @@ where
     })
 }
 
-#[cfg(feature = "device-audio")]
 fn idle_queue_report() -> QueueReport {
     QueueReport {
         frames: idle_occupancy("frames"),
@@ -1138,7 +1144,6 @@ fn idle_queue_report() -> QueueReport {
     }
 }
 
-#[cfg(feature = "device-audio")]
 fn idle_occupancy(name: &'static str) -> Occupancy {
     Occupancy {
         name,
@@ -1156,6 +1161,10 @@ struct DuplexAec {
     echo: Arc<Mutex<crate::audio::EchoController>>,
     ring: Arc<crate::audio::SampleRing>,
 }
+
+#[cfg(not(feature = "device-audio"))]
+#[derive(Clone)]
+struct DuplexAec;
 
 #[cfg(feature = "device-audio")]
 impl DuplexAec {
@@ -1217,21 +1226,47 @@ impl DuplexAec {
     }
 }
 
-#[cfg(feature = "device-audio")]
+#[cfg(not(feature = "device-audio"))]
+impl DuplexAec {
+    fn new() -> Result<Self> {
+        Ok(Self)
+    }
+
+    fn clean_frames(
+        &self,
+        frame: AudioFrame,
+        split: &mut crate::audio::FrameSplitter,
+        _shared: &Shared,
+        _echo_status: &mut (),
+    ) -> Result<Vec<AudioFrame>> {
+        split.push(&frame.samples)
+    }
+
+    fn feed_far_end(&self, _samples: &[i16], _cancel: &Cancel) -> Result<()> {
+        Ok(())
+    }
+}
+
 fn duplex_capture_loop<C, D>(
     mut capture: C,
     s2s: Arc<D>,
     aec: DuplexAec,
+    jitter: Arc<Mutex<JitterBuffer>>,
     cancel: &Cancel,
     shared: &Shared,
 ) where
     C: AudioCapture,
     D: DuplexS2s,
 {
-    use crate::audio::{EchoCalibration, FrameSplitter};
+    #[cfg(feature = "device-audio")]
+    use crate::audio::EchoCalibration;
+    use crate::audio::FrameSplitter;
 
     let mut split = FrameSplitter::new();
+    #[cfg(feature = "device-audio")]
     let mut echo_status = EchoCalibration::WaitingForPlayback;
+    #[cfg(not(feature = "device-audio"))]
+    let mut echo_status = ();
     loop {
         if cancel.is_shutdown() {
             return;
@@ -1280,6 +1315,7 @@ fn duplex_capture_loop<C, D>(
                     Err(Error::Cancelled) => {}
                     Err(err) => shared.fail(err, cancel),
                 }
+                drain_duplex_after_input(&*s2s, &jitter, cancel, shared);
                 cancel.shutdown();
                 return;
             }
@@ -1292,7 +1328,62 @@ fn duplex_capture_loop<C, D>(
     }
 }
 
-#[cfg(feature = "device-audio")]
+/// Keep the duplex clock alive after WAV/Frames end until Moshi finishes
+/// speaking or [`DUPLEX_DRAIN_TIMEOUT`] elapses.
+fn drain_duplex_after_input<D>(
+    s2s: &D,
+    jitter: &Mutex<JitterBuffer>,
+    cancel: &Cancel,
+    shared: &Shared,
+) where
+    D: DuplexS2s,
+{
+    let deadline = Instant::now() + DUPLEX_DRAIN_TIMEOUT;
+    let tick = duplex_quantum_duration();
+    let mut seq = 0_u64;
+    let mut heard = false;
+    let mut idle_since: Option<Instant> = None;
+    while Instant::now() < deadline {
+        if cancel.is_shutdown() {
+            return;
+        }
+        match shared.controls.poll_auto_timeout() {
+            AutoTimeoutAction::Exit => return,
+            AutoTimeoutAction::MicMute | AutoTimeoutAction::None => {}
+        }
+        let busy = {
+            let jitter = jitter.lock().expect("duplex jitter");
+            !jitter.is_empty() || jitter.is_playing()
+        };
+        if busy {
+            heard = true;
+            idle_since = None;
+        } else if heard {
+            let started = *idle_since.get_or_insert_with(Instant::now);
+            if started.elapsed() >= DUPLEX_DRAIN_IDLE {
+                return;
+            }
+        }
+        let started = Instant::now();
+        match AudioFrame::new(
+            seq,
+            crate::types::DEFAULT_SAMPLE_RATE_HZ,
+            crate::types::DEFAULT_CHANNELS,
+            vec![0; crate::types::FRAME_SAMPLES],
+        ) {
+            Ok(frame) => {
+                seq = seq.saturating_add(1);
+                ignore_cancel(s2s.push(frame, cancel), shared, cancel);
+            }
+            Err(err) => {
+                shared.fail(err, cancel);
+                return;
+            }
+        }
+        wait_remaining(tick, started, cancel);
+    }
+}
+
 fn duplex_poll_loop<D>(
     s2s: Arc<D>,
     jitter: Arc<Mutex<JitterBuffer>>,
@@ -1335,7 +1426,6 @@ fn duplex_poll_loop<D>(
     }
 }
 
-#[cfg(feature = "device-audio")]
 fn duplex_quantum_duration() -> Duration {
     Duration::from_nanos(
         crate::types::FRAME_SAMPLES as u64 * 1_000_000_000
@@ -1343,7 +1433,6 @@ fn duplex_quantum_duration() -> Duration {
     )
 }
 
-#[cfg(feature = "device-audio")]
 fn wait_remaining(tick: Duration, started: Instant, cancel: &Cancel) {
     loop {
         if cancel.is_shutdown() {
@@ -1363,7 +1452,6 @@ fn wait_remaining(tick: Duration, started: Instant, cancel: &Cancel) {
 /// burst is capped at 240 ms here rather than in the device ring. An empty
 /// pull is an underrun: playback stops until 90 ms is buffered again.
 /// Far-end is fed only after a successful play of those pulled samples.
-#[cfg(feature = "device-audio")]
 fn duplex_play_loop<K>(
     sink: &mut K,
     aec: DuplexAec,
@@ -3090,6 +3178,35 @@ mod tests {
                 .iter()
                 .all(|frame| frame.samples.iter().all(|s| *s == 0)),
             "muted capture must be silence, got {pushed:?}"
+        );
+    }
+
+    #[cfg(feature = "device-audio")]
+    #[test]
+    fn duplex_drains_silence_until_a_delayed_reply_plays() {
+        let sink = SharedCollectingSink::default();
+        let chunks = Arc::clone(&sink.chunks);
+        let s2s = crate::s2s::FakeS2s::new(Duration::from_millis(80));
+        let report = super::run_duplex_loop(
+            LoopConfig {
+                mode: LoopMode::UntilInputEnds,
+                ..LoopConfig::default()
+            },
+            ImmediateCapture {
+                frames: duplex_frames(2, 1_200).into_iter(),
+            },
+            sink,
+            s2s,
+            Cancel::new(),
+        )
+        .expect("drain duplex");
+        assert_eq!(report.tasks_exited, 3);
+        let played = chunks.lock().expect("chunks").clone();
+        assert!(
+            played
+                .iter()
+                .any(|chunk| chunk.samples.iter().any(|s| *s != 0)),
+            "delayed echo must play after capture ends, got {played:?}"
         );
     }
 

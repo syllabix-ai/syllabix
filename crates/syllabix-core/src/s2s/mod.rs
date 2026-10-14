@@ -4,10 +4,14 @@
 //! supported-API lists. The duplex loop is [`crate::pipeline::run_duplex_loop`].
 //! Playback goes through [`JitterBuffer`]: start at 90 ms, refill after
 //! underrun, cap at 240 ms by dropping the oldest samples back to 90 ms.
-//! Moshi websocket framing lives in [`codec`]; Ogg/Opus encode/decode needs
-//! the `s2s-opus` feature.
+//! Moshi websocket framing lives in [`codec`]; Ogg/Opus encode/decode and
+//! [`MoshiWsS2s`] need the `s2s-opus` feature.
 
 pub mod codec;
+#[cfg(feature = "s2s-opus")]
+pub(crate) mod moshi;
+#[cfg(feature = "s2s-opus")]
+pub use moshi::MoshiWsS2s;
 
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
