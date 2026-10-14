@@ -41,6 +41,9 @@ mod production {
         /// User-keyed OpenAI-compatible endpoint.
         #[cfg(feature = "cloud")]
         Cloud(OpenAiLlm),
+        /// Goose agent (`pipeline.agent: goose`). Replies are not implemented yet.
+        #[cfg(feature = "cloud")]
+        Goose,
     }
 
     impl Llm for LiveLlm {
@@ -49,6 +52,8 @@ mod production {
                 Self::Local(llm) => llm.name(),
                 #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.name(),
+                #[cfg(feature = "cloud")]
+                Self::Goose => "goose",
             }
         }
 
@@ -57,6 +62,8 @@ mod production {
                 Self::Local(llm) => llm.debug_meta(),
                 #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.debug_meta(),
+                #[cfg(feature = "cloud")]
+                Self::Goose => None,
             }
         }
 
@@ -65,6 +72,8 @@ mod production {
                 Self::Local(llm) => llm.take_tool_events(),
                 #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.take_tool_events(),
+                #[cfg(feature = "cloud")]
+                Self::Goose => Vec::new(),
             }
         }
 
@@ -79,6 +88,8 @@ mod production {
                 Self::Local(llm) => llm.generate(history, user, cancel, on_token),
                 #[cfg(feature = "cloud")]
                 Self::Cloud(llm) => llm.generate(history, user, cancel, on_token),
+                #[cfg(feature = "cloud")]
+                Self::Goose => Err(goose_not_implemented()),
             }
         }
     }
@@ -458,8 +469,17 @@ mod production {
         }
     }
 
+    fn goose_not_implemented() -> Error {
+        Error::Config {
+            field: "pipeline.agent".into(),
+            message: "goose agent is not implemented yet".into(),
+        }
+    }
+
     /// Build just the LLM slot from config. The cloud path never touches the
     /// model cache — no GGUF is fetched or loaded for a cloud run.
+    /// `pipeline.agent: goose` is online-only. `generate()` errors because the
+    /// agent is not implemented yet.
     pub fn build_llm(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -468,6 +488,25 @@ mod production {
         config: &AgentConfig,
         llm_api_key: Option<&Zeroizing<String>>,
     ) -> Result<LiveLlm> {
+        if config.agent == crate::defaults::AgentBackend::Goose {
+            let _ = llm_api_key;
+            if config.llm != crate::defaults::LlmProvider::Online {
+                return Err(Error::Config {
+                    field: "pipeline.agent".into(),
+                    message: "goose requires pipeline.llm.provider: online".into(),
+                });
+            }
+            #[cfg(feature = "cloud")]
+            {
+                let _ = (cache, fetcher, progress, cancel);
+                return Ok(LiveLlm::Goose);
+            }
+            #[cfg(not(feature = "cloud"))]
+            {
+                let _ = (cache, fetcher, progress, cancel);
+                return Err(goose_not_implemented());
+            }
+        }
         let skill_context = if config.llm_developer_harness {
             let discovery =
                 config.discover_skills(&std::env::current_dir().unwrap_or_else(|_| ".".into()));
@@ -613,6 +652,83 @@ mod production {
                 format!("{DEFAULT_LLM_BASE_URL}/chat/completions")
             );
             assert_eq!(meta.provider, "online");
+        }
+
+        #[test]
+        fn goose_online_returns_the_goose_slot() {
+            let mut config = crate::AgentConfig::v0();
+            config.agent = crate::defaults::AgentBackend::Goose;
+            config.llm = crate::defaults::LlmProvider::Online;
+            config.llm_model = "gpt-4o-mini".into();
+            let result = build_llm(
+                &empty_manifest_cache("goose-online"),
+                &BlockedFetcher::default(),
+                &mut NoProgress,
+                &Cancel::new(),
+                &config,
+                Some(&Zeroizing::new("sk-x".to_string())),
+            );
+            #[cfg(feature = "cloud")]
+            {
+                let mut llm = result.expect("online goose routes to the Goose slot");
+                assert!(matches!(llm, LiveLlm::Goose));
+                assert_eq!(llm.name(), "goose");
+                let transcript = Transcript {
+                    turn: crate::TurnId(0),
+                    text: String::new(),
+                    language: String::new(),
+                };
+                let err = llm
+                    .generate(&[], &transcript, &Cancel::new(), &mut |_| Ok(()))
+                    .expect_err("goose generate is not implemented yet");
+                assert!(err.to_string().contains("not implemented yet"), "{err}");
+            }
+            #[cfg(not(feature = "cloud"))]
+            {
+                let err = result.err().expect("goose needs the cloud feature");
+                assert!(err.to_string().contains("pipeline.agent"), "{err}");
+                assert!(err.to_string().contains("not implemented yet"), "{err}");
+            }
+        }
+
+        #[test]
+        fn goose_local_is_a_config_error() {
+            let mut config = crate::AgentConfig::v0();
+            config.agent = crate::defaults::AgentBackend::Goose;
+            let err = build_llm(
+                &empty_manifest_cache("goose-local"),
+                &BlockedFetcher::default(),
+                &mut NoProgress,
+                &Cancel::new(),
+                &config,
+                None,
+            )
+            .err()
+            .expect("goose with a local LLM is a config error");
+            assert!(err.to_string().contains("pipeline.agent"), "{err}");
+            assert!(err.to_string().contains("online"), "{err}");
+            assert!(
+                !err.to_string().contains("not implemented yet"),
+                "local goose must not look like a missing backend: {err}"
+            );
+        }
+
+        #[cfg(feature = "cloud")]
+        #[test]
+        fn goose_slot_reports_agent_not_implemented() {
+            let mut llm = LiveLlm::Goose;
+            assert_eq!(llm.name(), "goose");
+            assert!(llm.debug_meta().is_none());
+            assert!(llm.take_tool_events().is_empty());
+            let transcript = Transcript {
+                turn: crate::TurnId(0),
+                text: String::new(),
+                language: String::new(),
+            };
+            let err = llm
+                .generate(&[], &transcript, &Cancel::new(), &mut |_| Ok(()))
+                .expect_err("goose generate is not implemented yet");
+            assert!(err.to_string().contains("not implemented yet"), "{err}");
         }
 
         #[cfg(feature = "cloud")]
