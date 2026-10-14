@@ -42,9 +42,9 @@ impl LiveStt {
     pub fn with_language(self, _: &str) -> Result<Self> { Ok(self) }
 }
 pub fn build_stt(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>) -> Result<LiveStt> { Err(unavailable("stt")) }
-pub fn build_tts(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig) -> Result<LiveTts> { Err(unavailable("tts")) }
+pub fn build_tts(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>) -> Result<LiveTts> { Err(unavailable("tts")) }
 pub fn build_llm(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>) -> Result<LiveLlm> { Err(unavailable("llm")) }
-pub fn load_real_providers(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>, _: Option<&zeroize::Zeroizing<String>>) -> Result<(SileroVad, LiveStt, LiveLlm, LiveTts)> { Err(unavailable("providers")) }
+pub fn load_real_providers(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>, _: Option<&zeroize::Zeroizing<String>>, _: Option<&zeroize::Zeroizing<String>>) -> Result<(SileroVad, LiveStt, LiveLlm, LiveTts)> { Err(unavailable("providers")) }
 
 #[cfg(test)]
 mod tests {
@@ -83,8 +83,8 @@ mod tests {
         let fetcher = BlockedFetcher::default();
         let mut progress = NoProgress;
         assert!(build_stt(&cache, &fetcher, &mut progress, &cancel, &AgentConfig::v0(), None).is_err());
-        assert!(build_tts(&cache, &fetcher, &mut progress, &cancel, &AgentConfig::v0()).is_err());
+        assert!(build_tts(&cache, &fetcher, &mut progress, &cancel, &AgentConfig::v0(), None).is_err());
         assert!(build_llm(&cache, &fetcher, &mut progress, &cancel, &AgentConfig::v0(), None).is_err());
-        assert!(load_real_providers(&cache, &fetcher, &mut progress, &cancel, &AgentConfig::v0(), None, None).is_err());
+        assert!(load_real_providers(&cache, &fetcher, &mut progress, &cancel, &AgentConfig::v0(), None, None, None).is_err());
     }
 }

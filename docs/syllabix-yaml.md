@@ -54,7 +54,7 @@ Each of STT, LLM, and TTS is `local` (in-process, the default) or `online` (an O
 | --- | --- | --- |
 | STT | In-process. Ids: [engines](engines.md#stt). | OpenAI-compatible `audio/transcriptions`. `base_url` ([same rules](#base_url)). Key: `SYLLABIX_STT_API_KEY`. |
 | LLM | GGUF in-process. | OpenAI-compatible `chat/completions`. Key: `SYLLABIX_LLM_API_KEY` (self-hosted Ollama may not need a real one; [API key](#api-key-environment-not-yaml)). See [`base_url`](#base_url). |
-| TTS | In-process. Ids: [engines](engines.md#tts). | `provider: online` + `base_url` ([same rules](#base_url)). Runtime is not supported yet. Key: `SYLLABIX_TTS_API_KEY` (environment only). |
+| TTS | In-process. Ids: [engines](engines.md#tts). | OpenAI-compatible `audio/speech`. `base_url` ([same rules](#base_url)). Key: `SYLLABIX_TTS_API_KEY`. |
 
 ## `name`
 
@@ -238,7 +238,7 @@ Omitting `developer_permissions` uses `read-only`, `none`, and `none`.
 `local` (default, in-process) or `online`.
 
 - `local` — in-process. Ids: [engines](engines.md#tts).
-- `online` — OpenAI-compatible speech endpoint. See [Local vs online](#local-vs-online). `base_url` uses the [LLM rules](#base_url). Runtime is not supported yet.
+- `online` — OpenAI-compatible speech endpoint. Posts each finished sentence (`stream_format=audio`); no TTS weights are fetched. See [Local vs online](#local-vs-online). `base_url` uses the [LLM rules](#base_url).
 
 ### `model`
 

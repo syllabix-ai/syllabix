@@ -1136,4 +1136,36 @@ mod tests {
         assert!(matches!(err, Error::Cancelled), "{err}");
         let _ = handle.join();
     }
+
+    #[test]
+    fn session_loopback_speaks_one_scripted_turn_without_a_mic() {
+        use crate::session::Session;
+        use crate::testing::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeVad};
+
+        let (endpoint, handle) = serve_one(|stream, request| {
+            let text = String::from_utf8_lossy(request);
+            assert!(text.contains("POST /v1/audio/speech"), "{text}");
+            assert!(text.contains("\"stream_format\":\"audio\""), "{text}");
+            write_bytes(
+                stream,
+                "HTTP/1.1 200 OK",
+                &[("Content-Type", "application/octet-stream")],
+                &openai_pcm_bytes(),
+            )
+            .expect("write");
+        });
+        let sink = CollectingSink::default();
+        let report = Session::v0()
+            .with_vad(FakeVad::new())
+            .with_stt(FakeStt)
+            .with_llm(FakeLlm::new())
+            .with_tts(test_tts(endpoint))
+            .with_sink(sink)
+            .with_frames(scripted_frames(1, 2, 1))
+            .run(Cancel::new())
+            .expect("session loopback");
+        assert_eq!(report.turns.len(), 1);
+        assert_eq!(report.skipped_turns, 0);
+        let _ = handle.join();
+    }
 }

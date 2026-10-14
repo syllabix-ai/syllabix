@@ -20,7 +20,8 @@ use crate::turn_debug::TurnDebug;
 /// key in the `SYLLABIX_LLM_API_KEY` environment variable; a missing or empty
 /// key fails here — before any device opens or any weight loads. Online STT
 /// (`pipeline.stt.provider: online`) does the same with `SYLLABIX_STT_API_KEY`.
-/// Default keyless runs never read them.
+/// Online TTS does the same with `SYLLABIX_TTS_API_KEY`. Default keyless
+/// runs never read them.
 ///
 /// Under `cfg(coverage)` this is a one-turn fake loop so llvm-cov does not
 /// load whisper.cpp / llama.cpp / Kokoro weights or open devices.
@@ -70,6 +71,21 @@ pub fn run_live_with_controls(
         }
         crate::defaults::SttProvider::Local => None,
     };
+    let tts_api_key = match config.tts {
+        crate::defaults::TtsProvider::Online => {
+            #[cfg(feature = "cloud")]
+            {
+                Some(crate::remote_tts::resolve_api_key(|name| {
+                    std::env::var(name).ok()
+                })?)
+            }
+            #[cfg(not(feature = "cloud"))]
+            {
+                None
+            }
+        }
+        crate::defaults::TtsProvider::Local => None,
+    };
     let turn_debug = TurnDebug::from_config(config)?;
     run_live_inner(
         config,
@@ -79,10 +95,12 @@ pub fn run_live_with_controls(
         controls,
         llm_api_key,
         stt_api_key,
+        tts_api_key,
     )
 }
 
 #[cfg(not(coverage))]
+#[allow(clippy::too_many_arguments)]
 fn run_live_inner(
     config: &AgentConfig,
     cancel: Cancel,
@@ -91,6 +109,7 @@ fn run_live_inner(
     controls: RuntimeControls,
     llm_api_key: Option<Zeroizing<String>>,
     stt_api_key: Option<Zeroizing<String>>,
+    tts_api_key: Option<Zeroizing<String>>,
 ) -> Result<LoopReport> {
     use crate::audio::{NativeCapture, NativePlayback};
     use crate::defaults::BuiltinDefaults;
@@ -109,6 +128,7 @@ fn run_live_inner(
         config,
         llm_api_key.as_ref(),
         stt_api_key.as_ref(),
+        tts_api_key.as_ref(),
     )?;
     let watch = turn_debug
         .as_ref()
@@ -149,6 +169,7 @@ fn run_live_inner(
 }
 
 #[cfg(coverage)]
+#[allow(clippy::too_many_arguments)]
 fn run_live_inner(
     config: &AgentConfig,
     cancel: Cancel,
@@ -157,6 +178,7 @@ fn run_live_inner(
     controls: RuntimeControls,
     llm_api_key: Option<Zeroizing<String>>,
     stt_api_key: Option<Zeroizing<String>>,
+    tts_api_key: Option<Zeroizing<String>>,
 ) -> Result<LoopReport> {
     use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
     use crate::pipeline::{run_loop, LoopConfig, PipelineStages};
@@ -175,6 +197,7 @@ fn run_live_inner(
         config.diagnostics_audio,
         llm_api_key.is_some(),
         stt_api_key.is_some(),
+        tts_api_key.is_some(),
     );
     let watch = turn_debug
         .as_ref()

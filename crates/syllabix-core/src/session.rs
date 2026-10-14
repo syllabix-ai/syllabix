@@ -317,6 +317,20 @@ impl Session {
         } else {
             None
         };
+        let tts_api_key = if tts.is_none() && config.tts == crate::defaults::TtsProvider::Online {
+            #[cfg(feature = "cloud")]
+            {
+                Some(crate::remote_tts::resolve_api_key(|name| {
+                    std::env::var(name).ok()
+                })?)
+            }
+            #[cfg(not(feature = "cloud"))]
+            {
+                None
+            }
+        } else {
+            None
+        };
         let turn_debug = TurnDebug::from_config(&config)?;
         let controls = controls.unwrap_or_else(|| {
             RuntimeControls::with_auto_timeout(
@@ -330,6 +344,7 @@ impl Session {
             &cancel,
             llm_api_key.as_ref(),
             stt_api_key.as_ref(),
+            tts_api_key.as_ref(),
             vad,
             stt,
             llm,
@@ -376,6 +391,7 @@ fn resolve_ml(
     cancel: &Cancel,
     llm_api_key: Option<&Zeroizing<String>>,
     stt_api_key: Option<&Zeroizing<String>>,
+    tts_api_key: Option<&Zeroizing<String>>,
     vad: Option<Box<dyn Vad>>,
     stt: Option<Box<dyn Stt>>,
     llm: Option<Box<dyn Llm>>,
@@ -386,7 +402,7 @@ fn resolve_ml(
     use crate::openai::PROVIDER_NAME;
     use crate::real::{build_llm, build_stt, build_tts};
     #[cfg(feature = "cloud")]
-    use crate::real::{LiveLlm, LiveStt};
+    use crate::real::{LiveLlm, LiveStt, LiveTts};
     use crate::vad::SileroVad;
     #[cfg(feature = "cloud")]
     use crate::Error;
@@ -457,7 +473,25 @@ fn resolve_ml(
         Some(tts) => tts,
         None => {
             let cache = cache.as_ref().expect("cache when loading default TTS");
-            Box::new(build_tts(cache, &fetcher, &mut progress, cancel, config)?)
+            let built = build_tts(cache, &fetcher, &mut progress, cancel, config, tts_api_key)?;
+            #[cfg(feature = "cloud")]
+            if let LiveTts::Remote(remote) = &built {
+                match remote.warm_up(cancel) {
+                    Ok(()) => eprintln!("cloud: TTS endpoint ready"),
+                    Err(Error::Cancelled) => return Err(Error::Cancelled),
+                    Err(err) => {
+                        tracing::warn!(
+                            provider = crate::remote_tts::PROVIDER_NAME,
+                            error = %err,
+                            "cloud TTS warm-up failed"
+                        );
+                        eprintln!(
+                            "cloud: could not verify TTS endpoint; continuing — the first spoken reply may fail"
+                        );
+                    }
+                }
+            }
+            Box::new(built)
         }
     };
     Ok((vad, stt, llm, tts))
@@ -470,6 +504,7 @@ fn resolve_ml(
     _cancel: &Cancel,
     _llm_api_key: Option<&Zeroizing<String>>,
     _stt_api_key: Option<&Zeroizing<String>>,
+    _tts_api_key: Option<&Zeroizing<String>>,
     vad: Option<Box<dyn Vad>>,
     stt: Option<Box<dyn Stt>>,
     llm: Option<Box<dyn Llm>>,
@@ -491,6 +526,7 @@ fn resolve_ml(
     _cancel: &Cancel,
     llm_api_key: Option<&Zeroizing<String>>,
     stt_api_key: Option<&Zeroizing<String>>,
+    tts_api_key: Option<&Zeroizing<String>>,
     vad: Option<Box<dyn Vad>>,
     stt: Option<Box<dyn Stt>>,
     llm: Option<Box<dyn Llm>>,
@@ -512,6 +548,7 @@ fn resolve_ml(
         config.diagnostics_audio,
         llm_api_key.is_some(),
         stt_api_key.is_some(),
+        tts_api_key.is_some(),
     );
     Ok((
         vad.unwrap_or_else(|| Box::new(FakeVad::new())),

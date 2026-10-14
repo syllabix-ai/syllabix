@@ -193,13 +193,13 @@ impl LlmProvider {
 /// TTS execution models. `Local` runs weights in-process — Kokoro ONNX,
 /// Pocket TTS, or Qwen3-TTS through the shared llama.cpp/ggml path;
 /// `Online` points at an OpenAI-compatible speech endpoint
-/// (`pipeline.tts.base_url`). Runtime support lands in a follow-up; yaml
-/// already accepts the same `local` / `online` words as [`LlmProvider`].
+/// (`pipeline.tts.base_url`). Yaml accepts the same `local` / `online`
+/// words as [`LlmProvider`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsProvider {
     /// In-process weights. No network.
     Local,
-    /// OpenAI-compatible remote endpoint. Yaml-accepted; runtime not supported yet.
+    /// OpenAI-compatible remote endpoint. No local TTS weights.
     Online,
 }
 
