@@ -11,6 +11,8 @@ pub enum ModelLayer {
     Llm,
     /// Kokoro ONNX (weights or voice).
     Tts,
+    /// Pinned Goose CLI archive (`pipeline.agent: goose`).
+    Agent,
 }
 
 impl ModelLayer {
@@ -21,6 +23,7 @@ impl ModelLayer {
             Self::Stt => "stt",
             Self::Llm => "llm",
             Self::Tts => "tts",
+            Self::Agent => "agent",
         }
     }
 }
@@ -542,6 +545,7 @@ mod tests {
         assert_eq!(ModelLayer::Stt.as_str(), "stt");
         assert_eq!(ModelLayer::Llm.as_str(), "llm");
         assert_eq!(ModelLayer::Tts.as_str(), "tts");
+        assert_eq!(ModelLayer::Agent.as_str(), "agent");
     }
 
     #[test]

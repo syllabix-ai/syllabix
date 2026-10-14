@@ -19,6 +19,8 @@ mod production {
     use crate::config::AgentConfig;
     use crate::error::{Error, Result};
     use crate::llm::LlamaLlm;
+    #[cfg(feature = "cloud")]
+    use crate::models::resolve_goose_binary;
     use crate::models::{Fetcher, ModelCache, Progress};
     use crate::moonshine::MoonshineStt;
     #[cfg(feature = "cloud")]
@@ -41,7 +43,8 @@ mod production {
         /// User-keyed OpenAI-compatible endpoint.
         #[cfg(feature = "cloud")]
         Cloud(OpenAiLlm),
-        /// Goose agent (`pipeline.agent: goose`). Replies are not implemented yet.
+        /// Goose agent (`pipeline.agent: goose`). Downloads the pinned CLI;
+        /// replies are not implemented yet.
         #[cfg(feature = "cloud")]
         Goose,
     }
@@ -478,8 +481,9 @@ mod production {
 
     /// Build just the LLM slot from config. The cloud path never touches the
     /// model cache — no GGUF is fetched or loaded for a cloud run.
-    /// `pipeline.agent: goose` is online-only. `generate()` errors because the
-    /// agent is not implemented yet.
+    /// `pipeline.agent: goose` is online-only. This path downloads the pinned
+    /// Goose CLI; `generate()` still errors because the agent is not
+    /// implemented yet.
     pub fn build_llm(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -498,7 +502,7 @@ mod production {
             }
             #[cfg(feature = "cloud")]
             {
-                let _ = (cache, fetcher, progress, cancel);
+                resolve_goose_binary(cache, fetcher, progress, cancel)?;
                 return Ok(LiveLlm::Goose);
             }
             #[cfg(not(feature = "cloud"))]
@@ -655,39 +659,33 @@ mod production {
         }
 
         #[test]
-        fn goose_online_returns_the_goose_slot() {
+        fn goose_online_fetches_the_pinned_binary() {
             let mut config = crate::AgentConfig::v0();
             config.agent = crate::defaults::AgentBackend::Goose;
             config.llm = crate::defaults::LlmProvider::Online;
             config.llm_model = "gpt-4o-mini".into();
-            let result = build_llm(
+            let fetcher = BlockedFetcher::default();
+            let err = build_llm(
                 &empty_manifest_cache("goose-online"),
-                &BlockedFetcher::default(),
+                &fetcher,
                 &mut NoProgress,
                 &Cancel::new(),
                 &config,
                 Some(&Zeroizing::new("sk-x".to_string())),
-            );
+            )
+            .err()
+            .expect("goose fetch is attempted");
             #[cfg(feature = "cloud")]
             {
-                let mut llm = result.expect("online goose routes to the Goose slot");
-                assert!(matches!(llm, LiveLlm::Goose));
-                assert_eq!(llm.name(), "goose");
-                let transcript = Transcript {
-                    turn: crate::TurnId(0),
-                    text: String::new(),
-                    language: String::new(),
-                };
-                let err = llm
-                    .generate(&[], &transcript, &Cancel::new(), &mut |_| Ok(()))
-                    .expect_err("goose generate is not implemented yet");
-                assert!(err.to_string().contains("not implemented yet"), "{err}");
+                assert!(matches!(err, Error::ModelCache { .. }), "{err:?}");
+                assert!(err.to_string().contains("network blocked"), "{err}");
+                assert!(fetcher.hits.load(std::sync::atomic::Ordering::SeqCst) >= 1);
             }
             #[cfg(not(feature = "cloud"))]
             {
-                let err = result.err().expect("goose needs the cloud feature");
                 assert!(err.to_string().contains("pipeline.agent"), "{err}");
                 assert!(err.to_string().contains("not implemented yet"), "{err}");
+                assert_eq!(fetcher.hits.load(std::sync::atomic::Ordering::SeqCst), 0);
             }
         }
 
@@ -695,9 +693,10 @@ mod production {
         fn goose_local_is_a_config_error() {
             let mut config = crate::AgentConfig::v0();
             config.agent = crate::defaults::AgentBackend::Goose;
+            let fetcher = BlockedFetcher::default();
             let err = build_llm(
                 &empty_manifest_cache("goose-local"),
-                &BlockedFetcher::default(),
+                &fetcher,
                 &mut NoProgress,
                 &Cancel::new(),
                 &config,
@@ -710,6 +709,11 @@ mod production {
             assert!(
                 !err.to_string().contains("not implemented yet"),
                 "local goose must not look like a missing backend: {err}"
+            );
+            assert_eq!(
+                fetcher.hits.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "local goose must not download the Goose binary"
             );
         }
 

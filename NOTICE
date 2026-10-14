@@ -145,6 +145,12 @@ export to `KevinAHM/pocket-tts-onnx`, and the fixed `alba` speaker state to
 `kyutai/pocket-tts-without-voice-cloning`. Syllabix does not expose voice
 cloning or user voice registration.
 
+### Goose CLI (optional, `pipeline.agent: goose`)
+
+Apache License 2.0. Copyright Block / AAIF Goose authors.
+Fetched only when yaml selects `pipeline.agent: goose` (online LLM).
+Pinned release `v1.54.0` from https://github.com/aaif-goose/goose/releases/tag/v1.54.0
+
 ## Data
 
 ### Misaki English lexicons (compiled into the Kokoro grapheme-to-phoneme table)
