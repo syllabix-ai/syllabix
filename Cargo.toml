@@ -58,6 +58,9 @@ tiny_http = "=0.12.0"
 # The crates.io publish job sets this and [workspace.package] version from
 # the git tag. Do not bump by hand.
 syllabix-native = { path = "crates/syllabix-native", version = "0.1.0" }
+# Optional Moshi Ogg/Opus path (`s2s-opus`). Off by default; not under `cloud`.
+opus = "=0.4.0"
+ogg = "=0.9.1"
 
 # Installable artifacts (V0_LAUNCH sequence 22). Default `release` stays the
 # CI / `ci-local.sh` profile so everyday checks do not pay thin LTO.
