@@ -115,7 +115,8 @@ SYLLABIX_NATIVE_MODELS=whisper-small,lfm2.5-230m,pocket-tts \
 
 CI runs that lane via `native-tests.yml` on `ubuntu-latest` by default
 (pull requests, pushes to `main`, and `workflow_dispatch`). No native
-percentage floor yet.
+percentage floor yet. The same workflow’s **native serve** job points
+the six-turn loop at local [`serve`](cli.md#serve) STT and TTS workers.
 
 ## 7. 3-minute gate (profile C)
 

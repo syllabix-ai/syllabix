@@ -14,18 +14,27 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+use syllabix_core::config::{STT_API_KEY_ENV, TTS_API_KEY_ENV};
+use syllabix_core::defaults::{SttProvider, TtsProvider};
 use syllabix_core::llm::LFM25_230M_ASSET;
 use syllabix_core::memory::{process_rss_bytes, LOOP_RSS_GROWTH_CEILING_BYTES};
 use syllabix_core::models::{HttpFetcher, StderrProgress};
+use syllabix_core::real::{build_stt, build_tts, LiveStt, LiveTts};
 use syllabix_core::types::FRAME_SAMPLES;
 use syllabix_core::vad::{SileroVad, END_SILENCE_FRAMES};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames, DrainingPlayback, PcmFormat},
-    run_loop_captured, AudioCapture, AudioFrame, Cancel, Error, LoopConfig, ModelCache,
-    PipelineStages, Result, RuntimeControls,
+    run_loop_captured, AgentConfig, AudioCapture, AudioFrame, Cancel, Error, LoopConfig,
+    ModelCache, PipelineStages, Result, RuntimeControls,
 };
 
-use crate::{hex, launch_stack_selected, native, native_model_selected};
+use crate::{hex, launch_stack_selected, native, native_model_selected, Native};
+
+/// When set, the six-turn loop uses `build_stt` / `build_tts` remote clients
+/// instead of in-process Whisper / Pocket TTS. Keys stay on
+/// `SYLLABIX_STT_API_KEY` / `SYLLABIX_TTS_API_KEY` (no shared fallback).
+const STT_BASE_URL_ENV: &str = "SYLLABIX_STT_BASE_URL";
+const TTS_BASE_URL_ENV: &str = "SYLLABIX_TTS_BASE_URL";
 
 const SPEECH_SHA256: &str = "e72f1ccf42dc827252141e927a0969793169fbe8039392e207285aa306f09daa";
 const REAL_TURNS: usize = 6;
@@ -199,13 +208,14 @@ fn six_real_turns_complete_within_queue_and_memory_bounds() {
     )
     .expect("load Silero for six-turn");
     // Warm providers before the RSS baseline so growth measures the loop, not loads.
-    let stt = n.stt().clone();
+    // URL env vars swap STT/TTS to the remote clients; VAD and LLM stay in-process.
+    let stt = live_stt(&mut n);
     let llm = if weekly_230m_stack {
         n.lfm_asset_mut(LFM25_230M_ASSET).clone()
     } else {
         n.llm().clone()
     };
-    let tts = n.take_tts();
+    let tts = live_tts(&mut n);
     let warmup_rss = process_rss_bytes();
 
     let sink = DrainingPlayback::new(PcmFormat {
@@ -260,9 +270,11 @@ fn six_real_turns_complete_within_queue_and_memory_bounds() {
     assert_eq!(
         report.turns.len(),
         REAL_TURNS,
-        "expected {REAL_TURNS} real turns in {:?}, got {:?}",
+        "expected {REAL_TURNS} real turns in {:?}, got {:?} skipped={} cancelled={}",
         elapsed,
-        turn_summaries(&report)
+        turn_summaries(&report),
+        report.skipped_turns,
+        report.cancelled
     );
     for (i, turn) in report.turns.iter().enumerate() {
         assert_eq!(turn.id, syllabix_core::TurnId(i as u64));
@@ -298,5 +310,56 @@ fn six_real_turns_complete_within_queue_and_memory_bounds() {
             growth <= LOOP_RSS_GROWTH_CEILING_BYTES,
             "RSS grew {growth} bytes after warm-up (ceiling {LOOP_RSS_GROWTH_CEILING_BYTES}); before={before} after={after}"
         );
+    }
+}
+
+fn env_nonempty(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn live_stt(n: &mut Native) -> LiveStt {
+    match env_nonempty(STT_BASE_URL_ENV) {
+        Some(url) => {
+            let key = syllabix_core::remote_stt::resolve_api_key(|name| std::env::var(name).ok())
+                .unwrap_or_else(|err| panic!("{STT_API_KEY_ENV}: {err}"));
+            let mut config = AgentConfig::v0();
+            config.stt = SttProvider::Online;
+            config.stt_base_url = Some(url);
+            build_stt(
+                &ModelCache::v0(),
+                &HttpFetcher,
+                &mut StderrProgress::new(),
+                &Cancel::new(),
+                &config,
+                Some(&key),
+            )
+            .unwrap_or_else(|err| panic!("remote STT client: {err}"))
+        }
+        None => LiveStt::Whisper(n.stt().clone()),
+    }
+}
+
+fn live_tts(n: &mut Native) -> LiveTts {
+    match env_nonempty(TTS_BASE_URL_ENV) {
+        Some(url) => {
+            let key = syllabix_core::remote_tts::resolve_api_key(|name| std::env::var(name).ok())
+                .unwrap_or_else(|err| panic!("{TTS_API_KEY_ENV}: {err}"));
+            let mut config = AgentConfig::v0();
+            config.tts = TtsProvider::Online;
+            config.tts_base_url = Some(url);
+            build_tts(
+                &ModelCache::v0(),
+                &HttpFetcher,
+                &mut StderrProgress::new(),
+                &Cancel::new(),
+                &config,
+                Some(&key),
+            )
+            .unwrap_or_else(|err| panic!("remote TTS client: {err}"))
+        }
+        None => n.take_tts(),
     }
 }

@@ -149,3 +149,107 @@ jobs:
             coverage-native.xml
             coverage-native.lcov
           if-no-files-found: error
+
+  native-serve:
+    name: native serve
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - name: Detect native-related path changes
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "push" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags origin "$PR_BASE" "pull/${PR_NUMBER}/head:pr-head"
+            changed="$(git diff --name-only "$PR_BASE" pr-head)"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            git fetch --no-tags origin "$BEFORE" "$AFTER"
+            changed="$(git diff --name-only "$BEFORE" "$AFTER")"
+          fi
+          echo "$changed"
+          if echo "$changed" | grep -Eq '^(crates/|Cargo\.toml$|Cargo\.lock$|scripts/setup-linux\.sh$|scripts/setup-macos\.sh$|scripts/ci-local\.sh$|\.github/workflows/native-tests\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No native, engine, or related paths changed; skipping native serve."
+          fi
+      - name: Skip native serve (paths unchanged)
+        if: steps.gate.outputs.run != 'true'
+        run: echo "Docs-only or unrelated diff; native serve steps skipped so this check still reports."
+      - uses: dtolnay/rust-toolchain@1.91.0
+        if: steps.gate.outputs.run == 'true'
+      - name: Compile dependencies (Linux)
+        if: steps.gate.outputs.run == 'true'
+        run: ./scripts/setup-linux.sh
+      - uses: actions/cache@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          path: ${{ github.workspace }}/.syllabix-cache
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts-${{ hashFiles('crates/syllabix-core/src/models/manifest.rs') }}
+          restore-keys: |
+            syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts-
+            syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts
+      - uses: Swatinem/rust-cache@v2
+        if: steps.gate.outputs.run == 'true'
+        with:
+          key: native-serve
+      - name: Build syllabix (release)
+        if: steps.gate.outputs.run == 'true'
+        run: cargo build --release -p syllabix
+      - name: Serve TTS, serve STT, six-turn loop
+        if: steps.gate.outputs.run == 'true'
+        env:
+          TOKEN: ci-native-serve
+        run: |
+          set -euo pipefail
+          export SYLLABIX_SERVE_TOKEN="$TOKEN"
+          wait_health() {
+            local url="$1"
+            local pid="$2"
+            local name="$3"
+            local deadline=$((SECONDS + 1200))
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              if ! kill -0 "$pid" 2>/dev/null; then
+                echo "$name exited before /health"
+                return 1
+              fi
+              if curl -fsS -H "Authorization: Bearer $TOKEN" "$url" >/dev/null; then
+                echo "$name healthy"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "$name did not become healthy"
+            return 1
+          }
+
+          ./target/release/syllabix serve tts --bind 127.0.0.1:8092 --model pocket-tts &
+          tts_pid=$!
+          trap 'kill "$tts_pid" "${stt_pid:-}" 2>/dev/null || true' EXIT
+          wait_health "http://127.0.0.1:8092/health" "$tts_pid" "serve tts"
+
+          ./target/release/syllabix serve stt --bind 127.0.0.1:8091 --model whisper-small &
+          stt_pid=$!
+          wait_health "http://127.0.0.1:8091/health" "$stt_pid" "serve stt"
+
+          SYLLABIX_STT_BASE_URL=http://127.0.0.1:8091/v1 \
+          SYLLABIX_TTS_BASE_URL=http://127.0.0.1:8092/v1 \
+          SYLLABIX_STT_API_KEY="$TOKEN" \
+          SYLLABIX_TTS_API_KEY="$TOKEN" \
+          cargo test --release -p syllabix-core --features native-inference --test native_inference \
+            real_loop::six_real_turns_complete_within_queue_and_memory_bounds -- --exact --nocapture

@@ -282,7 +282,10 @@ impl Stt for RemoteStt {
 fn build_agent(timeouts: OpenAiTimeouts) -> Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(timeouts.connect)
-        .timeout_read(timeouts.read_poll)
+        // Blocking transcriptions do not send the status line until the
+        // engine finishes. `read_poll` (2s) is stream granularity and is
+        // too short for `syllabix serve stt` on CPU.
+        .timeout_read(timeouts.idle)
         .user_agent(concat!("syllabix/", env!("CARGO_PKG_VERSION")))
         .build()
 }
