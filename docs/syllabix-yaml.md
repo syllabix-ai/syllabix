@@ -39,6 +39,7 @@ pipeline:
     language: en
 
 # optional (init omits these):
+# pipeline.mode: cascade         # default; `s2s` is experimental
 # auto-timeout:                  # idle mic-mute / exit
 # diagnostics:                   # turn timelines / WAVs
 # skills:                        # local instruction packages (harness only)
@@ -59,6 +60,27 @@ Each of STT, LLM, and TTS is `local` (in-process, the default) or `online` (an O
 ## `name`
 
 Display label for the agent. Default: `demo-agent`.
+
+## Mode — cascade / s2s (experimental)
+
+`pipeline.mode` is `cascade` (default `run`, STT → LLM → TTS) or `s2s`. `init` omits it. `s2s` needs a `pipeline.s2s` block; that block is forbidden in cascade mode. This path is experimental.
+
+```yaml
+pipeline:
+  mode: s2s
+  s2s:
+    base_url: http://127.0.0.1:8998
+    tls_insecure: false
+```
+
+| Key | Detail |
+| --- | --- |
+| `base_url` | Required. Moshi (or compatible) HTTP(S) origin. Same URL rules as LLM [`base_url`](#base_url). Setting it is enough to send post-echo-cancelled mic audio to that server. |
+| `tls_insecure` | Default `false`. Skip TLS certificate verification. Loopback only (`127.0.0.1`, `localhost`, `::1`). |
+
+The key is `SYLLABIX_S2S_API_KEY` only, never yaml. Missing or blank is allowed; when set it is sent as `Authorization: Bearer`. Runtime needs `--features s2s-opus` (off by default, not under `full` or `cloud`; needs libopus). Without that feature, `mode: s2s` fails: `s2s is not supported yet (needs the s2s-opus feature)`.
+
+In S2S mode, post-echo-cancelled mic audio streams continuously to `base_url`. [What leaves the machine](architecture.md#what-leaves-the-machine).
 
 ## VAD — speech start / end
 

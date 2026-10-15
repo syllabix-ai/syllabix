@@ -46,6 +46,7 @@ First use of each model id downloads pinned weights over HTTPS, checks SHA-256, 
 - **`pipeline.stt.provider: online`:** each finished utterance WAV is posted to `POST /v1/audio/transcriptions`. VAD stays on-device. Key: `SYLLABIX_STT_API_KEY`.
 - **`pipeline.tts.provider: online`:** each finished sentence is posted to `POST /v1/audio/speech`. Key: `SYLLABIX_TTS_API_KEY`.
 - **`syllabix serve`:** weights live on the worker. Endpoints send the same utterance WAV / sentence text as hosted online STT/TTS. Mic capture does not leave the desk. [CLI serve](cli.md#serve).
+- **`pipeline.mode: s2s`:** post-echo-cancelled mic audio streams continuously to `pipeline.s2s.base_url`. Experimental. [yaml keys](syllabix-yaml.md#mode--cascade--s2s-experimental).
 
 ## Layout (contributors)
 
