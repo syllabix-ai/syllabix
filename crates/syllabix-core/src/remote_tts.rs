@@ -391,7 +391,10 @@ impl Tts for RemoteTts {
 fn build_agent(timeouts: OpenAiTimeouts) -> Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(timeouts.connect)
-        .timeout_read(timeouts.read_poll)
+        // Speech may not emit the first PCM until the engine has started.
+        // `read_poll` (2s) is stream granularity and is too short for
+        // `syllabix serve tts` on CPU.
+        .timeout_read(timeouts.idle)
         .user_agent(concat!("syllabix/", env!("CARGO_PKG_VERSION")))
         .build()
 }

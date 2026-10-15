@@ -232,6 +232,12 @@ and `pocket-tts` weights on pull requests and pushes to `main` on
 workflow change; docs-only PRs skip the heavy steps so the check still
 reports. Model weights are cached with `actions/cache`, keyed on those
 ids plus a hash of `manifest.rs`.
+A **native serve** job in the same workflow (Linux only) starts
+[`syllabix serve tts`](cli.md#serve) then `serve stt`, waits for each
+`GET /health`, and runs the six-turn real loop test against those
+servers (`SYLLABIX_STT_BASE_URL` / `SYLLABIX_TTS_BASE_URL`, keys
+`SYLLABIX_STT_API_KEY` / `SYLLABIX_TTS_API_KEY`). Same path gate and
+model cache; VAD and the LLM stay in-process.
 A **sdk no-native** job
 `cargo check`s `syllabix-core` with `--no-default-features` on a runner
 without CMake (`setup-linux.sh` is skipped). A Linux-only **crates.io
