@@ -7,8 +7,8 @@ use std::time::Duration;
 use serde_yaml::Value;
 
 use crate::defaults::{
-    BuiltinDefaults, LlmProvider, SttModel, SttProvider, TtsCompute, TtsModel, TtsProvider,
-    VadProvider,
+    BuiltinDefaults, LlmProvider, PipelineMode, SttModel, SttProvider, TtsCompute, TtsModel,
+    TtsProvider, VadProvider,
 };
 use crate::error::{Error, Result};
 use crate::language::is_supported as is_supported_language;
@@ -24,6 +24,18 @@ pub const CONFIG_FILE_NAME: &str = "syllabix.yaml";
 pub const STT_API_KEY_ENV: &str = "SYLLABIX_STT_API_KEY";
 /// Environment variable for an online TTS API key. Never read from yaml.
 pub const TTS_API_KEY_ENV: &str = "SYLLABIX_TTS_API_KEY";
+/// Environment variable for an S2S API key. Never read from yaml.
+pub const S2S_API_KEY_ENV: &str = "SYLLABIX_S2S_API_KEY";
+
+/// Remote speech-to-speech endpoint (`pipeline.s2s`). Required when
+/// `pipeline.mode` is `s2s`. The API key never lives here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S2sConfig {
+    /// Moshi (or compatible) HTTP(S) origin (`pipeline.s2s.base_url`).
+    pub base_url: String,
+    /// Skip TLS certificate verification (`pipeline.s2s.tls_insecure`).
+    pub tls_insecure: bool,
+}
 
 /// Default idle duration before the mic auto-mutes (`auto-timeout.mic_mute_ms`).
 pub const DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS: u32 = 180_000;
@@ -35,6 +47,10 @@ pub const DEFAULT_AUTO_TIMEOUT_EXIT_MS: u32 = 600_000;
 pub struct AgentConfig {
     /// Agent name (`demo-agent` by default).
     pub name: String,
+    /// Conversation runtime (`pipeline.mode`). Default `cascade`.
+    pub mode: PipelineMode,
+    /// S2S endpoint when `mode` is [`PipelineMode::S2s`].
+    pub s2s: Option<S2sConfig>,
     /// VAD provider.
     pub vad: VadProvider,
     /// Silero speech threshold `(0, 1]`.
@@ -125,6 +141,8 @@ impl AgentConfig {
     pub fn from_defaults(defaults: &BuiltinDefaults) -> Self {
         Self {
             name: defaults.name.to_string(),
+            mode: PipelineMode::Cascade,
+            s2s: None,
             vad: defaults.vad,
             vad_threshold: SPEECH_THRESHOLD,
             vad_min_speech_ms: MIN_SPEECH.as_millis() as u32,
@@ -227,11 +245,23 @@ impl AgentConfig {
         } else {
             format!("    compute: {}\n", self.tts_compute.as_str())
         };
+        let mode_line = if self.mode == PipelineMode::Cascade {
+            String::new()
+        } else {
+            format!("  mode: {}\n", self.mode.as_str())
+        };
+        let s2s_block = match &self.s2s {
+            Some(s2s) => format!(
+                "  s2s:\n    base_url: {}\n    tls_insecure: {}\n",
+                s2s.base_url, s2s.tls_insecure
+            ),
+            None => String::new(),
+        };
         format!(
             "\
 name: {name}
 pipeline:
-  vad:
+{mode_line}{s2s_block}  vad:
     provider: {vad}
     threshold: {vad_threshold}
     min_speech_ms: {vad_min_speech_ms}
@@ -252,6 +282,8 @@ pipeline:
     language: {tts_language}
 {tts_compute_line}{tts_base_url_line}{diagnostics_block}{skills_block}",
             name = self.name,
+            mode_line = mode_line,
+            s2s_block = s2s_block,
             vad = self.vad.as_str(),
             vad_threshold = self.vad_threshold,
             vad_min_speech_ms = self.vad_min_speech_ms,
@@ -356,6 +388,17 @@ pipeline:
         Ok(path)
     }
 
+    /// Fail fast when yaml selected a runtime that this build does not run yet.
+    pub fn ensure_mode_supported(&self) -> Result<()> {
+        if self.mode == PipelineMode::S2s {
+            return Err(Error::Config {
+                field: "pipeline.mode".into(),
+                message: "s2s is not supported yet".into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Silero turn policy for this config.
     pub fn vad_settings(&self) -> VadSettings {
         VadSettings {
@@ -385,7 +428,16 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         root.get("pipeline").ok_or_else(|| missing("pipeline"))?,
         "pipeline",
     )?;
-    deny_unknown(pipeline, "pipeline", &["vad", "stt", "llm", "tts"])?;
+    deny_unknown(
+        pipeline,
+        "pipeline",
+        &["mode", "s2s", "vad", "stt", "llm", "tts"],
+    )?;
+    let mode = match optional_string(pipeline, "pipeline", "mode")? {
+        Some(value) => parse_pipeline_mode(&value)?,
+        None => PipelineMode::Cascade,
+    };
+    let s2s = parse_s2s(pipeline, mode)?;
 
     let vad = mapping(required(pipeline, "pipeline.vad", "vad")?, "pipeline.vad")?;
     deny_unknown(
@@ -602,6 +654,8 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
 
     Ok(AgentConfig {
         name: name.to_string(),
+        mode,
+        s2s,
         vad: vad_provider,
         vad_threshold,
         vad_min_speech_ms,
@@ -1078,6 +1132,43 @@ fn parse_llm(value: &str) -> Result<LlmProvider> {
     }
 }
 
+fn parse_pipeline_mode(value: &str) -> Result<PipelineMode> {
+    match value {
+        "cascade" => Ok(PipelineMode::Cascade),
+        "s2s" => Ok(PipelineMode::S2s),
+        other => Err(unsupported("pipeline.mode", other, "cascade, s2s")),
+    }
+}
+
+fn parse_s2s(pipeline: &serde_yaml::Mapping, mode: PipelineMode) -> Result<Option<S2sConfig>> {
+    match (mode, pipeline.get("s2s")) {
+        (PipelineMode::Cascade, None) => Ok(None),
+        (PipelineMode::Cascade, Some(_)) => Err(Error::Config {
+            field: "pipeline.s2s".into(),
+            message: "is only valid when pipeline.mode is s2s".into(),
+        }),
+        (PipelineMode::S2s, None) => Err(Error::Config {
+            field: "pipeline.s2s".into(),
+            message: "is required when pipeline.mode is s2s".into(),
+        }),
+        (PipelineMode::S2s, Some(value)) => {
+            let map = mapping(value, "pipeline.s2s")?;
+            deny_yaml_api_key(map, "pipeline.s2s", S2S_API_KEY_ENV)?;
+            deny_unknown(map, "pipeline.s2s", &["base_url", "tls_insecure"])?;
+            let base_url = required_string(map, "pipeline.s2s.base_url", "base_url")?;
+            crate::openai::validate_base_url(base_url).map_err(|message| Error::Config {
+                field: "pipeline.s2s.base_url".into(),
+                message: message.replace(crate::openai::API_KEY_ENV, S2S_API_KEY_ENV),
+            })?;
+            let tls_insecure = optional_bool(map, "pipeline.s2s", "tls_insecure", false)?;
+            Ok(Some(S2sConfig {
+                base_url: base_url.to_string(),
+                tls_insecure,
+            }))
+        }
+    }
+}
+
 /// `pipeline.llm.model`: the four binary-supported GGUF ids for `local`; any
 /// non-empty id for `online` (the endpoint decides what it serves).
 fn parse_llm_model(provider: LlmProvider, value: &str) -> Result<String> {
@@ -1228,7 +1319,112 @@ mod tests {
         assert!(yaml.contains("min_speech_ms: 100"));
         assert!(yaml.contains("end_silence_ms: 350"));
         assert!(yaml.contains("preroll_ms: 200"));
+        assert!(
+            !yaml.contains("mode:"),
+            "init yaml omits the cascade mode default"
+        );
+        assert!(!yaml.contains("s2s:"), "init yaml omits the s2s block");
         assert_eq!(AgentConfig::parse_yaml(&yaml).unwrap(), AgentConfig::v0());
+        assert_eq!(AgentConfig::v0().mode, PipelineMode::Cascade);
+        assert_eq!(AgentConfig::v0().s2s, None);
+    }
+
+    fn with_s2s_yaml(mode_line: &str, s2s_block: &str) -> String {
+        AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            &format!("pipeline:\n{mode_line}{s2s_block}"),
+            1,
+        )
+    }
+
+    #[test]
+    fn pipeline_mode_defaults_to_cascade_and_accepts_s2s_loopback() {
+        let yaml = AgentConfig::v0().to_yaml();
+        let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(parsed.mode, PipelineMode::Cascade);
+        let explicit = with_s2s_yaml("  mode: cascade\n", "");
+        let parsed = AgentConfig::parse_yaml(&explicit).unwrap();
+        assert_eq!(parsed.mode, PipelineMode::Cascade);
+        assert_eq!(parsed.s2s, None);
+        let s2s = with_s2s_yaml(
+            "  mode: s2s\n",
+            "  s2s:\n    base_url: http://127.0.0.1:8998\n",
+        );
+        let parsed = AgentConfig::parse_yaml(&s2s).unwrap();
+        assert_eq!(parsed.mode, PipelineMode::S2s);
+        let s2s = parsed.s2s.as_ref().expect("s2s block");
+        assert_eq!(s2s.base_url, "http://127.0.0.1:8998");
+        assert!(!s2s.tls_insecure);
+        let dumped = parsed.to_yaml();
+        assert!(dumped.contains("mode: s2s"));
+        assert!(dumped.contains("base_url: http://127.0.0.1:8998"));
+        assert_eq!(
+            AgentConfig::parse_yaml(&dumped).unwrap().mode,
+            PipelineMode::S2s
+        );
+        parsed.ensure_mode_supported().expect_err("s2s runtime");
+    }
+
+    #[test]
+    fn pipeline_s2s_accepts_loopback_and_remote_base_urls() {
+        for url in [
+            "http://127.0.0.1:8998",
+            "http://localhost:8998",
+            "http://[::1]:8998",
+            "https://moshi.example.test",
+        ] {
+            let yaml = with_s2s_yaml(
+                "  mode: s2s\n",
+                &format!("  s2s:\n    base_url: {url}\n    tls_insecure: true\n"),
+            );
+            let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+            let s2s = parsed.s2s.expect("s2s");
+            assert_eq!(s2s.base_url, url);
+            assert!(s2s.tls_insecure);
+        }
+    }
+
+    #[test]
+    fn pipeline_s2s_block_is_tied_to_s2s_mode() {
+        let missing = with_s2s_yaml("  mode: s2s\n", "");
+        let err = AgentConfig::parse_yaml(&missing).unwrap_err();
+        assert!(err.to_string().contains("pipeline.s2s"), "{err}");
+        assert!(err.to_string().contains("required"), "{err}");
+        let extra = with_s2s_yaml("", "  s2s:\n    base_url: http://127.0.0.1:8998\n");
+        let err = AgentConfig::parse_yaml(&extra).unwrap_err();
+        assert!(err.to_string().contains("pipeline.s2s"), "{err}");
+        assert!(err.to_string().contains("pipeline.mode is s2s"), "{err}");
+    }
+
+    #[test]
+    fn pipeline_s2s_rejects_yaml_keys_and_unknown_mode() {
+        let keyed = with_s2s_yaml(
+            "  mode: s2s\n",
+            "  s2s:\n    base_url: http://127.0.0.1:8998\n    api_key: secret\n",
+        );
+        let err = AgentConfig::parse_yaml(&keyed).unwrap_err();
+        assert!(err.to_string().contains("pipeline.s2s.api_key"), "{err}");
+        assert!(err.to_string().contains(S2S_API_KEY_ENV), "{err}");
+        let unknown_field = with_s2s_yaml(
+            "  mode: s2s\n",
+            "  s2s:\n    base_url: http://127.0.0.1:8998\n    model: moshi\n",
+        );
+        let err = AgentConfig::parse_yaml(&unknown_field).unwrap_err();
+        assert!(err.to_string().contains("pipeline.s2s.model"), "{err}");
+        let unknown_mode = with_s2s_yaml("  mode: duplex\n", "");
+        let err = AgentConfig::parse_yaml(&unknown_mode).unwrap_err();
+        assert!(err.to_string().contains("pipeline.mode"), "{err}");
+        assert!(err.to_string().contains("cascade, s2s"), "{err}");
+        let missing_url = with_s2s_yaml("  mode: s2s\n", "  s2s:\n    tls_insecure: true\n");
+        let err = AgentConfig::parse_yaml(&missing_url).unwrap_err();
+        assert!(err.to_string().contains("pipeline.s2s.base_url"), "{err}");
+        let credentials = with_s2s_yaml(
+            "  mode: s2s\n",
+            "  s2s:\n    base_url: https://user:pass@127.0.0.1:8998\n",
+        );
+        let err = AgentConfig::parse_yaml(&credentials).unwrap_err();
+        assert!(err.to_string().contains("pipeline.s2s.base_url"), "{err}");
+        assert!(err.to_string().contains(S2S_API_KEY_ENV), "{err}");
     }
 
     #[test]
