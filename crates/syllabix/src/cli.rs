@@ -90,6 +90,18 @@ pub enum Commands {
         #[command(subcommand)]
         command: ServeCommand,
     },
+    /// Speak MCP over stdio so Goose can call `web_search` / `web_fetch`.
+    ///
+    /// Goose starts this as a child (`mcpServers`); there is no HTTP port.
+    #[command(hide = true)]
+    Mcp {
+        /// Workspace root (unused by web tools; kept for parity with shell).
+        #[arg(long, value_name = "DIR")]
+        workspace: PathBuf,
+        /// Optional JSONL file for `ToolTurnEvent` diagnostics.
+        #[arg(long, value_name = "FILE")]
+        tool_events: Option<PathBuf>,
+    },
 }
 
 /// `syllabix serve` workers. Weights load in later PRs; this slice listens and
@@ -140,6 +152,13 @@ pub fn execute(cli: Cli) -> Result<()> {
         #[cfg(coverage)]
         Commands::BenchLlmWorker { .. } => Err(Error::not_implemented("bench")),
         Commands::Serve { command } => crate::serve::execute(command),
+        Commands::Mcp {
+            workspace,
+            tool_events,
+        } => {
+            syllabix_core::mcp::run_stdio(workspace, tool_events)?;
+            Ok(())
+        }
     }
 }
 

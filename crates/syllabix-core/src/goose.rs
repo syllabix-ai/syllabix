@@ -23,6 +23,7 @@ use crate::config::AgentConfig;
 use crate::error::{Error, Result};
 use crate::executor::{self, MAX_OUTPUT_BYTES};
 use crate::llm::render_system_prompt;
+use crate::mcp;
 use crate::models::{Fetcher, ModelCache, Progress};
 use crate::openai::{join_endpoint, DEFAULT_LLM_BASE_URL};
 use crate::policy::DeveloperPermissions;
@@ -62,6 +63,8 @@ pub struct GooseAgent {
     cmd_tx: Sender<AcpIn>,
     evt_rx: mpsc::Receiver<AcpEvt>,
     tool_events: Arc<Mutex<Vec<ToolTurnEvent>>>,
+    /// JSONL written by the Syllabix MCP child (`web_search` / `web_fetch`).
+    mcp_tool_events: PathBuf,
     /// Present only when `diagnostics:` is enabled; never logs spawn-env secrets.
     acp_trace: Option<Arc<Mutex<Vec<AcpTraceLine>>>>,
     /// `diagnostics.directory` when diagnostics are on; Goose writes `turn-*/acp.jsonl`.
@@ -185,14 +188,28 @@ pub(crate) fn goose_child_env(
     ])
 }
 
-/// `session/new` `_meta.enabledExtensions`: developer/shell only.
+/// `session/new` `_meta.enabledExtensions`: developer/shell plus Syllabix MCP.
 /// Goose deserializes `available_tools` (snake_case) on builtin configs.
-pub(crate) fn enabled_extensions_value() -> Value {
-    json!([{
-        "type": "builtin",
-        "name": "developer",
-        "available_tools": ["shell"]
-    }])
+/// Client selection replaces the whole session, so MCP must be listed here
+/// (request `mcpServers` alone is ignored when this field is present).
+pub(crate) fn enabled_extensions_value(
+    mcp_command: &Path,
+    workspace: &Path,
+    tool_events: &Path,
+) -> Value {
+    json!([
+        {
+            "type": "builtin",
+            "name": "developer",
+            "available_tools": ["shell"]
+        },
+        mcp::mcp_enabled_extension_value(mcp_command, workspace, Some(tool_events)),
+    ])
+}
+
+/// Absolute path Goose should spawn for `syllabix mcp`.
+pub(crate) fn syllabix_mcp_command() -> PathBuf {
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("syllabix"))
 }
 
 /// One adapter for every `_goose/unstable/*` method name.
@@ -266,7 +283,8 @@ pub(crate) fn write_permission_yaml(path_root: &Path) -> Result<PathBuf> {
     let config_dir = path_root.join("config");
     std::fs::create_dir_all(&config_dir)?;
     let path = config_dir.join("permission.yaml");
-    std::fs::write(&path, permission_yaml_body(&[]))?;
+    let extras: Vec<String> = mcp::permission_tool_names().into();
+    std::fs::write(&path, permission_yaml_body(&extras))?;
     Ok(path)
 }
 
@@ -402,6 +420,9 @@ impl GooseAgent {
         };
         write_permission_yaml(&path_root)?;
         let workspace = workspace.canonicalize().unwrap_or(workspace);
+        let mcp_tool_events = path_root.join("mcp-tool-events.jsonl");
+        let _ = std::fs::write(&mcp_tool_events, "");
+        let mcp_command = syllabix_mcp_command();
         let base_url = config
             .llm_base_url
             .clone()
@@ -479,6 +500,8 @@ impl GooseAgent {
         let skill_list_worker = skill_list.clone();
         let language = config.language.clone();
         let wake_tx = in_tx.clone();
+        let worker_mcp_command = mcp_command.clone();
+        let worker_mcp_events = mcp_tool_events.clone();
         let worker = thread::Builder::new()
             .name("syllabix-acp".into())
             .spawn(move || {
@@ -495,6 +518,8 @@ impl GooseAgent {
                     system_prompt,
                     skill_list: skill_list_worker,
                     language,
+                    mcp_command: worker_mcp_command,
+                    mcp_tool_events: worker_mcp_events,
                     pending_waits: Vec::new(),
                     prompt_cancelled: false,
                 });
@@ -522,6 +547,7 @@ impl GooseAgent {
             cmd_tx: in_tx,
             evt_rx,
             tool_events,
+            mcp_tool_events,
             acp_trace,
             diagnostics_dir,
             shared,
@@ -588,6 +614,8 @@ struct AcpThread {
     system_prompt: String,
     skill_list: String,
     language: String,
+    mcp_command: PathBuf,
+    mcp_tool_events: PathBuf,
     /// `wait_for_exit` RPC ids waiting on async shells.
     pending_waits: Vec<(Value, String)>,
     /// Set when barge-in sent `session/cancel` for the in-flight prompt.
@@ -673,6 +701,11 @@ fn handshake(
 
     let _ = write_rpc(&mut ctx.stdin, &ctx.acp_trace, 0, "initialized", &json!({}));
 
+    let mcp_servers = vec![mcp::mcp_server_value(
+        &ctx.mcp_command,
+        &ctx.workspace,
+        Some(&ctx.mcp_tool_events),
+    )];
     write_rpc(
         &mut ctx.stdin,
         &ctx.acp_trace,
@@ -680,8 +713,14 @@ fn handshake(
         "session/new",
         &json!({
             "cwd": ctx.workspace,
-            "mcpServers": [],
-            "_meta": { "enabledExtensions": enabled_extensions_value() },
+            "mcpServers": mcp_servers,
+            "_meta": {
+                "enabledExtensions": enabled_extensions_value(
+                    &ctx.mcp_command,
+                    &ctx.workspace,
+                    &ctx.mcp_tool_events,
+                ),
+            },
         }),
     )?;
     pending.insert(*next_id, Pending::NewSession);
@@ -1269,7 +1308,10 @@ impl Llm for GooseAgent {
     }
 
     fn take_tool_events(&mut self) -> Vec<ToolTurnEvent> {
-        std::mem::take(&mut *self.tool_events.lock().expect("goose tool-events mutex"))
+        let mut events =
+            std::mem::take(&mut *self.tool_events.lock().expect("goose tool-events mutex"));
+        events.extend(mcp::take_tool_events_file(&self.mcp_tool_events));
+        events
     }
 
     fn generate(
@@ -1472,13 +1514,21 @@ mod tests {
     }
 
     #[test]
-    fn enabled_extensions_are_developer_shell_only() {
-        let value = enabled_extensions_value();
+    fn enabled_extensions_include_developer_shell_and_syllabix_mcp() {
+        let value = enabled_extensions_value(
+            Path::new("/bin/syllabix"),
+            Path::new("/ws"),
+            Path::new("/tmp/events.jsonl"),
+        );
         let first = &value[0];
         assert_eq!(first["type"], "builtin");
         assert_eq!(first["name"], "developer");
         assert_eq!(first["available_tools"], json!(["shell"]));
-        assert!(value.as_array().unwrap().len() == 1);
+        let mcp = &value[1];
+        assert_eq!(mcp["type"], "mcp");
+        assert_eq!(mcp["server"]["name"], "syllabix");
+        assert_eq!(mcp["available_tools"], json!(["web_search", "web_fetch"]));
+        assert_eq!(value.as_array().unwrap().len(), 2);
         let encoded = serde_json::to_string(&value).expect("encode");
         assert!(
             encoded.contains("\"available_tools\""),
