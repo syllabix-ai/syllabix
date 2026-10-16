@@ -51,18 +51,23 @@ impl NetworkMode {
     }
 }
 
-/// Secret injection policy. Only `none` is supported in this seam.
+/// Secret injection policy for the sandboxed shell environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SecretPolicy {
     /// Scrubbed environment; no host credentials injected.
     None,
+    /// Pass through host `KITE_API_KEY`, `KITE_API_SECRET`, and
+    /// `KITE_ACCESS_TOKEN` only. Values are never logged. Draft /
+    /// manual-test seam for the kite skill.
+    KiteEnv,
 }
 
 impl SecretPolicy {
-    /// Yaml / denial token (`none`).
+    /// Yaml / denial token (`none`, `kite-env`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
+            Self::KiteEnv => "kite-env",
         }
     }
 }
@@ -216,6 +221,8 @@ mod tests {
         assert_eq!(NetworkMode::None.as_str(), "none");
         assert_eq!(NetworkMode::Allow.as_str(), "allow");
         assert_eq!(SecretPolicy::None.as_str(), "none");
+        assert_eq!(SecretPolicy::KiteEnv.as_str(), "kite-env");
+        assert!(SecretPolicy::None < SecretPolicy::KiteEnv);
     }
 
     #[test]
@@ -315,6 +322,20 @@ mod tests {
         assert_eq!(
             err.message,
             "allow required; configured network mode is none"
+        );
+    }
+
+    #[test]
+    fn resolve_effective_denies_secrets_widening() {
+        let session = DeveloperPermissions::default_session();
+        let requested = DeveloperPermissions {
+            secrets: SecretPolicy::KiteEnv,
+            ..session.clone()
+        };
+        let err = resolve_effective(&session, Some(&requested)).unwrap_err();
+        assert_eq!(
+            err.message,
+            "kite-env required; configured secrets policy is none"
         );
     }
 

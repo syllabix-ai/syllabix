@@ -14,7 +14,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::cancel::Cancel;
-use crate::policy::{resolve_effective, DeveloperPermissions, FilesystemMode, NetworkMode};
+use crate::policy::{
+    resolve_effective, DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy,
+};
 use crate::sandbox::{current_provider, SandboxRequest};
 use crate::types::ToolCall;
 
@@ -343,7 +345,10 @@ fn execute_shell(
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_PAGER", "cat")
         .env("GIT_EXTERNAL_DIFF", "")
-        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    // `secrets: kite-env` only: host KITE_* into the child. Never log values.
+    apply_kite_env_allowlist(&mut command, effective.secrets);
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -372,6 +377,20 @@ fn execute_shell(
     let stderr = stderr.join().map_err(|_| "shell stderr reader failed")?;
     let output = format_output(status.code(), &stdout, &stderr);
     Ok(output)
+}
+
+/// Host names passed into the child when `secrets: kite-env`. Fixed allowlist.
+const KITE_ENV_ALLOWLIST: &[&str] = &["KITE_API_KEY", "KITE_API_SECRET", "KITE_ACCESS_TOKEN"];
+
+fn apply_kite_env_allowlist(command: &mut std::process::Command, secrets: SecretPolicy) {
+    if secrets != SecretPolicy::KiteEnv {
+        return;
+    }
+    for key in KITE_ENV_ALLOWLIST {
+        if let Ok(value) = std::env::var(key) {
+            command.env(key, value);
+        }
+    }
 }
 
 fn execute_fetch(url: &str, cancel: &Cancel) -> Result<String, String> {
@@ -1901,6 +1920,84 @@ mod tests {
                 result.content.starts_with("SANDBOX_UNAVAILABLE:"),
                 "{}",
                 result.content
+            );
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn shell_passes_only_kite_env_when_secrets_kite_env() {
+        let workspace = std::env::current_dir().unwrap();
+        // Unique markers: assert presence via equality checks in the child,
+        // and assert the tool result never echoes the raw values.
+        let key_marker = format!("kite-key-{}", std::process::id());
+        let secret_marker = format!("kite-secret-{}", std::process::id());
+        let token_marker = format!("kite-token-{}", std::process::id());
+        // SAFETY: single-threaded unit test; restored below.
+        std::env::set_var("KITE_API_KEY", &key_marker);
+        std::env::set_var("KITE_API_SECRET", &secret_marker);
+        std::env::set_var("KITE_ACCESS_TOKEN", &token_marker);
+        std::env::set_var("SYLLABIX_LLM_API_KEY", "should-stay-scrubbed");
+        std::env::set_var("UNRELATED_SECRET", "must-not-pass");
+
+        let kite_session = DeveloperPermissions {
+            filesystem: FilesystemMode::ReadOnly,
+            network: NetworkMode::None,
+            secrets: SecretPolicy::KiteEnv,
+        };
+        let probe = "python3 -c \"import os; print('KEY_OK' if os.environ.get('KITE_API_KEY') else 'KEY_MISS'); print('SECRET_OK' if os.environ.get('KITE_API_SECRET') else 'SECRET_MISS'); print('TOKEN_OK' if os.environ.get('KITE_ACCESS_TOKEN') else 'TOKEN_MISS'); print('LLM' if 'SYLLABIX_LLM_API_KEY' in os.environ else 'NOLLM'); print('OTHER' if 'UNRELATED_SECRET' in os.environ else 'NOOTHER')\"";
+        let result = execute_with_permissions(
+            &call("shell", serde_json::json!({ "command": probe })),
+            &workspace,
+            &kite_session,
+            &Cancel::new(),
+        );
+        let scrubbed = execute_with_permissions(
+            &call("shell", serde_json::json!({ "command": probe })),
+            &workspace,
+            &DeveloperPermissions::default_session(),
+            &Cancel::new(),
+        );
+
+        std::env::remove_var("KITE_API_KEY");
+        std::env::remove_var("KITE_API_SECRET");
+        std::env::remove_var("KITE_ACCESS_TOKEN");
+        std::env::remove_var("UNRELATED_SECRET");
+
+        if result.ok {
+            assert!(
+                result.content.contains("KEY_OK")
+                    && result.content.contains("SECRET_OK")
+                    && result.content.contains("TOKEN_OK"),
+                "kite env missing: {}",
+                result.content
+            );
+            assert!(
+                result.content.contains("NOLLM") && result.content.contains("NOOTHER"),
+                "non-allowlisted env leaked: {}",
+                result.content
+            );
+            assert!(
+                !result.content.contains(&key_marker)
+                    && !result.content.contains(&secret_marker)
+                    && !result.content.contains(&token_marker),
+                "kite secret values must not appear in tool output: {}",
+                result.content
+            );
+        } else {
+            assert!(
+                result.content.starts_with("SANDBOX_UNAVAILABLE:"),
+                "{}",
+                result.content
+            );
+        }
+        if scrubbed.ok {
+            assert!(
+                scrubbed.content.contains("KEY_MISS")
+                    && scrubbed.content.contains("SECRET_MISS")
+                    && scrubbed.content.contains("TOKEN_MISS"),
+                "secrets:none must not pass kite env: {}",
+                scrubbed.content
             );
         }
     }
