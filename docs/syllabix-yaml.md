@@ -226,7 +226,9 @@ Optional session ceiling. Valid only when `developer_harness: true`. Unknown key
 | --- | --- | --- |
 | `filesystem` | `read-only` \| `workspace-write` \| `danger-full-access` | `read-only` |
 | `network` | `none` \| `allow` | `none` |
-| `secrets` | `none` only | `none` |
+| `secrets` | `none` \| `kite-env` | `none` |
+
+`kite-env` passes host `KITE_API_KEY`, `KITE_API_SECRET`, and `KITE_ACCESS_TOKEN` into the sandboxed shell (those three names only; values are never logged). Default remains scrubbed.
 
 ```yaml
 pipeline:

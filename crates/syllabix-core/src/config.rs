@@ -840,9 +840,10 @@ fn parse_network_mode(raw: &str) -> Result<NetworkMode> {
 fn parse_secret_policy(raw: &str) -> Result<SecretPolicy> {
     match raw {
         "none" => Ok(SecretPolicy::None),
+        "kite-env" => Ok(SecretPolicy::KiteEnv),
         other => Err(Error::Config {
             field: "pipeline.llm.developer_permissions.secrets".into(),
-            message: format!("unsupported value {other:?} (allowed: \"none\")"),
+            message: format!("unsupported value {other:?} (allowed: \"none\", \"kite-env\")"),
         }),
     }
 }
@@ -1587,8 +1588,30 @@ pipeline:
   tts: { provider: local, model: kokoro }
 "#,
         )
-        .expect_err("non-none secrets are rejected");
+        .expect_err("unknown secrets values are rejected");
         assert!(secrets.to_string().contains("secrets"), "{secrets}");
+
+        let kite = AgentConfig::parse_yaml(
+            r#"
+name: harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm:
+    provider: online
+    model: gpt-test
+    base_url: https://example.test/v1
+    developer_harness: true
+    developer_permissions:
+      secrets: kite-env
+  tts: { provider: local, model: kokoro }
+"#,
+        )
+        .expect("kite-env secrets parse");
+        assert_eq!(
+            kite.llm_developer_permissions.secrets,
+            SecretPolicy::KiteEnv
+        );
 
         let fs = AgentConfig::parse_yaml(
             r#"
