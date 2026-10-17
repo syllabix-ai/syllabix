@@ -18,7 +18,7 @@ use crate::error::{Error, Result};
 /// Return the path to the unpacked Goose executable for this host.
 ///
 /// Downloads the pinned archive through [`ModelCache`] when missing. A
-/// checksum mismatch is a hard error. Not called for `pipeline.agent: builtin`.
+/// checksum mismatch is a hard error. Not called for `developer_harness.agent: builtin`.
 pub(crate) fn resolve_goose_binary(
     cache: &ModelCache,
     fetcher: &dyn Fetcher,
@@ -26,7 +26,7 @@ pub(crate) fn resolve_goose_binary(
     cancel: &Cancel,
 ) -> Result<PathBuf> {
     let target = host_rustc_target().ok_or_else(|| Error::Config {
-        field: "pipeline.agent".into(),
+        field: "developer_harness.agent".into(),
         message: format!(
             "goose has no pinned binary for {}-{}",
             std::env::consts::OS,
@@ -34,7 +34,7 @@ pub(crate) fn resolve_goose_binary(
         ),
     })?;
     let pin = goose_binary_for_target(target).ok_or_else(|| Error::Config {
-        field: "pipeline.agent".into(),
+        field: "developer_harness.agent".into(),
         message: format!("goose has no pinned binary for {target}"),
     })?;
     resolve_goose_binary_from_pin(cache, fetcher, progress, cancel, pin)

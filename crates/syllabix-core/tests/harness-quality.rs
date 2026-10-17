@@ -821,6 +821,7 @@ fn drive_turn<L: Llm>(llm: &mut L, text: &str) -> (String, Vec<ToolTurnEvent>) {
 #[test]
 #[ignore]
 fn harness_quality_local_lfm() {
+    syllabix_core::executor::set_inherit_current_session(false);
     let _admission_guard = admission_lock();
     let fixture_workspace = fixture_workspace();
     let skill_context = fixture_skill_context(&fixture_workspace.path);
@@ -908,6 +909,7 @@ fn harness_quality_local_lfm() {
 #[test]
 #[ignore]
 fn harness_quality_live_admission() {
+    syllabix_core::executor::set_inherit_current_session(false);
     let _admission_guard = admission_lock();
     let (base_url, model) = live_config();
     let api_key = resolve_api_key(|key| std::env::var(key).ok()).expect("key checked above");

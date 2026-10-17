@@ -11,7 +11,7 @@ pub enum ModelLayer {
     Llm,
     /// Kokoro ONNX (weights or voice).
     Tts,
-    /// Pinned Goose CLI archive (`pipeline.agent: goose`).
+    /// Pinned Goose CLI archive (`developer_harness.agent: goose`).
     Agent,
 }
 

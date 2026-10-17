@@ -50,6 +50,7 @@ pub fn run_live_with_controls(
     events: Option<Sender<LoopEvent>>,
     controls: RuntimeControls,
 ) -> Result<LoopReport> {
+    crate::session_env::install_from_config(config);
     let llm_api_key = match config.llm {
         crate::defaults::LlmProvider::Online => {
             Some(resolve_api_key(|name| std::env::var(name).ok())?)

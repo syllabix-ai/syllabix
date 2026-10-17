@@ -37,9 +37,8 @@ pipeline:
     provider: local
     model: pocket-tts
     language: en
-  # agent: builtin               # optional; goose needs llm.provider: online
-
 # optional (init omits these):
+# developer_harness:             # agent backend + sandbox shell environment
 # auto-timeout:                  # idle mic-mute / exit
 # diagnostics:                   # turn timelines / WAVs
 # skills:                        # local instruction packages (harness only)
@@ -56,14 +55,6 @@ Each of STT, LLM, and TTS is `local` (in-process, the default) or `online` (an O
 | STT | In-process. Ids: [engines](engines.md#stt). | OpenAI-compatible `audio/transcriptions`. `base_url` ([same rules](#base_url)). Key: `SYLLABIX_STT_API_KEY`. |
 | LLM | GGUF in-process. | OpenAI-compatible `chat/completions`. Key: `SYLLABIX_LLM_API_KEY` (self-hosted Ollama may not need a real one; [API key](#api-key-environment-not-yaml)). See [`base_url`](#base_url). |
 | TTS | In-process. Ids: [engines](engines.md#tts). | OpenAI-compatible `audio/speech`. `base_url` ([same rules](#base_url)). Key: `SYLLABIX_TTS_API_KEY`. |
-
-## `pipeline.agent`
-
-Optional. Default `builtin` (omitted by `init`). Values: `builtin` \| `goose`. Unknown values fail at load.
-
-`goose` needs `pipeline.llm.provider: online` (any OpenAI-compatible URL). With a local LLM it fails at load. Selecting `goose` downloads a pinned Goose CLI into the model cache and checks its SHA-256 before unpacking. Goose can search the web and fetch pages. Details: [engines](engines.md).
-
-With barge-in on (`run --barge-in`), speaking while Goose is answering cancels that answer.
 
 ## `name`
 
@@ -212,11 +203,11 @@ SYLLABIX_LLM_API_KEY=sk-… syllabix run
 
 Missing/empty with `provider: online` fails before devices or weights load. Keyless loopback still needs a placeholder: `SYLLABIX_LLM_API_KEY=ollama syllabix run`.
 
-### `developer_harness`
+### Tool loop (`developer_harness`)
 
-Default off. `init` does not write it. Explicit opt-in for the developer tool loop. Valid only with `provider: online` or local `lfm2.5-2.6b`. The ordinary spoken path stays tool-free.
+Default off. `init` does not write it. Explicit opt-in for the developer tool loop under `pipeline.llm`. Valid only with `provider: online` or local `lfm2.5-2.6b`. The ordinary spoken path stays tool-free.
 
-The harness uses a generic shell through the host sandbox: macOS Seatbelt and Linux Bubblewrap, with Landlock fallback. The model may request less filesystem authority per call, but the session ceiling is fixed at process start and cannot be widened in-session. The shell uses a scrubbed environment, bounded output, cancellation, and a workspace-contained working directory. It has no wall-clock deadline; cancellation still stops the active command.
+The harness uses a generic shell through the host sandbox: macOS Seatbelt and Linux Bubblewrap, with Landlock fallback. The model may request less filesystem authority per call, but the session ceiling is fixed at process start and cannot be widened in-session. Bounded output, cancellation, and a workspace-contained working directory apply to every command. It has no wall-clock deadline; cancellation still stops the active command.
 
 ### `developer_permissions`
 
@@ -239,6 +230,28 @@ pipeline:
 ```
 
 Omitting `developer_permissions` uses `read-only`, `none`, and `none`.
+
+## Agent backend and shell environment (`developer_harness`)
+
+Optional top-level `developer_harness:` block. `init` omits it. Unknown keys fail at load. This is separate from `pipeline.llm.developer_harness`, which turns the tool loop on.
+
+### `agent`
+
+Default `builtin` (omitted). Values: `builtin` \| `goose`.
+
+`goose` needs `pipeline.llm.provider: online` (any OpenAI-compatible URL). With a local LLM it fails at load. Selecting `goose` downloads a pinned Goose CLI into the model cache and checks its SHA-256 before unpacking. Goose can search the web and fetch pages. Details: [engines](engines.md).
+
+With barge-in on (`run --barge-in`), speaking while Goose is answering cancels that answer.
+
+### `inherit_current_session`
+
+Default `true`. When `true`, each command the agent runs (builtin or Goose) starts with the environment of the shell that launched Syllabix, like a forked shell — the agent can read every variable you have exported there. Set `inherit_current_session: false` for a clean session: the environment is cleared and only safe defaults (for example `PATH` and git non-interactive settings) are set. File and network sandbox rules are unchanged either way. Secret values are never written to diagnostics or trajectory logs.
+
+```yaml
+developer_harness:
+  agent: builtin
+  inherit_current_session: false
+```
 
 ## TTS — reply → speech
 
@@ -349,8 +362,8 @@ Default `false`. When `true`, also writes turn WAVs and implies `timestamps: tru
 Default `false`. When `true`, also writes each turn's agent trajectory
 (`user`, tool calls and results, assistant reply, outcome) as
 `trajectory.jsonl` next to `turn.json`, with secrets redacted. Implies
-`timestamps: true`. Written the same for `pipeline.agent: builtin` and
-`pipeline.agent: goose`.
+`timestamps: true`. Written the same for `developer_harness.agent: builtin` and
+`developer_harness.agent: goose`.
 
 ### `directory`
 

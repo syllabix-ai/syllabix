@@ -38,6 +38,10 @@ pub const DEFAULT_SEARCH_RESULTS: usize = 5;
 const FETCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const FETCH_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+use crate::session_env::{apply_sandbox_shell_env, inherit_current_session};
+
+pub use crate::session_env::set_inherit_current_session;
+
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Successful sandbox probes, keyed by canonical workspace plus the
@@ -140,12 +144,16 @@ pub enum ValidatedCall {
 /// becomes a bounded, model-visible rejection rather than a provider failure.
 #[allow(dead_code)] // compatibility helper for executor unit tests and callers
 pub fn execute(call: &ToolCall, workspace: &Path, cancel: &Cancel) -> crate::types::ToolResult {
-    execute_with_permissions(
+    let previous = inherit_current_session();
+    set_inherit_current_session(false);
+    let result = execute_with_permissions(
         call,
         workspace,
         &DeveloperPermissions::default_session(),
         cancel,
-    )
+    );
+    set_inherit_current_session(previous);
+    result
 }
 
 /// Execute one call using the immutable session capability ceiling.
@@ -335,15 +343,9 @@ fn execute_shell(
             return Err(error.to_string());
         }
     };
+    command.current_dir(&request.cwd);
+    apply_sandbox_shell_env(&mut command);
     command
-        .current_dir(&request.cwd)
-        .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_PAGER", "cat")
-        .env("GIT_EXTERNAL_DIFF", "")
-        .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1881,9 +1883,9 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn shell_scrubs_ambient_environment_secrets() {
+    fn shell_scrubs_ambient_environment_when_inherit_is_off_via_execute() {
         let workspace = std::env::current_dir().unwrap();
-        // The child must not inherit the launcher's LLM credential.
+        // Fresh-session mode must not inherit the launcher's LLM credential.
         let result = execute(
             &call("shell", serde_json::json!({"command":"env"})),
             &workspace,
