@@ -29,7 +29,7 @@ mic → Silero VAD → STT → LLM ⇄ sandboxed shell → … → TTS → speak
               ↑________________________________ barge-in (interrupt + flush)
 ```
 
-[Skills](syllabix-yaml.md#skills--local-instruction-packages) are optional instruction packages (`SKILL.md` under configured roots). Their text is shown to the harness as reference; they do not run code and do not widen sandbox permissions. Tool policy and ceilings: [developer_harness](syllabix-yaml.md#developer_harness).
+[Skills](syllabix-yaml.md#skills--local-instruction-packages) are optional instruction packages (`SKILL.md` under configured roots). Their text is shown to the harness as reference; they do not run code and do not widen sandbox permissions. Tool policy and ceilings: [pipeline.llm.developer_harness](syllabix-yaml.md#tool-loop-developer_harness).
 
 ## Barge-in
 
