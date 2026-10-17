@@ -21,6 +21,7 @@ pub mod g2p;
 #[cfg(all(not(coverage), feature = "ggml", feature = "cloud"))]
 mod goose;
 pub mod llm;
+pub mod mcp;
 pub mod memory;
 pub mod models;
 pub mod moonshine;

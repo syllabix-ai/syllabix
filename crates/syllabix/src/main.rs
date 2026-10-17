@@ -48,6 +48,7 @@ fn default_filter_for(command: &cli::Commands) -> &'static str {
         cli::Commands::BenchTtsWorker { .. } => "info",
         cli::Commands::BenchLlmWorker { .. } => "info",
         cli::Commands::Serve { .. } => "info",
+        cli::Commands::Mcp { .. } => "warn",
     }
 }
 
@@ -116,6 +117,13 @@ mod tests {
                 }
             }),
             "info"
+        );
+        assert_eq!(
+            default_filter_for(&cli::Commands::Mcp {
+                workspace: PathBuf::from("."),
+                tool_events: None,
+            }),
+            "warn"
         );
     }
 

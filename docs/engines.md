@@ -60,7 +60,7 @@ Local menu (unknown ids fail at load):
 
 `pipeline.llm.provider: online` uses any id the OpenAI-compatible endpoint serves. Audio stays on the machine; only transcript text leaves. The API key is `SYLLABIX_LLM_API_KEY` (environment only, never yaml).
 
-`pipeline.agent: goose` (online LLM only) downloads a pinned Goose CLI for this OS/arch into the model cache and checks its SHA-256 before unpacking. On Linux and macOS, unpacking needs the `bzip2` program. The default `builtin` agent does not download Goose.
+`pipeline.agent: goose` (online LLM only) downloads a pinned Goose CLI for this OS/arch into the model cache and checks its SHA-256 before unpacking. On Linux and macOS, unpacking needs the `bzip2` program. The default `builtin` agent does not download Goose. Goose can search the web and fetch pages.
 
 ## TTS
 

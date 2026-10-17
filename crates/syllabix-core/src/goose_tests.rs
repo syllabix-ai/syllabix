@@ -157,6 +157,15 @@ def handle(msg):
         assert ext and ext[0].get("name") == "developer", ext
         assert ext[0].get("available_tools") == ["shell"], ext
         assert "availableTools" not in ext[0], ext
+        assert len(ext) == 2 and ext[1].get("type") == "mcp", ext
+        assert ext[1].get("server", {}).get("name") == "syllabix", ext
+        assert ext[1].get("available_tools") == ["web_search", "web_fetch"], ext
+        servers = params.get("mcpServers") or []
+        assert len(servers) == 1 and servers[0].get("name") == "syllabix", servers
+        assert "mcp" in (servers[0].get("args") or []), servers
+        if root:
+            with open(os.path.join(root, "session-new.json"), "w") as f:
+                json.dump(params, f)
         rpc_result(msg_id, {"sessionId": state["session_id"]})
     elif method == "_goose/unstable/session/system-prompt/set":
         assert params.get("mode") == "set"
@@ -347,6 +356,8 @@ fn acp_handshake_writes_permission_yaml_and_spawn_env() {
     let (agent, home) = start_fake();
     let yaml = fs::read_to_string(home.join("config/permission.yaml")).unwrap();
     assert!(yaml.contains("shell"), "{yaml}");
+    assert!(yaml.contains("syllabix__web_search"), "{yaml}");
+    assert!(yaml.contains("syllabix__web_fetch"), "{yaml}");
     assert!(yaml.contains("never_allow"), "{yaml}");
     let env: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(home.join("spawn-env.json")).unwrap()).unwrap();
@@ -355,7 +366,49 @@ fn acp_handshake_writes_permission_yaml_and_spawn_env() {
     assert_eq!(env["GOOSE_DISABLE_KEYRING"], "1");
     assert_eq!(env["OPENAI_API_KEY"], "sk-x");
     assert_eq!(env["argv"][1], "acp");
+    let session: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(home.join("session-new.json")).unwrap()).unwrap();
+    assert_eq!(session["mcpServers"][0]["name"], "syllabix");
+    assert!(
+        session["mcpServers"][0]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|arg| arg == "mcp"),
+        "{session}"
+    );
+    assert_eq!(session["_meta"]["enabledExtensions"][1]["type"], "mcp");
     drop(agent);
+}
+
+#[test]
+fn take_tool_events_merges_mcp_jsonl() {
+    let (mut agent, home) = start_fake();
+    let events_path = home.join("mcp-tool-events.jsonl");
+    fs::write(
+        &events_path,
+        concat!(
+            r#"{"kind":"call","name":"web_search","call_id":"mcp-1","arguments":"{\"query\":\"rust\"}","content":""}"#,
+            "\n",
+            r#"{"kind":"result","name":"web_search","call_id":"mcp-1","arguments":"{\"query\":\"rust\"}","content":"[]"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let events = agent.take_tool_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kind == "call" && event.name == "web_search"),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kind == "result" && event.name == "web_search"),
+        "{events:?}"
+    );
+    assert!(agent.take_tool_events().is_empty());
 }
 
 #[test]
