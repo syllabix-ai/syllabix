@@ -42,6 +42,7 @@ pub mod skills;
 pub mod speech_text;
 pub mod stt;
 pub mod testing;
+pub mod trajectory;
 pub mod tts;
 pub mod turn_debug;
 pub mod types;

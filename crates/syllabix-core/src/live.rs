@@ -274,6 +274,31 @@ mod tests {
 
     #[cfg(coverage)]
     #[test]
+    fn coverage_run_live_trajectory_writes_the_turn_steps() {
+        let dir = std::env::temp_dir().join(format!(
+            "syllabix-live-trajectory-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut config = AgentConfig::v0();
+        config.diagnostics_trajectory = true;
+        config.diagnostics_directory = dir.clone();
+        super::run_live(&config, crate::Cancel::new(), None, false)
+            .expect("fake live with trajectory");
+        let body = std::fs::read_to_string(dir.join("turn-000").join("trajectory.jsonl"))
+            .expect("trajectory log");
+        assert!(body.contains("\"kind\":\"user\""), "{body}");
+        assert!(body.contains("\"kind\":\"assistant\""), "{body}");
+        assert!(body.contains("\"kind\":\"outcome\""), "{body}");
+        assert!(body.contains("\"outcome\":\"completed\""), "{body}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(coverage)]
+    #[test]
     fn coverage_run_live_disabled_diagnostics_writes_nothing() {
         let dir = std::env::temp_dir().join(format!(
             "syllabix-live-no-diagnostics-{}-{}",

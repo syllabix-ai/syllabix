@@ -13,14 +13,46 @@ and what a real report looks like.
 diagnostics:
   timestamps: true              # turn-*/turn.json sidecars under `directory`
   audio: true                   # additionally capture/clean/utterance/tts.wav; implies timestamps
+  trajectory: true              # additionally turn-*/trajectory.jsonl; implies timestamps
   directory: target/turn-debug  # optional; omit when the default is fine
 ```
 
-| Configuration | Sidecar | WAVs | PCM buffered |
-|---|---|---|---|
-| block absent / both false | no | no | none |
-| `timestamps: true` | yes | no | none |
-| `audio: true` | yes | yes | yes |
+| Configuration | Sidecar | WAVs | Trajectory | PCM buffered |
+|---|---|---|---|---|
+| block absent / all false | no | no | no | none |
+| `timestamps: true` | yes | no | no | none |
+| `audio: true` | yes | yes | no | yes |
+| `trajectory: true` | yes | no | yes | none |
+| `audio: true` + `trajectory: true` | yes | yes | yes | yes |
+
+## Agent trajectory (`trajectory.jsonl`)
+
+With `trajectory: true`, each turn directory also contains `trajectory.jsonl`:
+one JSON object per line, in order — the user utterance, every tool call with
+its validated arguments, every bounded tool result, the assistant reply, and
+the turn outcome. The same `trajectory.jsonl` is written for
+`pipeline.agent: builtin` and `pipeline.agent: goose`, so a turn can be read
+without knowing the underlying protocol.
+
+```json
+{"kind":"user","text":"what are my holdings?"}
+{"kind":"tool_call","name":"shell","call_id":"c1","arguments":{"command":"kite holdings"}}
+{"kind":"tool_result","name":"shell","call_id":"c1","ok":true,"content":"INFY 10"}
+{"kind":"assistant","text":"You hold 10 INFY."}
+{"kind":"outcome","outcome":"completed"}
+```
+
+`outcome` is `completed`, `skipped`, or `cancelled`. Long arguments and content
+are truncated to 4096 bytes. Every string passes through a secret filter before
+it is written: literal values of secret-named environment variables
+(`SYLLABIX_*_API_KEY`, `KITE_*`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`) are
+removed along with credential-shaped tokens (`Bearer`/`Basic` headers, `sk-…`,
+GitHub/Slack/AWS keys, JWTs) and values under sensitive JSON keys such as
+`api_key`. Redaction rewrites the exported trajectory copy only; `turn.json`,
+the WAVs, and `acp.jsonl` are never rewritten.
+
+With `pipeline.agent: goose`, `acp.jsonl` remains the raw ACP wire log for deep
+debugging; `trajectory.jsonl` is the step list written for every agent.
 
 ## Goose transcript (`acp.jsonl`)
 

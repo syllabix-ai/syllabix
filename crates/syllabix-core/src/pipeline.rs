@@ -2325,7 +2325,9 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let debug = TurnDebug::open(&dir).expect("open");
+        let debug =
+            TurnDebug::open_with_trajectory(&dir, false, crate::trajectory::Redactor::default())
+                .expect("open");
         let (events_tx, events_rx) = std::sync::mpsc::channel();
         run_loop(
             LoopConfig {
@@ -2359,6 +2361,14 @@ mod tests {
             "{json}"
         );
         assert!(json.contains("\"call_id\":\"call-42\""), "{json}");
+        // The same tool events feed the trajectory, the shape Goose uses.
+        let trajectory = std::fs::read_to_string(dir.join("turn-000").join("trajectory.jsonl"))
+            .expect("trajectory");
+        assert!(
+            trajectory.contains("\"kind\":\"tool_result\""),
+            "{trajectory}"
+        );
+        assert!(trajectory.contains("\"kind\":\"outcome\""), "{trajectory}");
         assert!(events_rx.try_iter().any(|event| matches!(
             event,
             LoopEvent::Tool { event, .. }
