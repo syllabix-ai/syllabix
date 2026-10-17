@@ -18,6 +18,8 @@ pub mod defaults;
 pub mod dist;
 pub mod executor;
 pub mod g2p;
+#[cfg(all(not(coverage), feature = "ggml", feature = "cloud"))]
+mod goose;
 pub mod llm;
 pub mod memory;
 pub mod models;

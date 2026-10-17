@@ -22,6 +22,14 @@ diagnostics:
 | `timestamps: true` | yes | no | none |
 | `audio: true` | yes | yes | yes |
 
+## Goose transcript (`acp.jsonl`)
+
+With `pipeline.agent: goose` and diagnostics on, each turn directory may also
+contain `acp.jsonl`: one JSON object per line of the conversation between
+Syllabix and Goose (`dir` is `in` or `out`, `msg` is the payload). API keys and
+other Goose spawn-env secrets are not written. The file is absent when Goose is
+not used or diagnostics are off.
+
 ## Timeline anchors
 
 Each `turn.json` carries `"timeline"` — monotonic milliseconds from the

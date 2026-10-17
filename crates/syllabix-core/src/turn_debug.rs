@@ -15,6 +15,15 @@ use crate::types::{
     LlmDebugMeta, ToolTurnEvent, TurnId, TurnTimings, Utterance, DEFAULT_SAMPLE_RATE_HZ,
 };
 
+/// One line of the Goose ↔ Syllabix transcript for `acp.jsonl` (diagnostics only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpTraceLine {
+    /// `in` (Goose → Syllabix) or `out` (Syllabix → Goose).
+    pub dir: String,
+    /// Raw line without a trailing newline. Never includes spawn-env secrets.
+    pub raw: String,
+}
+
 /// Default directory when `diagnostics:` is enabled without an explicit one.
 pub const DEFAULT_TURN_DEBUG_DIR: &str = "target/turn-debug";
 
@@ -135,6 +144,7 @@ struct TurnDump {
     llm_text: String,
     llm_meta: Option<LlmDebugMeta>,
     tool_events: Vec<ToolTurnEvent>,
+    acp_trace: Vec<AcpTraceLine>,
     tts_provider: Option<String>,
     tts_model: Option<String>,
     tts_backend: Option<String>,
@@ -302,6 +312,18 @@ impl TurnDebug {
         let dump = inner.turns.entry(turn.0).or_default();
         dump.tool_events.extend(events);
         let _ = rewrite_sidecar_if_written(&self.root, turn.0, dump);
+    }
+
+    /// Goose ↔ Syllabix transcript lines for this turn (`acp.jsonl`). Opt-in
+    /// diagnostics only; empty when Goose did not record a trace.
+    pub fn note_acp_trace(&self, turn: TurnId, lines: Vec<AcpTraceLine>) {
+        if lines.is_empty() {
+            return;
+        }
+        let mut inner = self.lock();
+        let dump = inner.turns.entry(turn.0).or_default();
+        dump.acp_trace.extend(lines);
+        let _ = write_acp_jsonl_if_present(&self.root, turn.0, dump);
     }
 
     /// PCM actually handed to the sink, plus the TTS provider facts for the
@@ -508,7 +530,8 @@ fn write_turn(
         write_pcm(&dir.join("utterance.wav"), &dump.utterance)?;
         write_pcm(&dir.join("tts.wav"), &dump.tts)?;
     }
-    write_sidecar_json(root, id, outcome, dump)
+    write_sidecar_json(root, id, outcome, dump)?;
+    write_acp_jsonl_if_present(root, id, dump)
 }
 
 /// Refresh `turn.json` after a dump that already landed (late LLM meta / tools).
@@ -519,7 +542,38 @@ fn rewrite_sidecar_if_written(root: &Path, id: u64, dump: &TurnDump) -> Result<(
     if !dump.written {
         return Ok(());
     }
-    write_sidecar_json(root, id, outcome, dump)
+    write_sidecar_json(root, id, outcome, dump)?;
+    write_acp_jsonl_if_present(root, id, dump)
+}
+
+fn write_acp_jsonl_if_present(root: &Path, id: u64, dump: &TurnDump) -> Result<()> {
+    if dump.acp_trace.is_empty() {
+        return Ok(());
+    }
+    let dir = root.join(format!("turn-{id:03}"));
+    fs::create_dir_all(&dir).map_err(|err| turn_debug_io(&dir, err))?;
+    write_acp_jsonl(&dir, &dump.acp_trace)
+}
+
+/// Write Goose transcript lines to `acp.jsonl` under `dir`. Used by Goose and
+/// by [`TurnDebug::note_acp_trace`]. API keys are not included.
+pub fn write_acp_jsonl(dir: &Path, lines: &[AcpTraceLine]) -> Result<()> {
+    if lines.is_empty() {
+        return Ok(());
+    }
+    fs::create_dir_all(dir).map_err(|err| turn_debug_io(dir, err))?;
+    let mut body = String::new();
+    for line in lines {
+        let msg = match serde_json::from_str::<serde_json::Value>(&line.raw) {
+            Ok(value) => value,
+            Err(_) => serde_json::Value::String(line.raw.clone()),
+        };
+        let row = serde_json::json!({ "dir": line.dir, "msg": msg });
+        body.push_str(&row.to_string());
+        body.push('\n');
+    }
+    fs::write(dir.join("acp.jsonl"), body).map_err(|err| turn_debug_io(dir, err))?;
+    Ok(())
 }
 
 fn write_sidecar_json(root: &Path, id: u64, outcome: TurnOutcome, dump: &TurnDump) -> Result<()> {
@@ -898,6 +952,32 @@ mod tests {
             json.contains("\"tool_events\": [{\"kind\":\"result\""),
             "{json}"
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn note_acp_trace_writes_acp_jsonl() {
+        let dir = unique_dir();
+        let debug = TurnDebug::open(&dir).unwrap();
+        let turn = TurnId(0);
+        debug.start_turn(turn);
+        debug.note_acp_trace(
+            turn,
+            vec![
+                AcpTraceLine {
+                    dir: "out".into(),
+                    raw: r#"{"jsonrpc":"2.0","method":"session/prompt"}"#.into(),
+                },
+                AcpTraceLine {
+                    dir: "in".into(),
+                    raw: r#"{"jsonrpc":"2.0","method":"session/update"}"#.into(),
+                },
+            ],
+        );
+        let body = fs::read_to_string(dir.join("turn-000").join("acp.jsonl")).unwrap();
+        assert!(body.contains("\"dir\":\"out\""), "{body}");
+        assert!(body.contains("session/prompt"), "{body}");
+        assert!(body.contains("\"dir\":\"in\""), "{body}");
         fs::remove_dir_all(&dir).unwrap();
     }
 
