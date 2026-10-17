@@ -108,6 +108,9 @@ pub struct AgentConfig {
     /// Diagnostics: additionally write the turn WAVs (`diagnostics.audio`).
     /// Implies `diagnostics_timestamps`.
     pub diagnostics_audio: bool,
+    /// Diagnostics: write each turn's agent trajectory (`diagnostics.trajectory`)
+    /// as `trajectory.jsonl` next to `turn.json`. Implies `diagnostics_timestamps`.
+    pub diagnostics_trajectory: bool,
     /// Diagnostics output directory (`diagnostics.directory`).
     pub diagnostics_directory: PathBuf,
     /// Idle milliseconds before auto mic-mute (`auto-timeout.mic_mute_ms`).
@@ -156,15 +159,16 @@ impl AgentConfig {
             tts_language: "en".to_string(),
             diagnostics_timestamps: false,
             diagnostics_audio: false,
+            diagnostics_trajectory: false,
             diagnostics_directory: PathBuf::from(DEFAULT_TURN_DEBUG_DIR),
             auto_timeout_mic_mute_ms: DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS,
             auto_timeout_exit_ms: DEFAULT_AUTO_TIMEOUT_EXIT_MS,
         }
     }
 
-    /// Diagnostics recording is on (sidecars and/or turn WAVs).
+    /// Diagnostics recording is on (sidecars, turn WAVs, and/or trajectories).
     pub fn diagnostics_enabled(&self) -> bool {
-        self.diagnostics_timestamps || self.diagnostics_audio
+        self.diagnostics_timestamps || self.diagnostics_audio || self.diagnostics_trajectory
     }
 
     /// Discover the built-in root and configured local skills for this
@@ -313,8 +317,11 @@ pipeline:
             format!("  directory: {}\n", self.diagnostics_directory.display())
         };
         format!(
-            "diagnostics:\n  timestamps: {}\n  audio: {}\n{}",
-            self.diagnostics_timestamps, self.diagnostics_audio, directory_line
+            "diagnostics:\n  timestamps: {}\n  audio: {}\n  trajectory: {}\n{}",
+            self.diagnostics_timestamps,
+            self.diagnostics_audio,
+            self.diagnostics_trajectory,
+            directory_line
         )
     }
 
@@ -608,8 +615,9 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     )?;
 
     // Diagnostics are configured here instead of with a CLI flag. `audio: true`
-    // implies `timestamps: true` — WAVs always ship with their sidecar.
-    let (diagnostics_timestamps, diagnostics_audio, diagnostics_directory) =
+    // implies `timestamps: true` — WAVs always ship with their sidecar — and
+    // `trajectory: true` implies it too, since the log renders next to it.
+    let (diagnostics_timestamps, diagnostics_audio, diagnostics_trajectory, diagnostics_directory) =
         parse_diagnostics(root)?;
     let (auto_timeout_mic_mute_ms, auto_timeout_exit_ms) = parse_auto_timeout(root)?;
     let skills = parse_skills(root)?;
@@ -650,6 +658,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         tts_language,
         diagnostics_timestamps,
         diagnostics_audio,
+        diagnostics_trajectory,
         diagnostics_directory,
         auto_timeout_mic_mute_ms,
         auto_timeout_exit_ms,
@@ -743,16 +752,22 @@ fn parse_skills(root: &serde_yaml::Mapping) -> Result<SkillsConfig> {
     Ok(SkillsConfig { roots })
 }
 
-/// `diagnostics: {timestamps, audio, directory}` — all optional, all default
-/// off/`target/turn-debug`. `audio: true` forces `timestamps: true`.
-fn parse_diagnostics(root: &serde_yaml::Mapping) -> Result<(bool, bool, PathBuf)> {
+/// `diagnostics: {timestamps, audio, trajectory, directory}` — all optional,
+/// all default off/`target/turn-debug`. `audio: true` and `trajectory: true`
+/// both force `timestamps: true`.
+fn parse_diagnostics(root: &serde_yaml::Mapping) -> Result<(bool, bool, bool, PathBuf)> {
     let Some(value) = root.get("diagnostics") else {
-        return Ok((false, false, PathBuf::from(DEFAULT_TURN_DEBUG_DIR)));
+        return Ok((false, false, false, PathBuf::from(DEFAULT_TURN_DEBUG_DIR)));
     };
     let diag = mapping(value, "diagnostics")?;
-    deny_unknown(diag, "diagnostics", &["timestamps", "audio", "directory"])?;
+    deny_unknown(
+        diag,
+        "diagnostics",
+        &["timestamps", "audio", "trajectory", "directory"],
+    )?;
     let timestamps = optional_bool(diag, "diagnostics", "timestamps", false)?;
     let audio = optional_bool(diag, "diagnostics", "audio", false)?;
+    let trajectory = optional_bool(diag, "diagnostics", "trajectory", false)?;
     let directory = match optional_string(diag, "diagnostics", "directory")? {
         Some(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
         Some(_) => {
@@ -763,7 +778,12 @@ fn parse_diagnostics(root: &serde_yaml::Mapping) -> Result<(bool, bool, PathBuf)
         }
         None => PathBuf::from(DEFAULT_TURN_DEBUG_DIR),
     };
-    Ok((timestamps || audio, audio, directory))
+    Ok((
+        timestamps || audio || trajectory,
+        audio,
+        trajectory,
+        directory,
+    ))
 }
 
 fn mapping<'a>(value: &'a Value, field: &str) -> Result<&'a serde_yaml::Mapping> {
@@ -2681,6 +2701,7 @@ pipeline:
         let cfg = AgentConfig::v0();
         assert!(!cfg.diagnostics_timestamps);
         assert!(!cfg.diagnostics_audio);
+        assert!(!cfg.diagnostics_trajectory);
         assert_eq!(
             cfg.diagnostics_directory,
             PathBuf::from(DEFAULT_TURN_DEBUG_DIR)
@@ -2693,14 +2714,33 @@ pipeline:
     #[test]
     fn diagnostics_block_parses_every_key() {
         let yaml = format!(
-            "{}\ndiagnostics:\n  timestamps: true\n  audio: true\n  directory: /tmp/turns\n",
+            "{}\ndiagnostics:\n  timestamps: true\n  audio: true\n  trajectory: true\n  directory: /tmp/turns\n",
             AgentConfig::v0().to_yaml()
         );
         let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
         assert!(cfg.diagnostics_timestamps);
         assert!(cfg.diagnostics_audio);
+        assert!(cfg.diagnostics_trajectory);
         assert_eq!(cfg.diagnostics_directory, PathBuf::from("/tmp/turns"));
         assert!(cfg.diagnostics_enabled());
+    }
+
+    #[test]
+    fn diagnostics_trajectory_implies_timestamps_and_round_trips() {
+        let yaml = format!(
+            "{}\ndiagnostics:\n  trajectory: true\n",
+            AgentConfig::v0().to_yaml()
+        );
+        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert!(cfg.diagnostics_trajectory);
+        assert!(
+            cfg.diagnostics_timestamps,
+            "trajectory ships with its sidecar"
+        );
+        assert!(!cfg.diagnostics_audio, "trajectory captures no WAVs");
+        let round = AgentConfig::parse_yaml(&cfg.to_yaml()).unwrap();
+        assert_eq!(round, cfg);
+        assert!(cfg.to_yaml().contains("trajectory: true"));
     }
 
     #[test]
@@ -2761,7 +2801,7 @@ pipeline:
 
     #[test]
     fn diagnostics_flags_must_be_booleans() {
-        for key in ["timestamps", "audio"] {
+        for key in ["timestamps", "audio", "trajectory"] {
             let yaml = format!(
                 "{}\ndiagnostics:\n  {key}: sure\n",
                 AgentConfig::v0().to_yaml()

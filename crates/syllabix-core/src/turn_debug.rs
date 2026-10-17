@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use crate::audio::{write_wav, PcmFormat, WavPcm};
 use crate::error::{Error, Result};
 use crate::speech_text::speak_text_for_tts;
+use crate::trajectory::{Redactor, TrajectoryEntry};
 use crate::types::{
     LlmDebugMeta, ToolTurnEvent, TurnId, TurnTimings, Utterance, DEFAULT_SAMPLE_RATE_HZ,
 };
@@ -122,6 +123,11 @@ pub struct TurnDebug {
     /// When false (yaml `audio: false`), PCM is never buffered — only the
     /// monotonic timeline and sidecar text fields are kept.
     collect_audio: bool,
+    /// When true (yaml `trajectory: true`), each closed turn also writes a
+    /// redacted `trajectory.jsonl` next to `turn.json`.
+    trajectory: bool,
+    /// Secret filter applied to every trajectory field before it is written.
+    redactor: Redactor,
     inner: Arc<Mutex<Inner>>,
 }
 
@@ -168,11 +174,32 @@ impl TurnDebug {
 
     /// Create the recorder with explicit WAV capture control (`diagnostics.audio`).
     pub fn open_with_audio(dir: impl Into<PathBuf>, collect_audio: bool) -> Result<Self> {
+        Self::open_inner(dir, collect_audio, false, Redactor::default())
+    }
+
+    /// Create the recorder with an explicit trajectory flag and secret filter.
+    /// Used by [`TurnDebug::from_config`] and tests that plant a known secret.
+    pub fn open_with_trajectory(
+        dir: impl Into<PathBuf>,
+        collect_audio: bool,
+        redactor: Redactor,
+    ) -> Result<Self> {
+        Self::open_inner(dir, collect_audio, true, redactor)
+    }
+
+    fn open_inner(
+        dir: impl Into<PathBuf>,
+        collect_audio: bool,
+        trajectory: bool,
+        redactor: Redactor,
+    ) -> Result<Self> {
         let root = dir.into();
         prepare_turn_debug_dir(&root)?;
         Ok(Self {
             root,
             collect_audio,
+            trajectory,
+            redactor,
             inner: Arc::new(Mutex::new(Inner {
                 turns: BTreeMap::new(),
             })),
@@ -184,9 +211,16 @@ impl TurnDebug {
         if !config.diagnostics_enabled() {
             return Ok(None);
         }
-        Self::open_with_audio(
+        let redactor = if config.diagnostics_trajectory {
+            Redactor::from_env()
+        } else {
+            Redactor::default()
+        };
+        Self::open_inner(
             config.diagnostics_directory.clone(),
             config.diagnostics_audio,
+            config.diagnostics_trajectory,
+            redactor,
         )
         .map(Some)
     }
@@ -298,7 +332,8 @@ impl TurnDebug {
         let mut inner = self.lock();
         let dump = inner.turns.entry(turn.0).or_default();
         dump.llm_meta = Some(meta);
-        let _ = rewrite_sidecar_if_written(&self.root, turn.0, dump);
+        let _ =
+            rewrite_sidecar_if_written(&self.root, turn.0, dump, self.trajectory, &self.redactor);
     }
 
     /// Ordered API-tool evidence. These events exclude host-only executor
@@ -311,7 +346,8 @@ impl TurnDebug {
         let mut inner = self.lock();
         let dump = inner.turns.entry(turn.0).or_default();
         dump.tool_events.extend(events);
-        let _ = rewrite_sidecar_if_written(&self.root, turn.0, dump);
+        let _ =
+            rewrite_sidecar_if_written(&self.root, turn.0, dump, self.trajectory, &self.redactor);
     }
 
     /// Goose ↔ Syllabix transcript lines for this turn (`acp.jsonl`). Opt-in
@@ -359,6 +395,8 @@ impl TurnDebug {
             turn.0,
             TurnOutcome::Completed,
             self.collect_audio,
+            self.trajectory,
+            &self.redactor,
             &mut inner,
         )
     }
@@ -371,6 +409,8 @@ impl TurnDebug {
             turn.0,
             TurnOutcome::Skipped,
             self.collect_audio,
+            self.trajectory,
+            &self.redactor,
             &mut inner,
         )
     }
@@ -383,6 +423,8 @@ impl TurnDebug {
             turn.0,
             TurnOutcome::Cancelled,
             self.collect_audio,
+            self.trajectory,
+            &self.redactor,
             &mut inner,
         )
     }
@@ -397,6 +439,8 @@ impl TurnDebug {
                 id,
                 TurnOutcome::Cancelled,
                 self.collect_audio,
+                self.trajectory,
+                &self.redactor,
                 &mut inner,
             )?;
         }
@@ -512,6 +556,8 @@ fn write_turn(
     id: u64,
     outcome: TurnOutcome,
     collect_audio: bool,
+    trajectory: bool,
+    redactor: &Redactor,
     inner: &mut Inner,
 ) -> Result<()> {
     let Some(dump) = inner.turns.get_mut(&id) else {
@@ -531,11 +577,18 @@ fn write_turn(
         write_pcm(&dir.join("tts.wav"), &dump.tts)?;
     }
     write_sidecar_json(root, id, outcome, dump)?;
-    write_acp_jsonl_if_present(root, id, dump)
+    write_acp_jsonl_if_present(root, id, dump)?;
+    write_trajectory_if_enabled(root, id, outcome, dump, trajectory, redactor)
 }
 
 /// Refresh `turn.json` after a dump that already landed (late LLM meta / tools).
-fn rewrite_sidecar_if_written(root: &Path, id: u64, dump: &TurnDump) -> Result<()> {
+fn rewrite_sidecar_if_written(
+    root: &Path,
+    id: u64,
+    dump: &TurnDump,
+    trajectory: bool,
+    redactor: &Redactor,
+) -> Result<()> {
     let Some(outcome) = dump.outcome else {
         return Ok(());
     };
@@ -543,7 +596,8 @@ fn rewrite_sidecar_if_written(root: &Path, id: u64, dump: &TurnDump) -> Result<(
         return Ok(());
     }
     write_sidecar_json(root, id, outcome, dump)?;
-    write_acp_jsonl_if_present(root, id, dump)
+    write_acp_jsonl_if_present(root, id, dump)?;
+    write_trajectory_if_enabled(root, id, outcome, dump, trajectory, redactor)
 }
 
 fn write_acp_jsonl_if_present(root: &Path, id: u64, dump: &TurnDump) -> Result<()> {
@@ -553,6 +607,65 @@ fn write_acp_jsonl_if_present(root: &Path, id: u64, dump: &TurnDump) -> Result<(
     let dir = root.join(format!("turn-{id:03}"));
     fs::create_dir_all(&dir).map_err(|err| turn_debug_io(&dir, err))?;
     write_acp_jsonl(&dir, &dump.acp_trace)
+}
+
+/// Write `trajectory.jsonl` when `diagnostics.trajectory` is on. The file holds
+/// the user utterance, the ordered tool calls/results, the assistant reply, and
+/// the turn outcome. Every field is redacted before it is written; the canonical
+/// sidecar and ACP trace are untouched.
+fn write_trajectory_if_enabled(
+    root: &Path,
+    id: u64,
+    outcome: TurnOutcome,
+    dump: &TurnDump,
+    enabled: bool,
+    redactor: &Redactor,
+) -> Result<()> {
+    if !enabled {
+        return Ok(());
+    }
+    let dir = root.join(format!("turn-{id:03}"));
+    fs::create_dir_all(&dir).map_err(|err| turn_debug_io(&dir, err))?;
+    let mut body = String::new();
+    let mut push = |entry: TrajectoryEntry| {
+        body.push_str(&entry.to_json(redactor).to_string());
+        body.push('\n');
+    };
+    if let Some(text) = &dump.stt_text {
+        push(TrajectoryEntry::User { text: text.clone() });
+    }
+    for event in &dump.tool_events {
+        push(trajectory_tool_entry(event));
+    }
+    if !dump.llm_text.is_empty() {
+        push(TrajectoryEntry::Assistant {
+            text: dump.llm_text.clone(),
+        });
+    }
+    push(TrajectoryEntry::Outcome {
+        outcome: outcome.as_str().to_string(),
+    });
+    fs::write(dir.join("trajectory.jsonl"), body).map_err(|err| turn_debug_io(&dir, err))?;
+    Ok(())
+}
+
+/// Map a recorded [`ToolTurnEvent`] onto its trajectory step. A `call` becomes a
+/// `tool_call`; every other kind (result, rejected, limit) carries content.
+fn trajectory_tool_entry(event: &ToolTurnEvent) -> TrajectoryEntry {
+    if event.kind == "call" {
+        TrajectoryEntry::ToolCall {
+            name: event.name.clone(),
+            call_id: event.call_id.clone(),
+            arguments: event.arguments.clone(),
+        }
+    } else {
+        TrajectoryEntry::ToolResult {
+            name: event.name.clone(),
+            call_id: event.call_id.clone(),
+            content: event.content.clone(),
+            ok: event.kind == "result",
+        }
+    }
 }
 
 /// Write Goose transcript lines to `acp.jsonl` under `dir`. Used by Goose and
@@ -987,6 +1100,101 @@ mod tests {
     }
 
     #[test]
+    fn trajectory_writes_user_tools_assistant_and_outcome() {
+        let dir = unique_dir();
+        let debug = TurnDebug::open_with_trajectory(&dir, false, Redactor::default()).unwrap();
+        let turn = TurnId(0);
+        debug.start_turn(turn);
+        debug.note_stt(turn, "what are my holdings?", "en");
+        debug.note_tool_events(
+            turn,
+            vec![
+                crate::types::ToolTurnEvent {
+                    kind: "call".into(),
+                    name: "shell".into(),
+                    call_id: "c1".into(),
+                    arguments: r#"{"command":"kite holdings"}"#.into(),
+                    content: String::new(),
+                },
+                crate::types::ToolTurnEvent {
+                    kind: "result".into(),
+                    name: "shell".into(),
+                    call_id: "c1".into(),
+                    arguments: r#"{"command":"kite holdings"}"#.into(),
+                    content: "INFY 10".into(),
+                },
+            ],
+        );
+        debug.note_llm(turn, "You hold 10 INFY.".into());
+        debug
+            .complete(turn, crate::types::TurnTimings::default())
+            .unwrap();
+        let body =
+            fs::read_to_string(dir.join("turn-000").join("trajectory.jsonl")).expect("trajectory");
+        let mut kinds = Vec::new();
+        for line in body.lines() {
+            let value: serde_json::Value = serde_json::from_str(line).expect("json line");
+            kinds.push(value["kind"].as_str().expect("kind").to_string());
+        }
+        assert_eq!(
+            kinds,
+            ["user", "tool_call", "tool_result", "assistant", "outcome"],
+            "{body}"
+        );
+        assert!(body.contains("\"outcome\":\"completed\""), "{body}");
+        assert!(body.contains("You hold 10 INFY."), "{body}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn trajectory_redacts_planted_secrets() {
+        let dir = unique_dir();
+        let redactor = Redactor::default()
+            .with_secret("KITE_SECRET_VALUE_1234")
+            .with_secret("sk-abcdef0123456789");
+        let debug = TurnDebug::open_with_trajectory(&dir, false, redactor).unwrap();
+        let turn = TurnId(0);
+        debug.start_turn(turn);
+        debug.note_stt(turn, "use KITE_SECRET_VALUE_1234", "en");
+        debug.note_tool_events(
+            turn,
+            vec![crate::types::ToolTurnEvent {
+                kind: "result".into(),
+                name: "shell".into(),
+                call_id: "c1".into(),
+                arguments: r#"{"api_key":"KITE_SECRET_VALUE_1234"}"#.into(),
+                content: "Authorization: Bearer tokvalue1234".into(),
+            }],
+        );
+        debug.note_llm(turn, "done".into());
+        debug
+            .complete(turn, crate::types::TurnTimings::default())
+            .unwrap();
+        let body =
+            fs::read_to_string(dir.join("turn-000").join("trajectory.jsonl")).expect("trajectory");
+        assert!(!body.contains("KITE_SECRET_VALUE_1234"), "{body}");
+        assert!(!body.contains("tokvalue1234"), "{body}");
+        assert!(body.contains("[REDACTED]"), "{body}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn trajectory_disabled_writes_no_file() {
+        let dir = unique_dir();
+        let debug = TurnDebug::open(&dir).unwrap();
+        let turn = TurnId(0);
+        debug.start_turn(turn);
+        debug.note_stt(turn, "hello", "en");
+        debug.note_llm(turn, "hi".into());
+        debug
+            .complete(turn, crate::types::TurnTimings::default())
+            .unwrap();
+        assert!(dir.join("turn-000").join("turn.json").is_file());
+        assert!(!dir.join("turn-000").join("trajectory.jsonl").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn from_config_disabled_returns_none_without_touching_the_filesystem() {
         let mut config = crate::config::AgentConfig::v0();
         assert!(TurnDebug::from_config(&config).unwrap().is_none());
@@ -1008,6 +1216,18 @@ mod tests {
         let debug = TurnDebug::from_config(&config).unwrap().expect("enabled");
         assert!(debug.collects_audio());
         assert_eq!(debug.root(), dir.as_path());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn from_config_trajectory_only_enables_the_recorder_without_wavs() {
+        let mut config = crate::config::AgentConfig::v0();
+        config.diagnostics_trajectory = true;
+        let dir = unique_dir();
+        config.diagnostics_directory = dir.clone();
+        let debug = TurnDebug::from_config(&config).unwrap().expect("enabled");
+        assert!(!debug.collects_audio(), "trajectory captures no WAVs");
+        assert!(debug.trajectory, "trajectory flag reaches the recorder");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

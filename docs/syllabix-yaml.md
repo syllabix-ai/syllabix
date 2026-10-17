@@ -344,6 +344,14 @@ Default `false`. When `true`, writes per-turn timeline sidecars.
 
 Default `false`. When `true`, also writes turn WAVs and implies `timestamps: true`.
 
+### `trajectory`
+
+Default `false`. When `true`, also writes each turn's agent trajectory
+(`user`, tool calls and results, assistant reply, outcome) as
+`trajectory.jsonl` next to `turn.json`, with secrets redacted. Implies
+`timestamps: true`. Written the same for `pipeline.agent: builtin` and
+`pipeline.agent: goose`.
+
 ### `directory`
 
 Output folder. Default `target/turn-debug`.
@@ -352,10 +360,11 @@ Output folder. Default `target/turn-debug`.
 diagnostics:
   timestamps: true
   audio: true
+  trajectory: true
   directory: target/turn-debug
 ```
 
-When timestamps or audio is on, each turn writes files under `directory`. What those files contain (timeline events, WAV names) is documented in [diagnostics.md](diagnostics.md).
+When any of these is on, each turn writes files under `directory`. What those files contain (timeline events, WAV names, trajectory fields) is documented in [diagnostics.md](diagnostics.md).
 
 ## Related
 
