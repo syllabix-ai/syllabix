@@ -37,6 +37,7 @@ pipeline:
     provider: local
     model: pocket-tts
     language: en
+  # agent: builtin               # optional; goose needs llm.provider: online
 
 # optional (init omits these):
 # auto-timeout:                  # idle mic-mute / exit
@@ -55,6 +56,12 @@ Each of STT, LLM, and TTS is `local` (in-process, the default) or `online` (an O
 | STT | In-process. Ids: [engines](engines.md#stt). | OpenAI-compatible `audio/transcriptions`. `base_url` ([same rules](#base_url)). Key: `SYLLABIX_STT_API_KEY`. |
 | LLM | GGUF in-process. | OpenAI-compatible `chat/completions`. Key: `SYLLABIX_LLM_API_KEY` (self-hosted Ollama may not need a real one; [API key](#api-key-environment-not-yaml)). See [`base_url`](#base_url). |
 | TTS | In-process. Ids: [engines](engines.md#tts). | OpenAI-compatible `audio/speech`. `base_url` ([same rules](#base_url)). Key: `SYLLABIX_TTS_API_KEY`. |
+
+## `pipeline.agent`
+
+Optional. Default `builtin` (omitted by `init`). Values: `builtin` \| `goose`. Unknown values fail at load.
+
+`goose` needs `pipeline.llm.provider: online` (any OpenAI-compatible URL). With a local LLM it fails at load.
 
 ## `name`
 
