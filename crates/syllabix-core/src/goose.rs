@@ -33,13 +33,15 @@ use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolTurnEven
 
 const GOOSE_UNSTABLE_PREFIX: &str = "_goose/unstable/";
 const SYSTEM_PROMPT_KEY: &str = "syllabix";
-/// `generate()` cancel check interval (same shape as the online adapter).
+/// `generate()` `evt_rx` wait slice only (Goose worker uses blocking `AcpIn::recv`).
 const CANCEL_POLL: Duration = Duration::from_millis(100);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Barge-in waits this long for Goose `TurnEnd(cancelled)` after `session/cancel`.
+const CANCEL_DEADLINE: Duration = Duration::from_secs(2);
 
 /// How long `generate()` waits with no tokens before failing.
-/// Shell work on the Goose worker does not count as idle (see `shell_inflight`).
+/// Shells in flight do not count as idle (see `shell_inflight`).
 fn idle_limit() -> Duration {
     #[cfg(test)]
     {
@@ -74,7 +76,7 @@ struct Shared {
     cancel: Mutex<Cancel>,
     terminals: Mutex<HashMap<String, StoredTerminal>>,
     next_terminal: AtomicU64,
-    /// Shell commands running on the worker; `generate()` skips idle timeout while > 0.
+    /// Shell commands in flight; `generate()` skips idle timeout while > 0.
     shell_inflight: AtomicU64,
     /// Distinct ACP `toolCallId`s. Not [`Llm::take_tool_events`].
     acp_tool_calls: Mutex<HashSet<String>>,
@@ -82,27 +84,30 @@ struct Shared {
 
 #[derive(Clone)]
 struct StoredTerminal {
-    output: String,
-    ok: bool,
-    truncated: bool,
+    cancel: Cancel,
+    /// `(output, ok, truncated)` once the sandboxed shell finishes.
+    finished: Arc<Mutex<Option<(String, bool, bool)>>>,
 }
 
 enum AcpCmd {
     Prompt(String),
+    Cancel,
     Shutdown,
 }
 
-/// Multiplexed wakeup for the Goose worker: a command or a stdout line.
+/// Multiplexed wakeup for the Goose worker: a command, stdout line, or shell done.
 enum AcpIn {
     Cmd(AcpCmd),
     Line(std::result::Result<String, String>),
+    /// Async `terminal/create` shell finished; drain pending `wait_for_exit`.
+    TerminalDone,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum AcpEvt {
     Ready,
     Token(String),
-    TurnEnd,
+    TurnEnd { cancelled: bool },
     Died(String),
     Fail(String),
 }
@@ -473,6 +478,7 @@ impl GooseAgent {
         let system_prompt = config.system_prompt.clone();
         let skill_list_worker = skill_list.clone();
         let language = config.language.clone();
+        let wake_tx = in_tx.clone();
         let worker = thread::Builder::new()
             .name("syllabix-acp".into())
             .spawn(move || {
@@ -480,6 +486,7 @@ impl GooseAgent {
                     child,
                     stdin,
                     in_rx,
+                    wake_tx,
                     evt_tx,
                     tool_events: worker_events,
                     acp_trace: worker_trace,
@@ -488,6 +495,8 @@ impl GooseAgent {
                     system_prompt,
                     skill_list: skill_list_worker,
                     language,
+                    pending_waits: Vec::new(),
+                    prompt_cancelled: false,
                 });
             })
             .map_err(|err| provider_err(format!("could not start Goose worker: {err}")))?;
@@ -569,6 +578,8 @@ struct AcpThread {
     child: Child,
     stdin: ChildStdin,
     in_rx: mpsc::Receiver<AcpIn>,
+    /// Clone of the multiplex sender; shell threads wake the worker via `TerminalDone`.
+    wake_tx: Sender<AcpIn>,
     evt_tx: Sender<AcpEvt>,
     tool_events: Arc<Mutex<Vec<ToolTurnEvent>>>,
     acp_trace: Option<Arc<Mutex<Vec<AcpTraceLine>>>>,
@@ -577,6 +588,10 @@ struct AcpThread {
     system_prompt: String,
     skill_list: String,
     language: String,
+    /// `wait_for_exit` RPC ids waiting on async shells.
+    pending_waits: Vec<(Value, String)>,
+    /// Set when barge-in sent `session/cancel` for the in-flight prompt.
+    prompt_cancelled: bool,
 }
 
 fn acp_thread(mut ctx: AcpThread) {
@@ -594,11 +609,28 @@ fn acp_thread(mut ctx: AcpThread) {
         match ctx.in_rx.recv() {
             Ok(AcpIn::Cmd(AcpCmd::Shutdown)) => break,
             Ok(AcpIn::Cmd(AcpCmd::Prompt(text))) => {
+                ctx.prompt_cancelled = false;
                 if let Err(err) =
                     send_prompt(&mut ctx, &mut next_id, &mut pending, &session_id, &text)
                 {
                     let _ = ctx.evt_tx.send(AcpEvt::Fail(err));
                 }
+            }
+            Ok(AcpIn::Cmd(AcpCmd::Cancel)) => {
+                ctx.prompt_cancelled = true;
+                kill_running_terminals(&ctx.shared);
+                if !session_id.is_empty() {
+                    let _ = write_rpc(
+                        &mut ctx.stdin,
+                        &ctx.acp_trace,
+                        0,
+                        "session/cancel",
+                        &json!({ "sessionId": session_id }),
+                    );
+                }
+            }
+            Ok(AcpIn::TerminalDone) => {
+                complete_pending_waits(&mut ctx);
             }
             Ok(AcpIn::Line(Ok(line))) => {
                 if let Err(err) = handle_line(&mut ctx, &mut pending, &mut session_id, &line) {
@@ -613,6 +645,7 @@ fn acp_thread(mut ctx: AcpThread) {
             Err(_) => break,
         }
     }
+    kill_running_terminals(&ctx.shared);
     let _ = ctx.child.kill();
     let _ = ctx.child.wait();
 }
@@ -736,7 +769,7 @@ fn wait_pending(
             }
             Ok(AcpIn::Line(Err(err))) => return Err(err),
             Ok(AcpIn::Cmd(AcpCmd::Shutdown)) => return Err("Goose shut down during startup".into()),
-            Ok(AcpIn::Cmd(_)) => {}
+            Ok(AcpIn::Cmd(_) | AcpIn::TerminalDone) => {}
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("Goose worker channel closed".into()),
         }
@@ -765,12 +798,22 @@ fn handle_line(
             .as_u64()
             .ok_or_else(|| "Goose message id must be a number".to_string())?;
         if let Some(error) = value.get("error") {
-            pending.remove(&id);
-            return Err(error
+            let message = error
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("Goose error")
-                .to_string());
+                .to_string();
+            match pending.remove(&id) {
+                Some(Pending::Prompt) if ctx.prompt_cancelled => {
+                    let _ = ctx.evt_tx.send(AcpEvt::TurnEnd { cancelled: true });
+                    return Ok(());
+                }
+                Some(Pending::Prompt) => {
+                    let _ = ctx.evt_tx.send(AcpEvt::Fail(message));
+                    return Ok(());
+                }
+                Some(_) | None => return Err(message),
+            }
         }
         let result = value.get("result").cloned().unwrap_or(Value::Null);
         match pending.remove(&id) {
@@ -786,7 +829,9 @@ fn handle_line(
                 }
             }
             Some(Pending::Prompt) => {
-                let _ = ctx.evt_tx.send(AcpEvt::TurnEnd);
+                let _ = ctx.evt_tx.send(AcpEvt::TurnEnd {
+                    cancelled: prompt_was_cancelled(&result),
+                });
             }
             Some(Pending::Init | Pending::Unstable) | None => {}
         }
@@ -818,55 +863,40 @@ fn handle_request(ctx: &mut AcpThread, value: &Value) -> std::result::Result<(),
         },
         "terminal/wait_for_exit" => {
             let tid = terminal_id(&params);
-            let stored = ctx
-                .shared
-                .terminals
-                .lock()
-                .expect("goose terminals mutex")
-                .get(&tid)
-                .map(|stored| stored.ok);
-            let code = i64::from(!stored.unwrap_or(true));
-            write_result(
-                &mut ctx.stdin,
-                &ctx.acp_trace,
-                id,
-                json!({ "exitCode": code, "signal": Value::Null }),
-            )?;
+            if let Some((_, ok, _)) = terminal_finished(&ctx.shared, &tid) {
+                write_wait_result(&mut ctx.stdin, &ctx.acp_trace, id, ok)?;
+            } else {
+                ctx.pending_waits.push((id, tid));
+            }
         }
         "terminal/output" => {
             let tid = terminal_id(&params);
-            let stored = ctx
+            let (output, ok, truncated, done) = terminal_snapshot(&ctx.shared, &tid);
+            let mut body = json!({
+                "output": output,
+                "truncated": truncated,
+            });
+            if done {
+                body["exitStatus"] = json!({ "exitCode": i64::from(!ok) });
+            }
+            write_result(&mut ctx.stdin, &ctx.acp_trace, id, body)?;
+        }
+        "terminal/release" => {
+            let tid = terminal_id(&params);
+            if let Some(stored) = ctx
                 .shared
                 .terminals
                 .lock()
                 .expect("goose terminals mutex")
-                .get(&tid)
-                .cloned();
-            let (output, ok, truncated) = stored
-                .map(|stored| (stored.output, stored.ok, stored.truncated))
-                .unwrap_or_else(|| (String::new(), false, false));
-            let code = i64::from(!ok);
-            write_result(
-                &mut ctx.stdin,
-                &ctx.acp_trace,
-                id,
-                json!({
-                    "output": output,
-                    "truncated": truncated,
-                    "exitStatus": { "exitCode": code }
-                }),
-            )?;
-        }
-        "terminal/release" => {
-            let tid = terminal_id(&params);
-            ctx.shared
-                .terminals
-                .lock()
-                .expect("goose terminals mutex")
-                .remove(&tid);
+                .remove(&tid)
+            {
+                stored.cancel.shutdown();
+            }
             write_result(&mut ctx.stdin, &ctx.acp_trace, id, json!({}))?;
         }
         "terminal/kill" => {
+            let tid = terminal_id(&params);
+            kill_terminal(&ctx.shared, &tid);
             write_result(&mut ctx.stdin, &ctx.acp_trace, id, json!({}))?;
         }
         other => {
@@ -888,6 +918,77 @@ fn terminal_id(params: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+fn prompt_was_cancelled(result: &Value) -> bool {
+    result
+        .get("stopReason")
+        .and_then(Value::as_str)
+        .or_else(|| result.get("stop_reason").and_then(Value::as_str))
+        == Some("cancelled")
+}
+
+fn kill_running_terminals(shared: &Shared) {
+    let terminals = shared.terminals.lock().expect("goose terminals mutex");
+    for stored in terminals.values() {
+        stored.cancel.shutdown();
+    }
+}
+
+fn kill_terminal(shared: &Shared, tid: &str) {
+    if let Some(stored) = shared
+        .terminals
+        .lock()
+        .expect("goose terminals mutex")
+        .get(tid)
+    {
+        stored.cancel.shutdown();
+    }
+}
+
+fn terminal_finished(shared: &Shared, tid: &str) -> Option<(String, bool, bool)> {
+    let terminals = shared.terminals.lock().expect("goose terminals mutex");
+    let stored = terminals.get(tid)?;
+    let finished = stored
+        .finished
+        .lock()
+        .expect("goose terminal result mutex")
+        .clone();
+    finished
+}
+
+fn terminal_snapshot(shared: &Shared, tid: &str) -> (String, bool, bool, bool) {
+    match terminal_finished(shared, tid) {
+        Some((output, ok, truncated)) => (output, ok, truncated, true),
+        None => (String::new(), false, false, false),
+    }
+}
+
+fn write_wait_result(
+    stdin: &mut ChildStdin,
+    trace: &Option<Arc<Mutex<Vec<AcpTraceLine>>>>,
+    id: Value,
+    ok: bool,
+) -> std::result::Result<(), String> {
+    write_result(
+        stdin,
+        trace,
+        id,
+        json!({ "exitCode": i64::from(!ok), "signal": Value::Null }),
+    )
+}
+
+fn complete_pending_waits(ctx: &mut AcpThread) {
+    let pending = std::mem::take(&mut ctx.pending_waits);
+    let mut still = Vec::new();
+    for (id, tid) in pending {
+        if let Some((_, ok, _)) = terminal_finished(&ctx.shared, &tid) {
+            let _ = write_wait_result(&mut ctx.stdin, &ctx.acp_trace, id, ok);
+        } else {
+            still.push((id, tid));
+        }
+    }
+    ctx.pending_waits = still;
 }
 
 fn terminal_create(ctx: &mut AcpThread, params: &Value) -> std::result::Result<Value, String> {
@@ -917,42 +1018,16 @@ fn terminal_create(ctx: &mut AcpThread, params: &Value) -> std::result::Result<V
         "t{}",
         ctx.shared.next_terminal.fetch_add(1, Ordering::SeqCst)
     );
-    let call = ToolCall {
-        id: id.clone(),
-        name: "shell".into(),
-        arguments: json!({ "command": command, "workdir": workdir }),
-    };
-    note_tool(
-        &ctx.tool_events,
-        "call",
-        "shell",
-        &id,
-        &call.arguments.to_string(),
-        "",
-    );
-    let cancel = ctx
-        .shared
-        .cancel
-        .lock()
-        .expect("goose cancel mutex")
-        .clone();
-    ctx.shared.shell_inflight.fetch_add(1, Ordering::SeqCst);
-    let result = executor::execute_with_permissions(
-        &call,
-        &ctx.shared.workspace,
-        &ctx.shared.permissions,
-        &cancel,
-    );
-    ctx.shared.shell_inflight.fetch_sub(1, Ordering::SeqCst);
-    note_tool(
-        &ctx.tool_events,
-        "result",
-        "shell",
-        &id,
-        &call.arguments.to_string(),
-        &result.content,
-    );
-    let (output, truncated) = cap_terminal_output(&result.content, limit);
+    let term_cancel = Cancel::new();
+    {
+        let pipeline = ctx.shared.cancel.lock().expect("goose cancel mutex");
+        // Barge-in is cancel_generation, not shutdown; also refuse shells after
+        // session/cancel so they cannot outlive generate().
+        if pipeline.is_shutdown() || ctx.prompt_cancelled {
+            term_cancel.shutdown();
+        }
+    }
+    let finished = Arc::new(Mutex::new(None));
     ctx.shared
         .terminals
         .lock()
@@ -960,12 +1035,79 @@ fn terminal_create(ctx: &mut AcpThread, params: &Value) -> std::result::Result<V
         .insert(
             id.clone(),
             StoredTerminal {
-                output,
-                ok: result.ok,
-                truncated,
+                cancel: term_cancel.clone(),
+                finished: Arc::clone(&finished),
             },
         );
+    spawn_shell(
+        ctx,
+        id.clone(),
+        command,
+        workdir,
+        limit,
+        term_cancel,
+        finished,
+    );
     Ok(json!({ "terminalId": id }))
+}
+
+fn spawn_shell(
+    ctx: &AcpThread,
+    id: String,
+    command: String,
+    workdir: String,
+    limit: Option<u64>,
+    exec_cancel: Cancel,
+    finished: Arc<Mutex<Option<(String, bool, bool)>>>,
+) {
+    let workspace = ctx.shared.workspace.clone();
+    let permissions = ctx.shared.permissions.clone();
+    let tool_events = Arc::clone(&ctx.tool_events);
+    let wake_tx = ctx.wake_tx.clone();
+    let shell_inflight = Arc::clone(&ctx.shared);
+    let spawn_finished = Arc::clone(&finished);
+    ctx.shared.shell_inflight.fetch_add(1, Ordering::SeqCst);
+    let spawn = thread::Builder::new()
+        .name(format!("syllabix-acp-{id}"))
+        .spawn(move || {
+            let call = ToolCall {
+                id: id.clone(),
+                name: "shell".into(),
+                arguments: json!({ "command": command, "workdir": workdir }),
+            };
+            note_tool(
+                &tool_events,
+                "call",
+                "shell",
+                &id,
+                &call.arguments.to_string(),
+                "",
+            );
+            let result =
+                executor::execute_with_permissions(&call, &workspace, &permissions, &exec_cancel);
+            note_tool(
+                &tool_events,
+                "result",
+                "shell",
+                &id,
+                &call.arguments.to_string(),
+                &result.content,
+            );
+            let (output, truncated) = cap_terminal_output(&result.content, limit);
+            *spawn_finished.lock().expect("goose terminal result mutex") =
+                Some((output, result.ok, truncated));
+            shell_inflight.shell_inflight.fetch_sub(1, Ordering::SeqCst);
+            let _ = wake_tx.send(AcpIn::TerminalDone);
+        });
+    if let Err(err) = spawn {
+        *finished.lock().expect("goose terminal result mutex") = Some((
+            format!("shell command could not start: {err}"),
+            false,
+            false,
+        ));
+        ctx.shared.shell_inflight.fetch_sub(1, Ordering::SeqCst);
+        let _ = ctx.wake_tx.send(AcpIn::TerminalDone);
+    }
 }
 
 fn handle_session_update(
@@ -1141,6 +1283,9 @@ impl Llm for GooseAgent {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
+        if let Some(err) = self.drain_stale_events() {
+            return Err(err);
+        }
         *self.shared.cancel.lock().expect("goose cancel mutex") = cancel.clone();
         let generation = cancel.generation();
         self.cmd_tx
@@ -1149,12 +1294,28 @@ impl Llm for GooseAgent {
         let mut index = 0u32;
         let mut pending: Option<TokenChunk> = None;
         let mut idle_since = Instant::now();
+        let mut cancelling = false;
+        let mut cancel_deadline: Option<Instant> = None;
         let result = loop {
-            if cancel.is_stale(generation) || cancel.is_shutdown() {
+            if !cancelling && (cancel.is_stale(generation) || cancel.is_shutdown()) {
+                self.begin_cancel(&mut cancelling, &mut cancel_deadline, &mut pending);
+            }
+            if cancelling && cancel_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                self.drop_stale_events();
                 break Err(Error::Cancelled);
             }
-            match self.evt_rx.recv_timeout(CANCEL_POLL) {
+            let wait = cancel_deadline
+                .map(|deadline| {
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(CANCEL_POLL)
+                })
+                .unwrap_or(CANCEL_POLL);
+            match self.evt_rx.recv_timeout(wait) {
                 Ok(AcpEvt::Token(text)) => {
+                    if cancelling {
+                        continue;
+                    }
                     idle_since = Instant::now();
                     if let Some(earlier) = pending.replace(TokenChunk {
                         turn: user.turn,
@@ -1165,11 +1326,15 @@ impl Llm for GooseAgent {
                     }) {
                         index += 1;
                         if on_token(earlier).is_err() {
-                            break Err(Error::Cancelled);
+                            self.begin_cancel(&mut cancelling, &mut cancel_deadline, &mut pending);
                         }
                     }
                 }
-                Ok(AcpEvt::TurnEnd) => {
+                Ok(AcpEvt::TurnEnd { cancelled }) => {
+                    if cancelling || cancelled {
+                        self.drop_stale_events();
+                        break Err(Error::Cancelled);
+                    }
                     let mut chunk = pending.take().unwrap_or(TokenChunk {
                         turn: user.turn,
                         generation,
@@ -1189,11 +1354,11 @@ impl Llm for GooseAgent {
                 }
                 Ok(AcpEvt::Ready) => {}
                 Err(RecvTimeoutError::Timeout) => {
-                    // Shell runs on the same worker that would emit tokens; do
-                    // not count that wait as idle silence from Goose.
-                    if self.shared.shell_inflight.load(Ordering::SeqCst) > 0 {
+                    // Shells run off the worker; do not count that wait as idle
+                    // silence from Goose.
+                    if !cancelling && self.shared.shell_inflight.load(Ordering::SeqCst) > 0 {
                         idle_since = Instant::now();
-                    } else if idle_since.elapsed() >= idle_limit() {
+                    } else if !cancelling && idle_since.elapsed() >= idle_limit() {
                         break Err(provider_err("Goose sent no reply"));
                     }
                 }
@@ -1204,6 +1369,46 @@ impl Llm for GooseAgent {
         };
         self.flush_acp_trace(user.turn);
         result
+    }
+}
+
+impl GooseAgent {
+    fn begin_cancel(
+        &self,
+        cancelling: &mut bool,
+        cancel_deadline: &mut Option<Instant>,
+        pending: &mut Option<TokenChunk>,
+    ) {
+        if *cancelling {
+            return;
+        }
+        *cancelling = true;
+        *cancel_deadline = Some(Instant::now() + CANCEL_DEADLINE);
+        *pending = None;
+        let _ = self.cmd_tx.send(AcpIn::Cmd(AcpCmd::Cancel));
+    }
+
+    fn drain_stale_events(&mut self) -> Option<Error> {
+        loop {
+            match self.evt_rx.try_recv() {
+                Ok(AcpEvt::Died(message) | AcpEvt::Fail(message)) => {
+                    return Some(provider_err(message));
+                }
+                Ok(_) => {}
+                Err(mpsc::TryRecvError::Empty) => return None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Some(provider_err("Goose stopped"));
+                }
+            }
+        }
+    }
+
+    fn drop_stale_events(&mut self) {
+        while let Ok(event) = self.evt_rx.try_recv() {
+            if let AcpEvt::Died(_) | AcpEvt::Fail(_) = event {
+                break;
+            }
+        }
     }
 }
 
@@ -1291,6 +1496,12 @@ mod tests {
             goose_unstable_method("session/system-prompt/set"),
             "_goose/unstable/session/system-prompt/set"
         );
+    }
+
+    #[test]
+    fn cancelled_stop_reason_is_detected() {
+        assert!(prompt_was_cancelled(&json!({ "stopReason": "cancelled" })));
+        assert!(!prompt_was_cancelled(&json!({ "stopReason": "end_turn" })));
     }
 
     #[test]

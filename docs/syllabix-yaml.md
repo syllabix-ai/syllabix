@@ -9,7 +9,7 @@ Optional project file for Syllabix. **`syllabix run` needs no yaml.** Defaults t
 | Create | `syllabix init [dir]`, or copy [`examples/demo-fully-self-hosted-voice-agents.yaml`](../examples/demo-fully-self-hosted-voice-agents.yaml) |
 | Missing file | Quietly uses defaults — not an error |
 | Unknown keys | Fail at load |
-| Not in this file | API keys, barge-in (`run --barge-in`), sample rate / frame size |
+| Not yaml keys | API keys, barge-in (`run --barge-in`), sample rate / frame size |
 
 `init` writes the defaults so you can edit them. It refuses to overwrite an existing file.
 
@@ -62,6 +62,8 @@ Each of STT, LLM, and TTS is `local` (in-process, the default) or `online` (an O
 Optional. Default `builtin` (omitted by `init`). Values: `builtin` \| `goose`. Unknown values fail at load.
 
 `goose` needs `pipeline.llm.provider: online` (any OpenAI-compatible URL). With a local LLM it fails at load. Selecting `goose` downloads a pinned Goose CLI into the model cache and checks its SHA-256 before unpacking. Details: [engines](engines.md).
+
+With barge-in on (`run --barge-in`), speaking while Goose is answering cancels that answer.
 
 ## `name`
 
