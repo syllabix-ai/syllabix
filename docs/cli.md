@@ -49,4 +49,4 @@ Point `pipeline.stt` / `pipeline.tts` `provider: online` at the worker. Hosted p
 
 ## Hidden commands
 
-`bench` and the `bench-*-worker` helpers are contributor-only performance tools. They are hidden from `--help`. See [contributing](contributing.md#contribute-component-performance-evidence).
+`bench`, the `bench-*-worker` helpers, and `vad-lab` are contributor-only tools. They are hidden from `--help`. See [component performance evidence](contributing.md#contribute-component-performance-evidence) and the [VAD endpointing lab](contributing.md#vad-endpointing-lab).

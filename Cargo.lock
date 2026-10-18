@@ -2335,6 +2335,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sonora",
  "syllabix-core",
  "syllabix-native",
  "tiny_http",

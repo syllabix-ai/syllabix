@@ -78,6 +78,16 @@ If a previous run preserved an uncommitted JSONL for the same fingerprint, a lat
 
 `docs/workload_benchmark/*.csv` (one statistics file per model, rows split by machine) and `docs/workload_benchmark/workload_benchmark.md` (tables split by machine configuration) are generated locally via `python3 scripts/summarize-benchmarks.py` after a run lands; no CI publishes them. Do not hand-edit those files — re-run the script. A failed correctness verdict is still valid evidence and stays in its JSONL record.
 
+## VAD endpointing lab
+
+`syllabix vad-lab` is a hidden, contributor-only command that checks whether the turn detector (Silero VAD) splits two spoken clips correctly. It joins two speech fixtures with a pause, mixes noise at a target signal-to-noise ratio (SNR), and counts the turns the detector closes across a grid of noise and pause lengths. It prints accuracy (`ok / total`) plus two failure counts — `false_split` (a turn closes too early) and `missed` (a pause swallows a turn) — and an energy probe for the echo canceller (AEC) and noise suppression (NS) stages.
+
+```bash
+cargo run -p syllabix -- vad-lab
+```
+
+It takes no arguments, uses the cached Silero model like `run` does, embeds its own fixtures, and makes no live-device claim. `end_silence_ms` dominates the result; the AEC and NS columns are capture-only (no render reference) and are indicative only.
+
 ## Live devices
 
 From this checkout, `cargo run -p syllabix -- run` talks on a machine with a microphone and speakers.

@@ -3,6 +3,8 @@ mod bench;
 mod cli;
 mod serve;
 pub mod tui;
+#[cfg(not(coverage))]
+mod vad_lab;
 
 use clap::Parser;
 use syllabix_core::Error;
@@ -47,6 +49,7 @@ fn default_filter_for(command: &cli::Commands) -> &'static str {
         cli::Commands::BenchAsrWorker { .. } => "info",
         cli::Commands::BenchTtsWorker { .. } => "info",
         cli::Commands::BenchLlmWorker { .. } => "info",
+        cli::Commands::VadLab => "info",
         cli::Commands::Serve { .. } => "info",
         cli::Commands::Mcp { .. } => "warn",
     }
@@ -109,6 +112,7 @@ mod tests {
             }),
             "info"
         );
+        assert_eq!(default_filter_for(&cli::Commands::VadLab), "info");
         assert_eq!(
             default_filter_for(&cli::Commands::Serve {
                 command: cli::ServeCommand::Stt {
