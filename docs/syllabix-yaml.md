@@ -20,9 +20,9 @@ name: demo-agent                 # agent label
 pipeline:
   vad:                           # speech start/end
     provider: silero
-    threshold: 0.5
-    min_speech_ms: 100
-    end_silence_ms: 350
+    threshold: 0.6
+    min_speech_ms: 384
+    end_silence_ms: 800
     preroll_ms: 200
   stt:                           # speech → text
     provider: local
@@ -62,8 +62,11 @@ Display label for the agent. Default: `demo-agent`.
 
 ## VAD — speech start / end
 
-`pipeline.vad` decides when the user has started talking and when the turn is over.
-Leave these alone unless you are diagnosing turn-taking.
+Voice activity detection (`pipeline.vad`) decides when the user has started
+talking and when the turn is over. `threshold`, `min_speech_ms`, and
+`end_silence_ms` are the editable controls; the small margin that separates a
+quiet moment inside the turn from a possible end of turn is fixed. Leave these
+alone unless you are diagnosing turn-taking.
 
 ### `provider`
 
@@ -71,18 +74,18 @@ Only `silero`. Required.
 
 ### `threshold`
 
-Default `0.5`. Range `(0, 1]` (`0` fails at load).
+Default `0.6`. Range `(0, 1]` (`0` fails at load).
 
 Silero scores every audio frame from `0` to `1`. A frame counts as **speech**
 when `score >= threshold`.
 
 - Closer to `0` — very sensitive; almost everything counts as speech (fan noise, rustling).
-- `0.5` — default.
+- `0.6` — default.
 - Closer to `1` — almost nothing counts as speech; soft speech is ignored; the agent may never open a turn or transcribe anything.
 
 ### `min_speech_ms`
 
-Default `100`.
+Default `384`.
 
 How long the score must stay **at or above** `threshold` before Syllabix opens
 a turn and starts feeding audio to STT. Shorter blips are ignored and never
@@ -93,13 +96,21 @@ transcribed.
 
 ### `end_silence_ms`
 
-Default `350`.
+Default `800`.
 
 How long the score must stay **below** `threshold` after speech before the turn
 ends and STT finalizes the utterance.
 
+Briefly quiet moments inside a longer utterance — a soft consonant, a pause for
+breath — do not count toward this window. Only stretches clearly below
+`threshold` count, so a small dip holds the turn open instead of ending it.
+
 - Lower it — the turn ends sooner after you stop; the agent may cut you off mid-sentence.
 - Raise it — the agent waits longer after pauses; turns feel slower once you finish.
+
+In a noisy room, raise `end_silence_ms` (or `threshold`) before lowering
+`min_speech_ms`. Background noise keeps the score near the threshold, and this
+window is the usual control for keeping short noise bursts from ending a turn.
 
 ### `preroll_ms`
 
@@ -109,7 +120,6 @@ Milliseconds of audio kept before VAD detected speech start, prepended to the
 STT utterance so the beginning of the first word is not clipped.
 
 Increase this if the agent often skips or gets your first few words wrong.
-Recommended to be higher than `min_speech_ms`.
 
 ## STT — speech → text
 

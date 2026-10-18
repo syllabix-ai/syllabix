@@ -84,7 +84,7 @@ pub struct Utterance {
     /// Turn assigned at speech-start.
     pub turn: TurnId,
     /// 200 ms post-AEC preroll (when available) plus every frame after speech-start
-    /// until end-of-utterance, including below-threshold dips and the 350 ms hangover.
+    /// until end-of-utterance, including below-threshold dips and the hangover.
     pub frames: Vec<AudioFrame>,
 }
 

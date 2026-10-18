@@ -2,9 +2,12 @@
 //!
 //! The lab builds two-utterance streams from human-speech fixtures, joins them
 //! with a configurable pause, optionally mixes stationary/ambient noise at a
-//! target SNR, and counts how many turns the Silero turn policy closes. It
-//! compares the production-shaped post-processing stages plus one candidate
-//! change (a hysteresis rule on the silence counter).
+//! target SNR, and counts how many turns the production Silero turn policy
+//! closes. The policy under test — a threshold open gated on `min_speech`, a
+//! hysteresis dead-band on the closing hangover, and a recurrent-state reset
+//! after `IDLE_RESET` of idle non-speech — is mirrored frame-for-frame by
+//! [`sim_turns`], which reuses the same [`VadSettings`] as the real
+//! [`SileroVad`] and is checked against it before the grid runs.
 //!
 //! Accuracy is reported as `ok / total` over a noise × pause grid, with the
 //! two failure modes that matter for a voice agent: `false_split` (a turn
@@ -30,7 +33,7 @@ use sonora::{AudioProcessing, Config, StreamConfig};
 use syllabix_core::audio::{i16_to_f32, read_wav, record_fixture_to_frames};
 use syllabix_core::models::{HttpFetcher, StderrProgress};
 use syllabix_core::types::{AudioFrame, DEFAULT_SAMPLE_RATE_HZ};
-use syllabix_core::vad::{SileroVad, VadSettings, MIN_SPEECH_FRAMES, SPEECH_THRESHOLD};
+use syllabix_core::vad::{SileroVad, VadSettings, IDLE_RESET, SPEECH_THRESHOLD};
 use syllabix_core::{Cancel, Error, ModelCache, Result, Vad, VadEvent};
 
 const SR: usize = DEFAULT_SAMPLE_RATE_HZ as usize;
@@ -42,9 +45,9 @@ const RNG_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 /// Pause after the second utterance so the closing hangover has room to fire.
 const TRAIL_MS: usize = 3000;
 
-/// End-silence settings to compare. 350 ms is the built-in default; 1000 ms
-/// shows what the same policy does with a longer hangover.
-const END_SILENCE_MS: [u64; 2] = [350, 1000];
+/// End-silence settings to compare. 800 ms is the built-in default; 350 ms was
+/// the previous default, and 1000 ms shows what a longer hangover does.
+const END_SILENCE_MS: [u64; 3] = [800, 350, 1000];
 const GAPS_MS: [usize; 5] = [250, 350, 500, 1000, 1500];
 /// `(kind, snr_db)`; `snr_db > 100` means clean (no noise mixed).
 const NOISES: [(&str, f32); 7] = [
@@ -78,7 +81,7 @@ const POOL: [(&str, &[u8]); 4] = [
 ];
 const AMBIENT: &[u8] = include_bytes!("../../syllabix-core/tests/fixtures/vad/noise.wav");
 
-const MODES: [&str; 5] = ["raw", "aec", "aecns", "hyst", "both"];
+const MODES: [&str; 3] = ["raw", "aec", "aecns"];
 
 /// Decode an embedded 16 kHz mono WAV fixture to a flat PCM16 stream.
 fn fixture(bytes: &[u8]) -> Result<Vec<i16>> {
@@ -229,44 +232,54 @@ fn real_turns(vad: &mut SileroVad, samples: &[i16]) -> Result<usize> {
     Ok(ends)
 }
 
-/// Frame-stepped replica of `SileroVad::push_frame` plus the candidate
-/// hysteresis rule: while a turn is open, a frame only counts toward the
-/// silence hangover when `p < max(0.01, SPEECH_THRESHOLD - 0.15)`.
-fn sim_turns(
-    vad: &mut SileroVad,
-    samples: &[i16],
-    end_silence_ms: u64,
-    hysteresis: bool,
-) -> Result<usize> {
+/// Frame-stepped replica of the production `SileroVad::push_frame` policy:
+/// a `settings.speech_threshold` open gated on `min_speech`, a hysteresis
+/// dead-band (`settings.silence_threshold`) on the closing hangover, and a
+/// recurrent-state reset after `IDLE_RESET` of idle non-speech. It reads the
+/// same [`VadSettings`] the real detector uses, so the two cannot drift.
+fn sim_turns(vad: &mut SileroVad, samples: &[i16], settings: &VadSettings) -> Result<usize> {
     vad.reset();
-    let silence_needed = (end_silence_ms as usize).div_ceil(32);
-    let hyst = (SPEECH_THRESHOLD - 0.15).max(0.01);
+    let min_speech = (settings.min_speech.as_millis() as usize).div_ceil(32);
+    let silence_needed = (settings.end_silence.as_millis() as usize).div_ceil(32);
+    let idle_needed = (IDLE_RESET.as_millis() as usize).div_ceil(32);
+    let hyst = settings.silence_threshold();
     let mut open = false;
     let mut speech = 0;
     let mut silence = 0;
+    let mut idle = 0;
     let mut turns = 0;
     for frame in frames(samples) {
         let p = vad.debug_probability(&frame)?;
-        if !open {
-            if p >= SPEECH_THRESHOLD {
-                speech += 1;
-                if speech >= MIN_SPEECH_FRAMES {
-                    open = true;
-                    silence = 0;
-                }
-            } else {
-                speech = 0;
-            }
-        } else if p >= SPEECH_THRESHOLD || (hysteresis && p >= hyst) {
+        if p >= settings.speech_threshold {
             silence = 0;
-        } else {
-            silence += 1;
+            idle = 0;
+            speech += 1;
+            if !open && speech >= min_speech {
+                open = true;
+            }
+        } else if open {
+            // Dead-band frames hold silence where it is; only clearly
+            // sub-threshold frames advance the closing hangover.
+            if p < hyst {
+                silence += 1;
+            }
             if silence >= silence_needed {
                 turns += 1;
                 open = false;
                 speech = 0;
                 silence = 0;
+                idle = 0;
                 vad.reset();
+            }
+        } else if speech > 0 {
+            // Tentative speech that never met MIN_SPEECH_FRAMES is dropped.
+            idle = 0;
+            speech = 0;
+        } else {
+            idle += 1;
+            if idle >= idle_needed {
+                vad.reset();
+                idle = 0;
             }
         }
     }
@@ -284,7 +297,7 @@ fn speech_segment(vad: &mut SileroVad, samples: &[i16]) -> Result<Vec<i16>> {
     let mut best = (0usize, 0usize);
     let mut i = 0;
     while i < probs.len() {
-        if probs[i] < 0.5 {
+        if probs[i] < SPEECH_THRESHOLD {
             i += 1;
             continue;
         }
@@ -293,7 +306,7 @@ fn speech_segment(vad: &mut SileroVad, samples: &[i16]) -> Result<Vec<i16>> {
         let mut gap = 0;
         let mut j = i;
         while j < probs.len() {
-            if probs[j] >= 0.5 {
+            if probs[j] >= SPEECH_THRESHOLD {
                 end = j;
                 gap = 0;
             } else {
@@ -377,17 +390,14 @@ fn build_cells(a: &[i16], b: &[i16]) -> Result<Vec<Cell>> {
     Ok(cells)
 }
 
-fn real_vad(cache: &ModelCache, end_silence_ms: u64) -> Result<SileroVad> {
+fn real_vad(cache: &ModelCache, settings: VadSettings) -> Result<SileroVad> {
     Ok(SileroVad::from_cache(
         cache,
         &HttpFetcher,
         &mut StderrProgress::new(),
         &Cancel::new(),
     )?
-    .with_settings(VadSettings {
-        end_silence: Duration::from_millis(end_silence_ms),
-        ..VadSettings::v0()
-    }))
+    .with_settings(settings))
 }
 
 fn rms_range(samples: &[i16], range: Range<usize>) -> f32 {
@@ -432,28 +442,32 @@ pub fn run() -> Result<()> {
     let cells = build_cells(&a, &b)?;
 
     // The simulated state machine must agree with the real VAD baseline.
-    let mut real_350 = real_vad(&cache, 350)?;
-    let mut real_1000 = real_vad(&cache, 1000)?;
     let mut mismatch = 0;
-    for cell in &cells {
-        if real_turns(&mut real_350, &cell.samples)?
-            != sim_turns(&mut seed, &cell.samples, 350, false)?
-        {
-            mismatch += 1;
-        }
-        if real_turns(&mut real_1000, &cell.samples)?
-            != sim_turns(&mut seed, &cell.samples, 1000, false)?
-        {
-            mismatch += 1;
+    for end_silence_ms in END_SILENCE_MS {
+        let settings = VadSettings {
+            end_silence: Duration::from_millis(end_silence_ms),
+            ..VadSettings::v0()
+        };
+        let mut real = real_vad(&cache, settings.clone())?;
+        for cell in &cells {
+            if real_turns(&mut real, &cell.samples)?
+                != sim_turns(&mut seed, &cell.samples, &settings)?
+            {
+                mismatch += 1;
+            }
         }
     }
     println!("simulation baseline mismatches vs real VAD: {mismatch}\n");
 
     for end_silence_ms in END_SILENCE_MS {
+        let settings = VadSettings {
+            end_silence: Duration::from_millis(end_silence_ms),
+            ..VadSettings::v0()
+        };
         println!("=== end_silence_ms={end_silence_ms} ===");
         println!(
-            "  {:>12} {:>5} {:>4} | {:>4} {:>4} {:>5} {:>4} {:>5}",
-            "noise/snr", "pause", "exp", "raw", "aec", "aecns", "hyst", "both"
+            "  {:>12} {:>5} {:>4} | {:>4} {:>4} {:>5}",
+            "noise/snr", "pause", "exp", "raw", "aec", "aecns"
         );
         let mut scores = [Score::default(); MODES.len()];
         for cell in &cells {
@@ -465,26 +479,16 @@ pub fn run() -> Result<()> {
             let aec = sonora_process(&cell.samples, false)?;
             let aecns = sonora_process(&cell.samples, true)?;
             let got = [
-                sim_turns(&mut seed, &cell.samples, end_silence_ms, false)?,
-                sim_turns(&mut seed, &aec, end_silence_ms, false)?,
-                sim_turns(&mut seed, &aecns, end_silence_ms, false)?,
-                sim_turns(&mut seed, &cell.samples, end_silence_ms, true)?,
-                sim_turns(&mut seed, &aecns, end_silence_ms, true)?,
+                sim_turns(&mut seed, &cell.samples, &settings)?,
+                sim_turns(&mut seed, &aec, &settings)?,
+                sim_turns(&mut seed, &aecns, &settings)?,
             ];
             for (mode, turns) in got.iter().enumerate() {
                 scores[mode].add(expected, *turns);
             }
             println!(
-                "  {:>7}/{:<4} {:>5} {:>4} | {:>4} {:>4} {:>5} {:>4} {:>5}",
-                cell.kind,
-                cell.snr_db,
-                cell.gap_ms,
-                expected,
-                got[0],
-                got[1],
-                got[2],
-                got[3],
-                got[4]
+                "  {:>7}/{:<4} {:>5} {:>4} | {:>4} {:>4} {:>5}",
+                cell.kind, cell.snr_db, cell.gap_ms, expected, got[0], got[1], got[2]
             );
         }
         for (mode, name) in MODES.iter().enumerate() {

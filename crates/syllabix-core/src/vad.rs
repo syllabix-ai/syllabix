@@ -16,24 +16,48 @@ use crate::types::{
 use crate::Cancel;
 
 /// Silero probability at or above which a frame begins or continues speech.
-pub const SPEECH_THRESHOLD: f32 = 0.5;
+pub const SPEECH_THRESHOLD: f32 = 0.6;
 
-/// A turn starts only after this much contiguous speech (four 32 ms frames).
-pub const MIN_SPEECH: Duration = Duration::from_millis(100);
+/// A turn starts only after this much contiguous speech (twelve 32 ms frames).
+pub const MIN_SPEECH: Duration = Duration::from_millis(384);
 
-/// Silence needed to close an utterance (eleven 32 ms frames = 352 ms).
-pub const END_SILENCE: Duration = Duration::from_millis(350);
+/// Silence needed to close an utterance (twenty-five 32 ms frames = 800 ms).
+pub const END_SILENCE: Duration = Duration::from_millis(800);
 
 /// Frame duration: 512 samples at 16 kHz.
 pub const FRAME_DURATION: Duration = Duration::from_millis(32);
 
 /// Frames of speech that meet [`MIN_SPEECH`].
-pub const MIN_SPEECH_FRAMES: usize = 4;
+pub const MIN_SPEECH_FRAMES: usize = 12;
 
 /// Frames of silence that meet [`END_SILENCE`].
-pub const END_SILENCE_FRAMES: usize = 11;
+pub const END_SILENCE_FRAMES: usize = 25;
 
-/// Post-AEC audio prepended onto the Whisper utterance before the first ≥0.5 frame.
+/// Dead-band margin below [`SPEECH_THRESHOLD`] that still holds a turn open.
+///
+/// While a turn is open, only frames scoring below
+/// [`VadSettings::silence_threshold`] count toward the closing hangover. Frames
+/// between that edge and the threshold (quiet consonants, brief dips) neither
+/// reset silence nor advance it, so borderline frames do not cut the user off.
+pub const HYSTERESIS: f32 = 0.15;
+
+/// Floor for [`VadSettings::silence_threshold`].
+///
+/// Without it, a `speech_threshold` at or below [`HYSTERESIS`] would put the
+/// hangover edge at or below zero, where `probability < edge` never holds and
+/// an open turn could never close.
+pub const SILENCE_FLOOR: f32 = 0.01;
+
+/// Idle non-speech that clears Silero's recurrent state.
+///
+/// Silero carries an LSTM state between frames, so room noise while nobody
+/// talks accumulates in the model's memory and biases the first real frame of
+/// the next turn. Clearing the state after this much contiguous idle
+/// non-speech makes that first frame start from the neutral initial state.
+pub const IDLE_RESET: Duration = Duration::from_millis(500);
+
+/// Post-AEC audio prepended onto the Whisper utterance before the first
+/// at-or-above-threshold frame.
 pub const WHISPER_PREROLL: Duration = Duration::from_millis(200);
 
 /// Samples in [`WHISPER_PREROLL`] at the capture rate.
@@ -68,6 +92,14 @@ impl VadSettings {
     pub fn preroll_samples(&self) -> usize {
         (DEFAULT_SAMPLE_RATE_HZ as usize) * (self.preroll.as_millis() as usize) / 1000
     }
+
+    /// Probability below which a frame counts toward the closing hangover.
+    ///
+    /// `speech_threshold - HYSTERESIS`, floored at [`SILENCE_FLOOR`] so a very
+    /// low `speech_threshold` still lets the hangover advance on near-silence.
+    pub fn silence_threshold(&self) -> f32 {
+        (self.speech_threshold - HYSTERESIS).max(SILENCE_FLOOR)
+    }
 }
 
 /// In-process Silero VAD backed by ONNX Runtime.
@@ -82,7 +114,7 @@ pub struct SileroVad {
     next_turn: u64,
     /// Recent post-AEC frames that are not part of the open speech clip.
     history: VecDeque<AudioFrame>,
-    /// Snapshot of [`WHISPER_PREROLL`] taken at the first ≥0.5 frame.
+    /// Snapshot of [`WHISPER_PREROLL`] taken at the first speech frame.
     preroll: Vec<AudioFrame>,
     /// Frames for the open (or still-tentative) utterance, including hangover.
     current: Vec<AudioFrame>,
@@ -90,6 +122,8 @@ pub struct SileroVad {
     active: Option<TurnId>,
     speech: Duration,
     silence: Duration,
+    /// Consecutive non-speech while idle, for the [`IDLE_RESET`] state clear.
+    idle: Duration,
 }
 
 impl SileroVad {
@@ -134,6 +168,7 @@ impl SileroVad {
             active: None,
             speech: Duration::ZERO,
             silence: Duration::ZERO,
+            idle: Duration::ZERO,
         }
     }
 
@@ -168,6 +203,7 @@ impl SileroVad {
     fn finish(&mut self) -> Option<VadEvent> {
         self.silence = Duration::ZERO;
         self.speech = Duration::ZERO;
+        self.idle = Duration::ZERO;
         let mut frames = std::mem::take(&mut self.preroll);
         frames.extend(std::mem::take(&mut self.current));
         let event = self.active.take().map(|turn| VadEvent::SpeechEnd {
@@ -175,7 +211,7 @@ impl SileroVad {
         });
         if event.is_some() {
             // Recurrent hangover otherwise suppresses the next user turn
-            // (identical or similar speech stays below 0.5).
+            // (identical or similar speech stays below the threshold).
             self.scorer.reset();
         }
         event
@@ -205,6 +241,7 @@ impl SileroVad {
         self.preroll.clear();
         self.speech = Duration::ZERO;
         self.silence = Duration::ZERO;
+        self.idle = Duration::ZERO;
     }
 }
 
@@ -214,11 +251,13 @@ impl Vad for SileroVad {
     }
 
     fn push_frame(&mut self, frame: AudioFrame) -> Result<Vec<VadEvent>> {
-        let speech = self.probability(&frame)? >= self.settings.speech_threshold;
+        let probability = self.probability(&frame)?;
+        let speech = probability >= self.settings.speech_threshold;
         let mut events = Vec::new();
 
         if speech {
             self.silence = Duration::ZERO;
+            self.idle = Duration::ZERO;
             if self.current.is_empty() {
                 self.preroll = preroll_frames(&self.history, self.settings.preroll_samples());
             }
@@ -228,23 +267,36 @@ impl Vad for SileroVad {
                 events.push(event);
             }
         } else if self.active.is_some() {
-            // Keep every post-start frame on the Whisper clip. Silero <0.5 is
-            // often a quiet consonant or a short pause, not end-of-turn, and
-            // the closing hangover itself still contains word endings.
+            // Keep every post-start frame on the Whisper clip. Below-threshold
+            // audio is often a quiet consonant or a short pause, not
+            // end-of-turn, and the closing hangover itself still contains word
+            // endings. Only frames clearly below the threshold
+            // (`silence_threshold`) advance the hangover; the dead-band in
+            // between holds silence where it is.
             self.current.push(frame.clone());
             self.push_history(frame);
-            self.silence += FRAME_DURATION;
-            // Count elapsed Duration, not `350 / 32` integer frames (that is
-            // 10 frames / 320 ms). Close on the first frame where silence
-            // is ≥ 350 ms (11 × 32 ms = 352 ms).
+            if probability < self.settings.silence_threshold() {
+                self.silence += FRAME_DURATION;
+            }
+            // Count elapsed Duration, not integer frames. Close on the first
+            // frame where silence is ≥ `end_silence` (25 × 32 ms = 800 ms).
             if self.silence >= self.settings.end_silence {
                 if let Some(event) = self.finish() {
                     events.push(event);
                 }
             }
         } else if !self.current.is_empty() {
+            self.idle = Duration::ZERO;
             self.drop_tentative(frame);
         } else {
+            // Truly idle: no turn open and nothing tentative. Accumulate
+            // non-speech so room noise does not build up in Silero's recurrent
+            // state and bias the next turn's opening frames.
+            self.idle += FRAME_DURATION;
+            if self.idle >= IDLE_RESET {
+                self.scorer.reset();
+                self.idle = Duration::ZERO;
+            }
             self.push_history(frame);
         }
 
@@ -267,6 +319,7 @@ impl SileroVad {
         self.active = None;
         self.speech = Duration::ZERO;
         self.silence = Duration::ZERO;
+        self.idle = Duration::ZERO;
     }
 }
 
@@ -352,7 +405,7 @@ impl ProbabilityScorer for OrtScorer {
     fn score(&mut self, frame: &AudioFrame) -> Result<f32> {
         // silero_vad.onnx (v6.2.1): 512 samples at sr=16000 scores ~0.003.
         // Two 256-sample 16 kHz windows hear speech but split speech.wav
-        // across a pause longer than 350 ms hangover. Pair-average to 8 kHz.
+        // across a pause longer than the hangover. Pair-average to 8 kHz.
         debug_assert_eq!(frame.sample_rate_hz, DEFAULT_SAMPLE_RATE_HZ);
         let audio: Vec<f32> = frame
             .samples
@@ -456,7 +509,8 @@ mod tests {
                 assert_eq!(
                     events.len(),
                     1,
-                    "10 silence frames are under {END_SILENCE:?}"
+                    "{} silence frames are under {END_SILENCE:?}",
+                    END_SILENCE_FRAMES - 1
                 );
             }
         }
@@ -524,7 +578,7 @@ mod tests {
             &pcm[MIN_SPEECH_FRAMES * FRAME_SAMPLES..(MIN_SPEECH_FRAMES + dip) * FRAME_SAMPLES];
         assert!(
             dip_pcm.iter().all(|s| *s == 7),
-            "intra-utterance <0.5 audio must reach Whisper, got {:?}",
+            "intra-utterance below-threshold audio must reach Whisper, got {:?}",
             dip_pcm.iter().copied().take(8).collect::<Vec<_>>()
         );
     }
@@ -572,7 +626,7 @@ mod tests {
         let preroll = &pcm[..PREROLL_SAMPLES];
         assert!(
             preroll.iter().all(|s| *s != 100 && *s != 0),
-            "preroll must be the audio before the first ≥0.5 frame"
+            "preroll must be the audio before the first speech frame"
         );
         let speech = &pcm[PREROLL_SAMPLES..PREROLL_SAMPLES + MIN_SPEECH_FRAMES * FRAME_SAMPLES];
         assert!(speech.iter().all(|s| *s == 100));
@@ -583,21 +637,260 @@ mod tests {
     #[test]
     fn yaml_min_speech_can_require_more_frames() {
         let settings = VadSettings {
-            min_speech: Duration::from_millis(200),
+            min_speech: Duration::from_millis(400),
             ..VadSettings::v0()
         };
-        let probabilities = std::iter::repeat_n(0.9, MIN_SPEECH_FRAMES)
-            .chain(std::iter::once(0.1))
-            .collect();
+        let probabilities = std::iter::repeat_n(0.9, MIN_SPEECH_FRAMES + 1).collect();
         let mut vad =
             SileroVad::with_scorer(Box::new(ScriptedScorer(probabilities))).with_settings(settings);
         let mut events = Vec::new();
-        for seq in 0..=MIN_SPEECH_FRAMES as u64 {
+        for seq in 0..MIN_SPEECH_FRAMES as u64 {
             events.extend(push_seq(&mut vad, seq));
         }
         assert!(
             events.is_empty(),
-            "200 ms min speech must ignore a 128 ms burst"
+            "400 ms min speech must ignore a 384 ms burst"
+        );
+        events.extend(push_seq(&mut vad, MIN_SPEECH_FRAMES as u64));
+        assert_eq!(events, vec![VadEvent::SpeechStart { turn: TurnId(0) }]);
+    }
+
+    #[test]
+    fn dead_band_frames_do_not_advance_the_closing_hangover() {
+        // Speech, then END_SILENCE_FRAMES-1 frames in the dead-band
+        // (threshold - HYSTERESIS <= p < threshold). Those frames must not
+        // advance the hangover, so the turn stays open until a truly silent
+        // frame pushes the count over.
+        let dead_band = SPEECH_THRESHOLD - HYSTERESIS / 2.0;
+        let probabilities = std::iter::repeat_n(0.9, MIN_SPEECH_FRAMES)
+            .chain(std::iter::repeat_n(dead_band, END_SILENCE_FRAMES))
+            .chain(std::iter::repeat_n(0.0, END_SILENCE_FRAMES))
+            .collect();
+        let mut vad = SileroVad::with_scorer(Box::new(ScriptedScorer(probabilities)));
+        let mut events = Vec::new();
+        let mut seq = 0_u64;
+        for _ in 0..MIN_SPEECH_FRAMES {
+            events.extend(push_seq(&mut vad, seq));
+            seq += 1;
+        }
+        assert_eq!(events, vec![VadEvent::SpeechStart { turn: TurnId(0) }]);
+        events.clear();
+        for _ in 0..END_SILENCE_FRAMES {
+            events.extend(push_seq(&mut vad, seq));
+            seq += 1;
+        }
+        assert!(
+            events.is_empty(),
+            "dead-band frames must not close the turn"
+        );
+        for _ in 0..END_SILENCE_FRAMES {
+            events.extend(push_seq(&mut vad, seq));
+            seq += 1;
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, VadEvent::SpeechEnd { .. }))
+                .count(),
+            1,
+            "truly silent frames still close the turn"
+        );
+    }
+
+    #[test]
+    fn dead_band_frames_hold_accumulated_silence() {
+        // Ten truly silent frames accumulate 320 ms of the hangover. Dead-band
+        // frames must leave that count untouched, so only fifteen more silent
+        // frames (not a fresh twenty-five) close the turn. If the dead-band
+        // reset the counter, the turn would still be open at the end.
+        let dead_band = SPEECH_THRESHOLD - HYSTERESIS / 2.0;
+        let partial = 10;
+        let probabilities = std::iter::repeat_n(0.9, MIN_SPEECH_FRAMES)
+            .chain(std::iter::repeat_n(0.0, partial))
+            .chain(std::iter::repeat_n(dead_band, END_SILENCE_FRAMES))
+            .chain(std::iter::repeat_n(0.0, END_SILENCE_FRAMES))
+            .collect();
+        let mut vad = SileroVad::with_scorer(Box::new(ScriptedScorer(probabilities)));
+        let mut events = Vec::new();
+        let mut seq = 0_u64;
+        for _ in 0..MIN_SPEECH_FRAMES + partial + END_SILENCE_FRAMES {
+            events.extend(push_seq(&mut vad, seq));
+            seq += 1;
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, VadEvent::SpeechEnd { .. })),
+            "dead-band frames must not close the turn"
+        );
+        for _ in 0..END_SILENCE_FRAMES - partial {
+            events.extend(push_seq(&mut vad, seq));
+            seq += 1;
+        }
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, VadEvent::SpeechEnd { .. })),
+            "silence accumulated before the dead-band must survive it"
+        );
+    }
+
+    #[test]
+    fn low_threshold_still_closes_the_turn() {
+        // A speech_threshold at or below HYSTERESIS would put
+        // `speech_threshold - HYSTERESIS` at or below zero without the floor,
+        // leaving the hangover edge where `probability < edge` never holds.
+        let settings = VadSettings {
+            speech_threshold: 0.1,
+            ..VadSettings::v0()
+        };
+        assert!(settings.silence_threshold() > 0.0);
+        let probabilities = std::iter::repeat_n(0.2, MIN_SPEECH_FRAMES)
+            .chain(std::iter::repeat_n(0.0, END_SILENCE_FRAMES))
+            .collect();
+        let mut vad =
+            SileroVad::with_scorer(Box::new(ScriptedScorer(probabilities))).with_settings(settings);
+        let mut events = Vec::new();
+        for seq in 0..(MIN_SPEECH_FRAMES + END_SILENCE_FRAMES) as u64 {
+            events.extend(push_seq(&mut vad, seq));
+        }
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, VadEvent::SpeechEnd { .. })),
+            "a low threshold must still let the hangover close the turn"
+        );
+    }
+
+    #[test]
+    fn idle_non_speech_clears_the_recurrent_state() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct CountingScorer {
+            resets: Arc<AtomicUsize>,
+        }
+        impl ProbabilityScorer for CountingScorer {
+            fn score(&mut self, _frame: &AudioFrame) -> Result<f32> {
+                Ok(0.0)
+            }
+            fn reset(&mut self) {
+                self.resets.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let resets = Arc::new(AtomicUsize::new(0));
+        let mut vad = SileroVad::with_scorer(Box::new(CountingScorer {
+            resets: Arc::clone(&resets),
+        }));
+        let idle_frames = (IDLE_RESET.as_millis() as usize).div_ceil(32);
+        for seq in 0..(idle_frames - 1) as u64 {
+            assert!(push_seq(&mut vad, seq).is_empty());
+        }
+        assert_eq!(
+            resets.load(Ordering::SeqCst),
+            0,
+            "state clears only after a full {IDLE_RESET:?} of idle non-speech"
+        );
+        assert!(push_seq(&mut vad, (idle_frames - 1) as u64).is_empty());
+        assert_eq!(
+            resets.load(Ordering::SeqCst),
+            1,
+            "{IDLE_RESET:?} of idle non-speech clears the recurrent state"
+        );
+    }
+
+    #[test]
+    fn idle_reset_does_not_fire_while_a_turn_is_open() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct ReplayScorer {
+            values: Vec<f32>,
+            index: usize,
+            resets: Arc<AtomicUsize>,
+        }
+        impl ProbabilityScorer for ReplayScorer {
+            fn score(&mut self, _frame: &AudioFrame) -> Result<f32> {
+                let value = self.values[self.index];
+                self.index += 1;
+                Ok(value)
+            }
+            fn reset(&mut self) {
+                self.resets.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        // More than IDLE_RESET of trailing silence, yet fewer frames than
+        // END_SILENCE needs to close, so the turn stays open.
+        let idle_frames = (IDLE_RESET.as_millis() as usize).div_ceil(32);
+        assert!(idle_frames < END_SILENCE_FRAMES);
+        let mut values = vec![0.9; MIN_SPEECH_FRAMES];
+        values.extend(std::iter::repeat_n(0.0, idle_frames));
+        let resets = Arc::new(AtomicUsize::new(0));
+        let mut vad = SileroVad::with_scorer(Box::new(ReplayScorer {
+            values,
+            index: 0,
+            resets: Arc::clone(&resets),
+        }));
+        let mut events = Vec::new();
+        for seq in 0..(MIN_SPEECH_FRAMES + idle_frames) as u64 {
+            events.extend(push_seq(&mut vad, seq));
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, VadEvent::SpeechEnd { .. })),
+            "the turn is still open"
+        );
+        assert_eq!(
+            resets.load(Ordering::SeqCst),
+            0,
+            "idle reset must not run while a turn is open"
+        );
+    }
+
+    #[test]
+    fn idle_counter_restarts_after_a_speech_frame() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct ReplayScorer {
+            values: Vec<f32>,
+            index: usize,
+            resets: Arc<AtomicUsize>,
+        }
+        impl ProbabilityScorer for ReplayScorer {
+            fn score(&mut self, _frame: &AudioFrame) -> Result<f32> {
+                let value = self.values[self.index];
+                self.index += 1;
+                Ok(value)
+            }
+            fn reset(&mut self) {
+                self.resets.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        // Two idle runs shorter than IDLE_RESET, split by a tentative speech
+        // frame that never opens a turn. The speech frame clears the idle
+        // counter, so the runs do not add up and no reset fires.
+        let run = (IDLE_RESET.as_millis() as usize).div_ceil(32) - 1;
+        let mut values = vec![0.0; run];
+        values.push(0.9);
+        values.extend(std::iter::repeat_n(0.0, run));
+        let resets = Arc::new(AtomicUsize::new(0));
+        let mut vad = SileroVad::with_scorer(Box::new(ReplayScorer {
+            values,
+            index: 0,
+            resets: Arc::clone(&resets),
+        }));
+        for seq in 0..(run + 1 + run) as u64 {
+            assert!(push_seq(&mut vad, seq).is_empty());
+        }
+        assert_eq!(
+            resets.load(Ordering::SeqCst),
+            0,
+            "a speech frame must restart the idle counter"
         );
     }
 
