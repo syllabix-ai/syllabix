@@ -1318,9 +1318,9 @@ mod tests {
         assert!(yaml.contains("system_prompt:"));
         assert!(yaml.contains("{language}"));
         assert!(yaml.contains("model: pocket-tts"));
-        assert!(yaml.contains("threshold: 0.5"));
-        assert!(yaml.contains("min_speech_ms: 100"));
-        assert!(yaml.contains("end_silence_ms: 350"));
+        assert!(yaml.contains("threshold: 0.6"));
+        assert!(yaml.contains("min_speech_ms: 384"));
+        assert!(yaml.contains("end_silence_ms: 800"));
         assert!(yaml.contains("preroll_ms: 200"));
         assert!(
             !yaml.contains("agent:"),
@@ -1869,12 +1869,12 @@ auto-timeout:
     fn yaml_vad_tunables_override_defaults() {
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("threshold: 0.5", "threshold: 0.7")
-            .replace("min_speech_ms: 100", "min_speech_ms: 200");
+            .replace("threshold: 0.6", "threshold: 0.7")
+            .replace("min_speech_ms: 384", "min_speech_ms: 200");
         let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
         assert!((cfg.vad_threshold - 0.7).abs() < f32::EPSILON);
         assert_eq!(cfg.vad_min_speech_ms, 200);
-        assert_eq!(cfg.vad_end_silence_ms, 350);
+        assert_eq!(cfg.vad_end_silence_ms, 800);
         assert_eq!(cfg.vad_settings().min_speech, Duration::from_millis(200));
     }
 
@@ -1891,7 +1891,7 @@ auto-timeout:
     fn vad_threshold_out_of_range_is_field_level() {
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("threshold: 0.5", "threshold: 1.5");
+            .replace("threshold: 0.6", "threshold: 1.5");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.vad.threshold"), "{err}");
     }

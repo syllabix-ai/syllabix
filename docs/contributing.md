@@ -86,7 +86,7 @@ If a previous run preserved an uncommitted JSONL for the same fingerprint, a lat
 cargo run -p syllabix -- vad-lab
 ```
 
-It takes no arguments, uses the cached Silero model like `run` does, embeds its own fixtures, and makes no live-device claim. `end_silence_ms` dominates the result; the AEC and NS columns are capture-only (no render reference) and are indicative only.
+It takes no arguments, uses the cached Silero model like `run` does, embeds its own fixtures, and makes no live-device claim. The frame-stepped replica of the production turn policy (threshold, min-speech latch, closing hysteresis, and the idle recurrent-state reset) is checked against the real VAD before the grid runs; any mismatch is printed. `end_silence_ms` dominates the result; the AEC and NS columns are capture-only (no render reference) and are indicative only.
 
 ## Live devices
 

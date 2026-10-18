@@ -7,7 +7,9 @@ use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 use syllabix_core::models::{BlockedFetcher, HttpFetcher, StderrProgress};
-use syllabix_core::vad::{SileroVad, END_SILENCE_FRAMES, MIN_SPEECH, MIN_SPEECH_FRAMES};
+use syllabix_core::vad::{
+    SileroVad, END_SILENCE_FRAMES, MIN_SPEECH, MIN_SPEECH_FRAMES, SPEECH_THRESHOLD,
+};
 use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames},
     Cancel, ModelCache, Vad, VadEvent,
@@ -137,9 +139,9 @@ fn populated_cache_reuses_silero_offline() {
 
 #[test]
 fn turn_timing_matches_launch_params() {
-    assert_eq!(MIN_SPEECH, std::time::Duration::from_millis(100));
-    assert_eq!(END_SILENCE_FRAMES, 11);
-    assert_eq!(MIN_SPEECH_FRAMES, 4);
+    assert_eq!(MIN_SPEECH, std::time::Duration::from_millis(384));
+    assert_eq!(END_SILENCE_FRAMES, 25);
+    assert_eq!(MIN_SPEECH_FRAMES, 12);
 }
 
 #[test]
@@ -148,7 +150,7 @@ fn speech_fixture_has_speech_frames() {
     vad.reset();
     let mut above = 0_u32;
     for frame in fixture_frames(&SPEECH) {
-        if vad.debug_probability(&frame).expect("score") >= 0.5 {
+        if vad.debug_probability(&frame).expect("score") >= SPEECH_THRESHOLD {
             above += 1;
         }
     }
