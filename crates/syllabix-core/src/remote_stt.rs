@@ -275,6 +275,7 @@ impl Stt for RemoteStt {
             turn: utterance.turn,
             text: parsed.text,
             language,
+            background: None,
         })
     }
 }

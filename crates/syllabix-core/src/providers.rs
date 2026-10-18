@@ -66,6 +66,7 @@ mod tests {
                 turn: TurnId(1),
                 text: String::from("hello"),
                 language: String::from("en"),
+                background: None,
             })
         }
     }
@@ -166,6 +167,7 @@ mod tests {
                 turn: TurnId(1),
                 text: String::from("hello"),
                 language: String::from("en"),
+                background: None,
             },
             &Cancel::new(),
             &mut |_| Ok(()),

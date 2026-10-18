@@ -158,6 +158,29 @@ impl TranscriptUi {
             LoopEvent::Partial { turn, text } => {
                 self.partial_user = Some((turn, text));
             }
+            LoopEvent::BackgroundResult {
+                turn,
+                label,
+                ok,
+                content,
+                language,
+            } => {
+                self.flush_agent();
+                if matches!(&self.partial_user, Some((id, _)) if *id == turn) {
+                    self.partial_user = None;
+                }
+                self.thinking = true;
+                self.using_tools = false;
+                self.spoken_reply_turn = None;
+                let status = if ok { "finished" } else { "failed" };
+                let line = if language.is_empty() || language == "en" {
+                    format!("Background ({label}) {status}: {content}")
+                } else {
+                    format!("Background [{language}] ({label}) {status}: {content}")
+                };
+                self.lines.push(line.clone());
+                self.display_queue.push(line);
+            }
             LoopEvent::User {
                 turn,
                 text,

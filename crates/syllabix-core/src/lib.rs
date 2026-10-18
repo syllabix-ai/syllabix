@@ -13,6 +13,7 @@
 //! and the rest) and can change.
 
 pub mod audio;
+pub mod background;
 pub mod config;
 pub mod defaults;
 pub mod dist;

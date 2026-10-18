@@ -219,6 +219,8 @@ Default off. `init` does not write it. Explicit opt-in for the developer tool lo
 
 The harness uses a generic shell through the host sandbox: macOS Seatbelt and Linux Bubblewrap, with Landlock fallback. The model may request less filesystem authority per call, but the session ceiling is fixed at process start and cannot be widened in-session. Bounded output, cancellation, and a workspace-contained working directory apply to every command. It has no wall-clock deadline; cancellation still stops the active command.
 
+For work that takes time (a long command, a fetch, or a timer), the model can set `"background": true` on `shell`, `web_fetch`, or `web_search`, or call the `sleep` tool. Syllabix acknowledges immediately, runs up to four background jobs at once, and speaks again on its own when a job completes. Goose uses the Model Context Protocol (MCP) tool `run_background` the same way.
+
 ### `developer_permissions`
 
 Optional session ceiling. Valid only when `developer_harness: true`. Unknown keys fail at load.

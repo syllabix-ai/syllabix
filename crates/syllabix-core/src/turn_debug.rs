@@ -147,6 +147,9 @@ struct TurnDump {
     capture_frames: usize,
     stt_text: Option<String>,
     stt_language: Option<String>,
+    background_label: Option<String>,
+    background_ok: Option<bool>,
+    background_content: Option<String>,
     llm_text: String,
     llm_meta: Option<LlmDebugMeta>,
     tool_events: Vec<ToolTurnEvent>,
@@ -314,6 +317,23 @@ impl TurnDebug {
         let mut inner = self.lock();
         let dump = inner.turns.entry(turn.0).or_default();
         dump.stt_text = Some(text.to_string());
+        dump.stt_language = Some(language.to_string());
+    }
+
+    /// Background-task follow-up (not mic STT).
+    pub fn note_background_result(
+        &self,
+        turn: TurnId,
+        label: &str,
+        ok: bool,
+        content: &str,
+        language: &str,
+    ) {
+        let mut inner = self.lock();
+        let dump = inner.turns.entry(turn.0).or_default();
+        dump.background_label = Some(label.to_string());
+        dump.background_ok = Some(ok);
+        dump.background_content = Some(content.to_string());
         dump.stt_language = Some(language.to_string());
     }
 
@@ -631,7 +651,13 @@ fn write_trajectory_if_enabled(
         body.push_str(&entry.to_json(redactor).to_string());
         body.push('\n');
     };
-    if let Some(text) = &dump.stt_text {
+    if let Some(label) = &dump.background_label {
+        push(TrajectoryEntry::BackgroundResult {
+            label: label.clone(),
+            ok: dump.background_ok.unwrap_or(false),
+            content: dump.background_content.clone().unwrap_or_default(),
+        });
+    } else if let Some(text) = &dump.stt_text {
         push(TrajectoryEntry::User { text: text.clone() });
     }
     for event in &dump.tool_events {
@@ -669,17 +695,19 @@ fn trajectory_tool_entry(event: &ToolTurnEvent) -> TrajectoryEntry {
 }
 
 /// Write Goose transcript lines to `acp.jsonl` under `dir`. Used by Goose and
-/// by [`TurnDebug::note_acp_trace`]. API keys are not included.
+/// by [`TurnDebug::note_acp_trace`]. Secrets and MCP `env` values are redacted
+/// before write (same [`Redactor`] as trajectory).
 pub fn write_acp_jsonl(dir: &Path, lines: &[AcpTraceLine]) -> Result<()> {
     if lines.is_empty() {
         return Ok(());
     }
+    let redactor = crate::trajectory::Redactor::from_env();
     fs::create_dir_all(dir).map_err(|err| turn_debug_io(dir, err))?;
     let mut body = String::new();
     for line in lines {
         let msg = match serde_json::from_str::<serde_json::Value>(&line.raw) {
-            Ok(value) => value,
-            Err(_) => serde_json::Value::String(line.raw.clone()),
+            Ok(value) => redact_acp_wire_message(value, &redactor),
+            Err(_) => serde_json::Value::String(redactor.redact_field(&line.raw)),
         };
         let row = serde_json::json!({ "dir": line.dir, "msg": msg });
         body.push_str(&row.to_string());
@@ -687,6 +715,59 @@ pub fn write_acp_jsonl(dir: &Path, lines: &[AcpTraceLine]) -> Result<()> {
     }
     fs::write(dir.join("acp.jsonl"), body).map_err(|err| turn_debug_io(dir, err))?;
     Ok(())
+}
+
+fn redact_acp_wire_message(
+    value: serde_json::Value,
+    redactor: &crate::trajectory::Redactor,
+) -> serde_json::Value {
+    redactor.redact_value(&redact_env_array_values(value))
+}
+
+/// MCP `env` entries are `{ name, value }`; redact every `value` before logging.
+fn redact_env_array_values(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::{Map, Value};
+    match value {
+        Value::Object(map) => {
+            let mut out = Map::new();
+            for (key, val) in map {
+                let val = if key == "env" {
+                    redact_env_array(val)
+                } else {
+                    redact_env_array_values(val)
+                };
+                out.insert(key, val);
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(redact_env_array_values).collect())
+        }
+        other => other,
+    }
+}
+
+fn redact_env_array(value: serde_json::Value) -> serde_json::Value {
+    use crate::trajectory::REDACTED;
+    use serde_json::Value;
+    match value {
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|item| {
+                    if let Value::Object(mut map) = item {
+                        if map.contains_key("name") && map.contains_key("value") {
+                            map.insert("value".into(), Value::String(REDACTED.into()));
+                        }
+                        Value::Object(map)
+                    } else {
+                        item
+                    }
+                })
+                .collect(),
+        ),
+        other => redact_env_array_values(other),
+    }
 }
 
 fn write_sidecar_json(root: &Path, id: u64, outcome: TurnOutcome, dump: &TurnDump) -> Result<()> {
@@ -1065,6 +1146,31 @@ mod tests {
             json.contains("\"tool_events\": [{\"kind\":\"result\""),
             "{json}"
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn acp_jsonl_redacts_mcp_env_values() {
+        use crate::trajectory::REDACTED;
+
+        let dir = unique_dir();
+        fs::create_dir_all(dir.join("turn-000")).unwrap();
+        let secret = "super-secret-background-token-value-12345";
+        let raw = format!(
+            r#"{{"jsonrpc":"2.0","method":"session/new","params":{{"mcpServers":[{{"name":"syllabix","env":[{{"name":"SYLLABIX_BACKGROUND_TOKEN","value":"{secret}"}}]}}]}}}}"#,
+            secret = secret
+        );
+        write_acp_jsonl(
+            &dir.join("turn-000"),
+            &[AcpTraceLine {
+                dir: "out".into(),
+                raw,
+            }],
+        )
+        .unwrap();
+        let body = fs::read_to_string(dir.join("turn-000").join("acp.jsonl")).unwrap();
+        assert!(!body.contains(secret), "{body}");
+        assert!(body.contains(REDACTED), "{body}");
         fs::remove_dir_all(&dir).unwrap();
     }
 

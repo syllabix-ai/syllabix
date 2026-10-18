@@ -117,6 +117,7 @@ impl Stt for FakeStt {
             turn: utterance.turn,
             text: format!("turn-{:03}", utterance.turn.0),
             language: BuiltinDefaults::v0().language.to_string(),
+            background: None,
         })
     }
 }
@@ -173,6 +174,7 @@ impl Stt for ScriptedStt {
             turn: utterance.turn,
             text,
             language: self.language.clone(),
+            background: None,
         })
     }
 }

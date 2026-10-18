@@ -58,7 +58,9 @@ mod tests {
         assert_eq!(llm.name(), "local");
         assert!(llm.debug_meta().is_none());
         assert!(llm.take_tool_events().is_empty());
-        let transcript = Transcript { turn: crate::TurnId(0), text: String::new(), language: String::new() };
+        let transcript = Transcript { turn: crate::TurnId(0), text: String::new(), language: String::new(),
+            background: None,
+        };
         assert!(llm.generate(&[], &transcript, &cancel, &mut |_| Ok(())).is_err());
         let mut tts = LiveTts;
         assert_eq!(tts.name(), "local");

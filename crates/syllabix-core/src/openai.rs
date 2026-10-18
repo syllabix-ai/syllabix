@@ -751,6 +751,10 @@ fn tool_definitions() -> serde_json::Value {
                         "url": {
                             "type": "string",
                             "description": "The absolute public HTTP or HTTPS URL to fetch."
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": "When true, fetch in the background and speak again when finished."
                         }
                     }
                 }
@@ -773,6 +777,10 @@ fn tool_definitions() -> serde_json::Value {
                         "count": {
                             "type": "number",
                             "description": "How many results to return (1-8, default 5)."
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": "When true, search in the background and speak again when finished."
                         }
                     }
                 }
@@ -800,6 +808,28 @@ fn tool_definitions() -> serde_json::Value {
                             "type": "string",
                             "enum": ["read-only", "workspace-write", "danger-full-access"],
                             "description": "Optional filesystem permission request; the host denies requests above the configured session ceiling."
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": "When true, run in the background and speak again when finished."
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sleep",
+                "description": "Wait for a number of seconds in the background, then let Syllabix start a follow-up turn (for timers and reminders).",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["seconds"],
+                    "properties": {
+                        "seconds": {
+                            "type": "number",
+                            "description": "How long to wait (1-3600 seconds)."
                         }
                     }
                 }
@@ -1112,10 +1142,12 @@ fn request_body_with_skills(
         ),
     }));
     for turn in kept {
-        messages.push(serde_json::json!({"role": "user", "content": turn.user.text}));
+        let (role, content) = turn.user.llm_message();
+        messages.push(serde_json::json!({"role": role, "content": content}));
         messages.push(serde_json::json!({"role": "assistant", "content": turn.assistant}));
     }
-    messages.push(serde_json::json!({"role": "user", "content": user.text}));
+    let (role, content) = user.llm_message();
+    messages.push(serde_json::json!({"role": role, "content": content}));
     serde_json::json!({
         "model": model,
         "messages": messages,
@@ -1157,6 +1189,7 @@ mod tests {
             turn: TurnId(0),
             text: text.into(),
             language: "en".into(),
+            background: None,
         }
     }
 
@@ -1879,7 +1912,7 @@ mod tests {
     }
 
     #[test]
-    fn default_request_has_no_tool_schemas_but_harness_defines_only_two() {
+    fn default_request_has_no_tool_schemas_but_harness_defines_expected_tools() {
         let default = request_body(
             "gpt-test",
             &[],
@@ -1894,7 +1927,7 @@ mod tests {
             .iter()
             .map(|tool| tool["function"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["web_fetch", "web_search", "shell"]);
+        assert_eq!(names, ["web_fetch", "web_search", "shell", "sleep"]);
     }
 
     #[test]

@@ -151,6 +151,7 @@ impl Stt for WhisperStt {
             turn: utterance.turn,
             text,
             language,
+            background: None,
         })
     }
 }

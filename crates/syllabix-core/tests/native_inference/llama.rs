@@ -40,6 +40,7 @@ fn q4_km_gguf_loads_without_segfault() {
         turn: TurnId(0),
         text: "Say the word hello.".into(),
         language: "en".into(),
+        background: None,
     };
     let chunks = collect(n.llm_mut(), &[], &user, &Cancel::new()).expect("generate after load");
     assert!(!chunks.is_empty(), "must stream at least one token chunk");
@@ -66,6 +67,7 @@ fn deterministic_fixture_streams_a_reply() {
         turn: TurnId(1),
         text: "Reply with the single word ping.".into(),
         language: "en".into(),
+        background: None,
     };
     let chunks = collect(n.llm_mut(), &[], &user, &Cancel::new()).expect("stream");
     let text = joined(&chunks);
@@ -91,6 +93,7 @@ fn generate_preserves_configured_turn_history() {
         turn: TurnId(0),
         text: "My favorite color is teal.".into(),
         language: "en".into(),
+        background: None,
     };
     let first_chunks = collect(n.llm_mut(), &[], &first, &Cancel::new()).expect("turn 1");
     let assistant: String = joined(&first_chunks);
@@ -102,6 +105,7 @@ fn generate_preserves_configured_turn_history() {
         turn: TurnId(1),
         text: "What color did I say?".into(),
         language: "en".into(),
+        background: None,
     };
     let log = n.llm().call_log();
     log.lock().expect("clear").clear();
@@ -126,6 +130,7 @@ fn cancel_aborts_native_generate_within_timeout() {
         text: "Tell a very long story about a river, a mountain, and a forest, with many details."
             .into(),
         language: "en".into(),
+        background: None,
     };
     let cancel = Cancel::new();
     let cancel_thread = cancel.clone();

@@ -339,19 +339,15 @@ impl LlamaLlm {
             ),
         });
         for turn in kept {
-            messages.push(ChatMessage {
-                role: "user".into(),
-                content: turn.user.text.clone(),
-            });
+            let (role, content) = turn.user.llm_message();
+            messages.push(ChatMessage { role, content });
             messages.push(ChatMessage {
                 role: "assistant".into(),
                 content: turn.assistant.clone(),
             });
         }
-        messages.push(ChatMessage {
-            role: "user".into(),
-            content: user.text.clone(),
-        });
+        let (role, content) = user.llm_message();
+        messages.push(ChatMessage { role, content });
         messages
     }
 
@@ -1282,6 +1278,10 @@ pub fn local_tool_definitions_json() -> String {
                         "url": {
                             "type": "string",
                             "description": "The absolute public HTTP or HTTPS URL to fetch."
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": "When true, fetch in the background and speak again when finished."
                         }
                     }
                 }
@@ -1304,6 +1304,10 @@ pub fn local_tool_definitions_json() -> String {
                         "count": {
                             "type": "number",
                             "description": "How many results to return (1-8, default 5)."
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": "When true, search in the background and speak again when finished."
                         }
                     }
                 }
@@ -1331,6 +1335,28 @@ pub fn local_tool_definitions_json() -> String {
                             "type": "string",
                             "enum": ["read-only", "workspace-write", "danger-full-access"],
                             "description": "Optional filesystem permission request; the host denies requests above the configured session ceiling."
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": "When true, run in the background and speak again when finished."
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sleep",
+                "description": "Wait for a number of seconds in the background, then let Syllabix start a follow-up turn (for timers and reminders).",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["seconds"],
+                    "properties": {
+                        "seconds": {
+                            "type": "number",
+                            "description": "How long to wait (1-3600 seconds)."
                         }
                     }
                 }
@@ -1814,6 +1840,7 @@ mod tests {
             turn: TurnId(turn),
             text: text.into(),
             language: crate::stt::STT_LANGUAGE.to_string(),
+            background: None,
         }
     }
 
@@ -1822,6 +1849,7 @@ mod tests {
             turn: TurnId(turn),
             text: text.into(),
             language: language.into(),
+            background: None,
         }
     }
 
@@ -2222,7 +2250,7 @@ mod tests {
                     .expect("function name")
             })
             .collect();
-        assert_eq!(names, vec!["web_fetch", "web_search", "shell"]);
+        assert_eq!(names, vec!["web_fetch", "web_search", "shell", "sleep"]);
         let search_description = value[1]["function"]["description"]
             .as_str()
             .expect("search description");
@@ -2320,7 +2348,7 @@ mod tests {
         };
         let normalized = normalize_local_tool_call(0, parsed).expect("normalize");
         assert_eq!(normalized.arguments["count"], serde_json::json!(5));
-        let validated =
+        let (validated, _) =
             crate::executor::validate_call(&normalized, &std::env::current_dir().expect("cwd"))
                 .expect("string count validates after normalization");
         assert!(matches!(

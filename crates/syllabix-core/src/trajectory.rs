@@ -29,6 +29,12 @@ const MIN_SECRET_LEN: usize = 8;
 pub enum TrajectoryEntry {
     /// The user's recognized utterance for this turn.
     User { text: String },
+    /// Agent follow-up after a background task finished (not mic STT).
+    BackgroundResult {
+        label: String,
+        ok: bool,
+        content: String,
+    },
     /// The assistant's reply for this turn.
     Assistant { text: String },
     /// A tool call the model requested, with its validated arguments.
@@ -55,6 +61,14 @@ impl TrajectoryEntry {
         match self {
             Self::User { text } => {
                 json!({ "kind": "user", "text": redactor.redact_text(text) })
+            }
+            Self::BackgroundResult { label, ok, content } => {
+                json!({
+                    "kind": "background_result",
+                    "label": label,
+                    "ok": ok,
+                    "content": redactor.redact_text(content),
+                })
             }
             Self::Assistant { text } => {
                 json!({ "kind": "assistant", "text": redactor.redact_text(text) })

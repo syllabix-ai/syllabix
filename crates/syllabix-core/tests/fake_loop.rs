@@ -30,6 +30,7 @@ fn run_with(
             events: None,
             turn_debug: None,
             controls: RuntimeControls::new(false),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -205,6 +206,7 @@ fn generation_cancel_drops_assistant_audio_and_keeps_the_next_user_turn() {
             events: None,
             turn_debug: None,
             controls: RuntimeControls::new(false),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -355,6 +357,7 @@ fn empty_and_whitespace_stt_skip_llm_and_keep_later_turns() {
             events: None,
             turn_debug: None,
             controls: RuntimeControls::new(false),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -419,6 +422,7 @@ fn turn_debug_one_turn_writes_wavs_and_does_not_change_reply() {
             events: None,
             turn_debug: Some(debug),
             controls: RuntimeControls::new(false),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -490,6 +494,7 @@ fn turn_debug_skipped_stt_still_writes() {
             events: None,
             turn_debug: Some(debug),
             controls: RuntimeControls::new(false),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -523,6 +528,7 @@ fn turn_debug_empty_stt_is_skipped_without_tts() {
             events: None,
             turn_debug: Some(debug),
             controls: RuntimeControls::new(false),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -573,6 +579,7 @@ fn turn_debug_cancel_writes_partial_turn() {
             events: None,
             turn_debug: Some(debug),
             controls: RuntimeControls::new(false),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -668,6 +675,7 @@ fn barge_loop(barge_in: bool, llm: FakeLlm) -> syllabix_core::LoopReport {
             events: None,
             turn_debug: None,
             controls: RuntimeControls::new(barge_in),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -720,6 +728,7 @@ fn barge_in_turn_debug_writes_interrupted_turn() {
             events: None,
             turn_debug: Some(debug),
             controls: RuntimeControls::new(true),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -759,6 +768,7 @@ fn diagnostics_sidecar_carries_the_full_turn_timeline() {
             events: None,
             turn_debug: Some(debug.clone()),
             controls: RuntimeControls::new(false),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -831,6 +841,7 @@ fn interrupted_barge_in_turn_has_a_partial_timeline_without_drain() {
             events: None,
             turn_debug: Some(debug),
             controls: RuntimeControls::new(true),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -890,6 +901,7 @@ fn vad_emits_speech_start_during_tts_only_with_barge_in() {
                 events: None,
                 turn_debug: None,
                 controls: RuntimeControls::new(barge_in),
+                ..LoopConfig::default()
             },
             PipelineStages {
                 vad: OverlapVad {
@@ -1043,6 +1055,7 @@ fn default_mode_never_transcribes_assistant_audio_after_playback_drains() {
                 turn: utterance.turn,
                 text: text.into(),
                 language: "en".into(),
+                background: None,
             })
         }
     }
@@ -1058,6 +1071,7 @@ fn default_mode_never_transcribes_assistant_audio_after_playback_drains() {
             events: None,
             turn_debug: None,
             controls: RuntimeControls::new(false),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -1158,6 +1172,7 @@ fn barge_in_stops_a_blocked_previous_tts_play() {
             events: None,
             turn_debug: None,
             controls: RuntimeControls::new(true),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),
@@ -1318,6 +1333,7 @@ fn first_tts_does_not_lose_speaker_copy_while_vad_is_paused() {
             events: None,
             turn_debug: None,
             controls: RuntimeControls::new(false),
+            ..LoopConfig::default()
         },
         PipelineStages {
             vad: FakeVad::new(),

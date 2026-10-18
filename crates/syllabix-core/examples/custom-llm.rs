@@ -104,6 +104,7 @@ impl Stt for FixedStt {
             turn: utterance.turn,
             text: String::from("hello from custom llm"),
             language: String::from("en"),
+            background: None,
         })
     }
 }

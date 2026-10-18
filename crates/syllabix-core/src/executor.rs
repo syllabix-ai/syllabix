@@ -136,9 +136,21 @@ pub struct ShellRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidatedCall {
     Shell(ShellRequest),
-    WebFetch { url: String },
-    WebSearch { query: String, count: usize },
+    WebFetch {
+        url: String,
+    },
+    WebSearch {
+        query: String,
+        count: usize,
+    },
+    /// Delay before a follow-up turn (always runs in the background).
+    Sleep {
+        seconds: u32,
+    },
 }
+
+/// Maximum `sleep` duration for background timers.
+pub const MAX_SLEEP_SECONDS: u32 = 3600;
 
 /// Execute one model call with its host-owned authority. A failed validation
 /// becomes a bounded, model-visible rejection rather than a provider failure.
@@ -163,11 +175,31 @@ pub fn execute_with_permissions(
     session: &DeveloperPermissions,
     cancel: &Cancel,
 ) -> crate::types::ToolResult {
-    let result = match validate_call(call, workspace) {
-        Ok(ValidatedCall::Shell(request)) => execute_shell(request, workspace, session, cancel),
-        Ok(ValidatedCall::WebFetch { url }) => execute_fetch(&url, cancel),
-        Ok(ValidatedCall::WebSearch { query, count }) => execute_search(&query, count, cancel),
-        Err(message) => Err(message),
+    let (validated, background) = match validate_call(call, workspace) {
+        Ok(pair) => pair,
+        Err(message) => {
+            return crate::types::ToolResult {
+                tool_call_id: call.id.clone(),
+                ok: false,
+                content: message,
+            };
+        }
+    };
+    if background {
+        if let Some(registry) = crate::background::registry() {
+            return registry.try_spawn_validated(&call.id, validated, workspace, session);
+        }
+        return crate::types::ToolResult {
+            tool_call_id: call.id.clone(),
+            ok: false,
+            content: "background tasks require an active voice session".into(),
+        };
+    }
+    let result = match validated {
+        ValidatedCall::Shell(request) => execute_shell(request, workspace, session, cancel),
+        ValidatedCall::WebFetch { url } => execute_fetch(&url, cancel),
+        ValidatedCall::WebSearch { query, count } => execute_search(&query, count, cancel),
+        ValidatedCall::Sleep { .. } => Err("sleep must run in the background".into()),
     };
     crate::types::ToolResult {
         tool_call_id: call.id.clone(),
@@ -177,15 +209,57 @@ pub fn execute_with_permissions(
 }
 
 /// Validate one model-visible call before it can reach an executor.
-pub fn validate_call(call: &ToolCall, workspace: &Path) -> Result<ValidatedCall, String> {
-    match call.name.as_str() {
-        "shell" => validate_shell(call, workspace).map(ValidatedCall::Shell),
-        "web_fetch" => validate_fetch(call).map(|url| ValidatedCall::WebFetch { url }),
-        "web_search" => {
-            validate_search(call).map(|(query, count)| ValidatedCall::WebSearch { query, count })
-        }
+pub fn validate_call(call: &ToolCall, workspace: &Path) -> Result<(ValidatedCall, bool), String> {
+    let (arguments, background) = strip_background_flag(&call.arguments)?;
+    let stripped = ToolCall {
+        id: call.id.clone(),
+        name: call.name.clone(),
+        arguments,
+    };
+    let validated = match stripped.name.as_str() {
+        "shell" => validate_shell(&stripped, workspace).map(ValidatedCall::Shell),
+        "web_fetch" => validate_fetch(&stripped).map(|url| ValidatedCall::WebFetch { url }),
+        "web_search" => validate_search(&stripped)
+            .map(|(query, count)| ValidatedCall::WebSearch { query, count }),
+        "sleep" => validate_sleep(&stripped).map(|seconds| ValidatedCall::Sleep { seconds }),
         _ => Err("tool is not available".into()),
+    }?;
+    let background = background || matches!(validated, ValidatedCall::Sleep { .. });
+    Ok((validated, background))
+}
+
+fn strip_background_flag(
+    arguments: &serde_json::Value,
+) -> Result<(serde_json::Value, bool), String> {
+    let object = arguments
+        .as_object()
+        .ok_or("tool arguments must be an object")?
+        .clone();
+    let background = object
+        .get("background")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let mut stripped = object;
+    stripped.remove("background");
+    Ok((serde_json::Value::Object(stripped), background))
+}
+
+fn validate_sleep(call: &ToolCall) -> Result<u32, String> {
+    let object = call
+        .arguments
+        .as_object()
+        .ok_or("sleep arguments must be an object")?;
+    if object.len() != 1 || !object.contains_key("seconds") {
+        return Err("sleep accepts only seconds".into());
     }
+    let seconds = object
+        .get("seconds")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("sleep seconds must be a positive number")?;
+    if seconds == 0 || seconds > MAX_SLEEP_SECONDS as u64 {
+        return Err("sleep seconds are out of range".into());
+    }
+    Ok(seconds as u32)
 }
 
 fn validate_fetch(call: &ToolCall) -> Result<String, String> {
@@ -1202,10 +1276,14 @@ mod tests {
         }
     }
 
+    fn validated(call: &ToolCall, workspace: &Path) -> Result<ValidatedCall, String> {
+        validate_call(call, workspace).map(|(validated, _)| validated)
+    }
+
     #[test]
     fn accepts_generic_shell_commands_and_optional_narrowing() {
         let workspace = std::env::current_dir().unwrap();
-        let request = validate_call(
+        let request = validated(
             &call("shell", serde_json::json!({"command":"rg -n TODO src"})),
             &workspace,
         )
@@ -1216,12 +1294,12 @@ mod tests {
         };
         assert_eq!(request.command, "rg -n TODO src");
         assert_eq!(request.permission, None);
-        let ValidatedCall::Shell(request) = validate_call(
+        let ValidatedCall::Shell(request) = validated(
             &call("shell", serde_json::json!({"command":"cargo test","workdir":"src","permission":"read-only"})),
             &workspace,
         ).unwrap() else { unreachable!() };
         assert_eq!(request.permission, Some(FilesystemMode::ReadOnly));
-        assert!(validate_call(
+        assert!(validated(
             &call("shell", serde_json::json!({"argv":["pwd"]})),
             &workspace
         )
@@ -1232,57 +1310,57 @@ mod tests {
     fn rejects_malformed_shell_arguments() {
         let workspace = std::env::current_dir().unwrap();
         // Missing or non-object args
-        assert!(validate_call(&call("shell", serde_json::Value::Null), &workspace).is_err());
-        assert!(validate_call(&call("shell", serde_json::json!(123)), &workspace).is_err());
-        assert!(validate_call(
+        assert!(validated(&call("shell", serde_json::Value::Null), &workspace).is_err());
+        assert!(validated(&call("shell", serde_json::json!(123)), &workspace).is_err());
+        assert!(validated(
             &call("shell", serde_json::json!(["git", "status"])),
             &workspace
         )
         .is_err());
         // Extra keys
-        assert!(validate_call(
+        assert!(validated(
             &call("shell", serde_json::json!({"command":"pwd","extra":1})),
             &workspace
         )
         .is_err());
         // Empty/non-string command
-        assert!(validate_call(
+        assert!(validated(
             &call("shell", serde_json::json!({"command":""})),
             &workspace
         )
         .is_err());
-        assert!(validate_call(
+        assert!(validated(
             &call("shell", serde_json::json!({"command":123})),
             &workspace
         )
         .is_err());
-        assert!(validate_call(
+        assert!(validated(
             &call("shell", serde_json::json!({"command":"pwd\0"})),
             &workspace
         )
         .is_err());
         // Oversized command
         let huge_command = "a".repeat(MAX_COMMAND_BYTES + 1);
-        assert!(validate_call(
+        assert!(validated(
             &call("shell", serde_json::json!({"command":huge_command})),
             &workspace
         )
         .is_err());
         // Non-string workdir
-        assert!(validate_call(
+        assert!(validated(
             &call("shell", serde_json::json!({"command":"pwd","workdir":123})),
             &workspace
         )
         .is_err());
         // Unknown tool
-        assert!(validate_call(&call("unknown_tool", serde_json::json!({})), &workspace).is_err());
+        assert!(validated(&call("unknown_tool", serde_json::json!({})), &workspace).is_err());
     }
 
     #[test]
     fn shell_cwd_cannot_escape_workspace() {
         let workspace = std::env::current_dir().unwrap();
         for cwd in ["..", "/tmp", "missing", "../..", "/"] {
-            assert!(validate_call(
+            assert!(validated(
                 &call("shell", serde_json::json!({"command":"pwd","workdir":cwd})),
                 &workspace
             )
@@ -1315,7 +1393,7 @@ mod tests {
     #[test]
     fn fetch_requires_credential_free_http_url() {
         let workspace = std::env::current_dir().unwrap();
-        assert!(validate_call(
+        assert!(validated(
             &call(
                 "web_fetch",
                 serde_json::json!({"url":"https://example.test/a"})
@@ -1323,7 +1401,7 @@ mod tests {
             &workspace
         )
         .is_ok());
-        assert!(validate_call(
+        assert!(validated(
             &call(
                 "web_fetch",
                 serde_json::json!({"url":"http://example.test/a"})
@@ -1341,7 +1419,7 @@ mod tests {
             "not a url",
         ] {
             assert!(
-                validate_call(
+                validated(
                     &call("web_fetch", serde_json::json!({"url":url})),
                     &workspace
                 )
@@ -1350,8 +1428,8 @@ mod tests {
             );
         }
         // Non-object arguments or extra keys
-        assert!(validate_call(&call("web_fetch", serde_json::json!(123)), &workspace).is_err());
-        assert!(validate_call(
+        assert!(validated(&call("web_fetch", serde_json::json!(123)), &workspace).is_err());
+        assert!(validated(
             &call(
                 "web_fetch",
                 serde_json::json!({"url":"https://example.test","extra":true})
@@ -1359,7 +1437,7 @@ mod tests {
             &workspace
         )
         .is_err());
-        assert!(validate_call(
+        assert!(validated(
             &call(
                 "web_fetch",
                 serde_json::json!({"not_url":"https://example.test"})
@@ -1444,12 +1522,12 @@ mod tests {
     #[test]
     fn web_search_validates_query_and_count() {
         let workspace = std::env::current_dir().unwrap();
-        assert!(validate_call(
+        assert!(validated(
             &call("web_search", serde_json::json!({"query":"rust language"})),
             &workspace
         )
         .is_ok());
-        assert!(validate_call(
+        assert!(validated(
             &call("web_search", serde_json::json!({"query":"rust","count":3})),
             &workspace
         )
@@ -1463,7 +1541,7 @@ mod tests {
             serde_json::json!({"query":"rust","extra":1}),
             serde_json::json!({"q":"rust"}),
         ] {
-            assert!(validate_call(&call("web_search", args), &workspace).is_err());
+            assert!(validated(&call("web_search", args), &workspace).is_err());
         }
     }
 
@@ -1748,7 +1826,7 @@ mod tests {
     #[test]
     fn web_search_rejects_non_integer_counts_and_long_queries() {
         let workspace = std::env::current_dir().unwrap();
-        assert!(validate_call(
+        assert!(validated(
             &call("web_search", serde_json::json!({"query":"rust","count":8})),
             &workspace
         )
@@ -1759,7 +1837,7 @@ mod tests {
             serde_json::json!({"query":"rust","count":-1}),
             serde_json::json!({"query":"x".repeat(MAX_SEARCH_QUERY_BYTES + 1)}),
         ] {
-            assert!(validate_call(&call("web_search", args), &workspace).is_err());
+            assert!(validated(&call("web_search", args), &workspace).is_err());
         }
     }
 

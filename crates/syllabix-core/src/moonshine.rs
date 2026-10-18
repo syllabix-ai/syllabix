@@ -393,6 +393,7 @@ impl Stt for MoonshineStt {
             turn: utterance.turn,
             text,
             language: self.language.clone(),
+            background: None,
         })
     }
 

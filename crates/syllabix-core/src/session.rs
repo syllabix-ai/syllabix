@@ -361,6 +361,7 @@ impl Session {
             events,
             turn_debug,
             controls,
+            background: None,
         };
         let stages = PipelineStages {
             vad: DynVad(vad),
