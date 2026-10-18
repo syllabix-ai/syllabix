@@ -85,6 +85,9 @@ pub enum Commands {
         #[arg(long, value_name = "ID")]
         model: String,
     },
+    /// Run contributor-only VAD endpointing accuracy measurements.
+    #[command(hide = true)]
+    VadLab,
     /// Serve local STT or TTS weights over OpenAI Audio HTTP.
     Serve {
         #[command(subcommand)]
@@ -151,6 +154,10 @@ pub fn execute(cli: Cli) -> Result<()> {
         Commands::BenchTtsWorker { .. } => Err(Error::not_implemented("bench")),
         #[cfg(coverage)]
         Commands::BenchLlmWorker { .. } => Err(Error::not_implemented("bench")),
+        #[cfg(not(coverage))]
+        Commands::VadLab => crate::vad_lab::run(),
+        #[cfg(coverage)]
+        Commands::VadLab => Err(Error::not_implemented("vad-lab")),
         Commands::Serve { command } => crate::serve::execute(command),
         Commands::Mcp {
             workspace,
@@ -363,6 +370,13 @@ mod tests {
         assert!(help.contains("init"), "{help}");
         assert!(help.contains("serve"), "{help}");
         assert!(!help.contains("bench"), "{help}");
+        assert!(!help.contains("vad-lab"), "{help}");
+    }
+
+    #[test]
+    fn parses_hidden_vad_lab() {
+        let cli = Cli::try_parse_from(["syllabix", "vad-lab"]).expect("parse vad-lab");
+        assert!(matches!(cli.command, Commands::VadLab));
     }
 
     #[test]
@@ -478,6 +492,9 @@ mod tests {
                     out: PathBuf::from("worker.jsonl"),
                     model: String::from("lfm2.5-2.6b"),
                 },
+            },
+            Cli {
+                command: Commands::VadLab,
             },
         ] {
             assert!(matches!(execute(cli), Err(Error::NotImplemented { .. })));
