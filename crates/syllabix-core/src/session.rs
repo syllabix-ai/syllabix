@@ -298,6 +298,7 @@ impl Session {
             sink,
             input,
         } = self;
+        crate::session_env::install_from_config(&config);
         let llm_api_key = if llm.is_none() && config.llm == LlmProvider::Online {
             Some(resolve_api_key(|name| std::env::var(name).ok())?)
         } else {

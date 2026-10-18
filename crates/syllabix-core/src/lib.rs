@@ -38,6 +38,7 @@ pub mod remote_stt;
 #[cfg(feature = "cloud")]
 pub mod remote_tts;
 pub mod sandbox;
+mod session_env;
 pub mod skills;
 pub mod speech_text;
 pub mod stt;

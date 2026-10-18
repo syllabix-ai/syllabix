@@ -59,9 +59,13 @@ pub struct AgentConfig {
     pub stt_compute: TtsCompute,
     /// STT language code: a whisper-supported ISO code or `auto`.
     pub language: String,
-    /// `pipeline.agent` (`builtin` or `goose`). Default `builtin`.
+    /// `developer_harness.agent` (`builtin` or `goose`). Default `builtin`.
     /// `goose` requires `pipeline.llm.provider: online`.
     pub agent: AgentBackend,
+    /// `developer_harness.inherit_current_session`. Default `true`: sandboxed
+    /// commands inherit the launcher shell environment. `false` clears it and
+    /// applies safe defaults only.
+    pub inherit_current_session: bool,
     /// LLM provider.
     pub llm: LlmProvider,
     /// LLM model id (`lfm2.5-2.6b`, `lfm2.5-350m`, `lfm2.5-230m`, `llama-3.2-1b`, `qwen3.5-0.8b`, or `qwen3.5-2b`).
@@ -143,6 +147,7 @@ impl AgentConfig {
             stt_compute: TtsCompute::Auto,
             language: defaults.language.to_string(),
             agent: AgentBackend::Builtin,
+            inherit_current_session: true,
             llm: defaults.llm,
             llm_model: defaults.llm_model.to_string(),
             thinking: defaults.llm_thinking,
@@ -235,16 +240,12 @@ impl AgentConfig {
         } else {
             format!("    compute: {}\n", self.tts_compute.as_str())
         };
-        let agent_line = if self.agent == AgentBackend::Builtin {
-            String::new()
-        } else {
-            format!("  agent: {}\n", self.agent.as_str())
-        };
+        let developer_harness_block = self.render_developer_harness_block();
         format!(
             "\
 name: {name}
 pipeline:
-{agent_line}  vad:
+  vad:
     provider: {vad}
     threshold: {vad_threshold}
     min_speech_ms: {vad_min_speech_ms}
@@ -263,7 +264,7 @@ pipeline:
     provider: {tts}
     model: {tts_model}
     language: {tts_language}
-{tts_compute_line}{tts_base_url_line}{diagnostics_block}{skills_block}",
+{tts_compute_line}{tts_base_url_line}{developer_harness_block}{diagnostics_block}{skills_block}",
             name = self.name,
             vad = self.vad.as_str(),
             vad_threshold = self.vad_threshold,
@@ -273,7 +274,7 @@ pipeline:
             stt = self.stt.as_str(),
             stt_model = self.stt_model_id,
             stt_compute_line = stt_compute_line,
-            agent_line = agent_line,
+            developer_harness_block = developer_harness_block,
             language = self.language,
             stt_base_url_line = self
                 .stt_base_url
@@ -345,6 +346,20 @@ pipeline:
         output
     }
 
+    fn render_developer_harness_block(&self) -> String {
+        if self.agent == AgentBackend::Builtin && self.inherit_current_session {
+            return String::new();
+        }
+        let mut out = String::from("developer_harness:\n");
+        if self.agent != AgentBackend::Builtin {
+            out.push_str(&format!("  agent: {}\n", self.agent.as_str()));
+        }
+        if !self.inherit_current_session {
+            out.push_str("  inherit_current_session: false\n");
+        }
+        out
+    }
+
     fn render_developer_permissions_block(&self) -> String {
         if !self.llm_developer_harness
             || self.llm_developer_permissions == DeveloperPermissions::default_session()
@@ -395,18 +410,28 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     deny_unknown(
         root,
         ".",
-        &["name", "pipeline", "diagnostics", "auto-timeout", "skills"],
+        &[
+            "name",
+            "pipeline",
+            "developer_harness",
+            "diagnostics",
+            "auto-timeout",
+            "skills",
+        ],
     )?;
     let name = required_string(root, "name", "name")?;
     let pipeline = mapping(
         root.get("pipeline").ok_or_else(|| missing("pipeline"))?,
         "pipeline",
     )?;
-    deny_unknown(pipeline, "pipeline", &["agent", "vad", "stt", "llm", "tts"])?;
-    let agent = match optional_string(pipeline, "pipeline", "agent")? {
-        Some(value) => parse_agent(&value)?,
-        None => AgentBackend::Builtin,
-    };
+    if pipeline.get("agent").is_some() {
+        return Err(Error::Config {
+            field: "pipeline.agent".into(),
+            message: "this key moved; set developer_harness.agent instead".into(),
+        });
+    }
+    deny_unknown(pipeline, "pipeline", &["vad", "stt", "llm", "tts"])?;
+    let (agent, inherit_current_session) = parse_developer_harness(root)?;
 
     let vad = mapping(required(pipeline, "pipeline.vad", "vad")?, "pipeline.vad")?;
     deny_unknown(
@@ -558,7 +583,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     let llm_developer_permissions = parse_developer_permissions(llm, llm_developer_harness)?;
     if agent == AgentBackend::Goose && llm_provider != LlmProvider::Online {
         return Err(Error::Config {
-            field: "pipeline.agent".into(),
+            field: "developer_harness.agent".into(),
             message: "goose requires pipeline.llm.provider: online".into(),
         });
     }
@@ -642,6 +667,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         stt_compute,
         language,
         agent,
+        inherit_current_session,
         llm: llm_provider,
         llm_model: llm_model.to_string(),
         thinking,
@@ -791,6 +817,25 @@ fn mapping<'a>(value: &'a Value, field: &str) -> Result<&'a serde_yaml::Mapping>
         field: field.into(),
         message: "must be a mapping".into(),
     })
+}
+
+fn parse_developer_harness(root: &serde_yaml::Mapping) -> Result<(AgentBackend, bool)> {
+    let Some(value) = root.get("developer_harness") else {
+        return Ok((AgentBackend::Builtin, true));
+    };
+    let map = mapping(value, "developer_harness")?;
+    deny_unknown(
+        map,
+        "developer_harness",
+        &["agent", "inherit_current_session"],
+    )?;
+    let agent = match optional_string(map, "developer_harness", "agent")? {
+        Some(value) => parse_agent_field("developer_harness.agent", &value)?,
+        None => AgentBackend::Builtin,
+    };
+    let inherit_current_session =
+        optional_bool(map, "developer_harness", "inherit_current_session", true)?;
+    Ok((agent, inherit_current_session))
 }
 
 fn parse_developer_permissions(
@@ -1119,11 +1164,11 @@ fn parse_llm(value: &str) -> Result<LlmProvider> {
     }
 }
 
-fn parse_agent(value: &str) -> Result<AgentBackend> {
+fn parse_agent_field(field: &str, value: &str) -> Result<AgentBackend> {
     match value {
         "builtin" => Ok(AgentBackend::Builtin),
         "goose" => Ok(AgentBackend::Goose),
-        other => Err(unsupported("pipeline.agent", other, "builtin, goose")),
+        other => Err(unsupported(field, other, "builtin, goose")),
     }
 }
 
@@ -1286,17 +1331,17 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_agent_defaults_to_builtin_and_accepts_goose_online() {
+    fn developer_harness_agent_defaults_to_builtin_and_accepts_goose_online() {
         let yaml = AgentConfig::v0().to_yaml();
         let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
         assert_eq!(parsed.agent, AgentBackend::Builtin);
-        let explicit = yaml.replacen("pipeline:\n", "pipeline:\n  agent: builtin\n", 1);
+        assert!(parsed.inherit_current_session);
+        let explicit = format!("{yaml}developer_harness:\n  agent: builtin\n",);
         let parsed = AgentConfig::parse_yaml(&explicit).unwrap();
         assert_eq!(parsed.agent, AgentBackend::Builtin);
-        let goose = online_yaml("gpt-4o-mini", "https://api.openai.com/v1").replacen(
-            "pipeline:\n",
-            "pipeline:\n  agent: goose\n",
-            1,
+        let goose = format!(
+            "{}\ndeveloper_harness:\n  agent: goose\n",
+            online_yaml("gpt-4o-mini", "https://api.openai.com/v1")
         );
         let parsed = AgentConfig::parse_yaml(&goose).unwrap();
         assert_eq!(parsed.agent, AgentBackend::Goose);
@@ -1310,25 +1355,48 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_agent_goose_requires_online_llm() {
+    fn developer_harness_agent_goose_requires_online_llm() {
+        let yaml = format!(
+            "{}\ndeveloper_harness:\n  agent: goose\n",
+            AgentConfig::v0().to_yaml()
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("developer_harness.agent"), "{err}");
+        assert!(err.to_string().contains("online"), "{err}");
+    }
+
+    #[test]
+    fn developer_harness_agent_unknown_value_is_named() {
+        let yaml = format!(
+            "{}\ndeveloper_harness:\n  agent: cursor\n",
+            AgentConfig::v0().to_yaml()
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("developer_harness.agent"), "{err}");
+        assert!(err.to_string().contains("builtin, goose"), "{err}");
+    }
+
+    #[test]
+    fn pipeline_agent_key_reports_migration_target() {
         let yaml =
             AgentConfig::v0()
                 .to_yaml()
                 .replacen("pipeline:\n", "pipeline:\n  agent: goose\n", 1);
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.agent"), "{err}");
-        assert!(err.to_string().contains("online"), "{err}");
+        assert!(err.to_string().contains("developer_harness.agent"), "{err}");
     }
 
     #[test]
-    fn pipeline_agent_unknown_value_is_named() {
-        let yaml =
-            AgentConfig::v0()
-                .to_yaml()
-                .replacen("pipeline:\n", "pipeline:\n  agent: cursor\n", 1);
-        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
-        assert!(err.to_string().contains("pipeline.agent"), "{err}");
-        assert!(err.to_string().contains("builtin, goose"), "{err}");
+    fn inherit_current_session_defaults_true_and_round_trips_false() {
+        assert!(AgentConfig::v0().inherit_current_session);
+        let yaml = format!(
+            "{}\ndeveloper_harness:\n  inherit_current_session: false\n",
+            AgentConfig::v0().to_yaml()
+        );
+        let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert!(!parsed.inherit_current_session);
+        assert!(parsed.to_yaml().contains("inherit_current_session: false"));
     }
 
     #[test]

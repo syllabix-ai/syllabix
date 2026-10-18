@@ -43,7 +43,7 @@ mod production {
         /// User-keyed OpenAI-compatible endpoint.
         #[cfg(feature = "cloud")]
         Cloud(OpenAiLlm),
-        /// Goose runs the reply (`pipeline.agent: goose`).
+        /// Goose runs the reply (`developer_harness.agent: goose`).
         #[cfg(feature = "cloud")]
         Goose(GooseAgent),
     }
@@ -473,7 +473,7 @@ mod production {
 
     /// Build just the LLM slot from config. The cloud path never touches the
     /// model cache — no GGUF is fetched or loaded for a cloud run.
-    /// `pipeline.agent: goose` is online-only: after the pinned Goose CLI is on
+    /// `developer_harness.agent: goose` is online-only: after the pinned Goose CLI is on
     /// disk, this starts the Goose backend for replies.
     pub fn build_llm(
         cache: &ModelCache,
@@ -486,7 +486,7 @@ mod production {
         if config.agent == crate::defaults::AgentBackend::Goose {
             if config.llm != crate::defaults::LlmProvider::Online {
                 return Err(Error::Config {
-                    field: "pipeline.agent".into(),
+                    field: "developer_harness.agent".into(),
                     message: "goose requires pipeline.llm.provider: online".into(),
                 });
             }
@@ -526,7 +526,7 @@ mod production {
             {
                 let _ = (cache, fetcher, progress, cancel, llm_api_key);
                 return Err(Error::Config {
-                    field: "pipeline.agent".into(),
+                    field: "developer_harness.agent".into(),
                     message: "goose requires the `cloud` feature".into(),
                 });
             }
@@ -703,7 +703,7 @@ mod production {
             }
             #[cfg(not(feature = "cloud"))]
             {
-                assert!(err.to_string().contains("pipeline.agent"), "{err}");
+                assert!(err.to_string().contains("developer_harness.agent"), "{err}");
                 assert!(err.to_string().contains("cloud"), "{err}");
                 assert_eq!(fetcher.hits.load(std::sync::atomic::Ordering::SeqCst), 0);
             }
@@ -724,7 +724,7 @@ mod production {
             )
             .err()
             .expect("goose with a local LLM is a config error");
-            assert!(err.to_string().contains("pipeline.agent"), "{err}");
+            assert!(err.to_string().contains("developer_harness.agent"), "{err}");
             assert!(err.to_string().contains("online"), "{err}");
             assert!(
                 !err.to_string().contains("not implemented yet"),

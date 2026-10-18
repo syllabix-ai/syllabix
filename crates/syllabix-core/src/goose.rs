@@ -1,4 +1,4 @@
-//! Goose backend for `pipeline.agent: goose`.
+//! Goose backend for `developer_harness.agent: goose`.
 //!
 //! Starts the pinned Goose CLI and runs each reply through it. Goose keeps
 //! conversation state; Syllabix history is not sent. `generate()` uses channels
@@ -437,6 +437,9 @@ impl GooseAgent {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::from(stderr_file));
+        if !config.inherit_current_session {
+            command.env_clear();
+        }
         for (key, value) in &env {
             command.env(key, value);
         }
