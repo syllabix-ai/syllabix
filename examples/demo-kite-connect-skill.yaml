@@ -1,0 +1,40 @@
+# Manual test: Kite Connect custom skill on builtin or Goose harness.
+# NOT for merge / production — copy as syllabix.yaml only for local checks.
+# Needs SYLLABIX_LLM_API_KEY. Export KITE_API_KEY, KITE_API_SECRET, and
+# (when available) KITE_ACCESS_TOKEN in this shell before `syllabix run`.
+# Default developer_harness.inherit_current_session: true passes them into
+# sandboxed commands (builtin shell and Goose terminal/*).
+# Key guide: docs/syllabix-yaml.md.
+#
+# Skills are not auto-discovered from skills/; enable the repository root
+# below. Kite HTTP/WebSocket needs developer_permissions.network: allow.
+name: demo-kite-connect-skill
+pipeline:
+  vad:
+    provider: silero
+  stt:
+    provider: local
+    model: whisper-small
+    language: en
+  llm:
+    provider: online
+    model: gpt-5.4
+    base_url: https://api.openai.com/v1
+    developer_harness: true
+    developer_permissions:
+      filesystem: workspace-write
+      network: allow
+      secrets: none
+    system_prompt: "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji. You have access to run terminal to run system command and few other tools available; when the user's request needs a system command or a tool, use them and answer from what you find. Prefer the kite-connect skill when building on Zerodha Kite Connect. Read-only Kite use only (holdings, positions, quotes); do not place or modify orders."
+  tts:
+    provider: local
+    model: pocket-tts
+
+# Default agent is builtin. For the Goose harness check, set agent: goose.
+developer_harness:
+  agent: builtin
+
+skills:
+  roots:
+    - path: skills
+      source: repository
