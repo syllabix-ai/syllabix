@@ -31,6 +31,12 @@ mic → Silero VAD → STT → LLM ⇄ sandboxed shell → … → TTS → speak
 
 [Skills](syllabix-yaml.md#skills--local-instruction-packages) are optional instruction packages (`SKILL.md` under configured roots). Their text is shown to the harness as reference; they do not run code and do not widen sandbox permissions. Tool policy and ceilings: [pipeline.llm.developer_harness](syllabix-yaml.md#tool-loop-developer_harness).
 
+### Background tasks and follow-up turns
+
+With the harness on, the model can set `"background": true` on `shell`, `web_fetch`, or `web_search`, or call `sleep` for a timer. Syllabix returns right away so the agent can acknowledge the user, runs the work on a bounded worker pool (up to four jobs at once), and starts a new turn by itself when a job finishes. Follow-up turns wait until you are not speaking, the agent is not mid-turn, and the microphone is not muted. Barge-in and quit behave like any other turn: quit cancels outstanding background work.
+
+The Goose agent uses the same mechanism through the Syllabix Model Context Protocol (MCP) tool `run_background`.
+
 ## Barge-in
 
 Default `run` finishes the current sentence before listening. `run --barge-in` keeps VAD running during TTS and cancels playback on user speech (queued audio dropped, LLM/TTS cancelled, new turn kept).

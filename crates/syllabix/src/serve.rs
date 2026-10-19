@@ -352,11 +352,11 @@ impl Stt for FixedStt {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
-        Ok(Transcript {
-            turn: utterance.turn,
-            text: self.text.clone(),
-            language: String::from("en"),
-        })
+        Ok(Transcript::from_speech(
+            utterance.turn,
+            self.text.clone(),
+            String::from("en"),
+        ))
     }
 }
 
@@ -1414,11 +1414,11 @@ mod tests {
                 }
                 thread::sleep(Duration::from_millis(5));
             }
-            Ok(Transcript {
-                turn: utterance.turn,
-                text: self.text.clone(),
-                language: String::from("en"),
-            })
+            Ok(Transcript::from_speech(
+                utterance.turn,
+                self.text.clone(),
+                String::from("en"),
+            ))
         }
     }
 

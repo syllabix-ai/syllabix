@@ -22,10 +22,11 @@ pub const SERVER_NAME: &str = "syllabix";
 pub const CLI_SUBCOMMAND: &str = "mcp";
 
 /// Prefixed names Goose lists in `permission.yaml` `always_allow`.
-pub fn permission_tool_names() -> [String; 2] {
+pub fn permission_tool_names() -> [String; 3] {
     [
         format!("{SERVER_NAME}__web_search"),
         format!("{SERVER_NAME}__web_fetch"),
+        format!("{SERVER_NAME}__run_background"),
     ]
 }
 
@@ -40,7 +41,22 @@ pub fn mcp_cli_args(workspace: &Path, tool_events: Option<&Path>) -> Vec<String>
         args.push("--tool-events".into());
         args.push(path.to_string_lossy().into_owned());
     }
+    if let Some(path) = crate::background::notify_socket_path() {
+        args.push("--background-socket".into());
+        args.push(path.to_string_lossy().into_owned());
+    }
     args
+}
+
+fn mcp_background_env() -> Vec<Value> {
+    crate::background::notify_session_token()
+        .map(|token| {
+            vec![json!({
+                "name": crate::background::BACKGROUND_TOKEN_ENV,
+                "value": token,
+            })]
+        })
+        .unwrap_or_default()
 }
 
 /// ACP `mcpServers` stdio entry (untagged; no `"type": "stdio"`).
@@ -49,7 +65,7 @@ pub fn mcp_server_value(command: &Path, workspace: &Path, tool_events: Option<&P
         "name": SERVER_NAME,
         "command": command,
         "args": mcp_cli_args(workspace, tool_events),
-        "env": [],
+        "env": mcp_background_env(),
     })
 }
 
@@ -62,7 +78,7 @@ pub fn mcp_enabled_extension_value(
     json!({
         "type": "mcp",
         "server": mcp_server_value(command, workspace, tool_events),
-        "available_tools": ["web_search", "web_fetch"],
+        "available_tools": ["web_search", "web_fetch", "run_background"],
     })
 }
 
@@ -113,13 +129,18 @@ pub fn take_tool_events_file(path: &Path) -> Vec<ToolTurnEvent> {
 }
 
 /// Serve MCP JSON-RPC over newline-delimited stdio until stdin closes.
-pub fn run_stdio(workspace: PathBuf, tool_events: Option<PathBuf>) -> std::io::Result<()> {
+pub fn run_stdio(
+    workspace: PathBuf,
+    tool_events: Option<PathBuf>,
+    background_socket: Option<PathBuf>,
+) -> std::io::Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     serve(
         workspace,
         tool_events,
+        background_socket,
         stdin.lock().lines(),
         &mut out,
         &Cancel::new(),
@@ -129,6 +150,7 @@ pub fn run_stdio(workspace: PathBuf, tool_events: Option<PathBuf>) -> std::io::R
 fn serve(
     workspace: PathBuf,
     tool_events: Option<PathBuf>,
+    background_socket: Option<PathBuf>,
     lines: impl Iterator<Item = std::io::Result<String>>,
     out: &mut impl Write,
     cancel: &Cancel,
@@ -143,9 +165,14 @@ fn serve(
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if let Some(response) =
-            handle_message(&workspace, tool_events.as_deref(), &msg, cancel, &next_call)
-        {
+        if let Some(response) = handle_message(
+            &workspace,
+            tool_events.as_deref(),
+            background_socket.as_deref(),
+            &msg,
+            cancel,
+            &next_call,
+        ) {
             writeln!(out, "{response}")?;
             out.flush()?;
         }
@@ -156,6 +183,7 @@ fn serve(
 fn handle_message(
     workspace: &Path,
     tool_events: Option<&Path>,
+    background_socket: Option<&Path>,
     msg: &Value,
     cancel: &Cancel,
     next_call: &AtomicU64,
@@ -170,6 +198,7 @@ fn handle_message(
         "tools/call" => call_tool(
             workspace,
             tool_events,
+            background_socket,
             msg.get("params").unwrap_or(&Value::Null),
             cancel,
             next_call,
@@ -231,6 +260,29 @@ fn tool_list() -> Value {
                     }
                 }
             }
+        },
+        {
+            "name": "run_background",
+            "description": "Run shell, web_fetch, web_search, or sleep in the background. Syllabix speaks immediately, then starts a new turn with the result when the task finishes.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["task"],
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "enum": ["shell", "web_fetch", "web_search", "sleep"],
+                        "description": "Which tool to run."
+                    },
+                    "command": { "type": "string" },
+                    "workdir": { "type": "string" },
+                    "permission": { "type": "string" },
+                    "url": { "type": "string" },
+                    "query": { "type": "string" },
+                    "count": { "type": "number" },
+                    "seconds": { "type": "number", "description": "For sleep tasks (1-3600)." }
+                }
+            }
         }
     ])
 }
@@ -238,6 +290,7 @@ fn tool_list() -> Value {
 fn call_tool(
     workspace: &Path,
     tool_events: Option<&Path>,
+    background_socket: Option<&Path>,
     params: &Value,
     cancel: &Cancel,
     next_call: &AtomicU64,
@@ -247,6 +300,9 @@ fn call_tool(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
+    if name == "run_background" {
+        return call_run_background(workspace, tool_events, background_socket, params, next_call);
+    }
     if !matches!(name.as_str(), "web_fetch" | "web_search") {
         return tool_error(format!("tool is not available: {name}"));
     }
@@ -278,6 +334,70 @@ fn call_tool(
         })
     } else {
         tool_error(result.content)
+    }
+}
+
+fn call_run_background(
+    _workspace: &Path,
+    tool_events: Option<&Path>,
+    background_socket: Option<&Path>,
+    params: &Value,
+    next_call: &AtomicU64,
+) -> Value {
+    let Some(socket) = background_socket else {
+        return tool_error("background tasks require an active voice session");
+    };
+    let Some(token) = crate::background::token_from_env() else {
+        return tool_error("background tasks require an active voice session");
+    };
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let task = arguments.get("task").and_then(Value::as_str).unwrap_or("");
+    let call_id = format!("mcp-{}", next_call.fetch_add(1, Ordering::SeqCst));
+    let args_text = arguments.to_string();
+    note_event(
+        tool_events,
+        "call",
+        "run_background",
+        &call_id,
+        &args_text,
+        "",
+    );
+    let inner_name = match task {
+        "shell" | "web_fetch" | "web_search" | "sleep" => task,
+        _ => {
+            return tool_error("run_background task is invalid");
+        }
+    };
+    let mut inner_args = arguments.as_object().cloned().unwrap_or_default();
+    inner_args.remove("task");
+    if inner_name != "sleep" {
+        inner_args.insert("background".into(), json!(true));
+    }
+    let spawn_args = Value::Object(inner_args);
+    let spawn_result =
+        crate::background::request_spawn(socket, token.as_str(), &call_id, inner_name, &spawn_args);
+    match spawn_result {
+        Ok(ack) => {
+            note_event(
+                tool_events,
+                "result",
+                "run_background",
+                &call_id,
+                &args_text,
+                "started",
+            );
+            json!({
+                "content": [{ "type": "text", "text": ack }],
+                "isError": false,
+            })
+        }
+        Err(message) => {
+            tracing::warn!("run_background could not start via parent session");
+            tool_error(message)
+        }
     }
 }
 
@@ -324,12 +444,18 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Cursor};
 
-    fn roundtrip(workspace: &Path, events: Option<&Path>, requests: &[&str]) -> Vec<Value> {
+    fn roundtrip(
+        workspace: &Path,
+        events: Option<&Path>,
+        background_socket: Option<&Path>,
+        requests: &[&str],
+    ) -> Vec<Value> {
         let input = requests.join("\n") + "\n";
         let mut out = Vec::new();
         serve(
             workspace.to_path_buf(),
             events.map(Path::to_path_buf),
+            background_socket.map(Path::to_path_buf),
             BufReader::new(Cursor::new(input)).lines(),
             &mut out,
             &Cancel::new(),
@@ -357,6 +483,7 @@ mod tests {
         let replies = roundtrip(
             &dir,
             None,
+            None,
             &[
                 r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
                 r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
@@ -370,7 +497,7 @@ mod tests {
             .iter()
             .filter_map(|tool| tool.get("name").and_then(Value::as_str))
             .collect();
-        assert_eq!(names, ["web_fetch", "web_search"]);
+        assert_eq!(names, ["web_fetch", "web_search", "run_background"]);
     }
 
     #[test]
@@ -388,6 +515,7 @@ mod tests {
         let replies = roundtrip(
             &dir,
             Some(&events),
+            None,
             &[
                 r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"web_fetch","arguments":{"url":"https://user:pass@example.com/"}}}"#,
                 r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"web_search","arguments":{"query":""}}}"#,
@@ -458,7 +586,10 @@ mod tests {
         let ext =
             mcp_enabled_extension_value(Path::new("/usr/bin/syllabix"), Path::new("/ws"), None);
         assert_eq!(ext["type"], "mcp");
-        assert_eq!(ext["available_tools"], json!(["web_search", "web_fetch"]));
+        assert_eq!(
+            ext["available_tools"],
+            json!(["web_search", "web_fetch", "run_background"])
+        );
     }
 
     #[test]
@@ -466,5 +597,158 @@ mod tests {
         let names = permission_tool_names();
         assert_eq!(names[0], "syllabix__web_search");
         assert_eq!(names[1], "syllabix__web_fetch");
+        assert_eq!(names[2], "syllabix__run_background");
+    }
+
+    #[test]
+    fn run_background_requires_active_session_socket() {
+        let _lock = crate::background::background_integration_lock();
+        let dir =
+            std::env::temp_dir().join(format!("syllabix-mcp-bg-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let replies = roundtrip(
+            &dir,
+            None,
+            None,
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_background","arguments":{"task":"sleep","seconds":1}}}"#,
+            ],
+        );
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0]["result"]["isError"], true);
+        let text = replies[0]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("");
+        assert!(text.contains("voice session"), "{text}");
+    }
+
+    #[test]
+    fn run_background_requires_background_token_env() {
+        let _lock = crate::background::background_integration_lock();
+        use crate::background::{clear, install, BackgroundRegistry, BACKGROUND_TOKEN_ENV};
+        use std::sync::Arc;
+
+        clear();
+        let registry = BackgroundRegistry::new(
+            Cancel::new(),
+            "en".into(),
+            std::env::temp_dir(),
+            crate::policy::DeveloperPermissions::default_session(),
+        );
+        let socket = registry.socket_path().expect("socket");
+        let dir =
+            std::env::temp_dir().join(format!("syllabix-mcp-bg-token-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::remove_var(BACKGROUND_TOKEN_ENV) };
+        let replies = roundtrip(
+            &dir,
+            None,
+            Some(socket.as_path()),
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_background","arguments":{"task":"sleep","seconds":1}}}"#,
+            ],
+        );
+        assert_eq!(replies[0]["result"]["isError"], true);
+        install(Arc::clone(&registry));
+        clear();
+    }
+
+    #[test]
+    fn run_background_rejects_invalid_task() {
+        let _lock = crate::background::background_integration_lock();
+        use crate::background::{clear, install, BackgroundRegistry, BACKGROUND_TOKEN_ENV};
+        use std::sync::Arc;
+
+        clear();
+        let registry = BackgroundRegistry::new(
+            Cancel::new(),
+            "en".into(),
+            std::env::temp_dir(),
+            crate::policy::DeveloperPermissions::default_session(),
+        );
+        install(Arc::clone(&registry));
+        let socket = registry.socket_path().expect("socket");
+        unsafe {
+            std::env::set_var(BACKGROUND_TOKEN_ENV, registry.session_token());
+        }
+        let dir =
+            std::env::temp_dir().join(format!("syllabix-mcp-bg-invalid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let replies = roundtrip(
+            &dir,
+            None,
+            Some(socket.as_path()),
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_background","arguments":{"task":"bogus"}}}"#,
+            ],
+        );
+        assert_eq!(replies[0]["result"]["isError"], true);
+        unsafe { std::env::remove_var(BACKGROUND_TOKEN_ENV) };
+        clear();
+    }
+
+    #[test]
+    fn run_background_sleep_starts_via_parent_socket() {
+        let _lock = crate::background::background_integration_lock();
+        use crate::background::{clear, install, BackgroundRegistry, BACKGROUND_TOKEN_ENV};
+        use std::sync::Arc;
+
+        clear();
+        let registry = BackgroundRegistry::new(
+            Cancel::new(),
+            "en".into(),
+            std::env::temp_dir(),
+            crate::policy::DeveloperPermissions::default_session(),
+        );
+        install(Arc::clone(&registry));
+        let socket = registry.socket_path().expect("socket");
+        unsafe {
+            std::env::set_var(BACKGROUND_TOKEN_ENV, registry.session_token());
+        }
+        let dir =
+            std::env::temp_dir().join(format!("syllabix-mcp-bg-sleep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let replies = roundtrip(
+            &dir,
+            None,
+            Some(socket.as_path()),
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_background","arguments":{"task":"sleep","seconds":1}}}"#,
+            ],
+        );
+        assert_eq!(replies[0]["result"]["isError"], false);
+        let text = replies[0]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("");
+        assert!(text.contains("background"), "{text}");
+        unsafe { std::env::remove_var(BACKGROUND_TOKEN_ENV) };
+        clear();
+    }
+
+    #[test]
+    fn mcp_cli_args_include_background_socket_when_installed() {
+        let _lock = crate::background::background_integration_lock();
+        use crate::background::{clear, install, BackgroundRegistry};
+        use std::sync::Arc;
+
+        clear();
+        let registry = BackgroundRegistry::new(
+            Cancel::new(),
+            "en".into(),
+            std::env::temp_dir(),
+            crate::policy::DeveloperPermissions::default_session(),
+        );
+        install(Arc::clone(&registry));
+        let workspace = std::env::temp_dir();
+        let args = mcp_cli_args(workspace.as_path(), None);
+        assert!(args.iter().any(|arg| arg == "--background-socket"));
+        let value = mcp_server_value(Path::new("/bin/syllabix"), workspace.as_path(), None);
+        let env = value["env"].as_array().expect("env");
+        assert!(
+            env.iter()
+                .any(|entry| entry["name"] == crate::background::BACKGROUND_TOKEN_ENV),
+            "{env:?}"
+        );
+        clear();
     }
 }

@@ -113,11 +113,22 @@ fn run_live_inner(
     tts_api_key: Option<Zeroizing<String>>,
 ) -> Result<LoopReport> {
     use crate::audio::{NativeCapture, NativePlayback};
+    use crate::background::BackgroundRegistry;
     use crate::defaults::BuiltinDefaults;
     use crate::models::{HttpFetcher, ModelCache, StderrProgress};
     use crate::pipeline::{run_loop_captured, LoopConfig, LoopMode, PipelineStages};
     use crate::real::load_real_providers;
     use crate::turn_debug::PlaybackWatch;
+    use std::sync::Arc;
+
+    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let background = BackgroundRegistry::new(
+        cancel.clone(),
+        config.language.clone(),
+        workspace,
+        config.llm_developer_permissions.clone(),
+    );
+    crate::background::install(Arc::clone(&background));
 
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
@@ -156,6 +167,7 @@ fn run_live_inner(
             events,
             turn_debug,
             controls,
+            background: Some(background),
         },
         PipelineStages {
             vad,

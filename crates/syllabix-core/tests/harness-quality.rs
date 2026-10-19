@@ -908,6 +908,7 @@ fn drive_turn_result<L: Llm>(
         turn: TurnId(0),
         text: text.into(),
         language: "en".into(),
+        background: None,
     };
     let cancel = Cancel::new();
     let mut reply = String::new();
@@ -966,6 +967,7 @@ fn harness_quality_local_lfm() {
                 turn: TurnId(0),
                 text: fixture.transcript.into(),
                 language: "en".into(),
+                background: None,
             };
             let result = fixture_llm.generate(&[], &user, &cancel, &mut |_| Ok(()));
             assert!(result.is_err(), "cancelled fixture must not generate");
@@ -1059,6 +1061,7 @@ fn harness_quality_live_admission() {
                 turn: TurnId(0),
                 text: fixture.transcript.into(),
                 language: "en".into(),
+                background: None,
             };
             assert!(
                 llm.generate(&[], &user, &cancel, &mut |_| Ok(())).is_err(),

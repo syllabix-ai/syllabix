@@ -418,21 +418,21 @@ fn benchmark_llm(
         let mut first_output_ms = None;
         let mut output = String::new();
         let mut generated_tokens = 0usize;
-        let user = Transcript {
-            turn: TurnId(index as u64),
-            text: scenario.text.clone(),
-            language: config.language.clone(),
-        };
+        let user = Transcript::from_speech(
+            TurnId(index as u64),
+            scenario.text.clone(),
+            config.language.clone(),
+        );
         let history: Vec<HistoryTurn> = scenario
             .history
             .iter()
             .enumerate()
             .map(|(turn, prior)| HistoryTurn {
-                user: Transcript {
-                    turn: TurnId(turn as u64),
-                    text: prior.user.clone(),
-                    language: config.language.clone(),
-                },
+                user: Transcript::from_speech(
+                    TurnId(turn as u64),
+                    prior.user.clone(),
+                    config.language.clone(),
+                ),
                 assistant: prior.assistant.clone(),
             })
             .collect();

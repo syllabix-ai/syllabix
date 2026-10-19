@@ -113,6 +113,15 @@ pub enum VadEvent {
     },
 }
 
+/// Metadata when a turn was started by a finished background task, not STT.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundTurnMeta {
+    /// Short label (`shell`, `sleep 30s`, …).
+    pub label: String,
+    /// Whether the background worker reported success.
+    pub ok: bool,
+}
+
 /// STT result for one user turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transcript {
@@ -123,6 +132,58 @@ pub struct Transcript {
     /// Effective STT language code: the configured id, or the code detected
     /// from this utterance when yaml selected `auto`.
     pub language: String,
+    /// Set when the pipeline injected a background completion (not mic STT).
+    pub background: Option<BackgroundTurnMeta>,
+}
+
+impl Transcript {
+    /// Build a normal user-speech transcript from STT.
+    pub fn from_speech(turn: TurnId, text: String, language: String) -> Self {
+        Self {
+            turn,
+            text,
+            language,
+            background: None,
+        }
+    }
+
+    /// Build a follow-up turn after background work finishes.
+    pub fn from_background(
+        turn: TurnId,
+        language: String,
+        label: String,
+        ok: bool,
+        content: String,
+    ) -> Self {
+        Self {
+            turn,
+            text: content,
+            language,
+            background: Some(BackgroundTurnMeta { label, ok }),
+        }
+    }
+
+    /// Chat role and content for the LLM (background turns are not mic STT).
+    pub fn llm_message(&self) -> (String, String) {
+        if let Some(meta) = &self.background {
+            let status = if meta.ok { "finished" } else { "failed" };
+            (
+                "system".into(),
+                format!(
+                    "Syllabix background task result (not user speech): task \"{label}\" {status}.\n{content}",
+                    label = meta.label,
+                    content = self.text
+                ),
+            )
+        } else {
+            ("user".into(), self.text.clone())
+        }
+    }
+
+    /// Prompt text for agent backends that take a single user utterance (e.g. Goose).
+    pub fn agent_prompt_text(&self) -> String {
+        self.llm_message().1
+    }
 }
 
 /// One streamed LLM token.
@@ -306,6 +367,21 @@ mod tests {
             ],
         };
         assert_eq!(utterance.pcm(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn background_transcript_uses_system_role_for_llm() {
+        let transcript = Transcript::from_background(
+            TurnId(1),
+            "en".into(),
+            "sleep 1s".into(),
+            true,
+            "done".into(),
+        );
+        let (role, content) = transcript.llm_message();
+        assert_eq!(role, "system");
+        assert!(content.contains("not user speech"));
+        assert_eq!(transcript.agent_prompt_text(), content);
     }
 
     #[test]

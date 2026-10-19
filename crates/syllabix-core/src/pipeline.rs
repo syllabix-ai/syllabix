@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::background::{BackgroundRegistry, FollowUpGate};
 use crate::cancel::Cancel;
 use crate::defaults::{BuiltinDefaults, QueueCaps};
 use crate::error::{Error, Result};
@@ -63,6 +64,14 @@ pub enum LoopEvent {
         /// Transcript.
         text: String,
         /// Effective STT language code (configured or auto-detected).
+        language: String,
+    },
+    /// Follow-up turn after a background task finished (not mic STT).
+    BackgroundResult {
+        turn: TurnId,
+        label: String,
+        ok: bool,
+        content: String,
         language: String,
     },
     /// Provisional STT text for the currently active VAD turn. It is enabled
@@ -356,7 +365,7 @@ impl RuntimeControls {
 }
 
 /// Configuration for one in-memory run.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LoopConfig {
     /// Built-in names and queue caps.
     pub defaults: BuiltinDefaults,
@@ -368,6 +377,8 @@ pub struct LoopConfig {
     pub turn_debug: Option<TurnDebug>,
     /// Mutable terminal controls; the CLI's `--barge-in` sets their initial state.
     pub controls: RuntimeControls,
+    /// Pre-created background registry (live entry points create this before Goose starts).
+    pub background: Option<std::sync::Arc<BackgroundRegistry>>,
 }
 
 impl LoopConfig {
@@ -379,6 +390,7 @@ impl LoopConfig {
             events: None,
             turn_debug: None,
             controls: RuntimeControls::new(false),
+            background: None,
         }
     }
 
@@ -390,6 +402,7 @@ impl LoopConfig {
             events: None,
             turn_debug: None,
             controls: RuntimeControls::new(false),
+            background: None,
         }
     }
 }
@@ -402,6 +415,7 @@ impl Default for LoopConfig {
             events: None,
             turn_debug: None,
             controls: RuntimeControls::new(false),
+            background: None,
         }
     }
 }
@@ -460,6 +474,10 @@ struct Shared {
     flush_playback: AtomicBool,
     assistant_turn: Mutex<Option<TurnId>>,
     interrupted: Mutex<HashSet<TurnId>>,
+    /// True from VAD SpeechStart until SpeechEnd for the active user turn.
+    user_speaking: AtomicBool,
+    /// Serializes follow-up delivery with gate checks.
+    follow_up_delivery: Mutex<()>,
     /// Sidecar facts captured from the TTS stage before the workers start.
     tts_provider: &'static str,
     tts_model: Option<String>,
@@ -490,10 +508,83 @@ impl Shared {
             flush_playback: AtomicBool::new(false),
             assistant_turn: Mutex::new(None),
             interrupted: Mutex::new(HashSet::new()),
+            user_speaking: AtomicBool::new(false),
+            follow_up_delivery: Mutex::new(()),
             tts_provider,
             tts_model,
             tts_backend,
         })
+    }
+
+    fn follow_up_gate(&self, queued: usize) -> FollowUpGate {
+        FollowUpGate {
+            user_speaking: self.user_speaking.load(Ordering::SeqCst),
+            assistant_active: self
+                .assistant_turn
+                .lock()
+                .expect("assistant turn")
+                .is_some()
+                || self.thinking.load(Ordering::SeqCst),
+            mic_muted: self.controls.mic_muted(),
+            queued,
+        }
+    }
+
+    fn deliver_follow_up(
+        &self,
+        transcript: Transcript,
+        tx: &BoundedSender<Transcript>,
+        cancel: &Cancel,
+    ) {
+        let at = Instant::now();
+        self.mark_assistant(transcript.turn);
+        self.note_background_result(&transcript, at);
+        ignore_cancel(tx.send_cancellable(transcript, cancel), self, cancel);
+    }
+
+    fn note_background_result(&self, transcript: &Transcript, at: Instant) {
+        let meta = transcript
+            .background
+            .as_ref()
+            .expect("background follow-up transcript");
+        {
+            let mut map = self.turns.lock().expect("turn accumulator");
+            let entry = map.entry(transcript.turn).or_insert_with(TurnAcc::new);
+            entry.user_text = Some(transcript.text.clone());
+            entry.stt_at = Some(at);
+        }
+        if let Some(debug) = &self.turn_debug {
+            debug.note_background_result(
+                transcript.turn,
+                &meta.label,
+                meta.ok,
+                &transcript.text,
+                &transcript.language,
+            );
+        }
+        self.emit(LoopEvent::BackgroundResult {
+            turn: transcript.turn,
+            label: meta.label.clone(),
+            ok: meta.ok,
+            content: transcript.text.clone(),
+            language: transcript.language.clone(),
+        });
+    }
+
+    fn try_deliver_follow_up(
+        &self,
+        registry: &std::sync::Arc<BackgroundRegistry>,
+        tx: &BoundedSender<Transcript>,
+        cancel: &Cancel,
+    ) {
+        let _guard = self.follow_up_delivery.lock().expect("follow-up delivery");
+        let transcript = registry.take_next_follow_up(|| {
+            let queued = registry.queued_completions();
+            self.follow_up_gate(queued).may_deliver()
+        });
+        if let Some(transcript) = transcript {
+            self.deliver_follow_up(transcript, tx, cancel);
+        }
     }
 
     fn emit(&self, event: LoopEvent) {
@@ -906,6 +997,9 @@ where
         tts_model,
         tts_backend,
     );
+    if let Some(background) = config.background.clone() {
+        crate::background::install(std::sync::Arc::clone(&background));
+    }
     config.controls.arm_idle();
     let mut joins: Vec<JoinHandle<()>> = Vec::new();
 
@@ -941,6 +1035,16 @@ where
         let tr_tx = tr_tx.clone();
         joins.push(spawn("syllabix-stt", live, move || {
             stt_loop(stt, utt_rx, partial_rx, tr_tx, &cancel, &shared)
+        }));
+    }
+
+    if let Some(background) = config.background.clone() {
+        let cancel = cancel.clone();
+        let shared = Arc::clone(&shared);
+        let live = Arc::clone(&shared.live_tasks);
+        let tr_tx = tr_tx.clone();
+        joins.push(spawn("syllabix-follow-up", live, move || {
+            follow_up_loop(background, tr_tx, &cancel, &shared);
         }));
     }
     drop(tr_tx);
@@ -1002,6 +1106,7 @@ where
     if let Some(debug) = &config.turn_debug {
         debug.finish_open()?;
     }
+    crate::background::clear();
 
     Ok(LoopReport {
         turns: shared.finished_turns(),
@@ -1098,6 +1203,8 @@ fn vad_loop<V: Vad>(
      -> Result<()> {
         for event in &events {
             if let VadEvent::SpeechStart { turn } = event {
+                let _coordination = shared.follow_up_delivery.lock().expect("turn coordination");
+                shared.user_speaking.store(true, Ordering::SeqCst);
                 shared.controls.disarm_idle();
                 shared.interrupt_assistant(cancel);
                 *active = Some(*turn);
@@ -1129,6 +1236,8 @@ fn vad_loop<V: Vad>(
         }
         for event in events {
             if let VadEvent::SpeechEnd { utterance } = event {
+                let _coordination = shared.follow_up_delivery.lock().expect("turn coordination");
+                shared.user_speaking.store(false, Ordering::SeqCst);
                 if let Some(debug) = &shared.turn_debug {
                     debug.note_utterance(&utterance);
                     debug.note_anchor(utterance.turn, TimelineAnchor::SpeechEnd, Instant::now());
@@ -1606,6 +1715,18 @@ fn maybe_stop_after(mode: LoopMode, completed: usize, cancel: &Cancel) {
     }
 }
 
+fn follow_up_loop(
+    registry: std::sync::Arc<BackgroundRegistry>,
+    tx: BoundedSender<Transcript>,
+    cancel: &Cancel,
+    shared: &Shared,
+) {
+    while !cancel.is_shutdown() {
+        shared.try_deliver_follow_up(&registry, &tx, cancel);
+        thread::sleep(POLL);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1629,6 +1750,7 @@ mod tests {
                 turn: utterance.turn,
                 text: "final transcript".into(),
                 language: "en".into(),
+                background: None,
             })
         }
 
@@ -1646,6 +1768,39 @@ mod tests {
             self.frames += 1;
             Ok((self.frames == 1).then(|| "partial transcript".into()))
         }
+    }
+
+    #[test]
+    fn turn_coordination_lock_serializes_speech_start_and_follow_up() {
+        let shared = Arc::new(Shared::new(
+            None,
+            None,
+            RuntimeControls::new(false),
+            "fake",
+            None,
+            None,
+        ));
+        let ready = Arc::new(AtomicBool::new(false));
+        let shared_hold = Arc::clone(&shared);
+        let ready_flag = Arc::clone(&ready);
+        let holder = thread::spawn(move || {
+            let _guard = shared_hold
+                .follow_up_delivery
+                .lock()
+                .expect("turn coordination");
+            ready_flag.store(true, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(150));
+        });
+        while !ready.load(Ordering::SeqCst) {
+            thread::yield_now();
+        }
+        let start = Instant::now();
+        let _guard = shared.follow_up_delivery.lock().expect("turn coordination");
+        assert!(
+            start.elapsed() >= Duration::from_millis(120),
+            "follow-up delivery must wait for speech-start coordination"
+        );
+        holder.join().expect("join");
     }
 
     #[test]
@@ -1991,6 +2146,7 @@ mod tests {
                 turn: utterance.turn,
                 text: "slow final".into(),
                 language: "en".into(),
+                background: None,
             })
         }
 

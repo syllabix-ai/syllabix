@@ -104,6 +104,9 @@ pub enum Commands {
         /// Optional JSONL file for `ToolTurnEvent` diagnostics.
         #[arg(long, value_name = "FILE")]
         tool_events: Option<PathBuf>,
+        /// Unix socket where the MCP child requests background spawns.
+        #[arg(long, value_name = "PATH", hide = true)]
+        background_socket: Option<PathBuf>,
     },
 }
 
@@ -162,8 +165,9 @@ pub fn execute(cli: Cli) -> Result<()> {
         Commands::Mcp {
             workspace,
             tool_events,
+            background_socket,
         } => {
-            syllabix_core::mcp::run_stdio(workspace, tool_events)?;
+            syllabix_core::mcp::run_stdio(workspace, tool_events, background_socket)?;
             Ok(())
         }
     }

@@ -39,6 +39,7 @@ fn qad_q4_0_gguf_loads_co_resident_without_segfault() {
         turn: TurnId(0),
         text: "Say the word hello.".into(),
         language: "en".into(),
+        background: None,
     };
     let mut chunks = Vec::new();
     llm.generate(&[], &user, &Cancel::new(), &mut |chunk| {
@@ -59,6 +60,7 @@ fn lfm_tool_turn_parses_a_native_call_into_the_shared_contract() {
         turn: TurnId(1),
         text: "How much free space is there on this machine?".into(),
         language: "en".into(),
+        background: None,
     };
     let mut chunks = Vec::new();
     let calls = llm
@@ -106,6 +108,7 @@ fn lfm_cancel_aborts_the_tools_aware_native_generate_within_timeout() {
         text: "Tell a very long story about a river, a mountain, and a forest, with many details."
             .into(),
         language: "en".into(),
+        background: None,
     };
     let cancel = Cancel::new();
     let cancel_thread = cancel.clone();
@@ -150,6 +153,7 @@ fn assert_small_lfm_loads_and_streams(asset_id: &'static str) {
         turn: TurnId(0),
         text: "Say the word hello.".into(),
         language: "en".into(),
+        background: None,
     };
     let mut chunks = Vec::new();
     llm.generate(&[], &user, &Cancel::new(), &mut |chunk| {
@@ -172,6 +176,7 @@ fn assert_small_lfm_tool_turn_is_fail_closed(asset_id: &'static str) {
         turn: TurnId(1),
         text: "How much free space is there on this machine?".into(),
         language: "en".into(),
+        background: None,
     };
     let mut chunks = Vec::new();
     let calls = llm
@@ -214,6 +219,7 @@ fn assert_small_lfm_cancel_within_timeout(asset_id: &'static str) {
         text: "Tell a very long story about a river, a mountain, and a forest, with many details."
             .into(),
         language: "en".into(),
+        background: None,
     };
     let cancel = Cancel::new();
     let cancel_thread = cancel.clone();

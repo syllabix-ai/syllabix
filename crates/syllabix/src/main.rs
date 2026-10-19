@@ -126,6 +126,7 @@ mod tests {
             default_filter_for(&cli::Commands::Mcp {
                 workspace: PathBuf::from("."),
                 tool_events: None,
+                background_socket: None,
             }),
             "warn"
         );

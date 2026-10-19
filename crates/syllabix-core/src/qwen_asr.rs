@@ -191,6 +191,7 @@ impl Stt for QwenAsrStt {
             turn: utterance.turn,
             text,
             language,
+            background: None,
         })
     }
 }

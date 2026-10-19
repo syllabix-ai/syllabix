@@ -9,6 +9,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
@@ -418,6 +419,7 @@ fn generate_streams_tokens_without_sending_history() {
         turn: TurnId(1),
         text: "hi".into(),
         language: "en".into(),
+        background: None,
     };
     let mut chunks = Vec::new();
     agent
@@ -455,6 +457,7 @@ fn generate_cancel_wakes_without_waiting_for_idle_timeout() {
         turn: TurnId(4),
         text: "please slow-reply".into(),
         language: "en".into(),
+        background: None,
     };
     let err = agent
         .generate(&[], &transcript, &cancel, &mut |_| Ok(()))
@@ -478,6 +481,7 @@ fn diagnostics_records_acp_jsonl_lines_both_directions() {
         turn: TurnId(5),
         text: "hi".into(),
         language: "en".into(),
+        background: None,
     };
     agent
         .generate(&[], &transcript, &Cancel::new(), &mut |_| Ok(()))
@@ -495,6 +499,51 @@ fn diagnostics_records_acp_jsonl_lines_both_directions() {
 }
 
 #[test]
+fn diagnostics_acp_jsonl_redacts_background_socket_token() {
+    use crate::background::{background_integration_lock, clear, install, BackgroundRegistry};
+    use crate::policy::DeveloperPermissions;
+    use crate::trajectory::REDACTED;
+
+    let _lock = background_integration_lock();
+    clear();
+    let registry = BackgroundRegistry::new(
+        Cancel::new(),
+        "en".into(),
+        std::env::temp_dir(),
+        DeveloperPermissions::default_session(),
+    );
+    install(Arc::clone(&registry));
+    let token = registry.session_token().to_string();
+
+    let mut config = online_config();
+    config.diagnostics_timestamps = true;
+    let dump = scratch().join("turn-debug-bg");
+    config.diagnostics_directory = dump.clone();
+    let (mut agent, _) = start_fake_with(config);
+    let transcript = Transcript {
+        turn: TurnId(7),
+        text: "hi".into(),
+        language: "en".into(),
+        background: None,
+    };
+    agent
+        .generate(&[], &transcript, &Cancel::new(), &mut |_| Ok(()))
+        .unwrap();
+    let body = fs::read_to_string(dump.join("turn-007").join("acp.jsonl")).unwrap();
+    assert!(
+        !body.contains(&token),
+        "background socket token must not appear in acp.jsonl: {body}"
+    );
+    assert!(
+        body.contains(REDACTED),
+        "MCP env values should be redacted in acp.jsonl: {body}"
+    );
+    assert!(body.contains("session/new"), "{body}");
+    drop(agent);
+    clear();
+}
+
+#[test]
 fn generate_idle_waits_out_a_long_shell() {
     // Without shell_inflight, a 400 ms idle limit would fail during `sleep 1`.
     let _idle = GooseIdleGuard::set(Duration::from_millis(400));
@@ -503,6 +552,7 @@ fn generate_idle_waits_out_a_long_shell() {
         turn: TurnId(6),
         text: "please slow-shell".into(),
         language: "en".into(),
+        background: None,
     };
     let mut chunks = Vec::new();
     agent
@@ -521,6 +571,7 @@ fn terminal_create_runs_through_execute_with_permissions() {
         turn: TurnId(2),
         text: "please use-shell".into(),
         language: "en".into(),
+        background: None,
     };
     let mut chunks = Vec::new();
     agent
@@ -557,6 +608,7 @@ fn terminal_create_refuses_cwd_outside_workspace() {
         turn: TurnId(3),
         text: "please escape-cwd".into(),
         language: "en".into(),
+        background: None,
     };
     let mut chunks = Vec::new();
     agent
@@ -615,6 +667,7 @@ fn barge_in_sends_session_cancel_and_drops_later_tokens() {
         turn: TurnId(6),
         text: "hold-for-cancel".into(),
         language: "en".into(),
+        background: None,
     };
     let cancel_thread = cancel.clone();
     let worker = thread::spawn(move || {
@@ -648,6 +701,7 @@ fn cancel_deadline_returns_without_waiting_for_goose() {
         turn: TurnId(7),
         text: "ignore-cancel".into(),
         language: "en".into(),
+        background: None,
     };
     let cancel_thread = cancel.clone();
     let started = Instant::now();
@@ -674,6 +728,7 @@ fn prompt_rpc_error_is_a_provider_error() {
         turn: TurnId(8),
         text: "prompt-error".into(),
         language: "en".into(),
+        background: None,
     };
     let err = agent
         .generate(&[], &transcript, &Cancel::new(), &mut |_| Ok(()))
@@ -694,6 +749,7 @@ fn mid_turn_crash_is_a_provider_error() {
         turn: TurnId(9),
         text: "crash-now".into(),
         language: "en".into(),
+        background: None,
     };
     let err = agent
         .generate(&[], &transcript, &Cancel::new(), &mut |_| Ok(()))
@@ -712,6 +768,7 @@ fn barge_in_kills_running_shell() {
         turn: TurnId(10),
         text: "sleep-shell".into(),
         language: "en".into(),
+        background: None,
     };
     let cancel_thread = cancel.clone();
     let started = Instant::now();
@@ -743,6 +800,7 @@ fn terminal_create_after_cancel_does_not_leave_a_live_shell() {
         turn: TurnId(11),
         text: "create-after-cancel".into(),
         language: "en".into(),
+        background: None,
     };
     let cancel_thread = cancel.clone();
     let started = Instant::now();

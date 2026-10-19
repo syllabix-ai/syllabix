@@ -1334,7 +1334,7 @@ impl Llm for GooseAgent {
         *self.shared.cancel.lock().expect("goose cancel mutex") = cancel.clone();
         let generation = cancel.generation();
         self.cmd_tx
-            .send(AcpIn::Cmd(AcpCmd::Prompt(user.text.clone())))
+            .send(AcpIn::Cmd(AcpCmd::Prompt(user.agent_prompt_text())))
             .map_err(|_| provider_err("Goose stopped"))?;
         let mut index = 0u32;
         let mut pending: Option<TokenChunk> = None;
