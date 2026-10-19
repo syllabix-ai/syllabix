@@ -21,6 +21,11 @@ impl Llm for LiveLlm {
     fn generate(&mut self, _: &[HistoryTurn], _: &Transcript, _: &Cancel, _: &mut dyn FnMut(TokenChunk) -> Result<()>) -> Result<()> { Err(unavailable("llm")) }
 }
 
+impl LiveLlm {
+    pub fn goose_acp_tool_call_ids(&self) -> Option<Vec<String>> { None }
+    pub fn goose_terminal_create_count(&self) -> Option<u64> { None }
+}
+
 impl Tts for LiveTts {
     fn name(&self) -> &'static str { "local" }
     fn model_id(&self) -> Option<&str> { None }
@@ -44,6 +49,7 @@ impl LiveStt {
 pub fn build_stt(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>) -> Result<LiveStt> { Err(unavailable("stt")) }
 pub fn build_tts(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>) -> Result<LiveTts> { Err(unavailable("tts")) }
 pub fn build_llm(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>) -> Result<LiveLlm> { Err(unavailable("llm")) }
+pub fn build_llm_at(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>, _: Option<std::path::PathBuf>) -> Result<LiveLlm> { Err(unavailable("llm")) }
 pub fn load_real_providers(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>, _: Option<&zeroize::Zeroizing<String>>, _: Option<&zeroize::Zeroizing<String>>) -> Result<(SileroVad, LiveStt, LiveLlm, LiveTts)> { Err(unavailable("providers")) }
 
 #[cfg(test)]

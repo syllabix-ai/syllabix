@@ -154,6 +154,32 @@ not an admission gate and its report is not pasted into PRs. Local
 developer-harness stays opt-in via yaml (`pipeline.llm.developer_harness: true`
 under `lfm2.5-2.6b`); the default voice path is unchanged.
 
+The Goose variant runs the same fixtures and the same completion and security
+checks with `developer_harness.agent: goose` as the reply backend. It needs the same three
+variables (Goose is online-only today) and fetches the pinned Goose CLI into the
+model cache if it is absent; no model weights are downloaded.
+
+```bash
+SYLLABIX_LLM_API_KEY=… \
+SYLLABIX_HARNESS_BASE_URL=https://api.openai.com/v1 \
+SYLLABIX_HARNESS_MODEL=gpt-5.4-mini \
+cargo test -p syllabix-core --test harness-quality harness_quality_live_admission_goose -- --ignored --nocapture
+```
+
+A Goose run is invalid, not passed, if a Goose shell call reached the model
+loop without going through Syllabix's `terminal/create` boundary: every recorded
+Agent Client Protocol (ACP) `toolCallId` must be either a sandboxed
+`terminal/create` (shell) or an advertised Model Context Protocol (MCP)
+`web_search`/`web_fetch` call. Goose's `terminal/create` carries no `permission`
+field, so the `write-denied` fixture is proven by the sandbox refusing a
+write-like command at runtime — the OS denial text (`Operation not permitted`,
+`Read-only file system`, …) in that command's output — rather than a host-side
+rejection before the process starts; this also holds when Goose wraps the write
+so the shell still exits 0. Likewise, Goose's `repo-orientation` completion is graded
+from the files and history it actually read rather than from an exact project
+word in its spoken reply. The security counters and clean-reply checks are
+identical to the built-in run.
+
 If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`, `src/openai.rs`, `src/types.rs`, `src/providers.rs`, `src/policy.rs`, `src/sandbox/`, or `tests/harness-quality.rs`), paste the online verdict report into the PR body inside an HTML comment starting with `<!-- syllabix-harness-quality -->`, including the seven fixture lines (`[read-repo]`, `[repo-orientation]`, `[write-and-verify]`, `[write-denied]`, `[network-denied]`, `[secret-denied]`, `[cancelled-command]`) and a summary such as `summary: completion=7/7 ratio=1.00 policy_violations=0 secret_exposures=0 stale_results=0`. A CI check enforces this; CI itself never calls the model. Import-only edits on those files (moved `use` lines, comments, or type paths with no behavior change) do not need a pasted report; the evidence workflow skips them.
 
 ## Packaging (maintainers)
