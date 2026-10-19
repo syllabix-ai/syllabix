@@ -96,6 +96,31 @@ mod production {
         }
     }
 
+    impl LiveLlm {
+        /// Distinct ACP `toolCallId`s observed in the Goose session, or `None`
+        /// for the other backends. The manual harness-quality run uses this with
+        /// [`Self::goose_terminal_create_count`] to prove every Goose call
+        /// reached Syllabix (a sandboxed `terminal/create` or an MCP web tool).
+        /// Test/evidence seam; not frozen API.
+        #[cfg(feature = "cloud")]
+        pub fn goose_acp_tool_call_ids(&self) -> Option<Vec<String>> {
+            match self {
+                Self::Goose(llm) => Some(llm.acp_tool_call_ids()),
+                _ => None,
+            }
+        }
+
+        /// `terminal/create` requests answered by the Goose session, or `None`
+        /// for the other backends. Test/evidence seam; not frozen API.
+        #[cfg(feature = "cloud")]
+        pub fn goose_terminal_create_count(&self) -> Option<u64> {
+            match self {
+                Self::Goose(llm) => Some(llm.terminal_create_count()),
+                _ => None,
+            }
+        }
+    }
+
     /// The configured TTS implementation for one live run.
     pub enum LiveTts {
         /// Kokoro ONNX, selected explicitly through YAML.
@@ -483,6 +508,26 @@ mod production {
         config: &AgentConfig,
         llm_api_key: Option<&Zeroizing<String>>,
     ) -> Result<LiveLlm> {
+        build_llm_at(cache, fetcher, progress, cancel, config, llm_api_key, None)
+    }
+
+    /// [`build_llm`] with an explicit workspace. `None` runs against the
+    /// current directory, matching every host path. The manual Goose
+    /// harness-quality run passes each fixture's own workspace so a harness
+    /// write can never touch the source checkout. Test/evidence seam; not
+    /// frozen API.
+    pub fn build_llm_at(
+        cache: &ModelCache,
+        fetcher: &dyn Fetcher,
+        progress: &mut dyn Progress,
+        cancel: &Cancel,
+        config: &AgentConfig,
+        llm_api_key: Option<&Zeroizing<String>>,
+        workspace: Option<std::path::PathBuf>,
+    ) -> Result<LiveLlm> {
+        let workspace = workspace.unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
         if config.agent == crate::defaults::AgentBackend::Goose {
             if config.llm != crate::defaults::LlmProvider::Online {
                 return Err(Error::Config {
@@ -497,8 +542,6 @@ mod production {
                     message: format!("is required when pipeline.llm.provider is {PROVIDER_NAME}"),
                 })?;
                 let binary = crate::goose::resolve_goose_exe(cache, fetcher, progress, cancel)?;
-                let workspace =
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let discovery = config.discover_skills(&workspace);
                 for diagnostic in &discovery.diagnostics {
                     tracing::warn!(
@@ -518,7 +561,7 @@ mod production {
                     cache: crate::goose::goose_path_root(cache),
                     config: config.clone(),
                     api_key: key.clone(),
-                    workspace,
+                    workspace: workspace.clone(),
                     skill_list: skill_file_list(&discovery),
                 })?));
             }
@@ -532,8 +575,7 @@ mod production {
             }
         }
         let skill_context = if config.llm_developer_harness {
-            let discovery =
-                config.discover_skills(&std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            let discovery = config.discover_skills(&workspace);
             for diagnostic in &discovery.diagnostics {
                 tracing::warn!(
                     code = %diagnostic.code,
@@ -564,7 +606,8 @@ mod production {
                 .with_system_prompt(config.system_prompt.clone())
                 .with_skill_context(skill_context.clone())
                 .with_developer_harness(config.llm_developer_harness)
-                .with_developer_permissions(config.llm_developer_permissions.clone()),
+                .with_developer_permissions(config.llm_developer_permissions.clone())
+                .with_workspace(workspace.clone()),
             )),
             crate::defaults::LlmProvider::Online => {
                 #[cfg(feature = "cloud")]
@@ -577,7 +620,8 @@ mod production {
                     })?;
                     Ok(LiveLlm::Cloud(
                         OpenAiLlm::new(OpenAiSettings::from_config(config), key.clone())
-                            .with_skill_context(skill_context),
+                            .with_skill_context(skill_context)
+                            .with_workspace(workspace.clone()),
                     ))
                 }
                 #[cfg(not(feature = "cloud"))]
