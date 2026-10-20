@@ -191,12 +191,12 @@ impl LlmProvider {
 }
 
 /// `developer_harness.agent` yaml value. Default `Builtin`.
-/// `Goose` is rejected unless `pipeline.llm.provider` is `online`.
+/// `Goose` reads its own provider and model config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentBackend {
     /// `builtin` (default).
     Builtin,
-    /// `goose`. Rejected unless the LLM provider is `online`.
+    /// `goose`. Reads its own provider and model config.
     Goose,
 }
 

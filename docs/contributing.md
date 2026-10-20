@@ -148,21 +148,28 @@ hard host-policy gate is absolute: `policy_violations=0`,
 for any non-zero counter. Give the key rate-limit headroom first — quota
 exhaustion fails the fixture as unreachable, not as a model verdict.
 
-Tracked admission is the online run only. An ignored
+Tracked admission is the builtin online run only. An ignored
 `harness_quality_local_lfm` test still exists for local-loop debugging; it is
 not an admission gate and its report is not pasted into PRs. Local
 developer-harness stays opt-in via yaml (`pipeline.llm.developer_harness: true`
 under `lfm2.5-2.6b`); the default voice path is unchanged.
 
 The Goose variant runs the same fixtures and the same completion and security
-checks with `developer_harness.agent: goose` as the reply backend. It needs the same three
-variables (Goose is online-only today) and fetches the pinned Goose CLI into the
-model cache if it is absent; no model weights are downloaded.
+checks with `developer_harness.agent: goose` as the reply backend. Goose reads
+its own provider and model; point it at the model under test first in
+`{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` (or via
+`GOOSE_PROVIDER`/`GOOSE_MODEL` and the provider's own environment). It fetches
+the pinned Goose CLI into the model cache if it is absent. For a local GGUF:
+
+```yaml
+active_provider: local
+providers:
+  local:
+    enabled: true
+    model: /path/to/lfm2.5-2.6b.gguf
+```
 
 ```bash
-SYLLABIX_LLM_API_KEY=… \
-SYLLABIX_HARNESS_BASE_URL=https://api.openai.com/v1 \
-SYLLABIX_HARNESS_MODEL=gpt-5.4-mini \
 cargo test -p syllabix-core --test harness-quality harness_quality_live_admission_goose -- --ignored --nocapture
 ```
 

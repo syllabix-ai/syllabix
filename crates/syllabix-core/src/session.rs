@@ -6,6 +6,7 @@ use zeroize::Zeroizing;
 
 use crate::cancel::Cancel;
 use crate::config::AgentConfig;
+use crate::defaults::AgentBackend;
 use crate::defaults::BuiltinDefaults;
 use crate::defaults::LlmProvider;
 use crate::error::Result;
@@ -25,6 +26,12 @@ enum Input {
     Default,
     Capture(Box<dyn AudioCapture>),
     Frames(Vec<AudioFrame>),
+}
+
+/// Goose owns its provider and model, so `pipeline.llm` never needs Syllabix's
+/// LLM key even when the yaml block is `online`.
+fn needs_llm_api_key(config: &AgentConfig, default_llm: bool) -> bool {
+    default_llm && config.agent != AgentBackend::Goose && config.llm == LlmProvider::Online
 }
 
 /// Type-erased stages so [`Session`] is not generic over every impl.
@@ -140,9 +147,10 @@ impl AudioCapture for DynCapture {
 /// Unset stages use the same defaults as [`crate::run_live`]: Silero VAD,
 /// the STT/LLM/TTS engines from yaml (or the built-in stack), loaded from
 /// the model cache, and the native microphone and speakers. Swap any stage
-/// before [`Session::run`]. An online LLM in yaml still fails fast on a
+/// before [`Session::run`]. A builtin online LLM in yaml still fails fast on a
 /// missing `SYLLABIX_LLM_API_KEY`, but only when that slot is left as the
-/// default (a custom [`Llm`] does not need the key).
+/// default and the agent is not Goose (Goose owns its provider and model, and
+/// a custom [`Llm`] does not need the key).
 /// Without the `ggml` feature, every ML stage must be swapped or `run`
 /// returns a config error. Without `device-audio`, capture or frames and a
 /// sink must be set. `run_live` and default mic/speakers need those features.
@@ -299,7 +307,7 @@ impl Session {
             input,
         } = self;
         crate::session_env::install_from_config(&config);
-        let llm_api_key = if llm.is_none() && config.llm == LlmProvider::Online {
+        let llm_api_key = if needs_llm_api_key(&config, llm.is_none()) {
             Some(resolve_api_key(|name| std::env::var(name).ok())?)
         } else {
             None
@@ -791,6 +799,23 @@ mod tests {
                 .expect_err("missing key")
         });
         assert!(err.to_string().contains(API_KEY_ENV), "{err}");
+    }
+
+    #[test]
+    fn goose_online_slot_skips_the_online_key() {
+        let mut config = AgentConfig::v0();
+        config.agent = AgentBackend::Goose;
+        config.llm = LlmProvider::Online;
+        assert!(!needs_llm_api_key(&config, true));
+        assert!(!needs_llm_api_key(&config, false));
+    }
+
+    #[test]
+    fn builtin_online_llm_still_needs_the_key() {
+        let mut config = AgentConfig::v0();
+        config.llm = LlmProvider::Online;
+        assert!(needs_llm_api_key(&config, true));
+        assert!(!needs_llm_api_key(&config, false));
     }
 
     #[test]

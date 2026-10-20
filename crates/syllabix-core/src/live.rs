@@ -16,9 +16,10 @@ use crate::turn_debug::TurnDebug;
 /// Diagnostics come from yaml (`diagnostics.timestamps` / `diagnostics.audio`
 /// / `diagnostics.directory`); disabled by default, which writes nothing.
 ///
-/// A cloud LLM config (`pipeline.llm.provider: online`) must already carry its
-/// key in the `SYLLABIX_LLM_API_KEY` environment variable; a missing or empty
-/// key fails here — before any device opens or any weight loads. Online STT
+/// A builtin cloud LLM config (`pipeline.llm.provider: online`) must already
+/// carry its key in the `SYLLABIX_LLM_API_KEY` environment variable; a missing
+/// or empty key fails here — before any device opens or any weight loads.
+/// Goose reads its own provider config instead and never needs this key. Online STT
 /// (`pipeline.stt.provider: online`) does the same with `SYLLABIX_STT_API_KEY`.
 /// Online TTS does the same with `SYLLABIX_TTS_API_KEY`. Default keyless
 /// runs never read them.
@@ -51,11 +52,12 @@ pub fn run_live_with_controls(
     controls: RuntimeControls,
 ) -> Result<LoopReport> {
     crate::session_env::install_from_config(config);
-    let llm_api_key = match config.llm {
-        crate::defaults::LlmProvider::Online => {
+    let llm_api_key = match (config.agent, config.llm) {
+        (crate::defaults::AgentBackend::Goose, _) => None,
+        (_, crate::defaults::LlmProvider::Online) => {
             Some(resolve_api_key(|name| std::env::var(name).ok())?)
         }
-        crate::defaults::LlmProvider::Local => None,
+        (_, crate::defaults::LlmProvider::Local) => None,
     };
     let stt_api_key = match config.stt {
         crate::defaults::SttProvider::Online => {

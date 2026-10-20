@@ -60,7 +60,7 @@ pub struct AgentConfig {
     /// STT language code: a whisper-supported ISO code or `auto`.
     pub language: String,
     /// `developer_harness.agent` (`builtin` or `goose`). Default `builtin`.
-    /// `goose` requires `pipeline.llm.provider: online`.
+    /// `goose` reads its own provider and model config.
     pub agent: AgentBackend,
     /// `developer_harness.inherit_current_session`. Default `true`: sandboxed
     /// commands inherit the launcher shell environment. `false` clears it and
@@ -581,12 +581,6 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         });
     }
     let llm_developer_permissions = parse_developer_permissions(llm, llm_developer_harness)?;
-    if agent == AgentBackend::Goose && llm_provider != LlmProvider::Online {
-        return Err(Error::Config {
-            field: "developer_harness.agent".into(),
-            message: "goose requires pipeline.llm.provider: online".into(),
-        });
-    }
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
     deny_yaml_api_key(tts, "pipeline.tts", TTS_API_KEY_ENV)?;
@@ -1331,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn developer_harness_agent_defaults_to_builtin_and_accepts_goose_online() {
+    fn developer_harness_agent_defaults_to_builtin_and_accepts_goose() {
         let yaml = AgentConfig::v0().to_yaml();
         let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
         assert_eq!(parsed.agent, AgentBackend::Builtin);
@@ -1355,14 +1349,14 @@ mod tests {
     }
 
     #[test]
-    fn developer_harness_agent_goose_requires_online_llm() {
+    fn developer_harness_agent_goose_accepts_local_pipeline_llm() {
         let yaml = format!(
             "{}\ndeveloper_harness:\n  agent: goose\n",
             AgentConfig::v0().to_yaml()
         );
-        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
-        assert!(err.to_string().contains("developer_harness.agent"), "{err}");
-        assert!(err.to_string().contains("online"), "{err}");
+        let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(parsed.agent, AgentBackend::Goose);
+        assert_eq!(parsed.llm, LlmProvider::Local);
     }
 
     #[test]
