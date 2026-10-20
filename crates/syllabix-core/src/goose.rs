@@ -16,7 +16,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use zeroize::Zeroizing;
 
 use crate::cancel::Cancel;
 use crate::config::AgentConfig;
@@ -25,7 +24,6 @@ use crate::executor::{self, MAX_OUTPUT_BYTES};
 use crate::llm::render_system_prompt;
 use crate::mcp;
 use crate::models::{Fetcher, ModelCache, Progress};
-use crate::openai::{join_endpoint, DEFAULT_LLM_BASE_URL};
 use crate::policy::DeveloperPermissions;
 use crate::providers::Llm;
 use crate::skills::SkillDiscovery;
@@ -129,7 +127,6 @@ pub struct GooseStart {
     /// Cache whose root holds `goose/` (`GOOSE_PATH_ROOT`).
     pub cache: PathBuf,
     pub config: AgentConfig,
-    pub api_key: Zeroizing<String>,
     pub workspace: PathBuf,
     pub skill_list: String,
 }
@@ -143,49 +140,102 @@ pub(crate) fn goose_path_root(cache: &ModelCache) -> PathBuf {
     root
 }
 
-/// `OPENAI_HOST` and `OPENAI_BASE_PATH` for a Syllabix `pipeline.llm.base_url`.
-pub(crate) fn openai_host_and_base_path(
-    base_url: &str,
-) -> std::result::Result<(String, String), String> {
-    let url = url::Url::parse(base_url.trim()).map_err(|err| err.to_string())?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| "URL needs a host".to_string())?;
-    let mut origin = format!("{}://{host}", url.scheme());
-    if let Some(port) = url.port() {
-        origin.push(':');
-        origin.push_str(&port.to_string());
-    }
-    let path = url.path().trim_end_matches('/');
-    let base_path = if path.is_empty() || path == "/" {
-        "v1/chat/completions".into()
-    } else {
-        format!("{}/chat/completions", path.trim_start_matches('/'))
-    };
-    Ok((origin, base_path))
+/// Goose provider docs shown when no provider/model is configured.
+pub(crate) const GOOSE_PROVIDER_DOCS: &str =
+    "https://goose-docs.ai/docs/getting-started/providers/";
+
+/// Goose's own config file under `{GOOSE_PATH_ROOT}/config`.
+pub(crate) fn goose_config_path(path_root: &Path) -> PathBuf {
+    path_root.join("config").join("config.yaml")
 }
 
-/// Child environment for `goose acp`. The API key is for the child only.
-pub(crate) fn goose_child_env(
-    model: &str,
-    base_url: &str,
-    api_key: &str,
-    path_root: &Path,
-) -> std::result::Result<Vec<(String, String)>, String> {
-    let (host, base_path) = openai_host_and_base_path(base_url)?;
-    Ok(vec![
-        ("GOOSE_PROVIDER".into(), "openai".into()),
-        ("GOOSE_MODEL".into(), model.into()),
-        ("OPENAI_HOST".into(), host),
-        ("OPENAI_BASE_PATH".into(), base_path),
-        ("OPENAI_API_KEY".into(), api_key.into()),
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn config_string(config: &serde_yaml::Value, key: &str) -> Option<String> {
+    non_empty(config.get(key).and_then(serde_yaml::Value::as_str))
+}
+
+fn provider_model(config: &serde_yaml::Value, provider: &str) -> Option<String> {
+    non_empty(
+        config
+            .get("providers")
+            .and_then(|providers| providers.get(provider))
+            .and_then(|entry| entry.get("model"))
+            .and_then(serde_yaml::Value::as_str),
+    )
+}
+
+/// Read Goose's active provider/model the way Goose does: environment first
+/// (only when the child inherits it), then `active_provider`/`providers`, then
+/// the legacy flat keys. Syllabix sets none of these.
+pub(crate) fn resolve_goose_model(path_root: &Path, use_env: bool) -> Result<String> {
+    let config_path = goose_config_path(path_root);
+    let raw = match std::fs::read_to_string(&config_path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            return Err(Error::Config {
+                field: "developer_harness.agent".into(),
+                message: format!(
+                    "could not read Goose config {}: {err}",
+                    config_path.display()
+                ),
+            })
+        }
+    };
+    let config: serde_yaml::Value = if raw.trim().is_empty() {
+        serde_yaml::Value::Null
+    } else {
+        serde_yaml::from_str(&raw).map_err(|err| Error::Config {
+            field: "developer_harness.agent".into(),
+            message: format!("invalid Goose config {}: {err}", config_path.display()),
+        })?
+    };
+    let env = |name: &str| {
+        if use_env {
+            std::env::var(name).ok()
+        } else {
+            None
+        }
+        .and_then(|value| non_empty(Some(&value)))
+    };
+    let provider = env("GOOSE_PROVIDER")
+        .or_else(|| config_string(&config, "active_provider"))
+        .or_else(|| config_string(&config, "GOOSE_PROVIDER"));
+    let model = env("GOOSE_MODEL")
+        .or_else(|| {
+            provider
+                .as_deref()
+                .and_then(|provider| provider_model(&config, provider))
+        })
+        .or_else(|| config_string(&config, "GOOSE_MODEL"));
+    match (provider, model) {
+        (Some(_), Some(model)) => Ok(model),
+        _ => Err(Error::Config {
+            field: "developer_harness.agent".into(),
+            message: format!(
+                "goose has no provider and model configured; set them in {} (see {GOOSE_PROVIDER_DOCS})",
+                config_path.display()
+            ),
+        }),
+    }
+}
+
+/// Child environment for `goose acp`. Provider/model come from Goose's config.
+pub(crate) fn goose_child_env(path_root: &Path) -> Vec<(String, String)> {
+    vec![
         (
             "GOOSE_PATH_ROOT".into(),
             path_root.to_string_lossy().into_owned(),
         ),
         ("GOOSE_DISABLE_KEYRING".into(), "1".into()),
         ("GOOSE_MODE".into(), "approve".into()),
-    ])
+    ]
 }
 
 /// `session/new` `_meta.enabledExtensions`: developer/shell plus Syllabix MCP.
@@ -404,7 +454,6 @@ impl GooseAgent {
             binary,
             cache,
             config,
-            api_key,
             workspace,
             skill_list,
         } = start;
@@ -419,16 +468,12 @@ impl GooseAgent {
             root.canonicalize().unwrap_or(root)
         };
         write_permission_yaml(&path_root)?;
+        let model = resolve_goose_model(&path_root, config.inherit_current_session)?;
         let workspace = workspace.canonicalize().unwrap_or(workspace);
         let mcp_tool_events = path_root.join("mcp-tool-events.jsonl");
         let _ = std::fs::write(&mcp_tool_events, "");
         let mcp_command = syllabix_mcp_command();
-        let base_url = config
-            .llm_base_url
-            .clone()
-            .unwrap_or_else(|| DEFAULT_LLM_BASE_URL.to_string());
-        let env = goose_child_env(&config.llm_model, &base_url, api_key.as_str(), &path_root)
-            .map_err(provider_err)?;
+        let env = goose_child_env(&path_root);
         let mut command = Command::new(&binary);
         let stderr_file = std::fs::File::create(path_root.join("goose.stderr"))
             .map_err(|err| provider_err(format!("goose stderr file: {err}")))?;
@@ -545,8 +590,8 @@ impl GooseAgent {
         }
 
         Ok(Self {
-            model: config.llm_model,
-            endpoint: join_endpoint(&base_url),
+            model,
+            endpoint: String::new(),
             cmd_tx: in_tx,
             evt_rx,
             tool_events,
@@ -1472,36 +1517,62 @@ mod tests {
     use crate::skills::{DiscoveredSkill, SkillManifest, SkillSource};
     use std::path::PathBuf;
 
-    #[test]
-    fn openai_url_splits_host_and_chat_path() {
-        let (host, path) = openai_host_and_base_path("https://api.openai.com/v1").expect("default");
-        assert_eq!(host, "https://api.openai.com");
-        assert_eq!(path, "v1/chat/completions");
-        let (host, path) =
-            openai_host_and_base_path("https://api.groq.com/openai/v1").expect("groq");
-        assert_eq!(host, "https://api.groq.com");
-        assert_eq!(path, "openai/v1/chat/completions");
+    fn scratch_path_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "syllabix-goose-config-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(goose_config_path(&root).parent().unwrap()).unwrap();
+        root
     }
 
     #[test]
     fn spawn_env_sets_approve_mode_and_disables_keyring() {
-        let env = goose_child_env(
-            "gpt-4o-mini",
-            "https://api.openai.com/v1",
-            "sk-secret",
-            Path::new("/tmp/syllabix-goose"),
-        )
-        .unwrap();
+        let env = goose_child_env(Path::new("/tmp/syllabix-goose"));
         let map: HashMap<_, _> = env.into_iter().collect();
-        assert_eq!(map["GOOSE_PROVIDER"], "openai");
-        assert_eq!(map["GOOSE_MODEL"], "gpt-4o-mini");
-        assert_eq!(map["OPENAI_HOST"], "https://api.openai.com");
-        assert_eq!(map["OPENAI_BASE_PATH"], "v1/chat/completions");
-        assert_eq!(map["OPENAI_API_KEY"], "sk-secret");
         assert_eq!(map["GOOSE_PATH_ROOT"], "/tmp/syllabix-goose");
         assert_eq!(map["GOOSE_DISABLE_KEYRING"], "1");
         assert_eq!(map["GOOSE_MODE"], "approve");
+        assert_eq!(map.len(), 3);
         assert!(!map.contains_key("GOOSE_ENABLE_SCHEDULER"));
+        assert!(!map.contains_key("GOOSE_PROVIDER"));
+        assert!(!map.contains_key("GOOSE_MODEL"));
+        assert!(!map.contains_key("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn resolve_goose_model_reads_structured_provider_config() {
+        let root = scratch_path_root("structured");
+        std::fs::write(
+            goose_config_path(&root),
+            "active_provider: local\nproviders:\n  local:\n    enabled: true\n    model: lfm2.5-2.6b\n",
+        )
+        .unwrap();
+        assert_eq!(resolve_goose_model(&root, false).unwrap(), "lfm2.5-2.6b");
+    }
+
+    #[test]
+    fn resolve_goose_model_reads_legacy_flat_keys() {
+        let root = scratch_path_root("legacy");
+        std::fs::write(
+            goose_config_path(&root),
+            "GOOSE_PROVIDER: openai\nGOOSE_MODEL: gpt-4o-mini\n",
+        )
+        .unwrap();
+        assert_eq!(resolve_goose_model(&root, false).unwrap(), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn resolve_goose_model_names_goose_config_when_missing() {
+        let root = scratch_path_root("missing");
+        let err = resolve_goose_model(&root, false).unwrap_err();
+        assert!(err.to_string().contains("developer_harness.agent"), "{err}");
+        assert!(err.to_string().contains("config.yaml"), "{err}");
+        assert!(err.to_string().contains(GOOSE_PROVIDER_DOCS), "{err}");
     }
 
     #[test]

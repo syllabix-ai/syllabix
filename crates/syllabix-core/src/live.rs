@@ -51,11 +51,12 @@ pub fn run_live_with_controls(
     controls: RuntimeControls,
 ) -> Result<LoopReport> {
     crate::session_env::install_from_config(config);
-    let llm_api_key = match config.llm {
-        crate::defaults::LlmProvider::Online => {
+    let llm_api_key = match (config.agent, config.llm) {
+        (crate::defaults::AgentBackend::Goose, _) => None,
+        (_, crate::defaults::LlmProvider::Online) => {
             Some(resolve_api_key(|name| std::env::var(name).ok())?)
         }
-        crate::defaults::LlmProvider::Local => None,
+        (_, crate::defaults::LlmProvider::Local) => None,
     };
     let stt_api_key = match config.stt {
         crate::defaults::SttProvider::Online => {

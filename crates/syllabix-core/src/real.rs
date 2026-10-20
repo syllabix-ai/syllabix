@@ -498,8 +498,9 @@ mod production {
 
     /// Build just the LLM slot from config. The cloud path never touches the
     /// model cache — no GGUF is fetched or loaded for a cloud run.
-    /// `developer_harness.agent: goose` is online-only: after the pinned Goose CLI is on
-    /// disk, this starts the Goose backend for replies.
+    /// `developer_harness.agent: goose` reads Goose's own provider/model
+    /// config; after the pinned Goose CLI is on disk, this starts the Goose
+    /// backend for replies.
     pub fn build_llm(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -529,18 +530,10 @@ mod production {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
         if config.agent == crate::defaults::AgentBackend::Goose {
-            if config.llm != crate::defaults::LlmProvider::Online {
-                return Err(Error::Config {
-                    field: "developer_harness.agent".into(),
-                    message: "goose requires pipeline.llm.provider: online".into(),
-                });
-            }
             #[cfg(feature = "cloud")]
             {
-                let key = llm_api_key.ok_or_else(|| Error::Config {
-                    field: API_KEY_ENV.into(),
-                    message: format!("is required when pipeline.llm.provider is {PROVIDER_NAME}"),
-                })?;
+                let path_root = crate::goose::goose_path_root(cache);
+                crate::goose::resolve_goose_model(&path_root, config.inherit_current_session)?;
                 let binary = crate::goose::resolve_goose_exe(cache, fetcher, progress, cancel)?;
                 let discovery = config.discover_skills(&workspace);
                 for diagnostic in &discovery.diagnostics {
@@ -558,9 +551,8 @@ mod production {
                 }
                 return Ok(LiveLlm::Goose(GooseAgent::start(GooseStart {
                     binary,
-                    cache: crate::goose::goose_path_root(cache),
+                    cache: path_root,
                     config: config.clone(),
-                    api_key: key.clone(),
                     workspace: workspace.clone(),
                     skill_list: skill_file_list(&discovery),
                 })?));
@@ -722,20 +714,30 @@ mod production {
             assert_eq!(meta.provider, "online");
         }
 
+        fn write_goose_config(cache: &ModelCache) {
+            let path = crate::goose::goose_config_path(&crate::goose::goose_path_root(cache));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                path,
+                "active_provider: local\nproviders:\n  local:\n    enabled: true\n    model: lfm2.5-2.6b\n",
+            )
+            .unwrap();
+        }
+
         #[test]
-        fn goose_online_fetches_the_pinned_binary() {
+        fn goose_fetches_the_pinned_binary() {
+            let cache = empty_manifest_cache("goose-fetch");
+            write_goose_config(&cache);
             let mut config = crate::AgentConfig::v0();
             config.agent = crate::defaults::AgentBackend::Goose;
-            config.llm = crate::defaults::LlmProvider::Online;
-            config.llm_model = "gpt-4o-mini".into();
             let fetcher = BlockedFetcher::default();
             let err = build_llm(
-                &empty_manifest_cache("goose-online"),
+                &cache,
                 &fetcher,
                 &mut NoProgress,
                 &Cancel::new(),
                 &config,
-                Some(&Zeroizing::new("sk-x".to_string())),
+                None,
             )
             .err()
             .expect("goose fetch is attempted");
@@ -754,12 +756,13 @@ mod production {
         }
 
         #[test]
-        fn goose_local_is_a_config_error() {
+        fn goose_without_provider_config_names_goose_config() {
+            let cache = empty_manifest_cache("goose-missing-config");
             let mut config = crate::AgentConfig::v0();
             config.agent = crate::defaults::AgentBackend::Goose;
             let fetcher = BlockedFetcher::default();
             let err = build_llm(
-                &empty_manifest_cache("goose-local"),
+                &cache,
                 &fetcher,
                 &mut NoProgress,
                 &Cancel::new(),
@@ -767,23 +770,19 @@ mod production {
                 None,
             )
             .err()
-            .expect("goose with a local LLM is a config error");
+            .expect("missing Goose provider config is a config error");
             assert!(err.to_string().contains("developer_harness.agent"), "{err}");
-            assert!(err.to_string().contains("online"), "{err}");
-            assert!(
-                !err.to_string().contains("not implemented yet"),
-                "local goose must not look like a missing backend: {err}"
-            );
+            assert!(err.to_string().contains("config.yaml"), "{err}");
             assert_eq!(
                 fetcher.hits.load(std::sync::atomic::Ordering::SeqCst),
                 0,
-                "local goose must not download the Goose binary"
+                "missing Goose config must fail before the binary download"
             );
         }
 
         #[cfg(feature = "cloud")]
         #[test]
-        fn goose_online_build_llm_returns_the_goose_slot() {
+        fn goose_local_build_llm_returns_the_goose_slot() {
             let binary = {
                 let dir = std::env::temp_dir().join(format!(
                     "syllabix-real-goose-bin-{}-{}",
@@ -821,25 +820,26 @@ mod production {
                 }
                 path
             };
+            let cache = empty_manifest_cache("goose-slot");
+            write_goose_config(&cache);
             let mut config = crate::AgentConfig::v0();
             config.agent = crate::defaults::AgentBackend::Goose;
-            config.llm = crate::defaults::LlmProvider::Online;
-            config.llm_model = "gpt-4o-mini".into();
             let _guard = crate::goose::GooseBinGuard::set(binary);
             let llm = build_llm(
-                &empty_manifest_cache("goose-slot"),
+                &cache,
                 &BlockedFetcher::default(),
                 &mut NoProgress,
                 &Cancel::new(),
                 &config,
-                Some(&Zeroizing::new("sk-x".to_string())),
+                None,
             )
             .expect("live goose slot");
             assert!(matches!(llm, LiveLlm::Goose(_)));
             assert_eq!(llm.name(), "goose");
             let meta = llm.debug_meta().expect("meta");
             assert_eq!(meta.provider, "goose");
-            assert_eq!(meta.model, "gpt-4o-mini");
+            assert_eq!(meta.model, "lfm2.5-2.6b");
+            assert_eq!(meta.endpoint, "");
         }
 
         #[cfg(feature = "cloud")]

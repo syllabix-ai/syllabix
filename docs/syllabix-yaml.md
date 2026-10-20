@@ -249,7 +249,7 @@ Optional top-level `developer_harness:` block. `init` omits it. Unknown keys fai
 
 Default `builtin` (omitted). Values: `builtin` \| `goose`.
 
-`goose` needs `pipeline.llm.provider: online` (any OpenAI-compatible URL). With a local LLM it fails at load. Selecting `goose` downloads a pinned Goose CLI into the model cache and checks its SHA-256 before unpacking. Goose can search the web and fetch pages. Details: [engines](engines.md).
+`goose` reads its own provider and model config; `pipeline.llm` does not drive it. Configure Goose in `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` (or `GOOSE_PROVIDER`/`GOOSE_MODEL`). Selecting `goose` downloads a pinned Goose CLI into the model cache and checks its SHA-256 before unpacking. Goose can search the web and fetch pages. Details: [engines](engines.md).
 
 With barge-in on (`run --barge-in`), speaking while Goose is answering cancels that answer.
 
