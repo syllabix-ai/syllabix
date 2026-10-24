@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-use zeroize::Zeroizing;
 
 const FAKE_ACP: &str = r#"#!/usr/bin/env python3
 import json, os, select, sys, time
@@ -318,29 +317,37 @@ fn fake_goose_bin() -> PathBuf {
     path
 }
 
-fn online_config() -> crate::AgentConfig {
+fn goose_config() -> crate::AgentConfig {
     let mut config = crate::AgentConfig::v0();
     config.agent = crate::defaults::AgentBackend::Goose;
-    config.llm = crate::defaults::LlmProvider::Online;
-    config.llm_model = "gpt-4o-mini".into();
+    config.inherit_current_session = false;
     config
 }
 
+fn write_goose_config(home: &std::path::Path) {
+    fs::create_dir_all(home.join("config")).unwrap();
+    fs::write(
+        home.join("config/config.yaml"),
+        "active_provider: local\nproviders:\n  local:\n    enabled: true\n    model: lfm2.5-2.6b\n",
+    )
+    .unwrap();
+}
+
 fn start_fake() -> (GooseAgent, PathBuf) {
-    start_fake_with(online_config())
+    start_fake_with(goose_config())
 }
 
 fn start_fake_with(config: crate::AgentConfig) -> (GooseAgent, PathBuf) {
     let binary = fake_goose_bin();
     let home = scratch().join("goose-home");
     fs::create_dir_all(&home).unwrap();
+    write_goose_config(&home);
     let workspace = scratch().join("ws");
     fs::create_dir_all(&workspace).unwrap();
     let agent = GooseAgent::start(GooseStart {
         binary,
         cache: home.clone(),
         config,
-        api_key: Zeroizing::new("sk-x".into()),
         workspace,
         skill_list: String::new(),
     })
@@ -361,10 +368,11 @@ fn acp_handshake_writes_permission_yaml_and_spawn_env() {
     assert!(yaml.contains("never_allow"), "{yaml}");
     let env: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(home.join("spawn-env.json")).unwrap()).unwrap();
-    assert_eq!(env["GOOSE_PROVIDER"], "openai");
+    assert_eq!(env["GOOSE_PROVIDER"], "");
+    assert_eq!(env["GOOSE_MODEL"], "");
     assert_eq!(env["GOOSE_MODE"], "approve");
     assert_eq!(env["GOOSE_DISABLE_KEYRING"], "1");
-    assert_eq!(env["OPENAI_API_KEY"], "sk-x");
+    assert_eq!(env["OPENAI_API_KEY"], "");
     assert_eq!(env["argv"][1], "acp");
     let session: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(home.join("session-new.json")).unwrap()).unwrap();
@@ -433,11 +441,9 @@ fn generate_streams_tokens_without_sending_history() {
         agent.take_acp_trace().is_empty(),
         "diagnostics off → no ACP trace"
     );
-    assert!(agent
-        .debug_meta()
-        .unwrap()
-        .endpoint
-        .contains("chat/completions"));
+    let meta = agent.debug_meta().unwrap();
+    assert_eq!(meta.endpoint, "");
+    assert_eq!(meta.model, "lfm2.5-2.6b");
     assert_eq!(agent.name(), "goose");
 }
 
@@ -469,7 +475,7 @@ fn generate_cancel_wakes_without_waiting_for_idle_timeout() {
 
 #[test]
 fn diagnostics_records_acp_jsonl_lines_both_directions() {
-    let mut config = online_config();
+    let mut config = goose_config();
     config.diagnostics_timestamps = true;
     let dump = scratch().join("turn-debug");
     config.diagnostics_directory = dump.clone();
@@ -582,11 +588,12 @@ fn goose_crash_is_a_provider_error() {
     let mut perms = fs::metadata(&path).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&path, perms).unwrap();
+    let home = scratch().join("home");
+    write_goose_config(&home);
     let err = GooseAgent::start(GooseStart {
         binary: path,
-        cache: scratch().join("home"),
-        config: online_config(),
-        api_key: Zeroizing::new("sk-x".into()),
+        cache: home,
+        config: goose_config(),
         workspace: scratch().join("ws"),
         skill_list: String::new(),
     })

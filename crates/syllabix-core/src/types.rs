@@ -166,11 +166,12 @@ pub struct HistoryTurn {
 
 /// Provider facts for diagnostics sidecars.
 ///
-/// `endpoint` and `request_id` are empty for the local llama.cpp provider;
-/// they identify the online endpoint and response associated with a turn.
+/// `endpoint` and `request_id` are empty for the local llama.cpp provider and
+/// for Goose, whose provider is configured outside Syllabix; they identify the
+/// online endpoint and response associated with a turn.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LlmDebugMeta {
-    /// Config name of the provider (`llama.cpp`, `openai`).
+    /// Config name of the provider (`llama.cpp`, `openai`, `goose`).
     pub provider: String,
     /// Model id used for this run (GGUF asset id or served model name).
     pub model: String,

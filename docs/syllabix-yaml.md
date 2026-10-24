@@ -211,7 +211,7 @@ SYLLABIX_LLM_API_KEY=sk-… syllabix run
 # or: export SYLLABIX_LLM_API_KEY=sk-…
 ```
 
-Missing/empty with `provider: online` fails before devices or weights load. Keyless loopback still needs a placeholder: `SYLLABIX_LLM_API_KEY=ollama syllabix run`.
+Missing/empty with a builtin `provider: online` fails before devices or weights load. Goose reads its own provider config and never needs this key. Keyless loopback still needs a placeholder: `SYLLABIX_LLM_API_KEY=ollama syllabix run`.
 
 ### Tool loop (`developer_harness`)
 
@@ -249,7 +249,7 @@ Optional top-level `developer_harness:` block. `init` omits it. Unknown keys fai
 
 Default `builtin` (omitted). Values: `builtin` \| `goose`.
 
-`goose` needs `pipeline.llm.provider: online` (any OpenAI-compatible URL). With a local LLM it fails at load. Selecting `goose` downloads a pinned Goose CLI into the model cache and checks its SHA-256 before unpacking. Goose can search the web and fetch pages. Details: [engines](engines.md).
+`goose` reads its own provider and model config; `pipeline.llm` does not drive it. Configure Goose in `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` (or `GOOSE_PROVIDER`/`GOOSE_MODEL`). The `pipeline.llm` block is still required in yaml, but Goose ignores those values. Selecting `goose` downloads a pinned Goose CLI into the model cache and checks its SHA-256 before unpacking. Goose can search the web and fetch pages. Details: [engines](engines.md).
 
 With barge-in on (`run --barge-in`), speaking while Goose is answering cancels that answer.
 
