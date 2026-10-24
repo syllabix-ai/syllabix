@@ -148,11 +148,13 @@ hard host-policy gate is absolute: `policy_violations=0`,
 for any non-zero counter. Give the key rate-limit headroom first — quota
 exhaustion fails the fixture as unreachable, not as a model verdict.
 
-Tracked admission is the builtin online run only. An ignored
-`harness_quality_local_lfm` test still exists for local-loop debugging; it is
-not an admission gate and its report is not pasted into PRs. Local
-developer-harness stays opt-in via yaml (`pipeline.llm.developer_harness: true`
-under `lfm2.5-2.6b`); the default voice path is unchanged.
+Tracked CI admission is the builtin online run. Goose local-GGUF admission is a
+manual operator run; its evidence is pasted into the pull request description.
+An ignored `harness_quality_local_lfm` test still exists for local-loop
+debugging; it is not part of CI admission and its report is not pasted into
+pull requests. Local developer-harness stays opt-in via yaml
+(`pipeline.llm.developer_harness: true` under `lfm2.5-2.6b`); the default
+voice path is unchanged.
 
 The Goose variant runs the same fixtures and the same completion and security
 checks with `developer_harness.agent: goose` as the reply backend. Goose reads
