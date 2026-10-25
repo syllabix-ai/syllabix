@@ -73,7 +73,7 @@ Ready = used by the CLI. Preview = less proven. Depend from crates.io ([Compatib
 | `full` | yes (`default`) | Lane 2, and Lane 3 hosts that still use shipped engines or the real mic/speakers | `ggml` + `device-audio` + `cloud`. `run_live`, `load_real_providers`, and `Session` defaults. |
 | `ggml` | via `full` | Lane 3 that still loads this crate’s Whisper / local LLM / Qwen engines | Optional `syllabix-native` (CMake + C++). |
 | `device-audio` | via `full` | Lane 3 that still uses the real microphone and speakers | Device I/O and echo cancellation (`NativeCapture` / `NativePlayback`). |
-| `cloud` | via `full` | Hosts whose yaml uses `pipeline.llm.provider: online`, `pipeline.stt.provider: online`, or `pipeline.tts.provider: online` with `load_real_providers` | `LiveLlm::Cloud`, `LiveStt::Remote`, and `LiveTts::Remote` in the real loader. `openai::OpenAiLlm` always compiles; `remote_stt::RemoteStt` and `remote_tts::RemoteTts` need this feature. |
+| `cloud` | via `full` | Hosts whose yaml uses `pipeline.llm.provider: openai-compatible`, `pipeline.stt.provider: online`, or `pipeline.tts.provider: online` with `load_real_providers` | `LiveLlm::Cloud`, `LiveStt::Remote`, and `LiveTts::Remote` in the real loader. `openai::OpenAiLlm` always compiles; `remote_stt::RemoteStt` and `remote_tts::RemoteTts` need this feature. |
 | `native-inference` | no | Contributors running the slow model tests (`native_inference`) | Turns on `ggml` plus the tests that download and run the real models (GGUF and ONNX). ONNX (`ort`) is always built in; this feature does not switch it on. |
 
 **Lane 3 that implements every stage** (see `examples/custom-llm.rs`): `default-features = false`.  
@@ -100,7 +100,7 @@ Always pass `--tag vX.Y.Z`. Do not install from `main`. This builds the on-devic
 | --- | --- |
 | CLI | `syllabix run`, `syllabix run --barge-in`, `syllabix init [DIR]`, `syllabix --help`. Full list: [cli](cli.md). |
 | Config | Optional `syllabix.yaml` in the process working directory. Missing file uses built-ins. Keys: [syllabix.yaml](syllabix-yaml.md). |
-| Environment | `SYLLABIX_LLM_API_KEY` for `pipeline.llm.provider: online` (never yaml). `SYLLABIX_STT_API_KEY` for online STT. `SYLLABIX_TTS_API_KEY` for online TTS. `SYLLABIX_CACHE_DIR` to share or relocate the model cache. |
+| Environment | `SYLLABIX_LLM_API_KEY` for `pipeline.llm.provider: openai-compatible` (never yaml). `SYLLABIX_STT_API_KEY` for online STT. `SYLLABIX_TTS_API_KEY` for online TTS. `SYLLABIX_CACHE_DIR` to share or relocate the model cache. |
 | Exit codes | `0` success. `1` I/O, config, device, cache, cancel, provider, or pipeline failure. `2` command not implemented. |
 
 `--help` and `init` download nothing. First `run` of the default stack fetches about 2.2 GB into the cache (below).
@@ -201,7 +201,7 @@ impl Llm for EchoLlm {
 
 The trait impl above is covered by `crates/syllabix-core/examples/custom-llm.rs`. That file uses in-memory fixtures so CI can run without a microphone (`cargo clippy --workspace --all-targets` compiles examples, so the supported API cannot bitrot). A host that swaps only the LLM and keeps the other `Session` defaults still needs the `ggml` and `device-audio` features (on by default). Skipping CMake is only for hosts that supply every stage themselves.
 
-A yaml `pipeline.llm.provider: online` still needs `SYLLABIX_LLM_API_KEY` when the LLM slot is the default. A custom `Llm` does not. Native mic/speaker types live under `syllabix_core::audio` and are **not** in the Lane 2 freeze list.
+A yaml `pipeline.llm.provider: openai-compatible` still needs `SYLLABIX_LLM_API_KEY` when the LLM slot is the default. A custom `Llm` does not. Native mic/speaker types live under `syllabix_core::audio` and are **not** in the Lane 2 freeze list.
 
 ### Supported types (Lane 3, additional)
 

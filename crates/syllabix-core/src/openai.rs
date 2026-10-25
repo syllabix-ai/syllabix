@@ -41,7 +41,7 @@ pub const DEFAULT_LLM_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// Config / log name.
 /// Config / log name for the remote execution model.
-pub const PROVIDER_NAME: &str = "online";
+pub const PROVIDER_NAME: &str = "openai-compatible";
 
 /// Response header echoed into diagnostics sidecars when present.
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -1387,7 +1387,7 @@ mod tests {
         // One-deep lookahead: the final delta carries is_last; no empty marker.
         assert_eq!(tokens, vec!["Hel".to_string(), "lo there".to_string()]);
         let meta = Llm::debug_meta(&llm).expect("openai reports debug meta");
-        assert_eq!(meta.provider, "online");
+        assert_eq!(meta.provider, "openai-compatible");
         assert_eq!(meta.model, "gpt-test");
         assert_eq!(meta.request_id, "req-123");
         assert!(meta.endpoint.ends_with("/v1/chat/completions"));
@@ -1753,7 +1753,7 @@ mod tests {
     #[test]
     fn settings_from_config_defaults_and_overrides() {
         let mut config = crate::AgentConfig::v0();
-        config.llm = crate::LlmProvider::Online;
+        config.llm = crate::LlmProvider::OpenAiCompatible;
         config.llm_model = "gpt-test".into();
         config.llm_base_url = None;
         assert_eq!(

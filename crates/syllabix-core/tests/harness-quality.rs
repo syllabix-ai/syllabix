@@ -1137,8 +1137,7 @@ fn harness_quality_live_admission() {
 }
 
 /// Goose config for one fixture: the harness skill config with Goose as the
-/// reply backend and the fixture's ceiling. Goose reads its own provider and
-/// model from `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml`.
+/// reply backend and the fixture's ceiling (`pipeline.llm` drives Goose's model).
 #[cfg(all(feature = "ggml", feature = "cloud"))]
 fn goose_fixture_config(fixture: &CapabilityFixture) -> AgentConfig {
     let mut config = AgentConfig::parse_yaml(include_str!("fixtures/skills-harness.yaml"))
@@ -1154,10 +1153,9 @@ fn goose_fixture_config(fixture: &CapabilityFixture) -> AgentConfig {
 }
 
 /// Manual-only Goose admission. Same fixtures and the same bar as
-/// `harness_quality_live_admission`, with Goose as the reply backend. Goose
-/// reads its own provider and model config; configure it under
-/// `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` before running. The pinned
-/// Goose CLI is fetched into the model cache if absent.
+/// `harness_quality_live_admission`, with Goose as the reply backend. Set
+/// `pipeline.llm` (and `SYLLABIX_LLM_API_KEY` when needed) before running. The
+/// pinned Goose CLI is fetched into the model cache if absent.
 ///
 /// A run is invalid, not passed, if Goose ran a shell call that did not arrive
 /// through Syllabix's `terminal/create` boundary. Shell events are only produced

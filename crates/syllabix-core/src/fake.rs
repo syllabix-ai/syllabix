@@ -246,7 +246,7 @@ impl Default for FakeLlm {
 
 impl Llm for FakeLlm {
     fn name(&self) -> &'static str {
-        BuiltinDefaults::v0().llm.as_str()
+        crate::defaults::LlmProvider::Local.as_str()
     }
 
     fn generate(

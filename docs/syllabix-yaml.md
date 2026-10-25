@@ -53,7 +53,7 @@ Each of STT, LLM, and TTS is `local` (in-process, the default) or `online` (an O
 | Stage | `local` | `online` |
 | --- | --- | --- |
 | STT | In-process. Ids: [engines](engines.md#stt). | OpenAI-compatible `audio/transcriptions`. `base_url` ([same rules](#base_url)). Key: `SYLLABIX_STT_API_KEY`. |
-| LLM | GGUF in-process. | OpenAI-compatible `chat/completions`. Key: `SYLLABIX_LLM_API_KEY` (self-hosted Ollama may not need a real one; [API key](#api-key-environment-not-yaml)). See [`base_url`](#base_url). |
+| LLM | GGUF in-process (named id or `.gguf` path). | `provider: openai-compatible` — OpenAI-compatible `chat/completions`. Key: `SYLLABIX_LLM_API_KEY` (self-hosted endpoints may use a placeholder; [API key](#api-key-environment-not-yaml)). See [`base_url`](#base_url). |
 | TTS | In-process. Ids: [engines](engines.md#tts). | OpenAI-compatible `audio/speech`. `base_url` ([same rules](#base_url)). Key: `SYLLABIX_TTS_API_KEY`. |
 
 ## `name`
@@ -167,16 +167,17 @@ The selected backend is recorded as `backend` in component benchmark JSONL.
 
 ### `provider`
 
-`local` (default) or `online`.
+With `developer_harness.agent: builtin` (default), only `local` and `openai-compatible` are valid.
 
-- `local` — GGUF in-process via llama.cpp.
-- `online` — OpenAI-compatible `chat/completions`; audio stays on the machine; only transcript text leaves.
+- `local` — GGUF in-process via llama.cpp. `model` is a catalogue id or a path to a `.gguf` file.
+- `openai-compatible` — any OpenAI-style `chat/completions` endpoint (`base_url` + `model`). Audio stays on the machine; only transcript text leaves. The old value `online` was renamed to `openai-compatible`.
+- Any other value (`openai`, `anthropic`, `ollama`, `openrouter`, …) is a [Goose](engines.md) provider name and requires `developer_harness.agent: goose`, unless you use `openai-compatible` with that vendor's OpenAI-compatible endpoint instead.
 
 ### `model`
 
-**Local** ids and sources: [engines](engines.md#llm). Unknown local ids fail at load.
+**Local** ids and sources: [engines](engines.md#llm), or a `.gguf` path. Unknown local ids fail at load.
 
-**Online:** any id the endpoint serves (`gpt-4o-mini`, …).
+**OpenAI-compatible (builtin) or Goose:** any id the endpoint or provider serves.
 
 Measured latency and memory for each local LLM id: [workload benchmark](workload_benchmark/workload_benchmark.md#llm).
 
@@ -186,23 +187,35 @@ Default `false`. Set `true` only with local `qwen3.5-2b`. Rejected for every oth
 
 ### `system_prompt`
 
-Optional spoken persona for both `local` and `online`. Default: the sample prompt above.
+Optional spoken persona for `local` and `openai-compatible`. Default: the sample prompt above.
 
 `{language}` is replaced at generate time with the STT language’s English name (`English`, `French`, …). Empty or non-string values fail at load. `init` writes this key so you can edit it.
 
 ### `base_url`
 
-Required when `provider: online`. Forbidden when `provider: local`. No default value for `base_url`.
+Required when `provider: openai-compatible`. Forbidden when `provider: local`. Optional for Goose `ollama` (`OLLAMA_HOST`). No default value for `base_url`.
 
-Examples: `https://api.openai.com/v1`, `https://api.groq.com/openai/v1`, `http://127.0.0.1:11434/v1` (Ollama), any vLLM / llama-server URL.
+Examples: `https://api.openai.com/v1`, `https://api.groq.com/openai/v1`, `http://127.0.0.1:11434/v1` (Ollama via `openai-compatible`), any vLLM / llama-server URL.
 
 ```yaml
 pipeline:
   llm:
-    provider: online
+    provider: openai-compatible
     model: gpt-4o-mini
     base_url: https://api.openai.com/v1
 ```
+
+Anthropic through the builtin harness (OpenAI-compatible API; key from the environment):
+
+```yaml
+pipeline:
+  llm:
+    provider: openai-compatible
+    model: claude-sonnet-4-5
+    base_url: https://api.anthropic.com/v1/
+```
+
+Use `SYLLABIX_LLM_API_KEY` with your Anthropic API key (never put keys in yaml).
 
 ### API key (environment, not yaml)
 
@@ -211,11 +224,11 @@ SYLLABIX_LLM_API_KEY=sk-… syllabix run
 # or: export SYLLABIX_LLM_API_KEY=sk-…
 ```
 
-Missing/empty with a builtin `provider: online` fails before devices or weights load. Goose reads its own provider config and never needs this key. Keyless loopback still needs a placeholder: `SYLLABIX_LLM_API_KEY=ollama syllabix run`.
+Missing/empty with a builtin `provider: openai-compatible` fails before devices or weights load. With `developer_harness.agent: goose`, Syllabix maps `SYLLABIX_LLM_API_KEY` to the Goose provider's expected variable when applicable. Keyless loopback still needs a placeholder: `SYLLABIX_LLM_API_KEY=ollama syllabix run`.
 
 ### Tool loop (`developer_harness`)
 
-Default off. `init` does not write it. Explicit opt-in for the developer tool loop under `pipeline.llm`. Valid only with `provider: online` or local `lfm2.5-2.6b`. The ordinary spoken path stays tool-free.
+Default off. `init` does not write it. Explicit opt-in for the developer tool loop under `pipeline.llm`. Valid only with `provider: openai-compatible` or local `lfm2.5-2.6b`. The ordinary spoken path stays tool-free.
 
 The harness uses a generic shell through the host sandbox: macOS Seatbelt and Linux Bubblewrap, with Landlock fallback. The model may request less filesystem authority per call, but the session ceiling is fixed at process start and cannot be widened in-session. Bounded output, cancellation, and a workspace-contained working directory apply to every command. It has no wall-clock deadline; cancellation still stops the active command.
 
@@ -249,7 +262,7 @@ Optional top-level `developer_harness:` block. `init` omits it. Unknown keys fai
 
 Default `builtin` (omitted). Values: `builtin` \| `goose`.
 
-`goose` reads its own provider and model config; `pipeline.llm` does not drive it. Configure Goose in `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` (or `GOOSE_PROVIDER`/`GOOSE_MODEL`). The `pipeline.llm` block is still required in yaml, but Goose ignores those values. Selecting `goose` downloads a pinned Goose CLI into the model cache and checks its SHA-256 before unpacking. Goose can search the web and fetch pages. Details: [engines](engines.md).
+`goose` uses `pipeline.llm` as the single place to pick provider and model. Syllabix writes them into `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` (merging with keys you added by hand) before starting Goose. Selecting `goose` downloads a pinned Goose CLI into the model cache and checks its SHA-256 before unpacking. Goose can search the web and fetch pages. Details: [engines](engines.md).
 
 With barge-in on (`run --barge-in`), speaking while Goose is answering cancels that answer.
 
@@ -307,7 +320,7 @@ pipeline:
 
 The selected `metal`, `vulkan`, or `cpu` backend is recorded as `tts_backend` in turn
 diagnostics and as `backend` in component benchmark JSONL. Qwen TTS stays
-`provider: local`; it can pair with `pipeline.llm.provider: online` (audio
+`provider: local`; it can pair with `pipeline.llm.provider: openai-compatible` (audio
 never leaves the machine). That combination does not load a local LLM GGUF,
 so the Metal TTS probe competes with resident STT (including a GPU-backed Qwen ASR).
 

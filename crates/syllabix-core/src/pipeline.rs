@@ -2293,7 +2293,7 @@ mod tests {
 
         fn debug_meta(&self) -> Option<crate::types::LlmDebugMeta> {
             Some(crate::types::LlmDebugMeta {
-                provider: "online".into(),
+                provider: "openai-compatible".into(),
                 model: "gpt-test".into(),
                 endpoint: "https://mock.example/v1/chat/completions".into(),
                 request_id: "req-42".into(),
@@ -2349,7 +2349,10 @@ mod tests {
         .expect("loop");
         let json =
             std::fs::read_to_string(dir.join("turn-000").join("turn.json")).expect("sidecar");
-        assert!(json.contains("\"llm_provider\": \"online\""), "{json}");
+        assert!(
+            json.contains("\"llm_provider\": \"openai-compatible\""),
+            "{json}"
+        );
         assert!(json.contains("\"llm_model\": \"gpt-test\""), "{json}");
         assert!(
             json.contains("\"llm_endpoint\": \"https://mock.example/v1/chat/completions\""),

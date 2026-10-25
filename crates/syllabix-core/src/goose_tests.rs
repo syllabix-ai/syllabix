@@ -350,6 +350,8 @@ fn start_fake_with(config: crate::AgentConfig) -> (GooseAgent, PathBuf) {
         config,
         workspace,
         skill_list: String::new(),
+        resolved_model: "lfm2.5-2.6b".into(),
+        provider_env: Vec::new(),
     })
     .unwrap_or_else(|err| {
         let stderr = fs::read_to_string(home.join("goose.stderr")).unwrap_or_default();
@@ -596,6 +598,8 @@ fn goose_crash_is_a_provider_error() {
         config: goose_config(),
         workspace: scratch().join("ws"),
         skill_list: String::new(),
+        resolved_model: "lfm2.5-2.6b".into(),
+        provider_env: Vec::new(),
     })
     .err()
     .expect("dead goose");

@@ -28,7 +28,7 @@ This page is positioning, not a benchmark. End-to-end latency and interrupt p95 
 
 **Pipecat or LiveKit** — you are building an application that needs browsers, WebRTC, telephony, transports, workers, multiple sessions, or production orchestration. Syllabix does not currently provide that transport or deployment infrastructure.
 
-**Ollama** — you primarily want to run a local **text** model. Syllabix can call an OpenAI-compatible endpoint such as Ollama (`pipeline.llm.provider: online` with an Ollama `base_url`) while keeping STT/TTS local. Ollama is therefore an optional external LLM endpoint, not part of the default Syllabix runtime.
+**Ollama** — you primarily want to run a local **text** model. Syllabix can call an OpenAI-compatible endpoint such as Ollama (`pipeline.llm.provider: openai-compatible` with an Ollama `base_url`) while keeping STT/TTS local. Ollama is therefore an optional external LLM endpoint, not part of the default Syllabix runtime.
 
 ## What this page does not claim
 
