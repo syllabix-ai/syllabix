@@ -191,7 +191,7 @@ impl LlmProvider {
         }
     }
 
-    /// Builtin Syllabix LLM (`developer_harness.agent: builtin`).
+    /// Non-Goose reply backends (`developer_harness.agent: syllabix` or `none`).
     pub fn builtin_supported(&self) -> bool {
         matches!(self, Self::Local | Self::OpenAiCompatible)
     }
@@ -201,12 +201,14 @@ impl LlmProvider {
     }
 }
 
-/// `developer_harness.agent` yaml value. Default `Builtin`.
+/// `developer_harness.agent` yaml value. Default `None`.
 /// `Goose` uses `pipeline.llm` to write Goose's provider/model config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentBackend {
-    /// `builtin` (default).
-    Builtin,
+    /// Plain voice chat with no sandboxed tools (default).
+    None,
+    /// Built-in Syllabix harness with sandboxed shell tools.
+    Syllabix,
     /// `goose`. Syllabix writes Goose's provider and model from `pipeline.llm`.
     Goose,
 }
@@ -215,9 +217,20 @@ impl AgentBackend {
     /// Config / log name.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Builtin => "builtin",
+            Self::None => "none",
+            Self::Syllabix => "syllabix",
             Self::Goose => "goose",
         }
+    }
+
+    /// Whether the built-in tool loop and `pipeline.llm.developer_permissions` apply.
+    pub fn syllabix_tools(self) -> bool {
+        matches!(self, Self::Syllabix)
+    }
+
+    /// Whether optional `skills:` roots are allowed.
+    pub fn allows_skills(self) -> bool {
+        matches!(self, Self::Syllabix | Self::Goose)
     }
 }
 

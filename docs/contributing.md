@@ -152,9 +152,8 @@ Tracked CI admission is the builtin openai-compatible run. Goose local-GGUF admi
 manual operator run; its evidence is pasted into the pull request description.
 An ignored `harness_quality_local_lfm` test still exists for local-loop
 debugging; it is not part of CI admission and its report is not pasted into
-pull requests. Local developer-harness stays opt-in via yaml
-(`pipeline.llm.developer_harness: true` under `lfm2.5-2.6b`); the default
-voice path is unchanged.
+pull requests. Local developer-harness stays opt-in via yaml (`developer_harness.agent: syllabix`);
+the default voice path (`agent: none`) is unchanged.
 
 The Goose variant runs the same fixtures and the same completion and security
 checks with `developer_harness.agent: goose` as the reply backend. Set

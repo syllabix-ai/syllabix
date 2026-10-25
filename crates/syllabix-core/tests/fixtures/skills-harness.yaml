@@ -2,8 +2,10 @@ name: skills-harness
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
+  llm: { provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1 }
   tts: { provider: local, model: kokoro }
+developer_harness:
+  agent: syllabix
 skills:
   roots:
     - path: skills

@@ -279,12 +279,9 @@ impl LlamaLlm {
         self
     }
 
-    /// Enable the bounded local harness for manual LFM evaluation only.
-    /// Production configuration deliberately never invokes this until the
-    /// harness-quality admission gate passes; retaining the model check here
-    /// keeps hand-built provider sets from widening the authority.
+    /// Enable the bounded local developer harness (sandboxed shell tools).
     pub fn with_developer_harness(mut self, enabled: bool) -> Self {
-        self.developer_harness = enabled && self.model_id == LFM25_2_6B_ASSET;
+        self.developer_harness = enabled;
         self
     }
 
@@ -2483,6 +2480,33 @@ mod tests {
             "<think>x</think>[shell(argv=['date'])]"
         ));
         assert!(!looks_like_lfm_tool_text("Here is [a normal answer]."));
+    }
+
+    #[test]
+    fn non_lfm_local_model_keeps_harness_tools_enabled() {
+        let mut llm = LlamaLlm::with_engine(Box::new(HarnessEngine {
+            rounds: VecDeque::from([
+                "<|tool_call_start|>[shell(argv=[\"pwd\"])]<|tool_call_end|>".into(),
+                "Done.".into(),
+            ]),
+            last_messages: Arc::new(Mutex::new(Vec::new())),
+        }));
+        llm.model_id = LLAMA_32_1B_ASSET.into();
+        llm = llm.with_developer_harness(true);
+        Llm::generate(
+            &mut llm,
+            &[],
+            &user(0, "Where am I?"),
+            &Cancel::new(),
+            &mut |_| Ok(()),
+        )
+        .expect("non-LFM harness must stay enabled");
+        let events = Llm::take_tool_events(&mut llm);
+        assert_eq!(
+            events.iter().filter(|event| event.kind == "call").count(),
+            1,
+            "regression: model allowlist would disable tools for {LLAMA_32_1B_ASSET}"
+        );
     }
 
     #[test]

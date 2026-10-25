@@ -31,7 +31,7 @@ With `trajectory: true`, each turn directory also contains `trajectory.jsonl`:
 one JSON object per line, in order — the user utterance, every tool call with
 its validated arguments, every bounded tool result, the assistant reply, and
 the turn outcome. The same `trajectory.jsonl` is written for
-`developer_harness.agent: builtin` and `developer_harness.agent: goose`, so a turn can be read
+`developer_harness.agent: syllabix` and `developer_harness.agent: goose`, so a turn can be read
 without knowing the underlying protocol.
 
 ```json

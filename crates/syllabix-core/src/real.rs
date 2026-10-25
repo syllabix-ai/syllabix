@@ -644,7 +644,7 @@ mod production {
             crate::defaults::LlmProvider::External(name) => Err(Error::Config {
                 field: "pipeline.llm.provider".into(),
                 message: format!(
-                    "provider {:?} needs developer_harness.agent: goose, or use provider: openai-compatible with that provider's OpenAI-compatible endpoint",
+                    "provider {:?} needs developer_harness.agent: goose (syllabix and none only support local and openai-compatible), or use provider: openai-compatible with that provider's OpenAI-compatible endpoint",
                     name
                 ),
             }),

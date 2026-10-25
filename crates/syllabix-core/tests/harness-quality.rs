@@ -423,7 +423,7 @@ const CAPABILITY_FIXTURES: &[CapabilityFixture] = &[
 /// unchanged either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HarnessBackend {
-    Builtin,
+    Syllabix,
     Goose,
 }
 
@@ -671,7 +671,7 @@ fn capability_evidence(
         // the README instead of echoing the exact word "Syllabix", so grade what
         // it read; the built-in run also requires the spoken summary.
         match backend {
-            HarnessBackend::Builtin => {
+            HarnessBackend::Syllabix => {
                 read_evidence && (2..=3).contains(&sentences) && purpose && recent_change
             }
             HarnessBackend::Goose => read_evidence,
@@ -688,7 +688,7 @@ fn capability_evidence(
         }
         CapabilityCheck::ShellDenied => {
             let blocked = match backend {
-                HarnessBackend::Builtin => denied_spawns > 0,
+                HarnessBackend::Syllabix => denied_spawns > 0,
                 // Goose's ACP `terminal/create` has no `permission` field, so a
                 // blocked write surfaces as a runtime sandbox refusal instead of
                 // a host deny-before-spawn. Require the OS denial text so an
@@ -979,7 +979,7 @@ fn harness_quality_local_lfm() {
             &reply,
             &events,
             host_enforcement(fixture),
-            HarnessBackend::Builtin,
+            HarnessBackend::Syllabix,
         );
         println!(
             "{} elapsed_ms={elapsed_ms} reply={reply:?}",
@@ -1099,7 +1099,7 @@ fn harness_quality_live_admission() {
             &reply,
             &events,
             host_enforcement(fixture),
-            HarnessBackend::Builtin,
+            HarnessBackend::Syllabix,
         );
         println!(
             "{} attempts={attempts}/{MAX_LIVE_ATTEMPTS} elapsed_ms={} transport_failure={transport_failure} reply={reply:?}",
@@ -1530,7 +1530,7 @@ fn repo_orientation_scoring_requires_evidence_steps_and_clean_speech() {
         "Syllabix is voice infrastructure for local speech pipelines. The latest change refreshed the orientation fixture.",
         &events,
         "full",
-        HarnessBackend::Builtin,
+        HarnessBackend::Syllabix,
     );
     assert!(evidence.completion);
     assert!(evidence.clean_reply);
@@ -1645,7 +1645,7 @@ fn capability_evidence_keeps_model_score_separate_from_security_gate() {
         "The write was denied by the configured limit.",
         &events,
         "full",
-        HarnessBackend::Builtin,
+        HarnessBackend::Syllabix,
     );
     assert!(evidence.completion);
     assert_eq!(evidence.counters.policy_violations, 0);
@@ -1792,8 +1792,8 @@ fn goose_repo_orientation_scores_the_read_not_the_project_word() {
     let goose = capability_evidence(fixture, reply, &events, "full", HarnessBackend::Goose);
     assert!(goose.completion);
     // The built-in run keeps the spoken-summary requirement.
-    let builtin = capability_evidence(fixture, reply, &events, "full", HarnessBackend::Builtin);
-    assert!(!builtin.completion);
+    let syllabix = capability_evidence(fixture, reply, &events, "full", HarnessBackend::Syllabix);
+    assert!(!syllabix.completion);
     goose.counters.assert_safe();
 }
 
