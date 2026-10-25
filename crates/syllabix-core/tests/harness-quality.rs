@@ -15,12 +15,11 @@
 //! ```
 //!
 //! The Goose variant runs the same fixtures and the same bar with Goose as the
-//! reply backend (`developer_harness.agent: goose`, online-only today):
+//! reply backend (`developer_harness.agent: goose`). Configure Goose's own
+//! provider and model first; see `docs/contributing.md`.
 //!
 //! ```bash
-//! SYLLABIX_LLM_API_KEY=… SYLLABIX_HARNESS_BASE_URL=https://… \
-//!   SYLLABIX_HARNESS_MODEL=gpt-4o-mini \
-//!   cargo test -p syllabix-core --test harness-quality harness_quality_live_admission_goose -- --ignored --nocapture
+//! cargo test -p syllabix-core --test harness-quality harness_quality_live_admission_goose -- --ignored --nocapture
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,7 +28,7 @@ use std::time::Instant;
 
 use syllabix_core::config::{DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy};
 #[cfg(all(feature = "ggml", feature = "cloud"))]
-use syllabix_core::defaults::{AgentBackend, LlmProvider};
+use syllabix_core::defaults::AgentBackend;
 use syllabix_core::llm::{
     LlamaLlm, LFM25_2_6B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
@@ -1138,16 +1137,14 @@ fn harness_quality_live_admission() {
 }
 
 /// Goose config for one fixture: the harness skill config with Goose as the
-/// reply backend, the online endpoint under test, and the fixture's ceiling.
+/// reply backend and the fixture's ceiling. Goose reads its own provider and
+/// model from `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml`.
 #[cfg(all(feature = "ggml", feature = "cloud"))]
-fn goose_fixture_config(fixture: &CapabilityFixture, base_url: &str, model: &str) -> AgentConfig {
+fn goose_fixture_config(fixture: &CapabilityFixture) -> AgentConfig {
     let mut config = AgentConfig::parse_yaml(include_str!("fixtures/skills-harness.yaml"))
         .expect("harness skill config");
     config.agent = AgentBackend::Goose;
-    config.llm = LlmProvider::Online;
-    config.llm_model = model.to_string();
-    config.llm_base_url = Some(base_url.to_string());
-    config.llm_developer_harness = true;
+    config.inherit_current_session = false;
     config.llm_developer_permissions = DeveloperPermissions {
         filesystem: fixture.filesystem,
         network: fixture.network,
@@ -1157,11 +1154,10 @@ fn goose_fixture_config(fixture: &CapabilityFixture, base_url: &str, model: &str
 }
 
 /// Manual-only Goose admission. Same fixtures and the same bar as
-/// `harness_quality_live_admission`, with Goose as the reply backend. Goose is
-/// online-only today (`developer_harness.agent: goose`), so it reads the same
-/// `SYLLABIX_LLM_API_KEY` / `SYLLABIX_HARNESS_BASE_URL` /
-/// `SYLLABIX_HARNESS_MODEL`. The pinned Goose CLI is fetched into the model
-/// cache if absent; no model weights are downloaded.
+/// `harness_quality_live_admission`, with Goose as the reply backend. Goose
+/// reads its own provider and model config; configure it under
+/// `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` before running. The pinned
+/// Goose CLI is fetched into the model cache if absent.
 ///
 /// A run is invalid, not passed, if Goose ran a shell call that did not arrive
 /// through Syllabix's `terminal/create` boundary. Shell events are only produced
@@ -1176,9 +1172,7 @@ fn goose_fixture_config(fixture: &CapabilityFixture, base_url: &str, model: &str
 fn harness_quality_live_admission_goose() {
     syllabix_core::executor::set_inherit_current_session(false);
     let _admission_guard = admission_lock();
-    let (base_url, model) = live_config();
-    let api_key = resolve_api_key(|key| std::env::var(key).ok()).expect("key checked above");
-    println!("model={model} base={base_url} mode=goose");
+    println!("mode=goose");
     let fixture_workspace = fixture_workspace();
     let cache = ModelCache::v0();
     let mut progress = NoProgress;
@@ -1187,7 +1181,7 @@ fn harness_quality_live_admission_goose() {
     let mut evidence = Vec::new();
 
     for fixture in CAPABILITY_FIXTURES {
-        let config = goose_fixture_config(fixture, &base_url, &model);
+        let config = goose_fixture_config(fixture);
         let mut reply = String::new();
         let mut events = Vec::new();
         let mut attempts = 0usize;
@@ -1201,7 +1195,7 @@ fn harness_quality_live_admission_goose() {
                 &mut progress,
                 &Cancel::new(),
                 &config,
-                Some(&api_key),
+                None,
                 Some(fixture_workspace.path.clone()),
             )
             .expect("goose backend starts against the pinned CLI");
@@ -1231,7 +1225,7 @@ fn harness_quality_live_admission_goose() {
                     &mut progress,
                     &Cancel::new(),
                     &config,
-                    Some(&api_key),
+                    None,
                     Some(fixture_workspace.path.clone()),
                 )
                 .expect("goose backend starts against the pinned CLI");
