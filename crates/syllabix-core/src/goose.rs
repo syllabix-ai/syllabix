@@ -17,13 +17,17 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use zeroize::Zeroizing;
+
 use crate::cancel::Cancel;
 use crate::config::AgentConfig;
+use crate::defaults::LlmProvider;
 use crate::error::{Error, Result};
 use crate::executor::{self, MAX_OUTPUT_BYTES};
 use crate::llm::render_system_prompt;
 use crate::mcp;
 use crate::models::{Fetcher, ModelCache, Progress};
+use crate::openai::API_KEY_ENV;
 use crate::policy::DeveloperPermissions;
 use crate::providers::Llm;
 use crate::skills::SkillDiscovery;
@@ -129,6 +133,16 @@ pub struct GooseStart {
     pub config: AgentConfig,
     pub workspace: PathBuf,
     pub skill_list: String,
+    /// Model label for diagnostics after `pipeline.llm` is written to Goose config.
+    pub resolved_model: String,
+    /// Provider API keys and hosts for the Goose child (never written to yaml).
+    pub provider_env: Vec<(String, String)>,
+}
+
+/// Result of mapping `pipeline.llm` onto Goose's config and child environment.
+pub(crate) struct GoosePipelinePrepared {
+    pub display_model: String,
+    pub child_env: Vec<(String, String)>,
 }
 
 /// Path Goose uses for config/data/state (`GOOSE_PATH_ROOT`).
@@ -224,6 +238,247 @@ fn read_goose_config(path: &Path) -> Result<Option<serde_yaml::Value>> {
 
 /// Deep-merge mappings so a later file can override one provider key without
 /// dropping the rest of the provider entry.
+fn mapping_mut(value: &mut serde_yaml::Value) -> &mut serde_yaml::Mapping {
+    match value {
+        serde_yaml::Value::Mapping(map) => map,
+        _ => panic!("expected yaml mapping"),
+    }
+}
+
+fn set_provider_model(config: &mut serde_yaml::Value, provider: &str, model: &str) {
+    let root = mapping_mut(config);
+    root.insert(
+        serde_yaml::Value::String("active_provider".into()),
+        serde_yaml::Value::String(provider.into()),
+    );
+    let providers = root
+        .entry(serde_yaml::Value::String("providers".into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let providers = mapping_mut(providers);
+    let entry = providers
+        .entry(serde_yaml::Value::String(provider.into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let entry = mapping_mut(entry);
+    entry.insert(
+        serde_yaml::Value::String("enabled".into()),
+        serde_yaml::Value::Bool(true),
+    );
+    entry.insert(
+        serde_yaml::Value::String("model".into()),
+        serde_yaml::Value::String(model.into()),
+    );
+    entry.insert(
+        serde_yaml::Value::String("configured".into()),
+        serde_yaml::Value::Bool(true),
+    );
+}
+
+fn openai_host_from_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if let Some(host) = trimmed.strip_suffix("/v1") {
+        host.trim_end_matches('/').to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn ollama_host_from_base_url(base_url: &str) -> String {
+    openai_host_from_base_url(base_url)
+}
+
+fn goose_provider_names(pipeline: &LlmProvider) -> (&str, &str) {
+    match pipeline {
+        LlmProvider::Local => ("local", "local"),
+        LlmProvider::OpenAiCompatible => ("openai", "openai-compatible"),
+        LlmProvider::External(name) => (name.as_str(), name.as_str()),
+    }
+}
+
+fn single_key_env_for_goose(goose_provider: &str) -> Option<&'static str> {
+    match goose_provider {
+        "openai" => Some("OPENAI_API_KEY"),
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "xai" => Some("XAI_API_KEY"),
+        "openrouter" => Some("OPENROUTER_API_KEY"),
+        "google" => Some("GOOGLE_API_KEY"),
+        "local" | "ollama" => None,
+        _ => None,
+    }
+}
+
+fn passthrough_env_vars(goose_provider: &str) -> &'static [&'static str] {
+    match goose_provider {
+        "bedrock" => &[
+            "AWS_PROFILE",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_REGION",
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_DEFAULT_REGION",
+        ],
+        "azure_openai" => &[
+            "AZURE_OPENAI_ENDPOINT",
+            "AZURE_OPENAI_DEPLOYMENT_NAME",
+            "AZURE_OPENAI_API_KEY",
+            "AZURE_OPENAI_AD_TOKEN",
+        ],
+        "azure_foundry" => &[
+            "AZURE_FOUNDRY_ENDPOINT",
+            "AZURE_FOUNDRY_API_KEY",
+            "AZURE_FOUNDRY_AD_TOKEN",
+            "AZURE_FOUNDRY_API_VERSION",
+        ],
+        "vertex_ai" | "gcp_vertex_ai" | "vertex" => &["GCP_PROJECT_ID", "GCP_LOCATION"],
+        _ => &[],
+    }
+}
+
+fn is_loopback_base_url(base_url: &str) -> bool {
+    let Ok(url) = url::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    matches!(
+        url.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("::1")
+    )
+}
+
+fn resolve_local_gguf_for_goose(
+    cache: &ModelCache,
+    fetcher: &dyn Fetcher,
+    progress: &mut dyn Progress,
+    cancel: &Cancel,
+    model: &str,
+) -> Result<String> {
+    if crate::config::is_gguf_path(model) {
+        let path = PathBuf::from(model);
+        if !path.is_file() {
+            return Err(Error::Config {
+                field: "pipeline.llm.model".into(),
+                message: format!("GGUF file does not exist: {}", path.display()),
+            });
+        }
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    let asset = cache
+        .manifest()
+        .asset(model)
+        .ok_or_else(|| Error::ModelCache {
+            message: format!("manifest does not contain the {model} asset"),
+        })?;
+    let path = cache.resolve(asset, fetcher, progress, cancel)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Write `pipeline.llm` into Goose's scoped `config.yaml` and build child env.
+pub(crate) fn prepare_goose_from_pipeline(
+    path_root: &Path,
+    config: &AgentConfig,
+    cache: &ModelCache,
+    fetcher: &dyn Fetcher,
+    progress: &mut dyn Progress,
+    cancel: &Cancel,
+    llm_api_key: Option<&Zeroizing<String>>,
+) -> Result<GoosePipelinePrepared> {
+    let (goose_provider, _) = goose_provider_names(&config.llm);
+    let goose_model = match &config.llm {
+        LlmProvider::Local => {
+            resolve_local_gguf_for_goose(cache, fetcher, progress, cancel, &config.llm_model)?
+        }
+        _ => config.llm_model.clone(),
+    };
+    let config_path = goose_config_path(path_root);
+    std::fs::create_dir_all(config_path.parent().ok_or_else(|| Error::Config {
+        field: "developer_harness.agent".into(),
+        message: "invalid Goose config directory".into(),
+    })?)?;
+    let mut merged = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    if let Some(layer) = read_goose_config(&config_path)? {
+        merge_config(&mut merged, layer);
+    }
+    set_provider_model(&mut merged, goose_provider, &goose_model);
+    let serialized = serde_yaml::to_string(&merged).map_err(|err| Error::Config {
+        field: "developer_harness.agent".into(),
+        message: format!("could not serialize Goose config: {err}"),
+    })?;
+    std::fs::write(&config_path, serialized).map_err(|err| Error::Config {
+        field: "developer_harness.agent".into(),
+        message: format!(
+            "could not write Goose config {}: {err}",
+            config_path.display()
+        ),
+    })?;
+    let mut child_env = Vec::new();
+    if let Some(base_url) = config.llm_base_url.as_deref() {
+        if goose_provider == "openai" {
+            child_env.push(("OPENAI_HOST".into(), openai_host_from_base_url(base_url)));
+        } else if goose_provider == "ollama" {
+            child_env.push(("OLLAMA_HOST".into(), ollama_host_from_base_url(base_url)));
+        }
+    }
+
+    let syllabix_key = llm_api_key.cloned().or_else(|| {
+        std::env::var(API_KEY_ENV)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(Zeroizing::new)
+    });
+
+    if let Some(env_name) = single_key_env_for_goose(goose_provider) {
+        let needs_key = !config
+            .llm_base_url
+            .as_deref()
+            .is_some_and(is_loopback_base_url);
+        let key = if needs_key {
+            syllabix_key.ok_or_else(|| Error::Config {
+                field: API_KEY_ENV.into(),
+                message: format!(
+                    "is required for pipeline.llm.provider {} (mapped to Goose provider {goose_provider})",
+                    config.llm.as_str()
+                ),
+            })?
+        } else {
+            syllabix_key.unwrap_or_else(|| Zeroizing::new("local".into()))
+        };
+        child_env.push((env_name.into(), key.to_string()));
+    } else if goose_provider != "local" && goose_provider != "ollama" {
+        let vars = passthrough_env_vars(goose_provider);
+        if vars.is_empty() {
+            return Err(Error::Config {
+                field: "pipeline.llm.provider".into(),
+                message: format!(
+                    "Goose provider {goose_provider} needs credentials in your environment; \
+                     Syllabix only maps SYLLABIX_LLM_API_KEY for openai, anthropic, xai, openrouter, and google"
+                ),
+            });
+        }
+        let mut copied = false;
+        for name in vars {
+            if let Ok(value) = std::env::var(name) {
+                if !value.trim().is_empty() {
+                    child_env.push((name.to_string(), value));
+                    copied = true;
+                }
+            }
+        }
+        if !copied {
+            return Err(Error::Config {
+                field: "pipeline.llm.provider".into(),
+                message: format!(
+                    "could not find credentials for Goose provider {goose_provider}; set one of: {}",
+                    vars.join(", ")
+                ),
+            });
+        }
+    }
+
+    let display_model = resolve_goose_model(path_root, false)?;
+    Ok(GoosePipelinePrepared {
+        display_model,
+        child_env,
+    })
+}
+
 fn merge_config(base: &mut serde_yaml::Value, over: serde_yaml::Value) {
     match (base, over) {
         (serde_yaml::Value::Mapping(base), serde_yaml::Value::Mapping(over)) => {
@@ -520,6 +775,8 @@ impl GooseAgent {
             config,
             workspace,
             skill_list,
+            resolved_model: model,
+            provider_env,
         } = start;
         let path_root = {
             let mut root = cache;
@@ -532,7 +789,6 @@ impl GooseAgent {
             root.canonicalize().unwrap_or(root)
         };
         write_permission_yaml(&path_root)?;
-        let model = resolve_goose_model(&path_root, config.inherit_current_session)?;
         let workspace = workspace.canonicalize().unwrap_or(workspace);
         let mcp_tool_events = path_root.join("mcp-tool-events.jsonl");
         let _ = std::fs::write(&mcp_tool_events, "");
@@ -549,7 +805,7 @@ impl GooseAgent {
         if !config.inherit_current_session {
             command.env_clear();
         }
-        for (key, value) in &env {
+        for (key, value) in env.iter().chain(provider_env.iter()) {
             command.env(key, value);
         }
         let mut child = command
@@ -1592,6 +1848,219 @@ mod tests {
         ));
         std::fs::create_dir_all(goose_config_path(&root).parent().unwrap()).unwrap();
         root
+    }
+
+    #[test]
+    fn prepare_goose_merge_keeps_user_keys_and_updates_provider_model() {
+        let root = scratch_path_root("prepare-merge");
+        let path = goose_config_path(&root);
+        std::fs::write(
+            &path,
+            "GOOSE_TEMPERATURE: 0.2\nproviders:\n  anthropic:\n    enabled: true\n    model: old\n",
+        )
+        .unwrap();
+        let gguf = std::env::temp_dir().join(format!(
+            "syllabix-goose-prepare-{}-{}.gguf",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&gguf, b"x").unwrap();
+        let mut config = crate::AgentConfig::v0();
+        config.llm_model = gguf.to_string_lossy().into();
+        let cache = crate::models::ModelCache::v0();
+        let prepared = prepare_goose_from_pipeline(
+            &root,
+            &config,
+            &cache,
+            &crate::models::BlockedFetcher::default(),
+            &mut crate::models::NoProgress,
+            &Cancel::new(),
+            None,
+        )
+        .expect("local goose prepare");
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("GOOSE_TEMPERATURE: 0.2"), "{body}");
+        assert!(body.contains("anthropic"), "{body}");
+        assert!(body.contains("active_provider: local"), "{body}");
+        assert!(body.contains(&gguf.to_string_lossy().to_string()), "{body}");
+        assert!(!body.contains("OPENAI_API_KEY"), "{body}");
+        assert!(prepared.child_env.is_empty());
+    }
+
+    #[test]
+    fn prepare_goose_openai_compatible_maps_key_env_not_config() {
+        let root = scratch_path_root("prepare-openai");
+        let mut config = crate::AgentConfig::v0();
+        config.llm = LlmProvider::OpenAiCompatible;
+        config.llm_model = "gpt-test".into();
+        config.llm_base_url = Some("http://127.0.0.1:11434/v1".into());
+        let cache = crate::models::ModelCache::v0();
+        let prepared = prepare_goose_from_pipeline(
+            &root,
+            &config,
+            &cache,
+            &crate::models::BlockedFetcher::default(),
+            &mut crate::models::NoProgress,
+            &Cancel::new(),
+            Some(&Zeroizing::new("placeholder-key".into())),
+        )
+        .expect("openai-compatible goose prepare");
+        let body = std::fs::read_to_string(goose_config_path(&root)).unwrap();
+        assert!(body.contains("active_provider: openai"), "{body}");
+        assert!(!body.contains("placeholder-key"), "{body}");
+        assert!(
+            prepared
+                .child_env
+                .iter()
+                .any(|(k, v)| k == "OPENAI_API_KEY" && v == "placeholder-key"),
+            "{:?}",
+            prepared.child_env
+        );
+        assert!(
+            prepared.child_env.iter().any(|(k, _)| k == "OPENAI_HOST"),
+            "{:?}",
+            prepared.child_env
+        );
+    }
+
+    fn prepare_fixture_config() -> (crate::models::ModelCache, crate::AgentConfig) {
+        (crate::models::ModelCache::v0(), crate::AgentConfig::v0())
+    }
+
+    fn run_prepare(
+        root: &Path,
+        config: &AgentConfig,
+        llm_api_key: Option<&Zeroizing<String>>,
+    ) -> Result<GoosePipelinePrepared> {
+        let (cache, _) = prepare_fixture_config();
+        prepare_goose_from_pipeline(
+            root,
+            config,
+            &cache,
+            &crate::models::BlockedFetcher::default(),
+            &mut crate::models::NoProgress,
+            &Cancel::new(),
+            llm_api_key,
+        )
+    }
+
+    fn api_key_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().expect("api key env lock")
+    }
+
+    #[test]
+    fn prepare_goose_anthropic_maps_syllabix_key_to_anthropic_api_key() {
+        let root = scratch_path_root("prepare-anthropic");
+        let mut config = crate::AgentConfig::v0();
+        config.llm = LlmProvider::External("anthropic".into());
+        config.llm_model = "claude-sonnet-4-5".into();
+        let prepared = run_prepare(
+            &root,
+            &config,
+            Some(&Zeroizing::new("anthropic-test-key".into())),
+        )
+        .expect("anthropic prepare");
+        let body = std::fs::read_to_string(goose_config_path(&root)).unwrap();
+        assert!(body.contains("active_provider: anthropic"), "{body}");
+        assert!(!body.contains("anthropic-test-key"), "{body}");
+        assert!(
+            prepared
+                .child_env
+                .iter()
+                .any(|(k, v)| k == "ANTHROPIC_API_KEY" && v == "anthropic-test-key"),
+            "{:?}",
+            prepared.child_env
+        );
+    }
+
+    #[test]
+    fn prepare_goose_bedrock_passthrough_copies_listed_env_vars() {
+        let _lock = api_key_env_lock();
+        let prior = [
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_REGION",
+            API_KEY_ENV,
+        ]
+        .iter()
+        .map(|name| (*name, std::env::var(name).ok()))
+        .collect::<Vec<_>>();
+        std::env::set_var("AWS_ACCESS_KEY_ID", "ak-test");
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", "sk-test");
+        std::env::set_var("AWS_REGION", "us-east-1");
+        std::env::remove_var(API_KEY_ENV);
+
+        let root = scratch_path_root("prepare-bedrock");
+        let mut config = crate::AgentConfig::v0();
+        config.llm = LlmProvider::External("bedrock".into());
+        config.llm_model = "anthropic.claude-3-5-sonnet-20241022-v2:0".into();
+        let prepared = run_prepare(&root, &config, None).expect("bedrock prepare");
+
+        for (name, value) in prior {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+
+        let body = std::fs::read_to_string(goose_config_path(&root)).unwrap();
+        assert!(!body.contains("ak-test"), "{body}");
+        assert!(!body.contains("sk-test"), "{body}");
+        let env: HashMap<_, _> = prepared.child_env.into_iter().collect();
+        assert_eq!(
+            env.get("AWS_ACCESS_KEY_ID").map(String::as_str),
+            Some("ak-test")
+        );
+        assert_eq!(
+            env.get("AWS_SECRET_ACCESS_KEY").map(String::as_str),
+            Some("sk-test")
+        );
+        assert_eq!(env.get("AWS_REGION").map(String::as_str), Some("us-east-1"));
+    }
+
+    #[test]
+    fn prepare_goose_unknown_provider_reports_credential_mapping_error() {
+        let root = scratch_path_root("prepare-unknown");
+        let mut config = crate::AgentConfig::v0();
+        config.llm = LlmProvider::External("some-unknown-vendor".into());
+        config.llm_model = "model-x".into();
+        let err = match run_prepare(&root, &config, None) {
+            Err(err) => err,
+            Ok(_) => panic!("expected unknown-provider prepare to fail"),
+        };
+        assert!(err.to_string().contains("pipeline.llm.provider"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("Syllabix only maps SYLLABIX_LLM_API_KEY"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn prepare_goose_openai_compatible_requires_key_for_non_loopback_base_url() {
+        let _lock = api_key_env_lock();
+        let prior = std::env::var(API_KEY_ENV).ok();
+        std::env::remove_var(API_KEY_ENV);
+
+        let root = scratch_path_root("prepare-openai-missing-key");
+        let mut config = crate::AgentConfig::v0();
+        config.llm = LlmProvider::OpenAiCompatible;
+        config.llm_model = "gpt-4o-mini".into();
+        config.llm_base_url = Some("https://api.openai.com/v1".into());
+        let err = match run_prepare(&root, &config, None) {
+            Err(err) => err,
+            Ok(_) => panic!("expected missing-key prepare to fail"),
+        };
+        match prior {
+            Some(value) => std::env::set_var(API_KEY_ENV, value),
+            None => std::env::remove_var(API_KEY_ENV),
+        }
+        assert!(err.to_string().contains(API_KEY_ENV), "{err}");
+        assert!(err.to_string().contains("openai-compatible"), "{err}");
     }
 
     #[test]

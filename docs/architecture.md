@@ -42,7 +42,7 @@ First use of each model id downloads pinned weights over HTTPS, checks SHA-256, 
 ## What leaves the machine
 
 - **Default local stack:** audio and text stay on the machine after the weight cache is filled.
-- **`pipeline.llm.provider: online`:** only transcript text is sent to the OpenAI-compatible endpoint. Mic audio is not uploaded. The key comes from `SYLLABIX_LLM_API_KEY`, never from yaml.
+- **`pipeline.llm.provider: openai-compatible`:** only transcript text is sent to the OpenAI-compatible endpoint. Mic audio is not uploaded. The key comes from `SYLLABIX_LLM_API_KEY`, never from yaml.
 - **`pipeline.stt.provider: online`:** each finished utterance WAV is posted to `POST /v1/audio/transcriptions`. VAD stays on-device. Key: `SYLLABIX_STT_API_KEY`.
 - **`pipeline.tts.provider: online`:** each finished sentence is posted to `POST /v1/audio/speech`. Key: `SYLLABIX_TTS_API_KEY`.
 - **`syllabix serve`:** weights live on the worker. Endpoints send the same utterance WAV / sentence text as hosted online STT/TTS. Mic capture does not leave the desk. [CLI serve](cli.md#serve).

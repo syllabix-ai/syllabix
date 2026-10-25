@@ -8,7 +8,6 @@ use crate::cancel::Cancel;
 use crate::config::AgentConfig;
 use crate::defaults::AgentBackend;
 use crate::defaults::BuiltinDefaults;
-use crate::defaults::LlmProvider;
 use crate::error::Result;
 use crate::openai::resolve_api_key;
 use crate::pipeline::{
@@ -28,10 +27,10 @@ enum Input {
     Frames(Vec<AudioFrame>),
 }
 
-/// Goose owns its provider and model, so `pipeline.llm` never needs Syllabix's
-/// LLM key even when the yaml block is `online`.
+/// Goose resolves credentials when starting; the builtin path needs
+/// `SYLLABIX_LLM_API_KEY` only for `openai-compatible`.
 fn needs_llm_api_key(config: &AgentConfig, default_llm: bool) -> bool {
-    default_llm && config.agent != AgentBackend::Goose && config.llm == LlmProvider::Online
+    default_llm && config.agent != AgentBackend::Goose && config.llm.is_openai_compatible()
 }
 
 /// Type-erased stages so [`Session`] is not generic over every impl.
@@ -675,6 +674,7 @@ fn resolve_io(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::defaults::LlmProvider;
     use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
     use crate::Error;
 
@@ -792,7 +792,7 @@ mod tests {
     #[test]
     fn default_online_llm_fails_fast_without_a_key() {
         let mut config = AgentConfig::v0();
-        config.llm = LlmProvider::Online;
+        config.llm = LlmProvider::OpenAiCompatible;
         let err = without_api_key(|| {
             Session::from_config(&config)
                 .run(Cancel::new())
@@ -805,7 +805,7 @@ mod tests {
     fn goose_online_slot_skips_the_online_key() {
         let mut config = AgentConfig::v0();
         config.agent = AgentBackend::Goose;
-        config.llm = LlmProvider::Online;
+        config.llm = LlmProvider::OpenAiCompatible;
         assert!(!needs_llm_api_key(&config, true));
         assert!(!needs_llm_api_key(&config, false));
     }
@@ -813,7 +813,7 @@ mod tests {
     #[test]
     fn builtin_online_llm_still_needs_the_key() {
         let mut config = AgentConfig::v0();
-        config.llm = LlmProvider::Online;
+        config.llm = LlmProvider::OpenAiCompatible;
         assert!(needs_llm_api_key(&config, true));
         assert!(!needs_llm_api_key(&config, false));
     }
@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn swapped_llm_skips_the_online_key() {
         let mut config = AgentConfig::v0();
-        config.llm = LlmProvider::Online;
+        config.llm = LlmProvider::OpenAiCompatible;
         let report = without_api_key(|| {
             swapped(Session::from_config(&config))
                 .run(Cancel::new())

@@ -978,7 +978,7 @@ mod tests {
         debug.note_llm_meta(
             turn,
             Some(LlmDebugMeta {
-                provider: "online".into(),
+                provider: "openai-compatible".into(),
                 model: "gpt-test".into(),
                 endpoint: "https://mock.example/v1/chat/completions".into(),
                 request_id: "req-7".into(),
@@ -987,7 +987,10 @@ mod tests {
         // Skipped turns write immediately; the meta must already be attached.
         debug.skip(turn).unwrap();
         let json = fs::read_to_string(dir.join("turn-003").join("turn.json")).unwrap();
-        assert!(json.contains("\"llm_provider\": \"online\""), "{json}");
+        assert!(
+            json.contains("\"llm_provider\": \"openai-compatible\""),
+            "{json}"
+        );
         assert!(json.contains("\"llm_model\": \"gpt-test\""), "{json}");
         assert!(
             json.contains("\"llm_endpoint\": \"https://mock.example/v1/chat/completions\""),
@@ -1036,7 +1039,7 @@ mod tests {
         debug.note_llm_meta(
             turn,
             Some(LlmDebugMeta {
-                provider: "online".into(),
+                provider: "openai-compatible".into(),
                 model: "gpt-test".into(),
                 endpoint: "https://mock.example/v1/chat/completions".into(),
                 request_id: "req-42".into(),
@@ -1054,7 +1057,10 @@ mod tests {
         );
         let json = fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
         assert!(json.contains("\"outcome\": \"completed\""), "{json}");
-        assert!(json.contains("\"llm_provider\": \"online\""), "{json}");
+        assert!(
+            json.contains("\"llm_provider\": \"openai-compatible\""),
+            "{json}"
+        );
         assert!(json.contains("\"llm_model\": \"gpt-test\""), "{json}");
         assert!(
             json.contains("\"llm_endpoint\": \"https://mock.example/v1/chat/completions\""),

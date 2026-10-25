@@ -58,9 +58,9 @@ Local menu (unknown ids fail at load):
 | `qwen3.5-0.8b` | Fetched when selected | https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF |
 | `qwen3.5-2b` | Fetched when selected; only id that may set `thinking: true` | https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF |
 
-`pipeline.llm.provider: online` uses any id the OpenAI-compatible endpoint serves. Audio stays on the machine; only transcript text leaves. The API key is `SYLLABIX_LLM_API_KEY` (environment only, never yaml).
+`pipeline.llm.provider: openai-compatible` uses any id the OpenAI-compatible endpoint serves. Audio stays on the machine; only transcript text leaves. The API key is `SYLLABIX_LLM_API_KEY` (environment only, never yaml).
 
-`developer_harness.agent: goose` downloads a pinned Goose CLI for this OS/arch into the model cache and checks its SHA-256 before unpacking. Goose reads its own provider and model from `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` or `GOOSE_PROVIDER`/`GOOSE_MODEL`; see Goose's [provider docs](https://goose-docs.ai/docs/getting-started/providers/). On Linux and macOS, unpacking needs the `bzip2` program. The default `builtin` agent does not download Goose. Goose can search the web and fetch pages.
+`developer_harness.agent: goose` downloads a pinned Goose CLI for this OS/arch into the model cache and checks its SHA-256 before unpacking. Syllabix writes Goose's provider and model from `pipeline.llm` into `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` before each run; see Goose's [provider docs](https://goose-docs.ai/docs/getting-started/providers/). On Linux and macOS, unpacking needs the `bzip2` program. The default `builtin` agent does not download Goose. Goose can search the web and fetch pages.
 
 ## TTS
 

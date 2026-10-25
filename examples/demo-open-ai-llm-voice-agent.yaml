@@ -9,7 +9,7 @@ pipeline:
     model: whisper-small
     language: en
   llm:
-    provider: online
+    provider: openai-compatible
     model: gpt-5.4
     base_url: https://api.openai.com/v1
     developer_harness: true

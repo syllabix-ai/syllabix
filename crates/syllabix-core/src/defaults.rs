@@ -168,35 +168,46 @@ impl SttModel {
 }
 
 /// LLM execution models. `Local` runs weights in-process (llama.cpp GGUF,
-/// first-run cache); `Online` streams from any OpenAI-compatible
-/// `chat/completions` endpoint (`pipeline.llm.base_url`, BYO key). The words
-/// name the posture — where the user's words go — not the engine; VAD/STT/TTS
-/// adopt the same vocabulary in follow-up PRs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// first-run cache). `OpenAiCompatible` streams from any OpenAI-compatible
+/// `chat/completions` endpoint (`pipeline.llm.base_url`, BYO key). Any other
+/// yaml value is a Goose provider name when `developer_harness.agent: goose`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LlmProvider {
     /// In-process GGUF engine. No network.
     Local,
-    /// OpenAI-compatible remote endpoint.
-    Online,
+    /// OpenAI-compatible remote endpoint (builtin LLM or Goose `openai`).
+    OpenAiCompatible,
+    /// Goose-native provider id (`anthropic`, `ollama`, …).
+    External(String),
 }
 
 impl LlmProvider {
     /// Config / log name.
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Local => "local",
-            Self::Online => "online",
+            Self::OpenAiCompatible => "openai-compatible",
+            Self::External(name) => name.as_str(),
         }
+    }
+
+    /// Builtin Syllabix LLM (`developer_harness.agent: builtin`).
+    pub fn builtin_supported(&self) -> bool {
+        matches!(self, Self::Local | Self::OpenAiCompatible)
+    }
+
+    pub fn is_openai_compatible(&self) -> bool {
+        matches!(self, Self::OpenAiCompatible)
     }
 }
 
 /// `developer_harness.agent` yaml value. Default `Builtin`.
-/// `Goose` reads its own provider and model config.
+/// `Goose` uses `pipeline.llm` to write Goose's provider/model config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentBackend {
     /// `builtin` (default).
     Builtin,
-    /// `goose`. Reads its own provider and model config.
+    /// `goose`. Syllabix writes Goose's provider and model from `pipeline.llm`.
     Goose,
 }
 
@@ -422,7 +433,11 @@ mod tests {
         assert_eq!(SttProvider::Local.as_str(), "local");
         assert_eq!(SttProvider::Online.as_str(), "online");
         assert_eq!(LlmProvider::Local.as_str(), "local");
-        assert_eq!(LlmProvider::Online.as_str(), "online");
+        assert_eq!(LlmProvider::OpenAiCompatible.as_str(), "openai-compatible");
+        assert_eq!(
+            LlmProvider::External("anthropic".into()).as_str(),
+            "anthropic"
+        );
         assert_eq!(TtsProvider::Local.as_str(), "local");
         assert_eq!(TtsProvider::Online.as_str(), "online");
         // The zero-config stack stays on-device; online is yaml opt-in only.

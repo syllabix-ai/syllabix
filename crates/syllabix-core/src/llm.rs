@@ -201,7 +201,7 @@ impl LlamaLlm {
     pub fn from_model_path(path: impl AsRef<Path>) -> Result<Self> {
         let _ = path;
         Err(Error::Provider {
-            provider: BuiltinDefaults::v0().llm.as_str(),
+            provider: crate::defaults::LlmProvider::Local.as_str(),
             message: if cfg!(coverage) {
                 "llama.cpp inference is not loaded in coverage tests".into()
             } else {
@@ -849,12 +849,12 @@ fn emit_local_harness_reply(
 
 impl Llm for LlamaLlm {
     fn name(&self) -> &'static str {
-        BuiltinDefaults::v0().llm.as_str()
+        crate::defaults::LlmProvider::Local.as_str()
     }
 
     fn debug_meta(&self) -> Option<LlmDebugMeta> {
         Some(LlmDebugMeta {
-            provider: BuiltinDefaults::v0().llm.as_str().into(),
+            provider: crate::defaults::LlmProvider::Local.as_str().into(),
             model: self.model_id.clone(),
             endpoint: String::new(),
             request_id: String::new(),
@@ -1004,7 +1004,7 @@ mod native {
         pub(super) fn load(path: &Path) -> Result<Self> {
             let ctx =
                 LlamaContext::load(path, thread_count()).map_err(|message| Error::Provider {
-                    provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
+                    provider: crate::defaults::LlmProvider::Local.as_str(),
                     message,
                 })?;
             Ok(Self { ctx })
@@ -1020,7 +1020,7 @@ mod native {
             self.ctx
                 .prompt_token_count(&ffi_messages(messages), append_thinking_off_suffix)
                 .map_err(|err| Error::Provider {
-                    provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
+                    provider: crate::defaults::LlmProvider::Local.as_str(),
                     message: format!("{err:?}"),
                 })
         }
@@ -1181,7 +1181,7 @@ mod native {
             Err(LlamaError::Cancelled) => Err(Error::Cancelled),
             Err(LlamaError::Failed(_)) if cancel.is_shutdown() => Err(Error::Cancelled),
             Err(LlamaError::Failed(message)) => Err(Error::Provider {
-                provider: crate::defaults::BuiltinDefaults::v0().llm.as_str(),
+                provider: crate::defaults::LlmProvider::Local.as_str(),
                 message,
             }),
         }

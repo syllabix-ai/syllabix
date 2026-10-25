@@ -60,7 +60,7 @@ pub struct AgentConfig {
     /// STT language code: a whisper-supported ISO code or `auto`.
     pub language: String,
     /// `developer_harness.agent` (`builtin` or `goose`). Default `builtin`.
-    /// `goose` reads its own provider and model config.
+    /// `goose` uses `pipeline.llm` to configure Goose's provider and model.
     pub agent: AgentBackend,
     /// `developer_harness.inherit_current_session`. Default `true`: sandboxed
     /// commands inherit the launcher shell environment. `false` clears it and
@@ -78,8 +78,8 @@ pub struct AgentConfig {
     /// Omitted YAML uses the built-in prompt template.
     pub system_prompt: String,
     /// OpenAI-compatible endpoint (`pipeline.llm.base_url`). Required for
-    /// `provider: online`, forbidden for `provider: local`; the API key never
-    /// lives here.
+    /// `provider: openai-compatible`, optional for Goose `ollama`; forbidden
+    /// for `provider: local`. The API key never lives here.
     pub llm_base_url: Option<String>,
     /// Explicit developer-only opt-in for the API tool loop. It is
     /// never enabled by defaults or written by `init`.
@@ -148,7 +148,7 @@ impl AgentConfig {
             language: defaults.language.to_string(),
             agent: AgentBackend::Builtin,
             inherit_current_session: true,
-            llm: defaults.llm,
+            llm: defaults.llm.clone(),
             llm_model: defaults.llm_model.to_string(),
             thinking: defaults.llm_thinking,
             system_prompt: crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
@@ -542,8 +542,17 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         ],
     )?;
     let llm_provider = parse_llm(required_string(llm, "pipeline.llm.provider", "provider")?)?;
+    if agent == AgentBackend::Builtin && !llm_provider.builtin_supported() {
+        return Err(Error::Config {
+            field: "pipeline.llm.provider".into(),
+            message: format!(
+                "provider {:?} needs developer_harness.agent: goose, or use provider: openai-compatible with that provider's OpenAI-compatible endpoint",
+                llm_provider.as_str()
+            ),
+        });
+    }
     let llm_model = parse_llm_model(
-        llm_provider,
+        &llm_provider,
         required_string(llm, "pipeline.llm.model", "model")?,
     )?;
     let thinking = optional_bool(llm, "pipeline.llm", "thinking", false)?;
@@ -563,20 +572,15 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     // The endpoint is explicit for `online` providers such as OpenAI, Groq, Ollama,
     // vLLM, llama-server); the key may not live here either way —
     // `SYLLABIX_LLM_API_KEY` env only, never yaml, never `.env`.
-    let llm_base_url = resolve_online_base_url(
-        llm,
-        "pipeline.llm.base_url",
-        "pipeline.llm.provider",
-        llm_provider == LlmProvider::Online,
-    )?;
+    let llm_base_url = resolve_llm_base_url(llm, &llm_provider)?;
     let llm_developer_harness = optional_bool(llm, "pipeline.llm", "developer_harness", false)?;
     let local_lfm_harness =
         llm_provider == LlmProvider::Local && llm_model == crate::llm::LFM25_2_6B_ASSET;
-    if llm_developer_harness && llm_provider != LlmProvider::Online && !local_lfm_harness {
+    if llm_developer_harness && !llm_provider.is_openai_compatible() && !local_lfm_harness {
         return Err(Error::Config {
             field: "pipeline.llm.developer_harness".into(),
             message:
-                "is only valid when pipeline.llm.provider is online, or for local model lfm2.5-2.6b"
+                "is only valid when pipeline.llm.provider is openai-compatible, or for local model lfm2.5-2.6b"
                     .into(),
         });
     }
@@ -1153,8 +1157,61 @@ fn parse_language(value: &str) -> Result<String> {
 fn parse_llm(value: &str) -> Result<LlmProvider> {
     match value {
         "local" => Ok(LlmProvider::Local),
-        "online" => Ok(LlmProvider::Online),
-        other => Err(unsupported("pipeline.llm.provider", other, "local, online")),
+        "online" => Err(Error::Config {
+            field: "pipeline.llm.provider".into(),
+            message: "provider value `online` was renamed to `openai-compatible`".into(),
+        }),
+        "openai-compatible" => Ok(LlmProvider::OpenAiCompatible),
+        other => Ok(LlmProvider::External(other.to_string())),
+    }
+}
+
+pub(crate) fn is_gguf_path(value: &str) -> bool {
+    value.ends_with(".gguf") || value.contains('/') || value.contains('\\')
+}
+
+fn resolve_llm_base_url(
+    map: &serde_yaml::Mapping,
+    provider: &LlmProvider,
+) -> Result<Option<String>> {
+    let field = "pipeline.llm.base_url";
+    let provider_field = "pipeline.llm.provider";
+    match provider {
+        LlmProvider::Local => {
+            if map.get("base_url").is_some() {
+                return Err(Error::Config {
+                    field: field.into(),
+                    message: format!(
+                        "is only valid when {provider_field} is openai-compatible or ollama"
+                    ),
+                });
+            }
+            Ok(None)
+        }
+        LlmProvider::OpenAiCompatible => resolve_online_base_url(map, field, provider_field, true),
+        LlmProvider::External(name) if name == "ollama" => {
+            match optional_string(map, "pipeline.llm", "base_url")? {
+                Some(value) => {
+                    crate::openai::validate_base_url(&value).map_err(|message| Error::Config {
+                        field: field.into(),
+                        message,
+                    })?;
+                    Ok(Some(value))
+                }
+                None => Ok(None),
+            }
+        }
+        LlmProvider::External(_) => {
+            if map.get("base_url").is_some() {
+                return Err(Error::Config {
+                    field: field.into(),
+                    message: format!(
+                        "is only valid when {provider_field} is openai-compatible or ollama"
+                    ),
+                });
+            }
+            Ok(None)
+        }
     }
 }
 
@@ -1168,22 +1225,27 @@ fn parse_agent_field(field: &str, value: &str) -> Result<AgentBackend> {
 
 /// `pipeline.llm.model`: the four binary-supported GGUF ids for `local`; any
 /// non-empty id for `online` (the endpoint decides what it serves).
-fn parse_llm_model(provider: LlmProvider, value: &str) -> Result<String> {
+fn parse_llm_model(provider: &LlmProvider, value: &str) -> Result<String> {
     match provider {
-        LlmProvider::Local => match value {
-            crate::llm::QWEN35_08B_ASSET
-            | crate::llm::QWEN35_2B_ASSET
-            | crate::llm::LLAMA_32_1B_ASSET
-            | crate::llm::LFM25_2_6B_ASSET
-            | crate::llm::LFM25_350M_ASSET
-            | crate::llm::LFM25_230M_ASSET => Ok(value.to_string()),
-            other => Err(unsupported(
-                "pipeline.llm.model",
-                other,
-                "lfm2.5-2.6b, lfm2.5-350m, lfm2.5-230m, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b",
-            )),
-        },
-        LlmProvider::Online => {
+        LlmProvider::Local => {
+            if is_gguf_path(value) {
+                return Ok(value.to_string());
+            }
+            match value {
+                crate::llm::QWEN35_08B_ASSET
+                | crate::llm::QWEN35_2B_ASSET
+                | crate::llm::LLAMA_32_1B_ASSET
+                | crate::llm::LFM25_2_6B_ASSET
+                | crate::llm::LFM25_350M_ASSET
+                | crate::llm::LFM25_230M_ASSET => Ok(value.to_string()),
+                other => Err(unsupported(
+                    "pipeline.llm.model",
+                    other,
+                    "lfm2.5-2.6b, lfm2.5-350m, lfm2.5-230m, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b, or a .gguf path",
+                )),
+            }
+        }
+        LlmProvider::OpenAiCompatible | LlmProvider::External(_) => {
             if value.trim().is_empty() {
                 Err(Error::Config {
                     field: "pipeline.llm.model".into(),
@@ -1335,11 +1397,11 @@ mod tests {
         assert_eq!(parsed.agent, AgentBackend::Builtin);
         let goose = format!(
             "{}\ndeveloper_harness:\n  agent: goose\n",
-            online_yaml("gpt-4o-mini", "https://api.openai.com/v1")
+            openai_compatible_yaml("gpt-4o-mini", "https://api.openai.com/v1")
         );
         let parsed = AgentConfig::parse_yaml(&goose).unwrap();
         assert_eq!(parsed.agent, AgentBackend::Goose);
-        assert_eq!(parsed.llm, LlmProvider::Online);
+        assert_eq!(parsed.llm, LlmProvider::OpenAiCompatible);
         let dumped = parsed.to_yaml();
         assert!(dumped.contains("agent: goose"));
         assert_eq!(
@@ -1408,7 +1470,7 @@ name: skills
 pipeline:
   vad: {{ provider: silero }}
   stt: {{ provider: local, model: whisper-small, language: en }}
-  llm: {{ provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }}
+  llm: {{ provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }}
   tts: {{ provider: local, model: kokoro }}
 skills:
   roots:
@@ -1434,7 +1496,7 @@ name: skills
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
+  llm: { provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
   tts: { provider: local, model: kokoro }
 "#;
         let unknown = format!("{base}skills: {{extra: true}}\n");
@@ -1474,7 +1536,7 @@ name: skills
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: online, model: gpt-test, base_url: https://example.test/v1 }
+  llm: { provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1 }
   tts: { provider: local, model: kokoro }
 skills:
   roots:
@@ -1496,7 +1558,7 @@ name: harness
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
+  llm: { provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
   tts: { provider: local, model: kokoro }
 "#,
         )
@@ -1572,7 +1634,7 @@ name: harness
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: online, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
+  llm: { provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1, developer_harness: true }
   tts: { provider: local, model: kokoro }
 "#,
         )
@@ -1589,7 +1651,7 @@ pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
   llm:
-    provider: online
+    provider: openai-compatible
     model: gpt-test
     base_url: https://example.test/v1
     developer_harness: true
@@ -1621,7 +1683,7 @@ pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
   llm:
-    provider: online
+    provider: openai-compatible
     model: gpt-test
     base_url: https://example.test/v1
     developer_permissions:
@@ -1640,7 +1702,7 @@ pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
   llm:
-    provider: online
+    provider: openai-compatible
     model: gpt-test
     base_url: https://example.test/v1
     developer_harness: true
@@ -1660,7 +1722,7 @@ pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
   llm:
-    provider: online
+    provider: openai-compatible
     model: gpt-test
     base_url: https://example.test/v1
     developer_harness: true
@@ -1679,7 +1741,7 @@ pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
   llm:
-    provider: online
+    provider: openai-compatible
     model: gpt-test
     base_url: https://example.test/v1
     developer_harness: true
@@ -1848,7 +1910,7 @@ auto-timeout:
             .join("../../examples/demo-open-ai-llm-voice-agent.yaml");
         let config = AgentConfig::load_path(&path).expect("load openai example");
         assert_eq!(config.name, "demo-open-ai-llm-voice-agent");
-        assert_eq!(config.llm, LlmProvider::Online);
+        assert_eq!(config.llm, LlmProvider::OpenAiCompatible);
         assert_eq!(config.llm_model, "gpt-5.4");
         assert_eq!(
             config.llm_base_url.as_deref(),
@@ -2078,7 +2140,7 @@ pipeline:
         assert_eq!(round.system_prompt, cfg.system_prompt);
     }
 
-    fn online_yaml(model: &str, base_url: &str) -> String {
+    fn openai_compatible_yaml(model: &str, base_url: &str) -> String {
         format!(
             r#"
 name: demo-agent
@@ -2090,7 +2152,7 @@ pipeline:
     model: whisper-small
     language: en
   llm:
-    provider: online
+    provider: openai-compatible
     model: "{model}"
     base_url: {base_url}
   tts:
@@ -2102,9 +2164,12 @@ pipeline:
 
     #[test]
     fn online_provider_accepts_any_model_id() {
-        let cfg = AgentConfig::parse_yaml(&online_yaml("gpt-4o-mini", "https://api.openai.com/v1"))
-            .unwrap();
-        assert_eq!(cfg.llm, LlmProvider::Online);
+        let cfg = AgentConfig::parse_yaml(&openai_compatible_yaml(
+            "gpt-4o-mini",
+            "https://api.openai.com/v1",
+        ))
+        .unwrap();
+        assert_eq!(cfg.llm, LlmProvider::OpenAiCompatible);
         assert_eq!(cfg.llm_model, "gpt-4o-mini");
         assert_eq!(
             cfg.llm_base_url.as_deref(),
@@ -2112,9 +2177,12 @@ pipeline:
         );
         // The endpoint decides what it serves; ids are not menu-restricted.
         assert_eq!(
-            AgentConfig::parse_yaml(&online_yaml("llama3.2:1b", "http://127.0.0.1:11434/v1"))
-                .unwrap()
-                .llm_model,
+            AgentConfig::parse_yaml(&openai_compatible_yaml(
+                "llama3.2:1b",
+                "http://127.0.0.1:11434/v1"
+            ))
+            .unwrap()
+            .llm_model,
             "llama3.2:1b"
         );
     }
@@ -2124,7 +2192,8 @@ pipeline:
         // A bare empty yaml value parses as null ("must be a string"); a
         // whitespace string must hit the non-empty rule.
         let err =
-            AgentConfig::parse_yaml(&online_yaml("   ", "https://api.openai.com/v1")).unwrap_err();
+            AgentConfig::parse_yaml(&openai_compatible_yaml("   ", "https://api.openai.com/v1"))
+                .unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.model"), "{err}");
         assert!(err.to_string().contains("non-empty"), "{err}");
     }
@@ -2135,7 +2204,7 @@ pipeline:
             .to_yaml()
             .replace(
                 "  llm:\n    provider: local",
-                "  llm:\n    provider: online",
+                "  llm:\n    provider: openai-compatible",
             )
             .replace("model: lfm2.5-2.6b", "model: gpt-4o-mini");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
@@ -2162,13 +2231,13 @@ pipeline:
         );
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.base_url"), "{err}");
-        assert!(err.to_string().contains("online"), "{err}");
+        assert!(err.to_string().contains("openai-compatible"), "{err}");
     }
 
     #[test]
     fn online_base_url_round_trips() {
         let url = "https://api.groq.com/openai/v1";
-        let cfg = AgentConfig::parse_yaml(&online_yaml("gpt-4o-mini", url)).unwrap();
+        let cfg = AgentConfig::parse_yaml(&openai_compatible_yaml("gpt-4o-mini", url)).unwrap();
         assert_eq!(cfg.llm_base_url.as_deref(), Some(url));
         let round = AgentConfig::parse_yaml(&cfg.to_yaml()).unwrap();
         assert_eq!(round, cfg);
@@ -2187,7 +2256,8 @@ pipeline:
             "https://user:pass@api.example.com",
             "",
         ] {
-            let err = AgentConfig::parse_yaml(&online_yaml("gpt-4o-mini", bad)).unwrap_err();
+            let err =
+                AgentConfig::parse_yaml(&openai_compatible_yaml("gpt-4o-mini", bad)).unwrap_err();
             assert!(
                 err.to_string().contains("pipeline.llm.base_url"),
                 "{bad}: {err}"
@@ -2197,7 +2267,7 @@ pipeline:
 
     #[test]
     fn non_string_base_url_is_field_level() {
-        let yaml = online_yaml("gpt-4o-mini", "https://api.openai.com/v1")
+        let yaml = openai_compatible_yaml("gpt-4o-mini", "https://api.openai.com/v1")
             .replace("base_url: https://api.openai.com/v1\n", "base_url: 7\n");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.base_url"), "{err}");
@@ -2320,7 +2390,7 @@ pipeline:
     #[test]
     fn online_llm_rejects_yaml_api_keys() {
         for key in ["api_key", "key", "token"] {
-            let yaml = online_yaml("gpt-4o-mini", "https://api.openai.com/v1").replace(
+            let yaml = openai_compatible_yaml("gpt-4o-mini", "https://api.openai.com/v1").replace(
                 "base_url: https://api.openai.com/v1\n",
                 &format!("base_url: https://api.openai.com/v1\n    {key}: secret\n"),
             );
@@ -2901,6 +2971,41 @@ pipeline:
         let err = AgentConfig::write_init(&dir).unwrap_err();
         assert!(err.to_string().contains("already exists"), "{err}");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn online_llm_provider_reports_rename() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace(
+                "  llm:\n    provider: local",
+                "  llm:\n    provider: online",
+            )
+            .replace(
+                "model: lfm2.5-2.6b",
+                "model: gpt-test\n    base_url: https://example.test/v1",
+            );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.llm.provider"), "{err}");
+        assert!(err.to_string().contains("openai-compatible"), "{err}");
+    }
+
+    #[test]
+    fn builtin_ollama_llm_provider_requires_goose() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace(
+                "  llm:\n    provider: local",
+                "  llm:\n    provider: ollama",
+            )
+            .replace("model: lfm2.5-2.6b", "model: llama3.2");
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.llm.provider"), "{err}");
+        assert!(
+            err.to_string().contains("developer_harness.agent: goose"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("openai-compatible"), "{err}");
     }
 
     #[test]
