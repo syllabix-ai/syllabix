@@ -31,7 +31,7 @@ With `trajectory: true`, each turn directory also contains `trajectory.jsonl`:
 one JSON object per line, in order — the user utterance, every tool call with
 its validated arguments, every bounded tool result, the assistant reply, and
 the turn outcome. The same `trajectory.jsonl` is written for
-`developer_harness.agent: syllabix` and `developer_harness.agent: goose`, so a turn can be read
+`agent_harness.agent: syllabix` and `agent_harness.agent: goose`, so a turn can be read
 without knowing the underlying protocol.
 
 ```json
@@ -51,12 +51,12 @@ GitHub/Slack/AWS keys, JWTs) and values under sensitive JSON keys such as
 `api_key`. Redaction rewrites the exported trajectory copy only; `turn.json`,
 the WAVs, and `acp.jsonl` are never rewritten.
 
-With `developer_harness.agent: goose`, `acp.jsonl` remains the raw ACP wire log for deep
+With `agent_harness.agent: goose`, `acp.jsonl` remains the raw ACP wire log for deep
 debugging; `trajectory.jsonl` is the step list written for every agent.
 
 ## Goose transcript (`acp.jsonl`)
 
-With `developer_harness.agent: goose` and diagnostics on, each turn directory may also
+With `agent_harness.agent: goose` and diagnostics on, each turn directory may also
 contain `acp.jsonl`: one JSON object per line of the conversation between
 Syllabix and Goose (`dir` is `in` or `out`, `msg` is the payload). API keys and
 other Goose spawn-env secrets are not written. The file is absent when Goose is

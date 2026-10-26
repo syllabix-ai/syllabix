@@ -99,7 +99,7 @@ pub fn render_system_prompt(template: &str, language: &str) -> String {
     }
 }
 
-/// Append the labelled, read-only local skill catalog to a developer-harness
+/// Append the labelled, read-only local skill catalog to an agent-harness
 /// system prompt. An empty catalog preserves the existing prompt byte-for-byte.
 pub fn render_system_prompt_with_skills(
     template: &str,
@@ -150,7 +150,7 @@ pub struct LlamaLlm {
     system_prompt: String,
     skill_context: String,
     tool_events: Arc<Mutex<Vec<ToolTurnEvent>>>,
-    developer_harness: bool,
+    agent_harness: bool,
     developer_permissions: DeveloperPermissions,
     workspace: PathBuf,
 }
@@ -165,7 +165,7 @@ impl Clone for LlamaLlm {
             system_prompt: self.system_prompt.clone(),
             skill_context: self.skill_context.clone(),
             tool_events: Arc::clone(&self.tool_events),
-            developer_harness: self.developer_harness,
+            agent_harness: self.agent_harness,
             developer_permissions: self.developer_permissions.clone(),
             workspace: self.workspace.clone(),
         }
@@ -189,7 +189,7 @@ impl LlamaLlm {
             system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             skill_context: String::new(),
             tool_events: Arc::new(Mutex::new(Vec::new())),
-            developer_harness: false,
+            agent_harness: false,
             developer_permissions: DeveloperPermissions::default_session(),
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         })
@@ -279,19 +279,19 @@ impl LlamaLlm {
         self
     }
 
-    /// Enable the bounded local developer harness (sandboxed shell tools).
-    pub fn with_developer_harness(mut self, enabled: bool) -> Self {
-        self.developer_harness = enabled;
+    /// Enable the bounded local agent harness (sandboxed shell tools).
+    pub fn with_agent_harness(mut self, enabled: bool) -> Self {
+        self.agent_harness = enabled;
         self
     }
 
-    /// Set the immutable capability ceiling used by the local developer harness.
+    /// Set the immutable capability ceiling used by the local agent harness.
     pub fn with_developer_permissions(mut self, permissions: DeveloperPermissions) -> Self {
         self.developer_permissions = permissions;
         self
     }
 
-    /// Set the host-owned workspace used by developer-harness shell calls.
+    /// Set the host-owned workspace used by agent-harness shell calls.
     /// Admission tests use this to keep writes out of the source checkout.
     pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
         self.workspace = workspace.into();
@@ -362,7 +362,7 @@ impl LlamaLlm {
             system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             skill_context: String::new(),
             tool_events: Arc::new(Mutex::new(Vec::new())),
-            developer_harness: false,
+            agent_harness: false,
             developer_permissions: DeveloperPermissions::default_session(),
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
@@ -869,7 +869,7 @@ impl Llm for LlamaLlm {
         cancel: &Cancel,
         on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
     ) -> Result<()> {
-        if self.developer_harness {
+        if self.agent_harness {
             return self.generate_lfm_harness(history, user, cancel, on_token);
         }
         if cancel.is_shutdown() {
@@ -2492,7 +2492,7 @@ mod tests {
             last_messages: Arc::new(Mutex::new(Vec::new())),
         }));
         llm.model_id = LLAMA_32_1B_ASSET.into();
-        llm = llm.with_developer_harness(true);
+        llm = llm.with_agent_harness(true);
         Llm::generate(
             &mut llm,
             &[],
@@ -2520,7 +2520,7 @@ mod tests {
             last_messages: Arc::clone(&messages),
         }));
         llm.model_id = LFM25_2_6B_ASSET.into();
-        llm = llm.with_developer_harness(true);
+        llm = llm.with_agent_harness(true);
         let mut spoken = Vec::new();
         Llm::generate(
             &mut llm,
@@ -2573,7 +2573,7 @@ mod tests {
             last_messages: Arc::new(Mutex::new(Vec::new())),
         }));
         llm.model_id = LFM25_2_6B_ASSET.into();
-        llm = llm.with_developer_harness(true);
+        llm = llm.with_agent_harness(true);
         let mut spoken = Vec::new();
         Llm::generate(
             &mut llm,

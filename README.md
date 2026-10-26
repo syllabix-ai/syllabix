@@ -70,7 +70,7 @@ The first local run downloads the models (Silero, Whisper `small`, LFM2.5-2.6B, 
 
 ### OpenAI LLM
 
-Uses OpenAI `gpt-5.4` with the developer harness on. Needs `SYLLABIX_LLM_API_KEY`. STT and TTS stay local; only transcript text goes to OpenAI. Set [developer_harness.agent: syllabix](docs/syllabix-yaml.md#agent-backend-and-shell-environment-developer_harness) for a local model with tools; accuracy can be poor and the model can be slow.
+Uses OpenAI `gpt-5.4` with the agent harness on. Needs `SYLLABIX_LLM_API_KEY`. STT and TTS stay local; only transcript text goes to OpenAI. Set [agent_harness.agent: syllabix](docs/syllabix-yaml.md#agent-backend-and-shell-environment-agent_harness) for a local model with tools; accuracy can be poor and the model can be slow.
 
 ```bash
 curl -L https://raw.githubusercontent.com/syllabix-ai/syllabix/main/examples/demo-open-ai-llm-voice-agent.yaml -o syllabix.yaml

@@ -69,7 +69,7 @@ pub fn latest_release_download_url(file_name: &str) -> String {
     format!("{RELEASE_LATEST_DOWNLOAD_PREFIX}{file_name}")
 }
 
-/// Goose CLI version fetched when `developer_harness.agent: goose`.
+/// Goose CLI version fetched when `agent_harness.agent: goose`.
 pub const GOOSE_VERSION: &str = "1.54.0";
 
 /// GitHub release tag for [`GOOSE_VERSION`].

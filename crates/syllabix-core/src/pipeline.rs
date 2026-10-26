@@ -96,7 +96,7 @@ pub enum LoopEvent {
         /// Whether recovery requires restarting the live session.
         restart_required: bool,
     },
-    /// Developer-harness trace evidence. It is never forwarded to TTS.
+    /// Agent-harness trace evidence. It is never forwarded to TTS.
     Tool {
         /// Turn that caused the call.
         turn: TurnId,

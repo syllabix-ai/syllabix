@@ -170,7 +170,7 @@ impl SttModel {
 /// LLM execution models. `Local` runs weights in-process (llama.cpp GGUF,
 /// first-run cache). `OpenAiCompatible` streams from any OpenAI-compatible
 /// `chat/completions` endpoint (`pipeline.llm.base_url`, BYO key). Any other
-/// yaml value is a Goose provider name when `developer_harness.agent: goose`.
+/// yaml value is a Goose provider name when `agent_harness.agent: goose`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LlmProvider {
     /// In-process GGUF engine. No network.
@@ -191,7 +191,7 @@ impl LlmProvider {
         }
     }
 
-    /// Non-Goose reply backends (`developer_harness.agent: syllabix` or `none`).
+    /// Non-Goose reply backends (`agent_harness.agent: syllabix` or `none`).
     pub fn builtin_supported(&self) -> bool {
         matches!(self, Self::Local | Self::OpenAiCompatible)
     }
@@ -201,7 +201,7 @@ impl LlmProvider {
     }
 }
 
-/// `developer_harness.agent` yaml value. Default `None`.
+/// `agent_harness.agent` yaml value. Default `None`.
 /// `Goose` uses `pipeline.llm` to write Goose's provider/model config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentBackend {

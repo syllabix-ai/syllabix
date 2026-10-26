@@ -43,7 +43,7 @@ mod production {
         /// User-keyed OpenAI-compatible endpoint.
         #[cfg(feature = "cloud")]
         Cloud(OpenAiLlm),
-        /// Goose runs the reply (`developer_harness.agent: goose`).
+        /// Goose runs the reply (`agent_harness.agent: goose`).
         #[cfg(feature = "cloud")]
         Goose(GooseAgent),
     }
@@ -498,7 +498,7 @@ mod production {
 
     /// Build just the LLM slot from config. The cloud path never touches the
     /// model cache — no GGUF is fetched or loaded for a cloud run.
-    /// `developer_harness.agent: goose` writes Goose's provider/model from
+    /// `agent_harness.agent: goose` writes Goose's provider/model from
     /// `pipeline.llm`; after the pinned Goose CLI is on disk, this starts the
     /// Goose backend for replies.
     pub fn build_llm(
@@ -571,12 +571,12 @@ mod production {
             {
                 let _ = (cache, fetcher, progress, cancel, llm_api_key);
                 return Err(Error::Config {
-                    field: "developer_harness.agent".into(),
+                    field: "agent_harness.agent".into(),
                     message: "goose requires the `cloud` feature".into(),
                 });
             }
         }
-        let skill_context = if config.llm_developer_harness {
+        let skill_context = if config.llm_agent_harness {
             let discovery = config.discover_skills(&workspace);
             for diagnostic in &discovery.diagnostics {
                 tracing::warn!(
@@ -612,7 +612,7 @@ mod production {
                 Ok(LiveLlm::Local(
                     llm.with_system_prompt(config.system_prompt.clone())
                         .with_skill_context(skill_context.clone())
-                        .with_developer_harness(config.llm_developer_harness)
+                        .with_agent_harness(config.llm_agent_harness)
                         .with_developer_permissions(config.llm_developer_permissions.clone())
                         .with_workspace(workspace.clone()),
                 ))
@@ -644,7 +644,7 @@ mod production {
             crate::defaults::LlmProvider::External(name) => Err(Error::Config {
                 field: "pipeline.llm.provider".into(),
                 message: format!(
-                    "provider {:?} needs developer_harness.agent: goose (syllabix and none only support local and openai-compatible), or use provider: openai-compatible with that provider's OpenAI-compatible endpoint",
+                    "provider {:?} needs agent_harness.agent: goose (syllabix and none only support local and openai-compatible), or use provider: openai-compatible with that provider's OpenAI-compatible endpoint",
                     name
                 ),
             }),
@@ -781,7 +781,7 @@ mod production {
             }
             #[cfg(not(feature = "cloud"))]
             {
-                assert!(err.to_string().contains("developer_harness.agent"), "{err}");
+                assert!(err.to_string().contains("agent_harness.agent"), "{err}");
                 assert!(err.to_string().contains("cloud"), "{err}");
                 assert_eq!(fetcher.hits.load(std::sync::atomic::Ordering::SeqCst), 0);
             }

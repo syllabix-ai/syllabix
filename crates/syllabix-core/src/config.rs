@@ -59,10 +59,10 @@ pub struct AgentConfig {
     pub stt_compute: TtsCompute,
     /// STT language code: a whisper-supported ISO code or `auto`.
     pub language: String,
-    /// `developer_harness.agent` (`none`, `syllabix`, or `goose`). Default `none`.
+    /// `agent_harness.agent` (`none`, `syllabix`, or `goose`). Default `none`.
     /// `goose` uses `pipeline.llm` to configure Goose's provider and model.
     pub agent: AgentBackend,
-    /// `developer_harness.inherit_current_session`. Default `true`: sandboxed
+    /// `agent_harness.inherit_current_session`. Default `true`: sandboxed
     /// commands inherit the launcher shell environment. `false` clears it and
     /// applies safe defaults only.
     pub inherit_current_session: bool,
@@ -81,9 +81,9 @@ pub struct AgentConfig {
     /// `provider: openai-compatible`, optional for Goose `ollama`; forbidden
     /// for `provider: local`. The API key never lives here.
     pub llm_base_url: Option<String>,
-    /// Built-in sandboxed tool loop (`developer_harness.agent: syllabix`).
-    pub llm_developer_harness: bool,
-    /// Session capability ceiling when `llm_developer_harness` is on
+    /// Built-in sandboxed tool loop (`agent_harness.agent: syllabix`).
+    pub llm_agent_harness: bool,
+    /// Session capability ceiling when `llm_agent_harness` is on
     /// (`pipeline.llm.developer_permissions`). Defaults to read-only /
     /// network none / secrets none. Rejected unless the harness is enabled.
     pub llm_developer_permissions: DeveloperPermissions,
@@ -152,7 +152,7 @@ impl AgentConfig {
             thinking: defaults.llm_thinking,
             system_prompt: crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             llm_base_url: None,
-            llm_developer_harness: false,
+            llm_agent_harness: false,
             llm_developer_permissions: DeveloperPermissions::default_session(),
             skills: SkillsConfig::default(),
             tts: defaults.tts,
@@ -176,7 +176,7 @@ impl AgentConfig {
     }
 
     /// Discover the built-in root and configured local skills for this
-    /// developer-harness workspace. The default spoken path does not call this.
+    /// agent-harness workspace. The default spoken path does not call this.
     pub fn discover_skills(&self, workspace: &Path) -> crate::skills::SkillDiscovery {
         crate::skills::SkillDiscovery::discover(
             &crate::skills::builtin_root(),
@@ -234,7 +234,7 @@ impl AgentConfig {
         } else {
             format!("    compute: {}\n", self.tts_compute.as_str())
         };
-        let developer_harness_block = self.render_developer_harness_block();
+        let agent_harness_block = self.render_agent_harness_block();
         format!(
             "\
 name: {name}
@@ -258,7 +258,7 @@ pipeline:
     provider: {tts}
     model: {tts_model}
     language: {tts_language}
-{tts_compute_line}{tts_base_url_line}{developer_harness_block}{diagnostics_block}{skills_block}",
+{tts_compute_line}{tts_base_url_line}{agent_harness_block}{diagnostics_block}{skills_block}",
             name = self.name,
             vad = self.vad.as_str(),
             vad_threshold = self.vad_threshold,
@@ -268,7 +268,7 @@ pipeline:
             stt = self.stt.as_str(),
             stt_model = self.stt_model_id,
             stt_compute_line = stt_compute_line,
-            developer_harness_block = developer_harness_block,
+            agent_harness_block = agent_harness_block,
             language = self.language,
             stt_base_url_line = self
                 .stt_base_url
@@ -339,11 +339,11 @@ pipeline:
         output
     }
 
-    fn render_developer_harness_block(&self) -> String {
+    fn render_agent_harness_block(&self) -> String {
         if self.agent == AgentBackend::None && self.inherit_current_session {
             return String::new();
         }
-        let mut out = String::from("developer_harness:\n");
+        let mut out = String::from("agent_harness:\n");
         if self.agent != AgentBackend::None {
             out.push_str(&format!("  agent: {}\n", self.agent.as_str()));
         }
@@ -354,7 +354,7 @@ pipeline:
     }
 
     fn render_developer_permissions_block(&self) -> String {
-        if !self.llm_developer_harness
+        if !self.llm_agent_harness
             || self.llm_developer_permissions == DeveloperPermissions::default_session()
         {
             return String::new();
@@ -381,6 +381,12 @@ pipeline:
         Ok(path)
     }
 
+    /// Enable or disable the built-in sandboxed tool loop (`agent_harness.agent: syllabix`).
+    pub fn with_llm_agent_harness(mut self, enabled: bool) -> Self {
+        self.llm_agent_harness = enabled;
+        self
+    }
+
     /// Silero turn policy for this config.
     pub fn vad_settings(&self) -> VadSettings {
         VadSettings {
@@ -400,13 +406,19 @@ impl Default for AgentConfig {
 
 fn parse_value(value: &Value) -> Result<AgentConfig> {
     let root = mapping(value, ".")?;
+    if root.get("developer_harness").is_some() {
+        return Err(Error::Config {
+            field: "developer_harness".into(),
+            message: "this key was renamed to `agent_harness`".into(),
+        });
+    }
     deny_unknown(
         root,
         ".",
         &[
             "name",
             "pipeline",
-            "developer_harness",
+            "agent_harness",
             "diagnostics",
             "auto-timeout",
             "skills",
@@ -420,11 +432,11 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     if pipeline.get("agent").is_some() {
         return Err(Error::Config {
             field: "pipeline.agent".into(),
-            message: "this key moved; set developer_harness.agent instead".into(),
+            message: "this key moved; set agent_harness.agent instead".into(),
         });
     }
     deny_unknown(pipeline, "pipeline", &["vad", "stt", "llm", "tts"])?;
-    let (agent, inherit_current_session) = parse_developer_harness(root)?;
+    let (agent, inherit_current_session) = parse_agent_harness(root)?;
 
     let vad = mapping(required(pipeline, "pipeline.vad", "vad")?, "pipeline.vad")?;
     deny_unknown(
@@ -524,7 +536,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     if llm.get("developer_harness").is_some() {
         return Err(Error::Config {
             field: "pipeline.llm.developer_harness".into(),
-            message: "this key was removed; set developer_harness.agent: syllabix instead".into(),
+            message: "this key was removed; set agent_harness.agent: syllabix instead".into(),
         });
     }
     deny_unknown(
@@ -544,7 +556,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         return Err(Error::Config {
             field: "pipeline.llm.provider".into(),
             message: format!(
-                "provider {:?} needs developer_harness.agent: goose (syllabix and none only support local and openai-compatible), or use provider: openai-compatible with that provider's OpenAI-compatible endpoint",
+                "provider {:?} needs agent_harness.agent: goose (syllabix and none only support local and openai-compatible), or use provider: openai-compatible with that provider's OpenAI-compatible endpoint",
                 llm_provider.as_str()
             ),
         });
@@ -571,8 +583,8 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     // vLLM, llama-server); the key may not live here either way —
     // `SYLLABIX_LLM_API_KEY` env only, never yaml, never `.env`.
     let llm_base_url = resolve_llm_base_url(llm, &llm_provider)?;
-    let llm_developer_harness = agent.syllabix_tools();
-    let llm_developer_permissions = parse_developer_permissions(llm, llm_developer_harness)?;
+    let llm_agent_harness = agent.syllabix_tools();
+    let llm_developer_permissions = parse_developer_permissions(llm, llm_agent_harness)?;
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
     deny_yaml_api_key(tts, "pipeline.tts", TTS_API_KEY_ENV)?;
@@ -635,7 +647,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     if skills != SkillsConfig::default() && !agent.allows_skills() {
         return Err(Error::Config {
             field: "skills".into(),
-            message: "requires developer_harness.agent: syllabix or goose".into(),
+            message: "requires agent_harness.agent: syllabix or goose".into(),
         });
     }
 
@@ -659,7 +671,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         thinking,
         system_prompt,
         llm_base_url,
-        llm_developer_harness,
+        llm_agent_harness,
         llm_developer_permissions,
         skills,
         tts: tts_provider,
@@ -805,22 +817,18 @@ fn mapping<'a>(value: &'a Value, field: &str) -> Result<&'a serde_yaml::Mapping>
     })
 }
 
-fn parse_developer_harness(root: &serde_yaml::Mapping) -> Result<(AgentBackend, bool)> {
-    let Some(value) = root.get("developer_harness") else {
+fn parse_agent_harness(root: &serde_yaml::Mapping) -> Result<(AgentBackend, bool)> {
+    let Some(value) = root.get("agent_harness") else {
         return Ok((AgentBackend::None, true));
     };
-    let map = mapping(value, "developer_harness")?;
-    deny_unknown(
-        map,
-        "developer_harness",
-        &["agent", "inherit_current_session"],
-    )?;
-    let agent = match optional_string(map, "developer_harness", "agent")? {
-        Some(value) => parse_agent_field("developer_harness.agent", &value)?,
+    let map = mapping(value, "agent_harness")?;
+    deny_unknown(map, "agent_harness", &["agent", "inherit_current_session"])?;
+    let agent = match optional_string(map, "agent_harness", "agent")? {
+        Some(value) => parse_agent_field("agent_harness.agent", &value)?,
         None => AgentBackend::None,
     };
     let inherit_current_session =
-        optional_bool(map, "developer_harness", "inherit_current_session", true)?;
+        optional_bool(map, "agent_harness", "inherit_current_session", true)?;
     Ok((agent, inherit_current_session))
 }
 
@@ -834,7 +842,7 @@ fn parse_developer_permissions(
     if !harness {
         return Err(Error::Config {
             field: "pipeline.llm.developer_permissions".into(),
-            message: "requires developer_harness.agent: syllabix".into(),
+            message: "requires agent_harness.agent: syllabix".into(),
         });
     }
     let map = mapping(value, "pipeline.llm.developer_permissions")?;
@@ -1210,7 +1218,9 @@ fn parse_agent_field(field: &str, value: &str) -> Result<AgentBackend> {
         "goose" => Ok(AgentBackend::Goose),
         "builtin" => Err(Error::Config {
             field: field.into(),
-            message: "agent value `builtin` was renamed to `syllabix`".into(),
+            message:
+                "agent value `builtin` was renamed to `syllabix`; set agent_harness.agent: syllabix"
+                    .into(),
         }),
         other => Err(unsupported(field, other, "none, syllabix, goose")),
     }
@@ -1380,27 +1390,27 @@ mod tests {
     }
 
     #[test]
-    fn developer_harness_agent_defaults_to_none_and_accepts_syllabix_and_goose() {
+    fn agent_harness_agent_defaults_to_none_and_accepts_syllabix_and_goose() {
         let yaml = AgentConfig::v0().to_yaml();
         let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
         assert_eq!(parsed.agent, AgentBackend::None);
-        assert!(!parsed.llm_developer_harness);
+        assert!(!parsed.llm_agent_harness);
         assert!(parsed.inherit_current_session);
-        let none = format!("{yaml}developer_harness:\n  agent: none\n",);
+        let none = format!("{yaml}agent_harness:\n  agent: none\n",);
         let parsed = AgentConfig::parse_yaml(&none).unwrap();
         assert_eq!(parsed.agent, AgentBackend::None);
-        assert!(!parsed.llm_developer_harness);
-        let explicit = format!("{yaml}developer_harness:\n  agent: syllabix\n",);
+        assert!(!parsed.llm_agent_harness);
+        let explicit = format!("{yaml}agent_harness:\n  agent: syllabix\n",);
         let parsed = AgentConfig::parse_yaml(&explicit).unwrap();
         assert_eq!(parsed.agent, AgentBackend::Syllabix);
-        assert!(parsed.llm_developer_harness);
+        assert!(parsed.llm_agent_harness);
         let goose = format!(
-            "{}\ndeveloper_harness:\n  agent: goose\n",
+            "{}\nagent_harness:\n  agent: goose\n",
             openai_compatible_yaml("gpt-4o-mini", "https://api.openai.com/v1")
         );
         let parsed = AgentConfig::parse_yaml(&goose).unwrap();
         assert_eq!(parsed.agent, AgentBackend::Goose);
-        assert!(!parsed.llm_developer_harness);
+        assert!(!parsed.llm_agent_harness);
         assert_eq!(parsed.llm, LlmProvider::OpenAiCompatible);
         let dumped = parsed.to_yaml();
         assert!(dumped.contains("agent: goose"));
@@ -1411,37 +1421,37 @@ mod tests {
     }
 
     #[test]
-    fn developer_harness_agent_goose_accepts_local_pipeline_llm() {
+    fn agent_harness_agent_goose_accepts_local_pipeline_llm() {
         let yaml = format!(
-            "{}\ndeveloper_harness:\n  agent: goose\n",
+            "{}\nagent_harness:\n  agent: goose\n",
             AgentConfig::v0().to_yaml()
         );
         let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
         assert_eq!(parsed.agent, AgentBackend::Goose);
-        assert!(!parsed.llm_developer_harness);
+        assert!(!parsed.llm_agent_harness);
         assert_eq!(parsed.llm, LlmProvider::Local);
     }
 
     #[test]
-    fn developer_harness_agent_builtin_reports_rename() {
+    fn agent_harness_agent_builtin_reports_rename() {
         let yaml = format!(
-            "{}\ndeveloper_harness:\n  agent: builtin\n",
+            "{}\nagent_harness:\n  agent: builtin\n",
             AgentConfig::v0().to_yaml()
         );
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
-        assert!(err.to_string().contains("developer_harness.agent"), "{err}");
+        assert!(err.to_string().contains("agent_harness.agent"), "{err}");
         assert!(err.to_string().contains("was renamed"), "{err}");
         assert!(err.to_string().contains("syllabix"), "{err}");
     }
 
     #[test]
-    fn developer_harness_agent_unknown_value_is_named() {
+    fn agent_harness_agent_unknown_value_is_named() {
         let yaml = format!(
-            "{}\ndeveloper_harness:\n  agent: cursor\n",
+            "{}\nagent_harness:\n  agent: cursor\n",
             AgentConfig::v0().to_yaml()
         );
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
-        assert!(err.to_string().contains("developer_harness.agent"), "{err}");
+        assert!(err.to_string().contains("agent_harness.agent"), "{err}");
         assert!(err.to_string().contains("none, syllabix, goose"), "{err}");
     }
 
@@ -1456,7 +1466,20 @@ mod tests {
             err.to_string().contains("pipeline.llm.developer_harness"),
             "{err}"
         );
+        assert!(err.to_string().contains("agent_harness.agent"), "{err}");
         assert!(err.to_string().contains("syllabix"), "{err}");
+    }
+
+    #[test]
+    fn top_level_developer_harness_reports_rename() {
+        let yaml = format!(
+            "{}\ndeveloper_harness:\n  agent: syllabix\n",
+            AgentConfig::v0().to_yaml()
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("developer_harness"), "{err}");
+        assert!(err.to_string().contains("agent_harness"), "{err}");
+        assert!(err.to_string().contains("was renamed"), "{err}");
     }
 
     #[test]
@@ -1467,14 +1490,14 @@ mod tests {
                 .replacen("pipeline:\n", "pipeline:\n  agent: goose\n", 1);
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.agent"), "{err}");
-        assert!(err.to_string().contains("developer_harness.agent"), "{err}");
+        assert!(err.to_string().contains("agent_harness.agent"), "{err}");
     }
 
     #[test]
     fn inherit_current_session_defaults_true_and_round_trips_false() {
         assert!(AgentConfig::v0().inherit_current_session);
         let yaml = format!(
-            "{}\ndeveloper_harness:\n  inherit_current_session: false\n",
+            "{}\nagent_harness:\n  inherit_current_session: false\n",
             AgentConfig::v0().to_yaml()
         );
         let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
@@ -1499,7 +1522,7 @@ pipeline:
   stt: {{ provider: local, model: whisper-small, language: en }}
   llm: {{ provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1 }}
   tts: {{ provider: local, model: kokoro }}
-developer_harness:
+agent_harness:
   agent: syllabix
 skills:
   roots:
@@ -1527,7 +1550,7 @@ pipeline:
   stt: { provider: local, model: whisper-small, language: en }
   llm: { provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1 }
   tts: { provider: local, model: kokoro }
-developer_harness:
+agent_harness:
   agent: syllabix
 "#;
         let unknown = format!("{base}skills: {{extra: true}}\n");
@@ -1560,7 +1583,7 @@ developer_harness:
     }
 
     #[test]
-    fn skills_config_requires_the_developer_harness() {
+    fn skills_config_requires_the_agent_harness() {
         let error = AgentConfig::parse_yaml(
             r#"
 name: skills
@@ -1575,14 +1598,14 @@ skills:
       source: repository
 "#,
         )
-        .expect_err("skills must require the developer harness");
+        .expect_err("skills must require the agent harness");
         assert!(error.to_string().contains("skills"));
-        assert!(error.to_string().contains("developer_harness.agent"));
+        assert!(error.to_string().contains("agent_harness.agent"));
     }
 
     #[test]
-    fn developer_harness_tools_follow_agent() {
-        assert!(!AgentConfig::v0().llm_developer_harness);
+    fn agent_harness_tools_follow_agent() {
+        assert!(!AgentConfig::v0().llm_agent_harness);
         assert_eq!(AgentConfig::v0().agent, AgentBackend::None);
         let enabled = AgentConfig::parse_yaml(
             r#"
@@ -1592,12 +1615,12 @@ pipeline:
   stt: { provider: local, model: whisper-small, language: en }
   llm: { provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1 }
   tts: { provider: local, model: kokoro }
-developer_harness:
+agent_harness:
   agent: syllabix
 "#,
         )
         .expect("online syllabix harness parses");
-        assert!(enabled.llm_developer_harness);
+        assert!(enabled.llm_agent_harness);
         let local_lfm = AgentConfig::parse_yaml(
             r#"
 name: harness
@@ -1606,12 +1629,12 @@ pipeline:
   stt: { provider: local, model: whisper-small, language: en }
   llm: { provider: local, model: lfm2.5-2.6b }
   tts: { provider: local, model: kokoro }
-developer_harness:
+agent_harness:
   agent: syllabix
 "#,
         )
         .expect("local LFM syllabix harness parses");
-        assert!(local_lfm.llm_developer_harness);
+        assert!(local_lfm.llm_agent_harness);
         let local_llama = AgentConfig::parse_yaml(
             r#"
 name: harness
@@ -1620,12 +1643,12 @@ pipeline:
   stt: { provider: local, model: whisper-small, language: en }
   llm: { provider: local, model: llama-3.2-1b }
   tts: { provider: local, model: kokoro }
-developer_harness:
+agent_harness:
   agent: syllabix
 "#,
         )
         .expect("non-LFM local syllabix harness parses");
-        assert!(local_llama.llm_developer_harness);
+        assert!(local_llama.llm_agent_harness);
         for model in ["lfm2.5-350m", "lfm2.5-230m"] {
             let parsed = AgentConfig::parse_yaml(&format!(
                 r#"
@@ -1635,19 +1658,19 @@ pipeline:
   stt: {{ provider: local, model: whisper-small, language: en }}
   llm: {{ provider: local, model: {model} }}
   tts: {{ provider: local, model: kokoro }}
-developer_harness:
+agent_harness:
   agent: syllabix
 "#,
             ))
             .expect("small LFM syllabix harness parses");
-            assert!(parsed.llm_developer_harness, "{model}");
+            assert!(parsed.llm_agent_harness, "{model}");
         }
     }
 
     #[test]
     fn developer_permissions_default_and_gated() {
         let defaults = AgentConfig::v0();
-        assert!(!defaults.llm_developer_harness);
+        assert!(!defaults.llm_agent_harness);
         assert_eq!(
             defaults.llm_developer_permissions,
             DeveloperPermissions::default_session()
@@ -1673,7 +1696,7 @@ pipeline:
   stt: { provider: local, model: whisper-small, language: en }
   llm: { provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1 }
   tts: { provider: local, model: kokoro }
-developer_harness:
+agent_harness:
   agent: syllabix
 "#,
         )
@@ -1698,7 +1721,7 @@ pipeline:
       network: allow
       secrets: none
   tts: { provider: local, model: kokoro }
-developer_harness:
+agent_harness:
   agent: syllabix
 "#,
         )
@@ -1749,7 +1772,7 @@ pipeline:
       filesystem: read-only
       extra: true
   tts: { provider: local, model: kokoro }
-developer_harness:
+agent_harness:
   agent: syllabix
 "#,
         )
@@ -1769,7 +1792,7 @@ pipeline:
     developer_permissions:
       secrets: DEPLOY_TOKEN
   tts: { provider: local, model: kokoro }
-developer_harness:
+agent_harness:
   agent: syllabix
 "#,
         )
@@ -1789,7 +1812,7 @@ pipeline:
     developer_permissions:
       filesystem: readwrite
   tts: { provider: local, model: kokoro }
-developer_harness:
+agent_harness:
   agent: syllabix
 "#,
         )
@@ -1960,7 +1983,7 @@ auto-timeout:
             Some("https://api.openai.com/v1")
         );
         assert_eq!(config.agent, AgentBackend::Syllabix);
-        assert!(config.llm_developer_harness);
+        assert!(config.llm_agent_harness);
         assert_eq!(config.stt_model, SttModel::Small);
         assert_eq!(config.tts_model, TtsModel::PocketTts);
     }
@@ -3046,7 +3069,7 @@ pipeline:
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.provider"), "{err}");
         assert!(
-            err.to_string().contains("developer_harness.agent: goose"),
+            err.to_string().contains("agent_harness.agent: goose"),
             "{err}"
         );
         assert!(err.to_string().contains("openai-compatible"), "{err}");

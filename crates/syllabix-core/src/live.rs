@@ -19,7 +19,7 @@ use crate::turn_debug::TurnDebug;
 /// A builtin cloud LLM config (`pipeline.llm.provider: openai-compatible`) must already
 /// carry its key in the `SYLLABIX_LLM_API_KEY` environment variable; a missing
 /// or empty key fails here — before any device opens or any weight loads.
-/// With `developer_harness.agent: goose`, this function does not pass that key into
+/// With `agent_harness.agent: goose`, this function does not pass that key into
 /// the builtin LLM slot, but starting Goose still maps `SYLLABIX_LLM_API_KEY` (or
 /// provider-specific passthrough credentials) into the Goose child from the
 /// environment when `pipeline.llm` requires it. Online STT

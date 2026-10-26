@@ -3,7 +3,7 @@
 //! Writes `turn-{id:03}/trajectory.jsonl`: the user utterance, every tool call
 //! with its validated arguments, every bounded tool result, the assistant
 //! reply, and the turn outcome — the same normalized shape for
-//! `developer_harness.agent: syllabix` and `developer_harness.agent: goose`, both of which feed
+//! `agent_harness.agent: syllabix` and `agent_harness.agent: goose`, both of which feed
 //! [`crate::turn_debug::TurnDebug`].
 //!
 //! Trajectories are the exported copy: the canonical `turn.json`, WAVs, and

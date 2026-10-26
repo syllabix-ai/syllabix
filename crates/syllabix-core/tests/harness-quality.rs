@@ -15,7 +15,7 @@
 //! ```
 //!
 //! The Goose variant runs the same fixtures and the same bar with Goose as the
-//! reply backend (`developer_harness.agent: goose`). Configure Goose's own
+//! reply backend (`agent_harness.agent: goose`). Configure Goose's own
 //! provider and model first; see `docs/contributing.md`.
 //!
 //! ```bash
@@ -805,7 +805,7 @@ fn fixture_workspace() -> FixtureWorkspace {
     std::fs::create_dir_all(path.join("src")).expect("fixture workspace");
     std::fs::write(
         path.join("README.md"),
-        "# Syllabix fixture\n\nSyllabix is voice infrastructure for local speech pipelines and developer harnesses.\n",
+        "# Syllabix fixture\n\nSyllabix is voice infrastructure for local speech pipelines and agent harnesses.\n",
     )
     .expect("fixture readme");
     std::fs::write(
@@ -940,7 +940,7 @@ fn harness_quality_local_lfm() {
         false,
     )
     .expect("local harness-quality requires the pinned LFM GGUF in the model cache")
-    .with_developer_harness(true)
+    .with_agent_harness(true)
     .with_skill_context(skill_context)
     .with_workspace(fixture_workspace.path.clone());
 
@@ -1042,7 +1042,7 @@ fn harness_quality_live_admission() {
                     model: model.clone(),
                     system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
                     skill_context: skill_context.clone(),
-                    developer_harness: true,
+                    agent_harness: true,
                     developer_permissions: DeveloperPermissions {
                         filesystem: fixture.filesystem,
                         network: fixture.network,
@@ -1073,7 +1073,7 @@ fn harness_quality_live_admission() {
                         model: model.clone(),
                         system_prompt: VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
                         skill_context: skill_context.clone(),
-                        developer_harness: true,
+                        agent_harness: true,
                         developer_permissions: DeveloperPermissions {
                             filesystem: fixture.filesystem,
                             network: fixture.network,

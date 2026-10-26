@@ -1,7 +1,7 @@
 //! Read-only discovery of local SKILL.md instruction packages.
 //!
 //! Phase 6 deliberately stops at instruction text. Skill files are parsed and
-//! labelled for the developer harness, but no entrypoint, executable, or
+//! labelled for the agent harness, but no entrypoint, executable, or
 //! other code-bearing metadata is accepted or run here.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -88,7 +88,7 @@ pub struct SkillManifest {
     pub inputs: BTreeMap<String, SkillInput>,
 }
 
-/// One valid skill visible to the developer-harness model.
+/// One valid skill visible to the agent-harness model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscoveredSkill {
     /// Parsed metadata.
@@ -126,7 +126,7 @@ impl SkillDiscovery {
     ///
     /// Missing built-in content is valid: a distribution may ship no built-in
     /// skills yet. Missing configured roots are diagnostics, never fatal to the
-    /// rest of the developer harness.
+    /// rest of the agent harness.
     pub fn discover(builtin_root: &Path, workspace: &Path, config: &SkillsConfig) -> Self {
         let mut roots = vec![SkillRoot {
             path: builtin_root.to_path_buf(),

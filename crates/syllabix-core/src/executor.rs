@@ -1,4 +1,4 @@
-//! Host-owned, bounded executors for the developer harness.
+//! Host-owned, bounded executors for the agent harness.
 //!
 //! This module validates model-facing [`ToolCall`] values before execution.
 //! Calls are validated here before an executor is selected; callers never get

@@ -152,11 +152,11 @@ Tracked CI admission is the builtin openai-compatible run. Goose local-GGUF admi
 manual operator run; its evidence is pasted into the pull request description.
 An ignored `harness_quality_local_lfm` test still exists for local-loop
 debugging; it is not part of CI admission and its report is not pasted into
-pull requests. Local developer-harness stays opt-in via yaml (`developer_harness.agent: syllabix`);
+pull requests. Local agent harness stays opt-in via yaml (`agent_harness.agent: syllabix`);
 the default voice path (`agent: none`) is unchanged.
 
 The Goose variant runs the same fixtures and the same completion and security
-checks with `developer_harness.agent: goose` as the reply backend. Set
+checks with `agent_harness.agent: goose` as the reply backend. Set
 `pipeline.llm` to the Goose provider and model under test; Syllabix writes
 `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` before starting Goose. It
 fetches the pinned Goose CLI into the model cache if it is absent.

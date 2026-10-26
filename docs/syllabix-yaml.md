@@ -38,7 +38,7 @@ pipeline:
     model: pocket-tts
     language: en
 # optional (init omits these):
-# developer_harness:             # agent backend + sandbox shell environment
+# agent_harness:             # agent backend + sandbox shell environment
 # auto-timeout:                  # idle mic-mute / exit
 # diagnostics:                   # turn timelines / WAVs
 # skills:                        # local instruction packages (harness only)
@@ -167,11 +167,11 @@ The selected backend is recorded as `backend` in component benchmark JSONL.
 
 ### `provider`
 
-With `developer_harness.agent: syllabix` or `none` (default), only `local` and `openai-compatible` are valid.
+With `agent_harness.agent: syllabix` or `none` (default), only `local` and `openai-compatible` are valid.
 
 - `local` — GGUF in-process via llama.cpp. `model` is a catalogue id or a path to a `.gguf` file.
 - `openai-compatible` — any OpenAI-style `chat/completions` endpoint (`base_url` + `model`). Audio stays on the machine; only transcript text leaves. The old value `online` was renamed to `openai-compatible`.
-- Any other value (`openai`, `anthropic`, `ollama`, `openrouter`, …) is a [Goose](engines.md) provider name and requires `developer_harness.agent: goose`, unless you use `openai-compatible` with that vendor's OpenAI-compatible endpoint instead.
+- Any other value (`openai`, `anthropic`, `ollama`, `openrouter`, …) is a [Goose](engines.md) provider name and requires `agent_harness.agent: goose`, unless you use `openai-compatible` with that vendor's OpenAI-compatible endpoint instead.
 
 ### `model`
 
@@ -224,11 +224,11 @@ SYLLABIX_LLM_API_KEY=sk-… syllabix run
 # or: export SYLLABIX_LLM_API_KEY=sk-…
 ```
 
-Missing/empty with `developer_harness.agent: none` or `syllabix` and `provider: openai-compatible` fails before devices or weights load. With `developer_harness.agent: goose`, Syllabix maps `SYLLABIX_LLM_API_KEY` to the Goose provider's expected variable when applicable. Keyless loopback still needs a placeholder: `SYLLABIX_LLM_API_KEY=ollama syllabix run`.
+Missing/empty with `agent_harness.agent: none` or `syllabix` and `provider: openai-compatible` fails before devices or weights load. With `agent_harness.agent: goose`, Syllabix maps `SYLLABIX_LLM_API_KEY` to the Goose provider's expected variable when applicable. Keyless loopback still needs a placeholder: `SYLLABIX_LLM_API_KEY=ollama syllabix run`.
 
 ### `developer_permissions`
 
-Optional session ceiling under `pipeline.llm`. Valid only when `developer_harness.agent: syllabix`. Unknown keys fail at load.
+Optional session ceiling under `pipeline.llm`. Valid only when `agent_harness.agent: syllabix`. Unknown keys fail at load.
 
 | Key | Values | Default |
 | --- | --- | --- |
@@ -237,7 +237,7 @@ Optional session ceiling under `pipeline.llm`. Valid only when `developer_harnes
 | `secrets` | `none` only | `none` |
 
 ```yaml
-developer_harness:
+agent_harness:
   agent: syllabix
 pipeline:
   llm:
@@ -249,16 +249,16 @@ pipeline:
 
 Omitting `developer_permissions` uses `read-only`, `none`, and `none`.
 
-## Agent backend and shell environment (`developer_harness`)
+## Agent backend and shell environment (`agent_harness`)
 
-Optional top-level `developer_harness:` block. `init` omits it. Unknown keys fail at load.
+Optional top-level `agent_harness:` block. `init` omits it. Unknown keys fail at load.
 
 ### `agent`
 
 Default `none` (omitted). Values: `none` \| `syllabix` \| `goose`.
 
 - `none` — plain voice chat with no sandboxed tools (the default `init` path).
-- `syllabix` — built-in developer harness with sandboxed shell tools. Works with `provider: local` (any catalogue id or `.gguf` path) or `openai-compatible`. The old yaml value `builtin` was renamed to `syllabix`; the removed `pipeline.llm.developer_harness` flag is replaced by `agent: syllabix`.
+- `syllabix` — built-in agent harness with sandboxed shell tools. Works with `provider: local` (any catalogue id or `.gguf` path) or `openai-compatible`. The old yaml value `builtin` was renamed to `syllabix`; the removed `pipeline.llm.developer_harness` flag is replaced by `agent_harness.agent: syllabix`.
 - `goose` — Goose runs the reply backend. Uses `pipeline.llm` as the single place to pick provider and model. Syllabix writes them into `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` (merging with keys you added by hand) before starting Goose. Selecting `goose` downloads a pinned Goose CLI into the model cache and checks its SHA-256 before unpacking. Goose can search the web and fetch pages. Details: [engines](engines.md).
 
 With `agent: syllabix`, the harness uses a generic shell through the host sandbox: macOS Seatbelt and Linux Bubblewrap, with Landlock fallback. The model may request less filesystem authority per call, but the session ceiling is fixed at process start and cannot be widened in-session. Bounded output, cancellation, and a workspace-contained working directory apply to every command. It has no wall-clock deadline; cancellation still stops the active command.
@@ -270,7 +270,7 @@ With barge-in on (`run --barge-in`), speaking while Goose is answering cancels t
 Default `true`. When `true`, each command the agent runs (syllabix or Goose) starts with the environment of the shell that launched Syllabix, like a forked shell — the agent can read every variable you have exported there. Set `inherit_current_session: false` for a clean session: the environment is cleared and only safe defaults (for example `PATH` and git non-interactive settings) are set. File and network sandbox rules are unchanged either way. Secret values are never written to diagnostics or trajectory logs.
 
 ```yaml
-developer_harness:
+agent_harness:
   agent: syllabix
   inherit_current_session: false
 ```
@@ -325,7 +325,7 @@ so the Metal TTS probe competes with resident STT (including a GPU-backed Qwen A
 
 ## Skills — local instruction packages
 
-Optional top-level block. Valid only when `developer_harness.agent` is `syllabix` or `goose`. `init` omits it. The product-shipped root beside the executable supplies default skills; repository and global roots are extra sources of local instructions.
+Optional top-level block. Valid only when `agent_harness.agent` is `syllabix` or `goose`. `init` omits it. The product-shipped root beside the executable supplies default skills; repository and global roots are extra sources of local instructions.
 
 ### `roots`
 
@@ -384,8 +384,8 @@ Default `false`. When `true`, also writes turn WAVs and implies `timestamps: tru
 Default `false`. When `true`, also writes each turn's agent trajectory
 (`user`, tool calls and results, assistant reply, outcome) as
 `trajectory.jsonl` next to `turn.json`, with secrets redacted. Implies
-`timestamps: true`. Written the same for `developer_harness.agent: syllabix` and
-`developer_harness.agent: goose`.
+`timestamps: true`. Written the same for `agent_harness.agent: syllabix` and
+`agent_harness.agent: goose`.
 
 ### `directory`
 
