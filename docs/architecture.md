@@ -22,14 +22,14 @@ Ids other than the defaults are yaml-selected and fetch on first use — [engine
 
 Default `run` is tool-free: one STT transcript goes to the LLM, then the spoken reply goes to TTS.
 
-With `pipeline.llm.developer_harness: true` (online or local `lfm2.5-2.6b`), the LLM may loop on sandboxed shell commands before it produces the final reply text for TTS:
+With `developer_harness.agent: syllabix`, the LLM may loop on sandboxed shell commands before it produces the final reply text for TTS:
 
 ```text
 mic → Silero VAD → STT → LLM ⇄ sandboxed shell → … → TTS → speakers
               ↑________________________________ barge-in (interrupt + flush)
 ```
 
-[Skills](syllabix-yaml.md#skills--local-instruction-packages) are optional instruction packages (`SKILL.md` under configured roots). Their text is shown to the harness as reference; they do not run code and do not widen sandbox permissions. Tool policy and ceilings: [pipeline.llm.developer_harness](syllabix-yaml.md#tool-loop-developer_harness).
+[Skills](syllabix-yaml.md#skills--local-instruction-packages) are optional instruction packages (`SKILL.md` under configured roots). Their text is shown to the harness as reference; they do not run code and do not widen sandbox permissions. Tool policy and ceilings: [developer_harness.agent](syllabix-yaml.md#agent-backend-and-shell-environment-developer_harness).
 
 ## Barge-in
 

@@ -60,7 +60,7 @@ Local menu (unknown ids fail at load):
 
 `pipeline.llm.provider: openai-compatible` uses any id the OpenAI-compatible endpoint serves. Audio stays on the machine; only transcript text leaves. The API key is `SYLLABIX_LLM_API_KEY` (environment only, never yaml).
 
-`developer_harness.agent: goose` downloads a pinned Goose CLI for this OS/arch into the model cache and checks its SHA-256 before unpacking. Syllabix writes Goose's provider and model from `pipeline.llm` into `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` before each run; see Goose's [provider docs](https://goose-docs.ai/docs/getting-started/providers/). On Linux and macOS, unpacking needs the `bzip2` program. The default `builtin` agent does not download Goose. Goose can search the web and fetch pages.
+`developer_harness.agent: goose` downloads a pinned Goose CLI for this OS/arch into the model cache and checks its SHA-256 before unpacking. Syllabix writes Goose's provider and model from `pipeline.llm` into `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` before each run; see Goose's [provider docs](https://goose-docs.ai/docs/getting-started/providers/). On Linux and macOS, unpacking needs the `bzip2` program. `developer_harness.agent: none` and `syllabix` do not download Goose. Goose can search the web and fetch pages.
 
 ## TTS
 
