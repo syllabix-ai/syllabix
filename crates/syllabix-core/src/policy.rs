@@ -1,9 +1,9 @@
-//! Session capability policy for the developer harness.
+//! Session capability policy for the agent harness.
 //!
 //! This module is the typed seam for capability-sandboxed execution
 //! ([#111](https://github.com/syllabix-ai/syllabix/issues/111)). The configured
 //! session permissions are a ceiling: a call or skill may narrow them, never
-//! widen them. The generic developer-harness shell resolves every invocation
+//! widen them. The generic agent-harness shell resolves every invocation
 //! through this policy before it reaches an OS sandbox provider.
 
 use std::ffi::OsString;

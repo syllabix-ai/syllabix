@@ -134,10 +134,10 @@ pub struct OpenAiSettings {
     pub system_prompt: String,
     /// Labelled instruction-only local skill catalog for the harness.
     pub skill_context: String,
-    /// Whether this explicit developer-only run advertises the two developer
-    /// harness schemas. Default runs omit the API `tools` member entirely.
-    pub developer_harness: bool,
-    /// Immutable capability ceiling for developer-harness shell calls.
+    /// Whether this run advertises the two agent-harness tool schemas.
+    /// Default runs omit the API `tools` member entirely.
+    pub agent_harness: bool,
+    /// Immutable capability ceiling for agent-harness shell calls.
     pub developer_permissions: DeveloperPermissions,
 }
 
@@ -153,7 +153,7 @@ impl OpenAiSettings {
             model: config.llm_model.clone(),
             system_prompt: config.system_prompt.clone(),
             skill_context: String::new(),
-            developer_harness: config.llm_developer_harness,
+            agent_harness: config.llm_agent_harness,
             developer_permissions: config.llm_developer_permissions.clone(),
         }
     }
@@ -230,7 +230,7 @@ impl OpenAiLlm {
         self
     }
 
-    /// Set the host-owned workspace used by developer-harness shell calls.
+    /// Set the host-owned workspace used by agent-harness shell calls.
     /// The normal runtime leaves this at the process working directory; tests
     /// and admission fixtures can use an isolated fixture workspace.
     pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
@@ -412,7 +412,7 @@ impl Llm for OpenAiLlm {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
         }
-        if self.settings.developer_harness {
+        if self.settings.agent_harness {
             return self.generate_with_tools(history, user, cancel, on_token);
         }
         let generation = cancel.generation();
@@ -482,7 +482,7 @@ impl Llm for OpenAiLlm {
                 Ok(Ok(StreamEvent::ToolCallDelta { .. })) => {
                     break Err(Error::Provider {
                         provider: PROVIDER_NAME,
-                        message: "received a tool call without developer harness enabled".into(),
+                        message: "received a tool call without agent harness enabled".into(),
                     });
                 }
                 Ok(Ok(StreamEvent::Finished)) => {
@@ -537,7 +537,7 @@ struct RawToolCall {
 }
 
 impl OpenAiLlm {
-    /// API-native developer-harness loop. Calls are normalized once, then
+    /// API-native agent-harness loop. Calls are normalized once, then
     /// dispatched through the host-owned bounded executor.
     fn generate_with_tools(
         &mut self,
@@ -1167,7 +1167,7 @@ mod tests {
                 model: "gpt-test".into(),
                 system_prompt: crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
                 skill_context: String::new(),
-                developer_harness: false,
+                agent_harness: false,
                 developer_permissions: crate::policy::DeveloperPermissions::default_session(),
             },
             Zeroizing::new(TEST_KEY.into()),
@@ -1450,7 +1450,7 @@ mod tests {
             .unwrap();
         });
         let mut llm = test_llm(endpoint);
-        llm.settings.developer_harness = true;
+        llm.settings.agent_harness = true;
         let (tokens, result) = collect(&mut llm, &Cancel::new());
         result.expect("tool continuation completes");
         assert_eq!(tokens, ["Live lookup is unavailable."]);
@@ -1484,7 +1484,7 @@ mod tests {
             .unwrap();
         });
         let mut llm = test_llm(endpoint);
-        llm.settings.developer_harness = true;
+        llm.settings.agent_harness = true;
         let (tokens, result) = collect(&mut llm, &Cancel::new());
         result.expect("rejection falls back");
         assert_eq!(tokens, [CLOUD_FALLBACK_TEXT]);
@@ -1508,7 +1508,7 @@ mod tests {
             .unwrap();
         });
         let mut llm = test_llm(endpoint);
-        llm.settings.developer_harness = true;
+        llm.settings.agent_harness = true;
         let (tokens, result) = collect(&mut llm, &Cancel::new());
         result.expect("limit is a completed answer");
         assert_eq!(tokens, [TOOL_LIMIT_TEXT]);
@@ -1529,7 +1529,7 @@ mod tests {
             .unwrap();
         });
         let mut llm = test_llm(endpoint);
-        llm.settings.developer_harness = true;
+        llm.settings.agent_harness = true;
         let (tokens, result) = collect(&mut llm, &Cancel::new());
         result.expect("final reply completes");
         assert_eq!(tokens, ["No tool is needed."]);
@@ -1544,7 +1544,7 @@ mod tests {
         // blocking on `accept()` like `serve_one` does.
         let (endpoint, server) = serve_expect_no_connection(Duration::from_millis(300));
         let mut llm = test_llm(endpoint);
-        llm.settings.developer_harness = true;
+        llm.settings.agent_harness = true;
         let cancel = Cancel::new();
         cancel.shutdown();
         let (tokens, result) = collect(&mut llm, &cancel);

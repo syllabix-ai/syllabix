@@ -1,7 +1,7 @@
-//! Capability sandbox providers for host-owned developer-harness commands.
+//! Capability sandbox providers for host-owned agent-harness commands.
 //!
 //! The provider gives the generic shell and future skill entrypoints one seam
-//! for asking the host to enforce a policy. Developer-harness shell calls fail
+//! for asking the host to enforce a policy. Agent-harness shell calls fail
 //! closed when the selected provider cannot uphold the requested mode.
 //!
 //! Platform backends:

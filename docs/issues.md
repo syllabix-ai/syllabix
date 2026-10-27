@@ -36,7 +36,7 @@ Include the Syllabix version or git SHA, OS, and the shortest steps that reprodu
 
 - Unexpected network use on the default local stack after the cache is full
 - Secrets appearing in yaml, logs, diagnostics sidecars, or spoken output
-- Sandbox / developer-harness escapes (write, network, or secret access beyond the configured ceiling)
+- Sandbox / agent-harness escapes (write, network, or secret access beyond the configured ceiling)
 
 ### What is not a vulnerability
 

@@ -194,11 +194,11 @@ fn run(barge_in: bool) -> Result<()> {
 
 /// Probe the sandbox once while the terminal is still in cooked mode, so
 /// tool calls during the conversation skip their per-call probe. Only runs
-/// when the developer harness is on; a failed warm changes nothing — the
+/// when the agent harness is on; a failed warm changes nothing — the
 /// first tool call still probes and fails closed.
 #[cfg(not(coverage))]
 fn warm_session_sandbox(cwd: &std::path::Path, config: &AgentConfig) {
-    if !config.llm_developer_harness {
+    if !config.llm_agent_harness {
         return;
     }
     let session = &config.llm_developer_permissions;
@@ -513,7 +513,7 @@ mod tests {
     #[cfg(not(coverage))]
     #[test]
     fn warm_session_sandbox_skips_when_harness_is_off() {
-        // Developer harness off: no probing, no sandbox output.
+        // Agent harness off: no probing, no sandbox output.
         warm_session_sandbox(&std::env::temp_dir(), &AgentConfig::v0());
     }
 
@@ -523,22 +523,16 @@ mod tests {
         // Host-dependent outcome (sandbox present or not); the warm must
         // simply not panic, covering the single-mode, narrowed read-only,
         // and danger-ceiling branches.
-        let read_only = AgentConfig {
-            llm_developer_harness: true,
-            ..AgentConfig::v0()
-        };
+        let read_only = AgentConfig::v0().with_llm_agent_harness(true);
         warm_session_sandbox(&std::env::temp_dir(), &read_only);
         for filesystem in [
             syllabix_core::config::FilesystemMode::WorkspaceWrite,
             syllabix_core::config::FilesystemMode::DangerFullAccess,
         ] {
-            let config = AgentConfig {
-                llm_developer_harness: true,
-                llm_developer_permissions: syllabix_core::config::DeveloperPermissions {
-                    filesystem,
-                    ..syllabix_core::config::DeveloperPermissions::default_session()
-                },
-                ..AgentConfig::v0()
+            let mut config = AgentConfig::v0().with_llm_agent_harness(true);
+            config.llm_developer_permissions = syllabix_core::config::DeveloperPermissions {
+                filesystem,
+                ..syllabix_core::config::DeveloperPermissions::default_session()
             };
             warm_session_sandbox(&std::env::temp_dir(), &config);
         }

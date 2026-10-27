@@ -1,4 +1,4 @@
-//! Goose backend for `developer_harness.agent: goose`.
+//! Goose backend for `agent_harness.agent: goose`.
 //!
 //! Starts the pinned Goose CLI and runs each reply through it. Goose keeps
 //! conversation state; Syllabix history is not sent. `generate()` uses channels
@@ -220,7 +220,7 @@ fn read_goose_config(path: &Path) -> Result<Option<serde_yaml::Value>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
             return Err(Error::Config {
-                field: "developer_harness.agent".into(),
+                field: "agent_harness.agent".into(),
                 message: format!("could not read Goose config {}: {err}", path.display()),
             })
         }
@@ -231,7 +231,7 @@ fn read_goose_config(path: &Path) -> Result<Option<serde_yaml::Value>> {
     serde_yaml::from_str(&raw)
         .map(Some)
         .map_err(|err| Error::Config {
-            field: "developer_harness.agent".into(),
+            field: "agent_harness.agent".into(),
             message: format!("invalid Goose config {}: {err}", path.display()),
         })
 }
@@ -389,7 +389,7 @@ pub(crate) fn prepare_goose_from_pipeline(
     };
     let config_path = goose_config_path(path_root);
     std::fs::create_dir_all(config_path.parent().ok_or_else(|| Error::Config {
-        field: "developer_harness.agent".into(),
+        field: "agent_harness.agent".into(),
         message: "invalid Goose config directory".into(),
     })?)?;
     let mut merged = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
@@ -398,11 +398,11 @@ pub(crate) fn prepare_goose_from_pipeline(
     }
     set_provider_model(&mut merged, goose_provider, &goose_model);
     let serialized = serde_yaml::to_string(&merged).map_err(|err| Error::Config {
-        field: "developer_harness.agent".into(),
+        field: "agent_harness.agent".into(),
         message: format!("could not serialize Goose config: {err}"),
     })?;
     std::fs::write(&config_path, serialized).map_err(|err| Error::Config {
-        field: "developer_harness.agent".into(),
+        field: "agent_harness.agent".into(),
         message: format!(
             "could not write Goose config {}: {err}",
             config_path.display()
@@ -535,7 +535,7 @@ fn resolve_goose_model_in(paths: &[PathBuf], use_env: bool) -> Result<String> {
                 .last()
                 .map_or_else(|| PathBuf::from("config.yaml"), std::path::PathBuf::clone);
             Err(Error::Config {
-                field: "developer_harness.agent".into(),
+                field: "agent_harness.agent".into(),
                 message: format!(
                     "goose has no provider and model configured; set them in {} (see {GOOSE_PROVIDER_DOCS})",
                     config_path.display()
@@ -2103,7 +2103,7 @@ mod tests {
     fn resolve_goose_model_names_goose_config_when_missing() {
         let root = scratch_path_root("missing");
         let err = resolve_goose_model_in(&[goose_config_path(&root)], false).unwrap_err();
-        assert!(err.to_string().contains("developer_harness.agent"), "{err}");
+        assert!(err.to_string().contains("agent_harness.agent"), "{err}");
         assert!(err.to_string().contains("config.yaml"), "{err}");
         assert!(err.to_string().contains(GOOSE_PROVIDER_DOCS), "{err}");
     }

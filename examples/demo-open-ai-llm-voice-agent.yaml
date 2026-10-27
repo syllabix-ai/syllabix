@@ -1,4 +1,4 @@
-# OpenAI LLM voice agent with developer harness on. Copy as syllabix.yaml.
+# OpenAI LLM voice agent with agent harness on. Copy as syllabix.yaml.
 # Needs SYLLABIX_LLM_API_KEY. Key guide: docs/syllabix-yaml.md. Catalogue: docs/engines.md
 name: demo-open-ai-llm-voice-agent
 pipeline:
@@ -17,7 +17,7 @@ pipeline:
     provider: local
     model: pocket-tts
 
-developer_harness:
+agent_harness:
   agent: syllabix
 
 # Optional idle timers (defaults shown). Set either value to 0 to disable it.
