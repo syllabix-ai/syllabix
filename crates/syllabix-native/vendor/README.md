@@ -39,4 +39,6 @@ during the first Qwen step. The copy is one I32 row per lookup; CPU and Metal
 results are unchanged. Keep the patch until upstream ggml-Vulkan accepts
 misaligned `GET_ROWS` indices.
 
+**Local patch (common chat-only), `common/CMakeLists.txt` and `CMakeLists.txt`:** Syllabix links `llama-common` for Jinja chat and tool parsing only. Trim `common/CMakeLists.txt` (no CLI/download sources or `http.h`; delete those files from `common/`), drop `add_subdirectory(vendor/cpp-httplib)` from root `CMakeLists.txt`, and remove the vendored `vendor/cpp-httplib` tree; keep `nlohmann`. No runtime behavior change; re-apply both CMake edits on pin bump until upstream splits a library-only common target.
+
 CPU vs Metal tok/s for the three v0 GGUFs: [`llama-bench.md`](llama-bench.md).

@@ -120,9 +120,7 @@ fn main() {
     // Release `--gc-sections` otherwise drops unused ggml/whisper objects
     // because the CLI does not transcribe yet. Keep both frontends in the binary.
     for lib in &libs {
-        if lib == "cpp-httplib" {
-            println!("cargo:rustc-link-lib=static={lib}");
-        } else if lib == "llama-common" {
+        if lib == "llama-common" {
             // Required: shim_chat references common chat symbols; normal archive
             // linking does not always pull the full llama-common object closure.
             println!("cargo:rustc-link-lib=static:+whole-archive={lib}");

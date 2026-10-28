@@ -71,7 +71,6 @@ add_library(${TARGET}
     debug.h
     fit.cpp
     fit.h
-    http.h
     imatrix-loader.cpp
     imatrix-loader.h
     json-schema-to-grammar.cpp
