@@ -39,6 +39,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(syllabix_
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+serde_json = { workspace = true }
+
 [build-dependencies]
+cc = "=1.2.46"
 cmake = "=0.1.58"
 walkdir = "=2.5.0"
