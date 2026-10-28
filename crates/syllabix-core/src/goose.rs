@@ -710,7 +710,7 @@ static TEST_GOOSE_BIN: Mutex<Option<PathBuf>> = Mutex::new(None);
 static TEST_GOOSE_BIN_SERIAL: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 static TEST_IDLE_TIMEOUT: Mutex<Option<Duration>> = Mutex::new(None);
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static TEST_IDLE_SERIAL: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
@@ -743,12 +743,12 @@ impl Drop for GooseBinGuard {
 }
 
 /// Overrides [`idle_limit`] for one test (serial with other idle overrides).
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) struct GooseIdleGuard {
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl GooseIdleGuard {
     pub(crate) fn set(limit: Duration) -> Self {
         let serial = TEST_IDLE_SERIAL
@@ -759,7 +759,7 @@ impl GooseIdleGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl Drop for GooseIdleGuard {
     fn drop(&mut self) {
         *TEST_IDLE_TIMEOUT.lock().expect("goose idle-timeout mutex") = None;
@@ -2317,6 +2317,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+// Tests spawn a shebang fake goose, so they only run on Unix.
+#[cfg(all(test, unix))]
 #[path = "goose_tests.rs"]
 mod goose_tests;
