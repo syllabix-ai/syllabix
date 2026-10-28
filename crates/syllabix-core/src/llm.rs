@@ -45,19 +45,19 @@ pub const LFM25_350M_ASSET: &str = "lfm2.5-350m";
 /// Manifest id for the yaml-only LiquidAI LFM2.5-230M QAD Q4_0 GGUF.
 pub const LFM25_230M_ASSET: &str = "lfm2.5-230m";
 
-/// Upper bound on collected text for one LFM tool turn (issue-89 lesson).
-/// LFM always thinks, so a turn that never emits a complete
-/// `<|tool_call_start|>` block must fail closed into the spoken fallback
-/// instead of generating until cancel. The bound lives in the adapter, not
-/// in YAML; generation still stops on EOS, cancellation, or context exhaustion.
-pub const LFM_TOOL_TURN_MAX_CHARS: usize = 8_000;
+/// Upper bound on collected text for one local common-chat tool turn (issue-89
+/// lesson). Models that think without emitting a complete tool call must fail
+/// closed into the spoken fallback instead of generating until cancel. The
+/// bound lives in the adapter, not in YAML; generation still stops on EOS,
+/// cancellation, or context exhaustion.
+pub const LOCAL_TOOL_TURN_MAX_CHARS: usize = 8_000;
 
-/// Host-authored continuation after each completed local tool exchange. LFM
-/// otherwise often terminates directly after a `tool` role message rather
-/// than producing the spoken answer that consumes it. A failed fetch must
-/// send the model to discovery, never to the same URL again: five identical
-/// retries burn the turn's whole call budget on a dead host.
-const LFM_TOOL_RESULT_CONTINUATION: &str = "Use the tool result above to answer the original request. If it is insufficient, make one valid next tool call; otherwise reply directly. If a fetch failed, do not retry the same URL: use the discovery search page to find a working source. Do not expose raw tool output, tool calls, URLs, or reasoning.";
+/// Backward-compatible alias for integration tests and yaml comments.
+pub const LFM_TOOL_TURN_MAX_CHARS: usize = LOCAL_TOOL_TURN_MAX_CHARS;
+
+/// Spoken error when the loaded GGUF chat template does not support tools.
+pub const LOCAL_HARNESS_NO_TOOLS_TEXT: &str =
+    "Sorry, this local model cannot run tools safely. Try a tools-capable GGUF or turn off the agent harness.";
 
 /// Spoken fallback for malformed local tool syntax. The host never executes
 /// an unnormalized call and never forwards its dialect text to TTS. Eval
@@ -415,76 +415,73 @@ impl LlamaLlm {
         messages
     }
 
-    /// LFM's tool template needs the assistant action that caused each tool
-    /// result. Sending only `tool` turns makes the result orphaned and the
-    /// model commonly ends the re-prompt without an answer. Re-render calls
-    /// from the validated shared contract rather than replaying raw model
-    /// reasoning or dialect text.
-    fn lfm_harness_messages(
+    /// OpenAI-shaped message JSON for the local common-chat harness: rolling
+    /// history plus assistant `tool_calls` and matching `tool` results.
+    fn local_harness_messages_json(
         &self,
         history: &[HistoryTurn],
         user: &Transcript,
-        exchanges: &[(String, Vec<ToolResult>)],
-    ) -> Vec<ChatMessage> {
-        let mut messages = self.messages(history, user);
-        for (call_message, results) in exchanges {
-            messages.push(ChatMessage {
-                role: "assistant".into(),
-                content: call_message.clone(),
-            });
+        exchanges: &[(Vec<ToolCall>, Vec<ToolResult>)],
+    ) -> String {
+        let mut messages: Vec<serde_json::Value> = self
+            .messages(history, user)
+            .iter()
+            .map(|message| {
+                serde_json::json!({
+                    "role": message.role,
+                    "content": message.content,
+                })
+            })
+            .collect();
+        for (calls, results) in exchanges {
+            let wire_calls: Vec<serde_json::Value> = calls
+                .iter()
+                .map(|call| {
+                    serde_json::json!({
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            "arguments": call.arguments.to_string(),
+                        }
+                    })
+                })
+                .collect();
+            messages.push(serde_json::json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": wire_calls,
+            }));
             for result in results {
-                messages.push(ChatMessage {
-                    role: "tool".into(),
-                    content: result.content.clone(),
-                });
+                messages.push(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": result.tool_call_id,
+                    "content": result.content,
+                }));
             }
-            messages.push(ChatMessage {
-                role: "user".into(),
-                content: LFM_TOOL_RESULT_CONTINUATION.into(),
-            });
         }
-        messages
+        serde_json::to_string(&messages).expect("harness messages JSON")
     }
 
-    /// Run one tools-aware turn using the local Qwen template.
-    ///
-    /// Render tool definitions and parse generated tool calls using the Qwen dialect.
-    /// preamble through the shim's tools-aware entry, collects the turn text,
-    /// then parses and normalizes Qwen `<tool_call>` blocks into [`ToolCall`]s
-    /// with `call` / `rejected` events for [`Llm::take_tool_events`].
-    /// A host-owned executor runs parsed calls;
-    /// this never runs a tool. Not on the default `run` path: [`Llm::generate`]
-    /// stays tool-free and byte-identical.
-    pub fn generate_tool_turn(
+    fn collect_common_chat_turn(
         &mut self,
-        history: &[HistoryTurn],
-        user: &Transcript,
+        messages_json: &str,
         cancel: &Cancel,
-        on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
-    ) -> Result<Vec<ToolCall>> {
-        if cancel.is_shutdown() {
-            return Err(Error::Cancelled);
-        }
-        let generation = cancel.generation();
-        {
-            let mut calls = self.calls.lock().expect("llm call log");
-            calls.push(LlmCall {
-                history_len: history.len(),
-                history_user_texts: history.iter().map(|t| t.user.text.clone()).collect(),
-                user_text: user.text.clone(),
-            });
-        }
-        let messages = self.tool_messages(history, user, &[]);
+        generation: crate::types::GenerationId,
+    ) -> Result<(String, ParsedChatOutput), CommonChatCollectError> {
         let tools = local_tool_definitions_json();
         let append_thinking_off_suffix =
             !self.thinking && is_thinking_tag_supported_model(&self.model_id);
         let mut text = String::new();
-        self.engine
+        let mut over_budget = false;
+        let outcome = self
+            .engine
             .lock()
             .expect("llama engine")
-            .generate_with_tools(
-                &messages,
+            .generate_with_common_chat(
+                messages_json,
                 &tools,
+                self.thinking,
                 append_thinking_off_suffix,
                 cancel,
                 &mut |piece, _| {
@@ -492,66 +489,49 @@ impl LlamaLlm {
                         return Err(Error::Cancelled);
                     }
                     text.push_str(piece);
+                    if text.len() > LOCAL_TOOL_TURN_MAX_CHARS {
+                        over_budget = true;
+                        return Err(Error::Cancelled);
+                    }
                     Ok(())
                 },
-            )?;
-        if cancel.is_shutdown() {
-            return Err(Error::Cancelled);
+            );
+        match outcome {
+            Err(Error::Cancelled) if over_budget && !cancel.is_shutdown() => {
+                return Err(CommonChatCollectError::OverBudget);
+            }
+            Err(err) => return Err(CommonChatCollectError::Failed(err)),
+            Ok(()) => {}
         }
-        on_token(TokenChunk {
-            turn: user.turn,
-            generation,
-            index: 0,
-            text: text.clone(),
-            is_last: true,
-        })?;
-        let parsed = match parse_qwen_tool_calls(&text) {
-            Ok(parsed) => parsed,
-            Err(message) => {
-                self.note_tool_event("rejected", "", "", "", &message);
-                return Ok(Vec::new());
-            }
-        };
+        if cancel.is_shutdown() || cancel.is_stale(generation) {
+            return Err(CommonChatCollectError::Failed(Error::Cancelled));
+        }
+        let output = self
+            .engine
+            .lock()
+            .expect("llama engine")
+            .chat_parse_output(&text, false)
+            .map_err(CommonChatCollectError::Parse)?;
+        Ok((text, output))
+    }
+
+    fn normalize_chat_tool_calls(
+        &self,
+        output: ParsedChatOutput,
+        call_index: usize,
+    ) -> std::result::Result<Vec<ToolCall>, String> {
+        if output.tool_calls.is_empty() {
+            return Err("no tool calls in model output".to_string());
+        }
+        let parsed = parsed_chat_tool_calls(output)?;
         let mut calls = Vec::with_capacity(parsed.len());
-        for (index, parsed) in parsed.into_iter().enumerate() {
-            match normalize_local_tool_call(index, parsed) {
-                Ok(call) => {
-                    self.note_tool_event(
-                        "call",
-                        &call.name,
-                        &call.id,
-                        &call.arguments.to_string(),
-                        "",
-                    );
-                    calls.push(call);
-                }
-                Err(message) => {
-                    self.note_tool_event("rejected", "", "", "", &message);
-                    return Ok(Vec::new());
-                }
-            }
+        for (offset, parsed) in parsed.into_iter().enumerate() {
+            calls.push(normalize_local_tool_call(call_index + offset, parsed)?);
         }
         Ok(calls)
     }
 
-    /// Run one tools-aware turn using the local LFM template.
-    ///
-    /// Render and parse the LFM tool-call dialect:
-    /// renders the `List of tools:` preamble through the shim's LFM-aware
-    /// entry, collects the turn text, then parses and normalizes LFM
-    /// `<|tool_call_start|>[name(k="v")]<|tool_call_end|>` blocks into
-    /// [`ToolCall`]s with `call` / `rejected` events for
-    /// [`Llm::take_tool_events`]. Executing the calls stays with the host-owned
-    /// loop (host-owned executor); this never runs a tool. Not on the
-    /// default `run` path: [`Llm::generate`] stays tool-free and
-    /// byte-identical.
-    ///
-    /// Bound (issue-89 lesson): collection stops at
-    /// [`LFM_TOOL_TURN_MAX_CHARS`]; an over-budget turn records a
-    /// `rejected` event and returns no calls (spoken fallback) instead of
-    /// generating until cancel. A real shutdown still surfaces as
-    /// [`Error::Cancelled`].
-    pub fn generate_lfm_tool_turn(
+    fn generate_local_common_tool_turn(
         &mut self,
         history: &[HistoryTurn],
         user: &Transcript,
@@ -570,42 +550,26 @@ impl LlamaLlm {
                 user_text: user.text.clone(),
             });
         }
-        let messages = self.tool_messages(history, user, &[]);
-        let tools = local_tool_definitions_json();
-        let mut text = String::new();
-        let mut over_budget = false;
-        let outcome = self
-            .engine
-            .lock()
-            .expect("llama engine")
-            .generate_with_lfm_tools(&messages, &tools, cancel, &mut |piece, _| {
-                if cancel.is_stale(generation) {
-                    return Err(Error::Cancelled);
-                }
-                text.push_str(piece);
-                if text.len() > LFM_TOOL_TURN_MAX_CHARS {
-                    over_budget = true;
-                    return Err(Error::Cancelled);
-                }
-                Ok(())
-            });
-        match outcome {
-            Err(Error::Cancelled) if over_budget && !cancel.is_shutdown() => {
+        let messages_json = simple_messages_to_openai_json(&self.tool_messages(history, user, &[]));
+        let (text, output) = match self.collect_common_chat_turn(&messages_json, cancel, generation)
+        {
+            Ok(value) => value,
+            Err(CommonChatCollectError::OverBudget) => {
                 self.note_tool_event(
                     "rejected",
                     "",
                     "",
                     "",
-                    "lfm tool turn exceeded the thinking bound",
+                    "local tool turn exceeded the thinking bound",
                 );
                 return Ok(Vec::new());
             }
-            Err(err) => return Err(err),
-            Ok(()) => {}
-        }
-        if cancel.is_shutdown() {
-            return Err(Error::Cancelled);
-        }
+            Err(CommonChatCollectError::Failed(err)) => return Err(err),
+            Err(CommonChatCollectError::Parse(message)) => {
+                self.note_tool_event("rejected", "", "", "", &message);
+                return Ok(Vec::new());
+            }
+        };
         on_token(TokenChunk {
             turn: user.turn,
             generation,
@@ -613,39 +577,51 @@ impl LlamaLlm {
             text: text.clone(),
             is_last: true,
         })?;
-        let parsed = match parse_lfm_tool_calls(&text) {
-            Ok(parsed) => parsed,
+        let calls = match self.normalize_chat_tool_calls(output, 0) {
+            Ok(calls) => calls,
             Err(message) => {
                 self.note_tool_event("rejected", "", "", "", &message);
                 return Ok(Vec::new());
             }
         };
-        let mut calls = Vec::with_capacity(parsed.len());
-        for (index, parsed) in parsed.into_iter().enumerate() {
-            match normalize_local_tool_call(index, parsed) {
-                Ok(call) => {
-                    self.note_tool_event(
-                        "call",
-                        &call.name,
-                        &call.id,
-                        &call.arguments.to_string(),
-                        "",
-                    );
-                    calls.push(call);
-                }
-                Err(message) => {
-                    self.note_tool_event("rejected", "", "", "", &message);
-                    return Ok(Vec::new());
-                }
-            }
+        for call in &calls {
+            self.note_tool_event(
+                "call",
+                &call.name,
+                &call.id,
+                &call.arguments.to_string(),
+                "",
+            );
         }
         Ok(calls)
     }
 
-    /// Complete the local Phase-5 harness loop. Tool dialect text is held
-    /// inside this adapter; only the answer after the final re-prompt reaches
-    /// the pipeline token stream and therefore TTS.
-    fn generate_lfm_harness(
+    /// Run one tools-aware turn using llama.cpp common chat.
+    pub fn generate_tool_turn(
+        &mut self,
+        history: &[HistoryTurn],
+        user: &Transcript,
+        cancel: &Cancel,
+        on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
+    ) -> Result<Vec<ToolCall>> {
+        self.generate_local_common_tool_turn(history, user, cancel, on_token)
+    }
+
+    /// Run one tools-aware turn using llama.cpp common chat.
+    pub fn generate_lfm_tool_turn(
+        &mut self,
+        history: &[HistoryTurn],
+        user: &Transcript,
+        cancel: &Cancel,
+        on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
+    ) -> Result<Vec<ToolCall>> {
+        self.generate_local_common_tool_turn(history, user, cancel, on_token)
+    }
+
+    /// Complete the local Phase-5 harness loop via llama.cpp common chat.
+    /// Tool dialect text stays inside the adapter; only the answer after the
+    /// final re-prompt reaches the pipeline token stream and therefore TTS.
+    fn generate_local_harness(
         &mut self,
         history: &[HistoryTurn],
         user: &Transcript,
@@ -660,81 +636,63 @@ impl LlamaLlm {
             history_user_texts: history.iter().map(|turn| turn.user.text.clone()).collect(),
             user_text: user.text.clone(),
         });
-        let mut exchanges: Vec<(String, Vec<ToolResult>)> = Vec::new();
+        if !self
+            .engine
+            .lock()
+            .expect("llama engine")
+            .chat_tools_supported()?
+        {
+            return emit_local_harness_reply(
+                user.turn,
+                generation,
+                LOCAL_HARNESS_NO_TOOLS_TEXT,
+                cancel,
+                on_token,
+            );
+        }
+        let mut exchanges: Vec<(Vec<ToolCall>, Vec<ToolResult>)> = Vec::new();
         let mut call_count = 0usize;
         loop {
             if cancel.is_shutdown() || cancel.is_stale(generation) {
                 return Err(Error::Cancelled);
             }
-            let mut text = String::new();
-            let mut over_budget = false;
-            let messages = self.lfm_harness_messages(history, user, &exchanges);
-            let tools = local_tool_definitions_json();
-            let outcome = self
-                .engine
-                .lock()
-                .expect("llama engine")
-                .generate_with_lfm_tools(&messages, &tools, cancel, &mut |piece, _| {
-                    if cancel.is_stale(generation) {
-                        return Err(Error::Cancelled);
+            let messages_json = self.local_harness_messages_json(history, user, &exchanges);
+            let (_text, output) =
+                match self.collect_common_chat_turn(&messages_json, cancel, generation) {
+                    Ok(value) => value,
+                    Err(CommonChatCollectError::OverBudget) => {
+                        self.note_tool_event(
+                            "rejected",
+                            "",
+                            "",
+                            "",
+                            "local tool turn exceeded the thinking bound",
+                        );
+                        return emit_local_harness_reply(
+                            user.turn,
+                            generation,
+                            LOCAL_TOOL_FALLBACK_TEXT,
+                            cancel,
+                            on_token,
+                        );
                     }
-                    text.push_str(piece);
-                    if text.len() > LFM_TOOL_TURN_MAX_CHARS {
-                        over_budget = true;
-                        return Err(Error::Cancelled);
+                    Err(CommonChatCollectError::Failed(err)) => return Err(err),
+                    Err(CommonChatCollectError::Parse(message)) => {
+                        self.note_tool_event("rejected", "", "", "", &message);
+                        return emit_local_harness_reply(
+                            user.turn,
+                            generation,
+                            LOCAL_TOOL_FALLBACK_TEXT,
+                            cancel,
+                            on_token,
+                        );
                     }
-                    Ok(())
-                });
-            match outcome {
-                Err(Error::Cancelled) if over_budget && !cancel.is_shutdown() => {
-                    self.note_tool_event(
-                        "rejected",
-                        "",
-                        "",
-                        "",
-                        "lfm tool turn exceeded the thinking bound",
-                    );
-                    return emit_local_harness_reply(
-                        user.turn,
-                        generation,
-                        LOCAL_TOOL_FALLBACK_TEXT,
-                        cancel,
-                        on_token,
-                    );
-                }
-                Err(err) => return Err(err),
-                Ok(()) => {}
+                };
+            if output.tool_calls.is_empty() {
+                let spoken = sanitize_harness_spoken_content(&output.content, &_text);
+                return emit_local_harness_reply(user.turn, generation, &spoken, cancel, on_token);
             }
-            if cancel.is_shutdown() || cancel.is_stale(generation) {
-                return Err(Error::Cancelled);
-            }
-
-            // A tools-aware model may answer directly. It is a normal spoken
-            // reply only when it contains neither a wire delimiter nor the
-            // bare bracket form produced when llama.cpp strips LFM special
-            // tokens during detokenization.
-            if !looks_like_lfm_tool_text(&text) {
-                return emit_local_harness_reply(user.turn, generation, &text, cancel, on_token);
-            }
-            let parsed = match parse_lfm_tool_calls(&text) {
-                Ok(parsed) => parsed,
-                Err(message) => {
-                    self.note_tool_event("rejected", "", "", "", &message);
-                    return emit_local_harness_reply(
-                        user.turn,
-                        generation,
-                        LOCAL_TOOL_FALLBACK_TEXT,
-                        cancel,
-                        on_token,
-                    );
-                }
-            };
-            let calls = match parsed
-                .into_iter()
-                .enumerate()
-                .map(|(index, call)| normalize_local_tool_call(call_count + index, call))
-                .collect::<std::result::Result<Vec<_>, _>>()
-            {
+            let calls = match self.normalize_chat_tool_calls(output, call_count) {
                 Ok(calls) => calls,
                 Err(message) => {
                     self.note_tool_event("rejected", "", "", "", &message);
@@ -758,9 +716,9 @@ impl LlamaLlm {
                 );
             }
             call_count += calls.len();
-            let call_message = render_lfm_tool_call_message(&calls);
             let mut results = Vec::with_capacity(calls.len());
-            for call in calls {
+            let executed = calls;
+            for call in &executed {
                 self.note_tool_event(
                     "call",
                     &call.name,
@@ -769,7 +727,7 @@ impl LlamaLlm {
                     "",
                 );
                 let result = executor::execute_with_permissions(
-                    &call,
+                    call,
                     &self.workspace,
                     &self.developer_permissions,
                     cancel,
@@ -786,32 +744,45 @@ impl LlamaLlm {
                 );
                 results.push(result);
             }
-            exchanges.push((call_message, results));
+            exchanges.push((executed, results));
         }
     }
 }
 
-/// Render a normalized shared-contract call into the LFM assistant-tool turn
-/// expected immediately before `tool` role results. JSON values are valid in
-/// LFM's Pythonic call-list dialect (strings retain JSON quoting; arrays keep
-/// bracket form), and all values have already passed normalization.
-fn render_lfm_tool_call_message(calls: &[ToolCall]) -> String {
-    let rendered = calls
-        .iter()
-        .map(|call| {
-            let arguments = call
-                .arguments
-                .as_object()
-                .expect("normalized tool call has object arguments")
-                .iter()
-                .map(|(key, value)| format!("{key}={value}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{}({arguments})", call.name)
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("<|tool_call_start|>[{rendered}]<|tool_call_end|>")
+enum CommonChatCollectError {
+    OverBudget,
+    Parse(String),
+    Failed(Error),
+}
+
+/// Drop DeepSeek-style reasoning blocks from text we send to TTS. When
+/// generation stops before `</think>`, the parser can leave
+/// chain-of-thought in `content`; never speak that.
+fn strip_unfinished_reasoning_from_spoken_content(text: &str) -> String {
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+    let mut out = text.to_string();
+    loop {
+        let Some(start) = out.find(OPEN) else {
+            break;
+        };
+        if let Some(rel) = out[start..].find(CLOSE) {
+            let end = start + rel + CLOSE.len();
+            out.replace_range(start..end, "");
+        } else {
+            out.truncate(start);
+            break;
+        }
+    }
+    out.trim().to_string()
+}
+
+fn sanitize_harness_spoken_content(parsed_content: &str, raw_generation: &str) -> String {
+    let mut spoken = strip_unfinished_reasoning_from_spoken_content(parsed_content);
+    if raw_generation.contains("<think>") && !raw_generation.contains("</think>") {
+        spoken.clear();
+    }
+    spoken
 }
 
 fn emit_local_harness_reply(
@@ -827,13 +798,14 @@ fn emit_local_harness_reply(
     // A tool result that yields no speakable reply is a silent turn: the
     // microphone reopens with nothing said. Fail closed with the spoken
     // fallback instead of emitting an empty reply TTS cannot voice.
-    let reply = if crate::speech_text::speak_text_for_tts(text)
+    let scrubbed = strip_unfinished_reasoning_from_spoken_content(text);
+    let reply = if crate::speech_text::speak_text_for_tts(&scrubbed)
         .trim()
         .is_empty()
     {
         LOCAL_TOOL_FALLBACK_TEXT.to_string()
     } else {
-        text.to_string()
+        scrubbed
     };
     on_token(TokenChunk {
         turn,
@@ -870,7 +842,7 @@ impl Llm for LlamaLlm {
         on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
     ) -> Result<()> {
         if self.agent_harness {
-            return self.generate_lfm_harness(history, user, cancel, on_token);
+            return self.generate_local_harness(history, user, cancel, on_token);
         }
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
@@ -931,37 +903,34 @@ trait Engine: Send {
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()>;
 
-    /// Tools-aware generation. The default runs the plain path so
-    /// scripted/test engines stay tool-free; the native engine renders the
-    /// Qwen `<tools>` preamble through the shim alongside the plain path.
-    fn generate_with_tools(
+    fn chat_tools_supported(&mut self) -> Result<bool> {
+        Ok(true)
+    }
+
+    fn generate_with_common_chat(
         &mut self,
-        messages: &[ChatMessage],
+        messages_json: &str,
         tools_json: &str,
+        enable_thinking: bool,
         append_thinking_off_suffix: bool,
         cancel: &Cancel,
         on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()> {
-        let _ = tools_json;
-        self.generate(messages, append_thinking_off_suffix, cancel, on_piece)
+        let _ = (tools_json, enable_thinking);
+        let messages = openai_messages_json_to_chat(messages_json)?;
+        self.generate(&messages, append_thinking_off_suffix, cancel, on_piece)
     }
 
-    /// LFM tools-aware generation. The default runs the plain
-    /// path so scripted/test engines stay tool-free; the native engine
-    /// renders the `List of tools:` preamble through the LFM shim entry.
-    /// Kept separate from [`Engine::generate_with_tools`] (second-dialect
-    /// exception).
-    fn generate_with_lfm_tools(
+    fn chat_parse_output(
         &mut self,
-        messages: &[ChatMessage],
-        tools_json: &str,
-        cancel: &Cancel,
-        on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
-    ) -> Result<()> {
-        let _ = tools_json;
-        // LFM has no think-off suffix convention; the plain path default
-        // (`false`) keeps tool-free framing unchanged.
-        self.generate(messages, false, cancel, on_piece)
+        text: &str,
+        is_partial: bool,
+    ) -> std::result::Result<ParsedChatOutput, String> {
+        let _ = is_partial;
+        Ok(ParsedChatOutput {
+            content: text.to_string(),
+            tool_calls: Vec::new(),
+        })
     }
 
     fn context_window(&self) -> Option<(i32, i32)> {
@@ -976,7 +945,9 @@ mod native {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Instant;
 
-    use syllabix_native::{LlamaContext, LlamaError, LlamaGenerate};
+    use syllabix_native::{
+        LlamaContext, LlamaError, LlamaGenerate, ParsedChatOutput as NativeParsedChatOutput,
+    };
 
     fn ffi_messages(messages: &[ChatMessage]) -> Vec<syllabix_native::ChatMessage> {
         messages
@@ -993,6 +964,13 @@ mod native {
     /// consumes it; coverage never compiles that FFI boundary.
     pub(super) const LLAMA_TOKEN_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
+    /// Prompt prefill emits no tokens, and llama.cpp polls the abort callback
+    /// inside each prefill `llama_decode`. A tools-aware prompt (~500 tokens
+    /// for the three host tools, more after tool results) can take well over
+    /// [`LLAMA_TOKEN_STALL_TIMEOUT`] on CPU for a 4B-class GGUF, so the bound
+    /// before the first streamed token is separate and generous.
+    pub(super) const LLAMA_FIRST_TOKEN_TIMEOUT: Duration = Duration::from_secs(300);
+
     pub(super) struct LlamaEngine {
         ctx: LlamaContext,
     }
@@ -1005,6 +983,32 @@ mod native {
                     message,
                 })?;
             Ok(Self { ctx })
+        }
+
+        fn parse_chat_output(
+            &mut self,
+            text: &str,
+            is_partial: bool,
+        ) -> std::result::Result<ParsedChatOutput, String> {
+            self.ctx
+                .chat_parse_output(text, is_partial)
+                .map(map_native_parsed_output)
+                .map_err(|err| format!("{err:?}"))
+        }
+    }
+
+    fn map_native_parsed_output(output: NativeParsedChatOutput) -> ParsedChatOutput {
+        ParsedChatOutput {
+            content: output.content,
+            tool_calls: output
+                .tool_calls
+                .into_iter()
+                .map(|call| ParsedChatToolCall {
+                    name: call.name,
+                    arguments: call.arguments,
+                    id: call.id,
+                })
+                .collect(),
         }
     }
 
@@ -1063,10 +1067,20 @@ mod native {
             finish_native(outcome, &abort, cancel, on_piece)
         }
 
-        fn generate_with_tools(
+        fn chat_tools_supported(&mut self) -> Result<bool> {
+            self.ctx
+                .chat_tools_supported()
+                .map_err(|err| Error::Provider {
+                    provider: crate::defaults::LlmProvider::Local.as_str(),
+                    message: format!("{err:?}"),
+                })
+        }
+
+        fn generate_with_common_chat(
             &mut self,
-            messages: &[ChatMessage],
+            messages_json: &str,
             tools_json: &str,
+            enable_thinking: bool,
             append_thinking_off_suffix: bool,
             cancel: &Cancel,
             on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
@@ -1077,11 +1091,12 @@ mod native {
             let abort = GenerationAbort::new(cancel);
             let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
             let c_tools = tools_json.to_string();
-            let messages = ffi_messages(messages);
             let outcome = unsafe {
-                self.ctx.generate_with_tools(
-                    &messages,
+                self.ctx.chat_generate(
+                    messages_json,
                     &c_tools,
+                    enable_thinking,
+                    append_thinking_off_suffix,
                     LlamaGenerate {
                         append_thinking_off_suffix,
                         n_threads: thread_count(),
@@ -1092,9 +1107,6 @@ mod native {
                         abort.note_token();
                         match on_piece(text, is_last) {
                             Ok(()) => {
-                                // Re-arm after the downstream consumer returns:
-                                // a slow token queue / TTS worker is backpressure,
-                                // not a model stall.
                                 abort.note_token();
                                 Ok(())
                             }
@@ -1107,47 +1119,12 @@ mod native {
             finish_native(outcome, &abort, cancel, on_piece)
         }
 
-        fn generate_with_lfm_tools(
+        fn chat_parse_output(
             &mut self,
-            messages: &[ChatMessage],
-            tools_json: &str,
-            cancel: &Cancel,
-            on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
-        ) -> Result<()> {
-            if cancel.is_shutdown() {
-                return Err(Error::Cancelled);
-            }
-            let abort = GenerationAbort::new(cancel);
-            let abort_user = (&abort as *const GenerationAbort).cast_mut().cast();
-            let c_tools = tools_json.to_string();
-            let messages = ffi_messages(messages);
-            let outcome = unsafe {
-                self.ctx.generate_with_lfm_tools(
-                    &messages,
-                    &c_tools,
-                    LlamaGenerate {
-                        append_thinking_off_suffix: false,
-                        n_threads: thread_count(),
-                    },
-                    Some(abort_on_stall),
-                    abort_user,
-                    &mut |text, is_last| {
-                        abort.note_token();
-                        match on_piece(text, is_last) {
-                            Ok(()) => {
-                                // Re-arm after the downstream consumer returns:
-                                // a slow token queue / TTS worker is backpressure,
-                                // not a model stall.
-                                abort.note_token();
-                                Ok(())
-                            }
-                            Err(Error::Cancelled) => Err(LlamaError::Cancelled),
-                            Err(err) => Err(LlamaError::Failed(err.to_string())),
-                        }
-                    },
-                )
-            };
-            finish_native(outcome, &abort, cancel, on_piece)
+            text: &str,
+            is_partial: bool,
+        ) -> std::result::Result<ParsedChatOutput, String> {
+            self.parse_chat_output(text, is_partial)
         }
 
         fn context_window(&self) -> Option<(i32, i32)> {
@@ -1188,6 +1165,7 @@ mod native {
         pub(super) cancel: &'a Cancel,
         pub(super) last_token: Mutex<Instant>,
         pub(super) timed_out: AtomicBool,
+        pub(super) first_token_seen: AtomicBool,
     }
 
     impl<'a> GenerationAbort<'a> {
@@ -1196,11 +1174,22 @@ mod native {
                 cancel,
                 last_token: Mutex::new(Instant::now()),
                 timed_out: AtomicBool::new(false),
+                first_token_seen: AtomicBool::new(false),
             }
         }
 
         pub(super) fn note_token(&self) {
             *self.last_token.lock().expect("llama token timer") = Instant::now();
+            self.first_token_seen.store(true, Ordering::SeqCst);
+        }
+
+        /// Inter-token bound once streaming started; prefill bound before.
+        pub(super) fn stall_timeout(&self) -> Duration {
+            if self.first_token_seen.load(Ordering::SeqCst) {
+                LLAMA_TOKEN_STALL_TIMEOUT
+            } else {
+                LLAMA_FIRST_TOKEN_TIMEOUT
+            }
         }
 
         pub(super) fn timed_out(&self) -> bool {
@@ -1223,7 +1212,7 @@ mod native {
             .lock()
             .expect("llama token timer")
             .elapsed()
-            >= LLAMA_TOKEN_STALL_TIMEOUT
+            >= state.stall_timeout()
         {
             state.timed_out.store(true, Ordering::SeqCst);
             return true;
@@ -1246,7 +1235,24 @@ mod native {
         fn stalled_abort_is_reported() {
             let cancel = Cancel::new();
             let state = GenerationAbort::new(&cancel);
+            state.note_token();
             *state.last_token.lock().unwrap() = Instant::now() - LLAMA_TOKEN_STALL_TIMEOUT;
+            assert!(unsafe {
+                abort_on_stall((&state as *const GenerationAbort).cast_mut().cast())
+            });
+            assert!(state.timed_out());
+        }
+
+        #[test]
+        fn prefill_gets_the_first_token_bound() {
+            let cancel = Cancel::new();
+            let state = GenerationAbort::new(&cancel);
+            *state.last_token.lock().unwrap() = Instant::now() - LLAMA_TOKEN_STALL_TIMEOUT;
+            assert!(!unsafe {
+                abort_on_stall((&state as *const GenerationAbort).cast_mut().cast())
+            });
+            assert!(!state.timed_out());
+            *state.last_token.lock().unwrap() = Instant::now() - LLAMA_FIRST_TOKEN_TIMEOUT;
             assert!(unsafe {
                 abort_on_stall((&state as *const GenerationAbort).cast_mut().cast())
             });
@@ -1337,6 +1343,21 @@ pub fn local_tool_definitions_json() -> String {
     .to_string()
 }
 
+/// One tool call from llama.cpp `common_chat_parse`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ParsedChatToolCall {
+    name: String,
+    arguments: String,
+    id: String,
+}
+
+/// Assistant turn from llama.cpp `common_chat_parse`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) struct ParsedChatOutput {
+    content: String,
+    tool_calls: Vec<ParsedChatToolCall>,
+}
+
 /// One parsed Qwen `<tool_call>` block: function name plus its parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedLocalToolCall {
@@ -1346,93 +1367,59 @@ pub struct ParsedLocalToolCall {
     pub arguments: serde_json::Value,
 }
 
-/// Parse Qwen-native tool calls from generated text.
-///
-/// Each `<tool_call><function=name><parameter=k>v</parameter>…</function></tool_call>`
-/// block yields one call, in order. Prose around the blocks (optional
-/// reasoning before the call) is ignored. Malformed blocks fail closed with
-/// a message; the caller records a `rejected` tool event and speaks the
-/// fallback instead of executing anything.
-pub fn parse_qwen_tool_calls(text: &str) -> std::result::Result<Vec<ParsedLocalToolCall>, String> {
-    let mut calls = Vec::new();
-    let mut rest = text;
-    let mut searched = 0;
-    while let Some(open) = rest.find("<tool_call>") {
-        searched += open;
-        let after_open = &rest[open + "<tool_call>".len()..];
-        let close = after_open
-            .find("</tool_call>")
-            .ok_or_else(|| "qwen tool call is missing </tool_call>".to_string())?;
-        // Reject nested blocks rather than guessing a pairing.
-        if after_open[..close].contains("<tool_call>") {
-            return Err("qwen tool call contains a nested <tool_call>".to_string());
-        }
-        calls.push(parse_qwen_tool_call_block(&after_open[..close])?);
-        rest = &after_open[close + "</tool_call>".len()..];
-        searched += "<tool_call>".len() + close + "</tool_call>".len();
+/// Map a native common-chat parse into [`ParsedLocalToolCall`] for normalization.
+pub(crate) fn parsed_chat_tool_calls(
+    output: ParsedChatOutput,
+) -> std::result::Result<Vec<ParsedLocalToolCall>, String> {
+    let mut calls = Vec::with_capacity(output.tool_calls.len());
+    for tool_call in output.tool_calls {
+        let arguments: serde_json::Value = serde_json::from_str(&tool_call.arguments)
+            .map_err(|_| "tool call arguments are not valid JSON".to_string())?;
+        calls.push(ParsedLocalToolCall {
+            name: tool_call.name,
+            arguments,
+        });
     }
-    if calls.is_empty() {
-        return Err("no qwen <tool_call> block found".to_string());
-    }
-    let _ = searched;
     Ok(calls)
 }
 
-fn parse_qwen_tool_call_block(block: &str) -> std::result::Result<ParsedLocalToolCall, String> {
-    let fn_open = block
-        .find("<function=")
-        .ok_or_else(|| "qwen tool call is missing <function=name>".to_string())?;
-    let name_start = fn_open + "<function=".len();
-    let name_end = block[name_start..]
-        .find('>')
-        .ok_or_else(|| "qwen tool call has a malformed <function=>".to_string())?;
-    let name = block[name_start..name_start + name_end].trim().to_string();
-    if name.is_empty() {
-        return Err("qwen tool call has an empty function name".to_string());
-    }
-    let fn_body = &block[name_start + name_end + 1..];
-    let fn_close = fn_body
-        .find("</function>")
-        .ok_or_else(|| "qwen tool call is missing </function>".to_string())?;
-    if fn_body[..fn_close].contains("<function=") {
-        return Err("qwen tool call contains a nested <function=".to_string());
-    }
-    let params = &fn_body[..fn_close];
-    let mut map = serde_json::Map::new();
-    let mut rest = params;
-    while let Some(p_open) = rest.find("<parameter=") {
-        let key_start = p_open + "<parameter=".len();
-        let key_end = rest[key_start..]
-            .find('>')
-            .ok_or_else(|| "qwen tool call has a malformed <parameter=>".to_string())?;
-        let key = rest[key_start..key_start + key_end].trim().to_string();
-        if key.is_empty() {
-            return Err("qwen tool call has an empty parameter name".to_string());
-        }
-        let value_start = key_start + key_end + 1;
-        let value_end = rest[value_start..]
-            .find("</parameter>")
-            .ok_or_else(|| format!("qwen tool call parameter {key:?} is missing </parameter>"))?;
-        let value = rest[value_start..value_start + value_end]
-            .trim()
-            .to_string();
-        if map.contains_key(&key) {
-            return Err(format!("qwen tool call repeats parameter {key:?}"));
-        }
-        map.insert(key, serde_json::Value::String(value));
-        rest = &rest[value_start + value_end + "</parameter>".len()..];
-    }
-    Ok(ParsedLocalToolCall {
-        name,
-        arguments: serde_json::Value::Object(map),
-    })
+fn simple_messages_to_openai_json(messages: &[ChatMessage]) -> String {
+    let value: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|message| {
+            serde_json::json!({
+                "role": message.role,
+                "content": message.content,
+            })
+        })
+        .collect();
+    serde_json::to_string(&value).expect("messages JSON")
 }
 
-/// Normalize one parsed local call into [`ToolCall`].
-/// Local generations carry no provider ids, so the id is synthesized
-/// (`local-call-{index}`); the matching [`ToolResult::tool_call_id`] uses the
-/// same value, and the pipeline correlates them exactly like online ids.
-/// Unknown names and non-object arguments fail closed.
+fn openai_messages_json_to_chat(messages_json: &str) -> Result<Vec<ChatMessage>> {
+    let value: Vec<serde_json::Value> =
+        serde_json::from_str(messages_json).map_err(|err| Error::Provider {
+            provider: crate::defaults::LlmProvider::Local.as_str(),
+            message: format!("invalid harness messages JSON: {err}"),
+        })?;
+    value
+        .into_iter()
+        .map(|message| {
+            let role = message
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let content = message
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            Ok(ChatMessage { role, content })
+        })
+        .collect()
+}
+
 pub fn normalize_local_tool_call(
     index: usize,
     mut parsed: ParsedLocalToolCall,
@@ -1443,11 +1430,6 @@ pub fn normalize_local_tool_call(
     if !parsed.arguments.is_object() {
         return Err("tool call arguments must be a JSON object".to_string());
     }
-    // Local dialects serialize scalar values as strings. Keep the generic
-    // shell's command string intact; the host owns shell invocation and
-    // policy validation rather than this adapter splitting or interpreting it.
-    // Accept the pre-Phase-4 in-memory fixture spelling while old recordings
-    // drain; it is not advertised in either model-facing schema.
     if parsed.name == "shell" {
         if let Some(argv) = parsed
             .arguments
@@ -1491,234 +1473,6 @@ pub fn normalize_local_tool_call(
     })
 }
 
-/// Parse LFM-native tool calls from generated text.
-///
-/// Each `<|tool_call_start|>[name(k="v", …)]<|tool_call_end|>` block yields
-/// one or more calls, in order; multiple blocks are concatenated in document
-/// order. Prose around the blocks (reasoning, `always-thinks` chatter) is
-/// ignored. Bracket lists may hold several comma-separated calls.
-/// Malformed blocks fail closed with a message; the caller records a
-/// `rejected` tool event and speaks the fallback instead of executing
-/// anything. Separate from [`parse_qwen_tool_calls`] (second-dialect
-/// exception); values are stored as strings like the Qwen path (lists are
-/// space-joined) so both dialects feed the same representation.
-pub fn parse_lfm_tool_calls(text: &str) -> std::result::Result<Vec<ParsedLocalToolCall>, String> {
-    const OPEN: &str = "<|tool_call_start|>";
-    const CLOSE: &str = "<|tool_call_end|>";
-    let mut calls = Vec::new();
-    let mut rest = text;
-    while let Some(open) = rest.find(OPEN) {
-        let after_open = &rest[open + OPEN.len()..];
-        let close = after_open
-            .find(CLOSE)
-            .ok_or_else(|| "lfm tool call is missing <|tool_call_end|>".to_string())?;
-        let block = &after_open[..close];
-        if block.contains(OPEN) {
-            return Err("lfm tool call contains a nested <|tool_call_start|>".to_string());
-        }
-        calls.extend(parse_lfm_tool_call_block(block)?);
-        rest = &after_open[close + CLOSE.len()..];
-    }
-    if calls.is_empty() {
-        // llama.cpp may omit special-token delimiters from decoded text. The
-        // LFM template still leaves its Pythonic call list after `<think>`;
-        // accept only that entire trailing list, never a bracket fragment in
-        // ordinary prose.
-        let tail = text
-            .rsplit_once("</think>")
-            .map(|(_, tail)| tail)
-            .unwrap_or(text)
-            .trim();
-        if tail.starts_with('[') && tail.ends_with(']') {
-            return parse_lfm_tool_call_block(tail);
-        }
-        return Err("no lfm tool call block found".to_string());
-    }
-    Ok(calls)
-}
-
-fn looks_like_lfm_tool_text(text: &str) -> bool {
-    if text.contains("<|tool_call_start|>") {
-        return true;
-    }
-    let tail = text
-        .rsplit_once("</think>")
-        .map(|(_, tail)| tail)
-        .unwrap_or(text)
-        .trim_start();
-    tail.starts_with('[')
-}
-
-fn parse_lfm_tool_call_block(block: &str) -> std::result::Result<Vec<ParsedLocalToolCall>, String> {
-    let trimmed = block.trim();
-    if trimmed.is_empty() {
-        return Err("lfm tool call block is empty".to_string());
-    }
-    let inner = if trimmed.starts_with('[') {
-        if !trimmed.ends_with(']') {
-            return Err("lfm tool call block has unbalanced brackets".to_string());
-        }
-        trimmed[1..trimmed.len() - 1].trim()
-    } else {
-        trimmed
-    };
-    if inner.is_empty() {
-        return Err("lfm tool call block is empty".to_string());
-    }
-    let mut calls = Vec::new();
-    for source in split_top_level(inner, ',') {
-        calls.push(parse_lfm_pythonic_call(&source)?);
-    }
-    Ok(calls)
-}
-
-fn parse_lfm_pythonic_call(source: &str) -> std::result::Result<ParsedLocalToolCall, String> {
-    let source = source.trim();
-    let paren = source
-        .find('(')
-        .ok_or_else(|| "lfm tool call is missing (args)".to_string())?;
-    let name = source[..paren].trim();
-    if name.is_empty() || !is_lfm_identifier(name) {
-        return Err("lfm tool call has an invalid function name".to_string());
-    }
-    if !source.ends_with(')') {
-        return Err("lfm tool call is missing the closing )".to_string());
-    }
-    let args = &source[paren + 1..source.len() - 1];
-    let mut map = serde_json::Map::new();
-    if !args.trim().is_empty() {
-        for part in split_top_level(args, ',') {
-            let (key, value) = parse_lfm_kwarg(&part)?;
-            if map.contains_key(&key) {
-                return Err(format!("lfm tool call repeats parameter {key:?}"));
-            }
-            map.insert(key, value);
-        }
-    }
-    Ok(ParsedLocalToolCall {
-        name: name.to_string(),
-        arguments: serde_json::Value::Object(map),
-    })
-}
-
-fn parse_lfm_kwarg(part: &str) -> std::result::Result<(String, serde_json::Value), String> {
-    let part = part.trim();
-    let eq = part
-        .find('=')
-        .ok_or_else(|| "lfm tool call parameter is missing =".to_string())?;
-    // Reject `==` (comparison, not a kwarg) rather than splitting inside it.
-    if part[eq + 1..].starts_with('=') {
-        return Err("lfm tool call parameter is missing =".to_string());
-    }
-    let key = part[..eq].trim();
-    if key.is_empty() || !is_lfm_identifier(key) {
-        return Err("lfm tool call has an invalid parameter name".to_string());
-    }
-    let raw = part[eq + 1..].trim();
-    if raw.is_empty() {
-        return Err(format!("lfm tool call parameter {key:?} is empty"));
-    }
-    Ok((key.to_string(), parse_lfm_value(raw)?))
-}
-
-fn parse_lfm_value(raw: &str) -> std::result::Result<serde_json::Value, String> {
-    let raw = raw.trim();
-    if raw.starts_with('[') {
-        if !raw.ends_with(']') {
-            return Err("lfm tool call list value has unbalanced brackets".to_string());
-        }
-        let inner = raw[1..raw.len() - 1].trim();
-        if inner.is_empty() {
-            return Ok(serde_json::Value::String(String::new()));
-        }
-        let mut items = Vec::new();
-        for item in split_top_level(inner, ',') {
-            items.push(parse_lfm_scalar(&item)?);
-        }
-        // Qwen-path parity: every parameter is a string, so a Pythonic
-        // list (e.g. `argv=["df", "-h", "."]`) joins into one string.
-        return Ok(serde_json::Value::String(items.join(" ")));
-    }
-    parse_lfm_scalar(raw).map(serde_json::Value::String)
-}
-
-fn parse_lfm_scalar(raw: &str) -> std::result::Result<String, String> {
-    let raw = raw.trim();
-    if raw.len() >= 2
-        && ((raw.starts_with('"') && raw.ends_with('"'))
-            || (raw.starts_with('\'') && raw.ends_with('\'')))
-    {
-        return Ok(unescape_lfm_string(&raw[1..raw.len() - 1]));
-    }
-    if raw.contains(['"', '\'', '[', ']', '(', ')']) {
-        return Err("lfm tool call value is malformed".to_string());
-    }
-    Ok(raw.to_string())
-}
-
-fn unescape_lfm_string(body: &str) -> String {
-    let mut out = String::with_capacity(body.len());
-    let mut chars = body.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some('r') => out.push('\r'),
-                Some(other) => out.push(other),
-                None => out.push('\\'),
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-fn is_lfm_identifier(name: &str) -> bool {
-    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// Split on `sep` at the top level only: separators inside quotes, `()`,
-/// or `[]` do not split.
-fn split_top_level(source: &str, sep: char) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut depth_paren = 0usize;
-    let mut depth_bracket = 0usize;
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    let mut start = 0usize;
-    for (i, c) in source.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if let Some(q) = quote {
-            if c == '\\' {
-                escaped = true;
-            } else if c == q {
-                quote = None;
-            }
-            continue;
-        }
-        match c {
-            '"' | '\'' => quote = Some(c),
-            '(' => depth_paren += 1,
-            ')' => depth_paren = depth_paren.saturating_sub(1),
-            '[' => depth_bracket += 1,
-            ']' => depth_bracket = depth_bracket.saturating_sub(1),
-            _ => {
-                if c == sep && depth_paren == 0 && depth_bracket == 0 {
-                    parts.push(source[start..i].trim().to_string());
-                    start = i + c.len_utf8();
-                }
-            }
-        }
-    }
-    parts.push(source[start..].trim().to_string());
-    parts
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1731,6 +1485,24 @@ mod tests {
         pieces: Vec<String>,
         delay: Duration,
         last_messages: Arc<Mutex<Vec<ChatMessage>>>,
+        parse_outputs: VecDeque<ParsedChatOutput>,
+        chat_tools: bool,
+        parse_error: Option<String>,
+        last_enable_thinking: Arc<Mutex<Option<bool>>>,
+    }
+
+    impl Default for ScriptedEngine {
+        fn default() -> Self {
+            Self {
+                pieces: Vec::new(),
+                delay: Duration::ZERO,
+                last_messages: Arc::new(Mutex::new(Vec::new())),
+                parse_outputs: VecDeque::new(),
+                chat_tools: true,
+                parse_error: None,
+                last_enable_thinking: Arc::new(Mutex::new(None)),
+            }
+        }
     }
 
     impl Engine for ScriptedEngine {
@@ -1775,34 +1547,41 @@ mod tests {
             }
             Ok(())
         }
-    }
 
-    struct HarnessEngine {
-        rounds: VecDeque<String>,
-        last_messages: Arc<Mutex<Vec<ChatMessage>>>,
-    }
-
-    impl Engine for HarnessEngine {
-        fn prompt_token_count(
-            &mut self,
-            _messages: &[ChatMessage],
-            _append_thinking_off_suffix: bool,
-        ) -> Result<usize> {
-            Ok(0)
+        fn chat_tools_supported(&mut self) -> Result<bool> {
+            Ok(self.chat_tools)
         }
 
-        fn generate(
+        fn generate_with_common_chat(
             &mut self,
-            messages: &[ChatMessage],
-            _thinking: bool,
-            _cancel: &Cancel,
+            messages_json: &str,
+            _tools_json: &str,
+            enable_thinking: bool,
+            append_thinking_off_suffix: bool,
+            cancel: &Cancel,
             on_piece: &mut dyn FnMut(&str, bool) -> Result<()>,
         ) -> Result<()> {
-            *self.last_messages.lock().expect("messages") = messages.to_vec();
-            on_piece(
-                &self.rounds.pop_front().expect("scripted harness round"),
-                true,
-            )
+            *self.last_enable_thinking.lock().expect("thinking flag") = Some(enable_thinking);
+            let messages = openai_messages_json_to_chat(messages_json)?;
+            self.generate(&messages, append_thinking_off_suffix, cancel, on_piece)
+        }
+
+        fn chat_parse_output(
+            &mut self,
+            text: &str,
+            is_partial: bool,
+        ) -> std::result::Result<ParsedChatOutput, String> {
+            if let Some(message) = self.parse_error.as_ref() {
+                return Err(message.clone());
+            }
+            if let Some(output) = self.parse_outputs.pop_front() {
+                return Ok(output);
+            }
+            let _ = is_partial;
+            Ok(ParsedChatOutput {
+                content: text.to_string(),
+                tool_calls: Vec::new(),
+            })
         }
     }
 
@@ -1883,6 +1662,8 @@ mod tests {
             pieces: vec!["hi".into()],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         assert_eq!(llm.name(), "local");
         assert_eq!(LFM25_2_6B_ASSET, BuiltinDefaults::v0().llm_model);
@@ -1917,6 +1698,8 @@ mod tests {
             pieces: vec!["Hel".into(), "lo".into()],
             delay: Duration::ZERO,
             last_messages: Arc::clone(&messages),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let mut chunks = Vec::new();
         llm.generate(&[], &user(3, "hi"), &Cancel::new(), &mut |chunk| {
@@ -1946,6 +1729,8 @@ mod tests {
             pieces: vec!["ok".into()],
             delay: Duration::ZERO,
             last_messages: Arc::clone(&messages),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }))
         .with_system_prompt("You are a cooking coach. Reply in spoken {language}.");
         llm.generate(
@@ -1969,6 +1754,8 @@ mod tests {
             pieces: vec!["Bonjour".into()],
             delay: Duration::ZERO,
             last_messages: Arc::clone(&messages),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         llm.generate(
             &[],
@@ -1993,6 +1780,8 @@ mod tests {
             pieces: vec!["ok".into()],
             delay: Duration::ZERO,
             last_messages: Arc::clone(&messages),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let history = vec![HistoryTurn {
             user: user(0, "first"),
@@ -2025,6 +1814,8 @@ mod tests {
             pieces: vec!["ok".into()],
             delay: Duration::ZERO,
             last_messages: Arc::clone(&messages),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let history: Vec<HistoryTurn> = (0..10)
             .map(|i| HistoryTurn {
@@ -2051,6 +1842,8 @@ mod tests {
             pieces: vec!["nope".into()],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let cancel = Cancel::new();
         cancel.shutdown();
@@ -2066,6 +1859,8 @@ mod tests {
             pieces: vec!["late".into()],
             delay: Duration::from_secs(2),
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let cancel = Cancel::new();
         let cancel_thread = cancel.clone();
@@ -2099,6 +1894,8 @@ mod tests {
             pieces: vec![],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let mut chunks = Vec::new();
         llm.generate(&[], &user(0, "hi"), &Cancel::new(), &mut |chunk| {
@@ -2117,6 +1914,8 @@ mod tests {
             pieces: vec!["a".into(), "b".into()],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let cancel = Cancel::new();
         let err = llm.generate(&[], &user(0, "hi"), &cancel, &mut |chunk| {
@@ -2134,6 +1933,8 @@ mod tests {
             pieces: vec!["ok".into()],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let log = llm.call_log();
         let mut cloned = llm.clone();
@@ -2181,6 +1982,8 @@ mod tests {
             pieces: (0..200).map(|i| format!("t{i}")).collect(),
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let on = off.clone().with_thinking(true);
         assert!(!off.thinking());
@@ -2240,56 +2043,6 @@ mod tests {
     }
 
     #[test]
-    fn qwen_tool_call_with_two_parameters_parses_in_order() {
-        let text = "Let me check that.\n\n<tool_call>\n<function=shell>\n<parameter=argv>\ndf -h .\n</parameter>\n<parameter=cwd>\n.\n</parameter>\n</function>\n</tool_call>";
-        let calls = parse_qwen_tool_calls(text).expect("parse");
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "shell");
-        assert_eq!(
-            calls[0].arguments.get("argv").and_then(|v| v.as_str()),
-            Some("df -h .")
-        );
-        let normalized = normalize_local_tool_call(0, calls[0].clone()).expect("normalize");
-        assert_eq!(normalized.id, "local-call-0");
-        assert_eq!(normalized.name, "shell");
-        assert_eq!(normalized.arguments["command"], "df -h .");
-        assert!(normalized.arguments.is_object());
-    }
-
-    #[test]
-    fn qwen_multiple_tool_calls_keep_document_order() {
-        let text = "<tool_call>\n<function=web_fetch>\n<parameter=url>\nhttps://example.com/a\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=shell>\n<parameter=argv>\ndate\n</parameter>\n</function>\n</tool_call>";
-        let calls = parse_qwen_tool_calls(text).expect("parse");
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].name, "web_fetch");
-        assert_eq!(calls[1].name, "shell");
-        assert_eq!(
-            normalize_local_tool_call(1, calls[1].clone())
-                .expect("normalize")
-                .id,
-            "local-call-1"
-        );
-    }
-
-    #[test]
-    fn qwen_malformed_blocks_fail_closed() {
-        assert!(parse_qwen_tool_calls("just prose, no call").is_err());
-        assert!(parse_qwen_tool_calls("<tool_call>\n<function=shell>").is_err());
-        assert!(parse_qwen_tool_calls(
-            "<tool_call>\n<function=shell>\n<parameter=argv>\ndate\n</function>\n</tool_call>"
-        )
-        .is_err());
-        assert!(parse_qwen_tool_calls(
-            "<tool_call>\n<function=>\n<parameter=argv>\ndate\n</parameter>\n</function>\n</tool_call>"
-        )
-        .is_err());
-        assert!(parse_qwen_tool_calls(
-            "<tool_call>\n<tool_call>\n<function=shell>\n</function>\n</tool_call>\n</tool_call>"
-        )
-        .is_err());
-    }
-
-    #[test]
     fn local_unknown_tool_name_is_rejected_like_online() {
         let parsed = ParsedLocalToolCall {
             name: "curl".into(),
@@ -2332,6 +2085,8 @@ mod tests {
             pieces: vec!["ok".into()],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let results = vec![
             ToolResult {
@@ -2360,6 +2115,8 @@ mod tests {
             pieces: vec!["ok".into()],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         assert!(Llm::take_tool_events(&mut llm).is_empty());
         llm.note_tool_event("call", "shell", "local-call-0", "{\"argv\":\"date\"}", "");
@@ -2377,15 +2134,25 @@ mod tests {
         assert!(Llm::take_tool_events(&mut llm).is_empty());
     }
 
+    fn parsed_shell_call(command: &str) -> ParsedChatOutput {
+        ParsedChatOutput {
+            content: String::new(),
+            tool_calls: vec![ParsedChatToolCall {
+                name: "shell".into(),
+                arguments: format!(r#"{{"command":"{command}"}}"#),
+                id: String::new(),
+            }],
+        }
+    }
+
     #[test]
     fn tool_turn_parses_scripted_calls_and_records_events() {
         let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
-            pieces: vec![
-                "<tool_call>\n<function=shell>\n<parameter=argv>\ndate\n</parameter>\n</function>\n</tool_call>"
-                    .into(),
-            ],
+            pieces: vec!["model raw".into()],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::from([parsed_shell_call("date")]),
+            ..ScriptedEngine::default()
         }));
         let mut chunks = Vec::new();
         let calls = llm
@@ -2416,6 +2183,8 @@ mod tests {
             pieces: vec!["just prose, no call".into()],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let mut chunks = Vec::new();
         let calls = llm
@@ -2438,219 +2207,17 @@ mod tests {
         assert!(is_v0_llm_model(LFM25_2_6B_ASSET));
         assert!(is_v0_llm_model(LFM25_350M_ASSET));
         assert!(is_v0_llm_model(LFM25_230M_ASSET));
-        assert_eq!(LFM_TOOL_TURN_MAX_CHARS, 8_000);
-    }
-
-    #[test]
-    fn lfm_pythonic_call_with_kwargs_parses_in_order() {
-        let text = "Checking now.\n<|tool_call_start|>[shell(argv=\"df -h .\")]<|tool_call_end|>";
-        let calls = parse_lfm_tool_calls(text).expect("parse");
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "shell");
-        assert_eq!(
-            calls[0].arguments.get("argv").and_then(|v| v.as_str()),
-            Some("df -h .")
-        );
-        let normalized = normalize_local_tool_call(0, calls[0].clone()).expect("normalize");
-        assert_eq!(normalized.id, "local-call-0");
-        assert_eq!(normalized.name, "shell");
-        assert!(normalized.arguments.is_object());
-    }
-
-    #[test]
-    fn lfm_list_values_join_like_the_qwen_path() {
-        let text = "<|tool_call_start|>[shell(argv=[\"df\", \"-h\", \".\"])]<|tool_call_end|>";
-        let calls = parse_lfm_tool_calls(text).expect("parse");
-        assert_eq!(
-            calls[0].arguments.get("argv").and_then(|v| v.as_str()),
-            Some("df -h .")
-        );
-    }
-
-    #[test]
-    fn lfm_bare_call_after_think_is_normalized_but_bare_prose_is_not() {
-        let calls = parse_lfm_tool_calls(
-            "<think>I should inspect disk space.</think>[shell(argv=['df', '-h', '.'])]",
-        )
-        .expect("stripped special-token call parses");
-        let call =
-            normalize_local_tool_call(0, calls.into_iter().next().unwrap()).expect("normalize");
-        assert_eq!(call.arguments["command"], "df -h .");
-        assert!(looks_like_lfm_tool_text(
-            "<think>x</think>[shell(argv=['date'])]"
-        ));
-        assert!(!looks_like_lfm_tool_text("Here is [a normal answer]."));
-    }
-
-    #[test]
-    fn non_lfm_local_model_keeps_harness_tools_enabled() {
-        let mut llm = LlamaLlm::with_engine(Box::new(HarnessEngine {
-            rounds: VecDeque::from([
-                "<|tool_call_start|>[shell(argv=[\"pwd\"])]<|tool_call_end|>".into(),
-                "Done.".into(),
-            ]),
-            last_messages: Arc::new(Mutex::new(Vec::new())),
-        }));
-        llm.model_id = LLAMA_32_1B_ASSET.into();
-        llm = llm.with_agent_harness(true);
-        Llm::generate(
-            &mut llm,
-            &[],
-            &user(0, "Where am I?"),
-            &Cancel::new(),
-            &mut |_| Ok(()),
-        )
-        .expect("non-LFM harness must stay enabled");
-        let events = Llm::take_tool_events(&mut llm);
-        assert_eq!(
-            events.iter().filter(|event| event.kind == "call").count(),
-            1,
-            "regression: model allowlist would disable tools for {LLAMA_32_1B_ASSET}"
-        );
-    }
-
-    #[test]
-    fn local_lfm_harness_executes_then_repompts_and_only_streams_final_reply() {
-        let messages = Arc::new(Mutex::new(Vec::new()));
-        let mut llm = LlamaLlm::with_engine(Box::new(HarnessEngine {
-            rounds: VecDeque::from([
-                "<|tool_call_start|>[shell(argv=[\"pwd\"])]<|tool_call_end|>".into(),
-                "The workspace is ready.".into(),
-            ]),
-            last_messages: Arc::clone(&messages),
-        }));
-        llm.model_id = LFM25_2_6B_ASSET.into();
-        llm = llm.with_agent_harness(true);
-        let mut spoken = Vec::new();
-        Llm::generate(
-            &mut llm,
-            &[],
-            &user(0, "Where am I?"),
-            &Cancel::new(),
-            &mut |chunk| {
-                spoken.push(chunk.text);
-                Ok(())
-            },
-        )
-        .expect("local harness succeeds");
-        assert_eq!(spoken, ["The workspace is ready."]);
-        let events = Llm::take_tool_events(&mut llm);
-        assert_eq!(
-            events.iter().filter(|event| event.kind == "call").count(),
-            1
-        );
-        assert_eq!(
-            events.iter().filter(|event| event.kind == "result").count(),
-            1
-        );
-        assert!(events
-            .iter()
-            .all(|event| !event.content.contains("tool_call_start")));
-        let final_messages = messages.lock().expect("messages").clone();
-        let assistant_call = final_messages
-            .iter()
-            .position(|message| {
-                message.role == "assistant" && message.content.contains("tool_call_start")
-            })
-            .expect("re-prompt includes assistant tool call");
-        let tool_result = final_messages
-            .iter()
-            .position(|message| message.role == "tool")
-            .expect("re-prompt includes tool result");
-        assert!(assistant_call < tool_result, "call precedes its result");
-        assert_eq!(
-            final_messages[tool_result + 1].content,
-            LFM_TOOL_RESULT_CONTINUATION
-        );
-    }
-
-    #[test]
-    fn local_lfm_harness_rejects_malformed_calls_without_execution() {
-        let mut llm = LlamaLlm::with_engine(Box::new(HarnessEngine {
-            rounds: VecDeque::from(
-                ["<|tool_call_start|>[rm_everything()]<|tool_call_end|>".into()],
-            ),
-            last_messages: Arc::new(Mutex::new(Vec::new())),
-        }));
-        llm.model_id = LFM25_2_6B_ASSET.into();
-        llm = llm.with_agent_harness(true);
-        let mut spoken = Vec::new();
-        Llm::generate(
-            &mut llm,
-            &[],
-            &user(0, "Delete it"),
-            &Cancel::new(),
-            &mut |chunk| {
-                spoken.push(chunk.text);
-                Ok(())
-            },
-        )
-        .expect("rejection is a spoken safe fallback");
-        assert_eq!(spoken, [LOCAL_TOOL_FALLBACK_TEXT]);
-        let events = Llm::take_tool_events(&mut llm);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind, "rejected");
-    }
-
-    #[test]
-    fn normalized_lfm_calls_render_before_tool_results() {
-        let calls = vec![ToolCall {
-            id: "local-call-0".into(),
-            name: "shell".into(),
-            arguments: serde_json::json!({"argv": ["df", "-h"]}),
-        }];
-        assert_eq!(
-            render_lfm_tool_call_message(&calls),
-            "<|tool_call_start|>[shell(argv=[\"df\",\"-h\"])]<|tool_call_end|>"
-        );
-    }
-
-    #[test]
-    fn lfm_multiple_blocks_and_calls_keep_document_order() {
-        let text = "<|tool_call_start|>[web_fetch(url=\"https://example.com/a\")]<|tool_call_end|> \
-            <|tool_call_start|>[shell(argv=\"date\"), web_fetch(url='https://example.com/b')]<|tool_call_end|>";
-        let calls = parse_lfm_tool_calls(text).expect("parse");
-        assert_eq!(calls.len(), 3);
-        assert_eq!(calls[0].name, "web_fetch");
-        assert_eq!(calls[1].name, "shell");
-        assert_eq!(calls[2].name, "web_fetch");
-        assert_eq!(
-            normalize_local_tool_call(2, calls[2].clone())
-                .expect("normalize")
-                .id,
-            "local-call-2"
-        );
-    }
-
-    #[test]
-    fn lfm_malformed_blocks_fail_closed() {
-        assert!(parse_lfm_tool_calls("just prose, no call").is_err());
-        assert!(parse_lfm_tool_calls("<|tool_call_start|>[shell(argv=\"date\")]").is_err());
-        assert!(parse_lfm_tool_calls(
-            "<|tool_call_start|>shell(argv=\"date\")<|tool_call_start|>[shell(argv=\"date\")]<|tool_call_end|>"
-        )
-        .is_err());
-        assert!(parse_lfm_tool_calls("<|tool_call_start|>[]<|tool_call_end|>").is_err());
-        assert!(
-            parse_lfm_tool_calls("<|tool_call_start|>[shell(argv=\"date\"]<|tool_call_end|>")
-                .is_err()
-        );
-        assert!(parse_lfm_tool_calls(
-            "<|tool_call_start|>[unknown_tool(x=\"1\")]<|tool_call_end|>"
-        )
-        .map(|calls| normalize_local_tool_call(0, calls[0].clone()))
-        .expect("parses")
-        .is_err());
+        assert_eq!(LFM_TOOL_TURN_MAX_CHARS, LOCAL_TOOL_TURN_MAX_CHARS);
     }
 
     #[test]
     fn lfm_tool_turn_parses_scripted_calls_and_records_events() {
         let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
-            pieces: vec![
-                "Let me check.\n<|tool_call_start|>[shell(argv=\"date\")]<|tool_call_end|>".into(),
-            ],
+            pieces: vec!["model raw".into()],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::from([parsed_shell_call("date")]),
+            ..ScriptedEngine::default()
         }));
         let mut chunks = Vec::new();
         let calls = llm
@@ -2681,6 +2248,8 @@ mod tests {
             pieces: vec!["just prose, no call".into()],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let mut chunks = Vec::new();
         let calls = llm
@@ -2701,6 +2270,8 @@ mod tests {
             pieces: vec!["x".repeat(LFM_TOOL_TURN_MAX_CHARS + 1)],
             delay: Duration::ZERO,
             last_messages: Arc::new(Mutex::new(Vec::new())),
+            parse_outputs: VecDeque::new(),
+            ..ScriptedEngine::default()
         }));
         let mut chunks = Vec::new();
         let calls = llm
@@ -2747,5 +2318,185 @@ mod tests {
             Ok(_) => panic!("unknown model should fail"),
         };
         assert!(matches!(err, Error::Config { .. }));
+    }
+
+    #[test]
+    fn parsed_chat_tool_calls_rejects_non_json_arguments() {
+        let output = ParsedChatOutput {
+            content: String::new(),
+            tool_calls: vec![ParsedChatToolCall {
+                name: "shell".into(),
+                arguments: "not-json".into(),
+                id: String::new(),
+            }],
+        };
+        assert_eq!(
+            parsed_chat_tool_calls(output).expect_err("bad json"),
+            "tool call arguments are not valid JSON"
+        );
+    }
+
+    #[test]
+    fn common_chat_tool_turn_over_budget_records_rejection() {
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["x".repeat(LOCAL_TOOL_TURN_MAX_CHARS + 1)],
+            ..ScriptedEngine::default()
+        }));
+        let mut chunks = Vec::new();
+        let calls = llm
+            .generate_tool_turn(&[], &user(0, "hi"), &Cancel::new(), &mut |chunk| {
+                chunks.push(chunk);
+                Ok(())
+            })
+            .expect("over-budget turn");
+        assert!(calls.is_empty());
+        assert!(chunks.is_empty());
+        let events = Llm::take_tool_events(&mut llm);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "rejected");
+        assert!(events[0].content.contains("thinking bound"));
+    }
+
+    #[test]
+    fn common_chat_passes_enable_thinking_to_the_engine() {
+        let thinking_flag = Arc::new(Mutex::new(None));
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["ok".into()],
+            parse_outputs: VecDeque::from([parsed_shell_call("date")]),
+            last_enable_thinking: Arc::clone(&thinking_flag),
+            ..ScriptedEngine::default()
+        }))
+        .with_thinking(true);
+        llm.generate_tool_turn(&[], &user(0, "hi"), &Cancel::new(), &mut |_| Ok(()))
+            .expect("tool turn");
+        assert_eq!(*thinking_flag.lock().unwrap(), Some(true));
+    }
+
+    #[test]
+    fn agent_harness_without_chat_tools_emits_spoken_fallback() {
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            chat_tools: false,
+            ..ScriptedEngine::default()
+        }))
+        .with_agent_harness(true);
+        let mut chunks = Vec::new();
+        llm.generate(&[], &user(0, "hi"), &Cancel::new(), &mut |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        })
+        .expect("harness reply");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, LOCAL_HARNESS_NO_TOOLS_TEXT);
+    }
+
+    #[test]
+    fn agent_harness_replies_directly_when_model_returns_content_only() {
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["spoken answer".into()],
+            parse_outputs: VecDeque::from([ParsedChatOutput {
+                content: "spoken answer".into(),
+                tool_calls: Vec::new(),
+            }]),
+            ..ScriptedEngine::default()
+        }))
+        .with_agent_harness(true);
+        let mut chunks = Vec::new();
+        llm.generate(&[], &user(0, "hi"), &Cancel::new(), &mut |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        })
+        .expect("harness reply");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "spoken answer");
+    }
+
+    #[test]
+    fn agent_harness_executes_a_tool_then_speaks_the_follow_up() {
+        let workspace = std::env::temp_dir().join(format!(
+            "syllabix-harness-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["call".into(), "done".into()],
+            parse_outputs: VecDeque::from([
+                parsed_shell_call("echo harness-ok"),
+                ParsedChatOutput {
+                    content: "The command succeeded.".into(),
+                    tool_calls: Vec::new(),
+                },
+            ]),
+            ..ScriptedEngine::default()
+        }))
+        .with_agent_harness(true)
+        .with_workspace(&workspace);
+        let mut chunks = Vec::new();
+        llm.generate(&[], &user(0, "run echo"), &Cancel::new(), &mut |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        })
+        .expect("harness loop");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "The command succeeded.");
+        let events = Llm::take_tool_events(&mut llm);
+        assert!(events.iter().any(|event| event.kind == "call"));
+        assert!(events.iter().any(|event| event.kind == "result"));
+    }
+
+    #[test]
+    fn agent_harness_parse_error_emits_spoken_fallback() {
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["bad".into()],
+            parse_error: Some("parse failed".into()),
+            ..ScriptedEngine::default()
+        }))
+        .with_agent_harness(true);
+        let mut chunks = Vec::new();
+        llm.generate(&[], &user(0, "hi"), &Cancel::new(), &mut |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        })
+        .expect("harness fallback");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, LOCAL_TOOL_FALLBACK_TEXT);
+    }
+
+    #[test]
+    fn strip_unfinished_reasoning_removes_open_blocks() {
+        assert_eq!(
+            strip_unfinished_reasoning_from_spoken_content(
+                "<think>\nplanning steps\n</think>\nHello"
+            ),
+            "Hello"
+        );
+        assert!(strip_unfinished_reasoning_from_spoken_content(
+            "<think>\nThe user wants me to write outside\n"
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn agent_harness_does_not_speak_unclosed_reasoning() {
+        let mut llm = LlamaLlm::with_engine(Box::new(ScriptedEngine {
+            pieces: vec!["<think>\nsecret plan\n".into()],
+            parse_outputs: VecDeque::from([ParsedChatOutput {
+                content: "secret plan leaked".into(),
+                tool_calls: Vec::new(),
+            }]),
+            ..ScriptedEngine::default()
+        }))
+        .with_agent_harness(true);
+        let mut chunks = Vec::new();
+        llm.generate(&[], &user(0, "hi"), &Cancel::new(), &mut |chunk| {
+            chunks.push(chunk);
+            Ok(())
+        })
+        .expect("harness reply");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, LOCAL_TOOL_FALLBACK_TEXT);
     }
 }

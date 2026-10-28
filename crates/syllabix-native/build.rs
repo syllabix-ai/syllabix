@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 fn main() {
     println!("cargo:rerun-if-changed=CMakeLists.txt");
     println!("cargo:rerun-if-changed=src/shim.c");
+    println!("cargo:rerun-if-changed=src/shim_chat.cpp");
     println!("cargo:rerun-if-changed=src/shim_tts.c");
     println!("cargo:rerun-if-changed=src/shim_vulkan.cpp");
     println!("cargo:rerun-if-changed=src/shim_asr.c");
@@ -47,7 +48,8 @@ fn main() {
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("GGML_CUDA", "OFF")
         .define("GGML_OPENMP", "OFF")
-        .define("LLAMA_BUILD_COMMON", "OFF")
+        .define("LLAMA_BUILD_COMMON", "ON")
+        .define("LLAMA_SUBPROCESS", "OFF")
         .define("LLAMA_BUILD_TESTS", "OFF")
         .define("LLAMA_BUILD_TOOLS", "OFF")
         .define("LLAMA_BUILD_EXAMPLES", "OFF")
@@ -81,6 +83,22 @@ fn main() {
             .define("GGML_OPENMP", "OFF")
             .define("GGML_CPU_KLEIDIAI", "OFF")
             .define("GGML_VULKAN", if vulkan { "ON" } else { "OFF" });
+        if linux {
+            let mut c_cfg = cc::Build::new();
+            c_cfg
+                .no_default_flags(true)
+                .compiler("gcc")
+                .flag("-w")
+                .flag("-fPIC");
+            let mut cxx_cfg = cc::Build::new();
+            cxx_cfg
+                .no_default_flags(true)
+                .cpp(true)
+                .compiler("g++")
+                .flag("-w")
+                .flag("-fPIC");
+            config.init_c_cfg(c_cfg).init_cxx_cfg(cxx_cfg);
+        }
     }
 
     let dst = config.build();
@@ -95,11 +113,22 @@ fn main() {
 
     let mut libs = collect_static_libs(&search);
     // Link order: shim, frontends, then ggml pieces.
-    prefer_first(&mut libs, &["syllabix_native", "whisper", "llama"]);
+    prefer_first(
+        &mut libs,
+        &["syllabix_native", "whisper", "llama-common", "llama"],
+    );
     // Release `--gc-sections` otherwise drops unused ggml/whisper objects
     // because the CLI does not transcribe yet. Keep both frontends in the binary.
     for lib in &libs {
-        println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
+        if lib == "cpp-httplib" {
+            println!("cargo:rustc-link-lib=static={lib}");
+        } else if lib == "llama-common" {
+            // Required: shim_chat references common chat symbols; normal archive
+            // linking does not always pull the full llama-common object closure.
+            println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
+        } else {
+            println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
+        }
     }
     if apple {
         println!("cargo:rustc-link-lib=c++");

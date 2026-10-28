@@ -47,7 +47,9 @@ else()
     set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
 endif()
 
-set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
+set(LLAMA_SUBPROCESS OFF CACHE BOOL "" FORCE)
+set(LLAMA_LLGUIDANCE OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -86,7 +88,7 @@ set(LLAMA_VERSION_MAJOR 0)
 set(MTMD_VIDEO OFF CACHE BOOL "mtmd video support" FORCE)
 add_subdirectory("${LLAMA_DIR}/tools/mtmd" "${CMAKE_BINARY_DIR}/mtmd")
 
-add_library(syllabix_native STATIC src/shim.c src/shim_tts.c src/shim_asr.c src/shim_vulkan.cpp)
+add_library(syllabix_native STATIC src/shim.c src/shim_chat.cpp src/shim_tts.c src/shim_asr.c src/shim_vulkan.cpp)
 # shim_vulkan.cpp catches ggml C++ exceptions raised under shim_tts.c / shim_asr.c frames;
 # GCC/Clang only unwind C frames compiled with -fexceptions.
 if(NOT MSVC)
@@ -98,7 +100,7 @@ target_include_directories(syllabix_native PUBLIC
     "${LLAMA_DIR}/include"
     "${LLAMA_DIR}/tools/mtmd"
 )
-target_link_libraries(syllabix_native PUBLIC whisper llama mtmd)
+target_link_libraries(syllabix_native PUBLIC whisper llama llama-common mtmd)
 target_compile_features(syllabix_native PUBLIC cxx_std_17)
 
 include(GNUInstallDirs)

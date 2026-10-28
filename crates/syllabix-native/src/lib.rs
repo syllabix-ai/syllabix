@@ -36,6 +36,11 @@ mod ffi {
         _private: [u8; 0],
     }
 
+    #[repr(C)]
+    pub struct ChatSessionHandle {
+        _private: [u8; 0],
+    }
+
     #[cfg(not(coverage))]
     extern "C" {
         pub fn syllabix_native_hush_logs();
@@ -85,65 +90,50 @@ mod ffi {
             token_cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
             token_user: *mut c_void,
         ) -> c_int;
-        pub fn syllabix_llama_generate_with_tools(
+        pub fn syllabix_chat_string_free(s: *mut c_char);
+        pub fn syllabix_chat_session_new(
             llm: *mut LlamaHandle,
-            roles: *const *const c_char,
-            contents: *const *const c_char,
-            n_messages: c_int,
-            thinking: c_int,
+            err_out: *mut c_char,
+            err_cap: usize,
+        ) -> *mut ChatSessionHandle;
+        pub fn syllabix_chat_session_free(session: *mut ChatSessionHandle);
+        pub fn syllabix_chat_tools_supported(session: *const ChatSessionHandle) -> c_int;
+        pub fn syllabix_chat_last_format_name(session: *const ChatSessionHandle) -> *const c_char;
+        pub fn syllabix_chat_session_from_template(
+            template_src: *const c_char,
+            err_out: *mut c_char,
+            err_cap: usize,
+        ) -> *mut ChatSessionHandle;
+        pub fn syllabix_chat_apply(
+            session: *mut ChatSessionHandle,
+            messages_json: *const c_char,
             tools_json: *const c_char,
+            enable_thinking: c_int,
+            prompt_out: *mut *mut c_char,
+            err_out: *mut c_char,
+            err_cap: usize,
+        ) -> c_int;
+        pub fn syllabix_chat_parse(
+            session: *mut ChatSessionHandle,
+            text: *const c_char,
+            is_partial: c_int,
+            result_out: *mut *mut c_char,
+            err_out: *mut c_char,
+            err_cap: usize,
+        ) -> c_int;
+        pub fn syllabix_chat_generate(
+            session: *mut ChatSessionHandle,
+            messages_json: *const c_char,
+            tools_json: *const c_char,
+            enable_thinking: c_int,
+            thinking: c_int,
             n_threads: c_int,
             abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
             abort_user: *mut c_void,
             token_cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
             token_user: *mut c_void,
-        ) -> c_int;
-        pub fn syllabix_llama_render_qwen(
-            roles: *const *const c_char,
-            contents: *const *const c_char,
-            n_messages: c_int,
-            tools_json: *const c_char,
-            thinking: c_int,
-            out: *mut c_char,
-            out_cap: c_int,
-        ) -> c_int;
-        pub fn syllabix_llama_count_prompt_tokens_with_tools(
-            llm: *mut LlamaHandle,
-            roles: *const *const c_char,
-            contents: *const *const c_char,
-            n_messages: c_int,
-            thinking: c_int,
-            tools_json: *const c_char,
-        ) -> c_int;
-        pub fn syllabix_llama_generate_with_lfm_tools(
-            llm: *mut LlamaHandle,
-            roles: *const *const c_char,
-            contents: *const *const c_char,
-            n_messages: c_int,
-            thinking: c_int,
-            tools_json: *const c_char,
-            n_threads: c_int,
-            abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
-            abort_user: *mut c_void,
-            token_cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
-            token_user: *mut c_void,
-        ) -> c_int;
-        pub fn syllabix_llama_render_lfm(
-            roles: *const *const c_char,
-            contents: *const *const c_char,
-            n_messages: c_int,
-            tools_json: *const c_char,
-            thinking: c_int,
-            out: *mut c_char,
-            out_cap: c_int,
-        ) -> c_int;
-        pub fn syllabix_llama_count_prompt_tokens_with_lfm_tools(
-            llm: *mut LlamaHandle,
-            roles: *const *const c_char,
-            contents: *const *const c_char,
-            n_messages: c_int,
-            thinking: c_int,
-            tools_json: *const c_char,
+            err_out: *mut c_char,
+            err_cap: usize,
         ) -> c_int;
         pub fn syllabix_qwen_tts_load(
             model_path: *const c_char,
@@ -200,26 +190,7 @@ mod ffi {
     // the real shim (it is pure and already weight-free); fake the calls that
     // require a live native context.
     #[cfg(coverage)]
-    extern "C" {
-        pub fn syllabix_llama_render_qwen(
-            roles: *const *const c_char,
-            contents: *const *const c_char,
-            n_messages: c_int,
-            tools_json: *const c_char,
-            thinking: c_int,
-            out: *mut c_char,
-            out_cap: c_int,
-        ) -> c_int;
-        pub fn syllabix_llama_render_lfm(
-            roles: *const *const c_char,
-            contents: *const *const c_char,
-            n_messages: c_int,
-            tools_json: *const c_char,
-            thinking: c_int,
-            out: *mut c_char,
-            out_cap: c_int,
-        ) -> c_int;
-    }
+    extern "C" {}
 
     #[cfg(coverage)]
     fn text(ptr: *const c_char) -> String {
@@ -426,67 +397,139 @@ mod ffi {
     }
 
     #[cfg(coverage)]
+    pub unsafe fn syllabix_chat_string_free(_s: *mut c_char) {}
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_chat_session_from_template(
+        _template_src: *const c_char,
+        err_out: *mut c_char,
+        err_cap: usize,
+    ) -> *mut ChatSessionHandle {
+        if !err_out.is_null() && err_cap > 0 {
+            *err_out = 0;
+        }
+        std::ptr::dangling_mut::<ChatSessionHandle>()
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_chat_session_new(
+        _llm: *mut LlamaHandle,
+        err_out: *mut c_char,
+        err_cap: usize,
+    ) -> *mut ChatSessionHandle {
+        if !err_out.is_null() && err_cap > 0 {
+            *err_out = 0;
+        }
+        std::ptr::dangling_mut::<ChatSessionHandle>()
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_chat_session_free(_session: *mut ChatSessionHandle) {}
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_chat_tools_supported(_session: *const ChatSessionHandle) -> c_int {
+        1
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_chat_last_format_name(
+        _session: *const ChatSessionHandle,
+    ) -> *const c_char {
+        c"CONTENT_ONLY".as_ptr()
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_chat_apply(
+        _session: *mut ChatSessionHandle,
+        messages_json: *const c_char,
+        _tools_json: *const c_char,
+        _enable_thinking: c_int,
+        prompt_out: *mut *mut c_char,
+        err_out: *mut c_char,
+        err_cap: usize,
+    ) -> c_int {
+        if !err_out.is_null() && err_cap > 0 {
+            *err_out = 0;
+        }
+        if prompt_out.is_null() {
+            return -1;
+        }
+        let msg = text(messages_json);
+        if msg.contains("apply-fail") {
+            return -1;
+        }
+        let prompt = format!("fake-chat-prompt:{msg}");
+        let out = std::ffi::CString::new(prompt).unwrap().into_raw();
+        *prompt_out = out;
+        0
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_chat_parse(
+        _session: *mut ChatSessionHandle,
+        input: *const c_char,
+        _is_partial: c_int,
+        result_out: *mut *mut c_char,
+        err_out: *mut c_char,
+        err_cap: usize,
+    ) -> c_int {
+        if !err_out.is_null() && err_cap > 0 {
+            *err_out = 0;
+        }
+        if result_out.is_null() {
+            return -1;
+        }
+        let body = text(input);
+        if body.contains("parse-fail") {
+            return -1;
+        }
+        let json = if body.contains("tool_call") {
+            r#"{"content":"","tool_calls":[{"name":"shell","arguments":"{\"command\":\"pwd\"}","id":"local-call-0"}]}"#
+        } else {
+            r#"{"content":"fake reply","tool_calls":[]}"#
+        };
+        *result_out = std::ffi::CString::new(json).unwrap().into_raw();
+        0
+    }
+
+    #[cfg(coverage)]
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn syllabix_llama_generate_with_tools(
-        llm: *mut LlamaHandle,
-        roles: *const *const c_char,
-        contents: *const *const c_char,
-        n_messages: c_int,
+    pub unsafe fn syllabix_chat_generate(
+        session: *mut ChatSessionHandle,
+        messages_json: *const c_char,
+        tools_json: *const c_char,
+        _enable_thinking: c_int,
         thinking: c_int,
-        _tools: *const c_char,
         n_threads: c_int,
-        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
-        abort_user: *mut c_void,
+        _abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        _abort_user: *mut c_void,
         cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
         user: *mut c_void,
+        err_out: *mut c_char,
+        err_cap: usize,
     ) -> c_int {
-        syllabix_llama_generate(
-            llm, roles, contents, n_messages, thinking, n_threads, abort, abort_user, cb, user,
-        )
-    }
-
-    #[cfg(coverage)]
-    pub unsafe fn syllabix_llama_count_prompt_tokens_with_tools(
-        llm: *mut LlamaHandle,
-        roles: *const *const c_char,
-        contents: *const *const c_char,
-        n_messages: c_int,
-        thinking: c_int,
-        _tools: *const c_char,
-    ) -> c_int {
-        syllabix_llama_count_prompt_tokens(llm, roles, contents, n_messages, thinking)
-    }
-
-    #[cfg(coverage)]
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn syllabix_llama_generate_with_lfm_tools(
-        llm: *mut LlamaHandle,
-        roles: *const *const c_char,
-        contents: *const *const c_char,
-        n_messages: c_int,
-        thinking: c_int,
-        _tools: *const c_char,
-        n_threads: c_int,
-        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
-        abort_user: *mut c_void,
-        cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
-        user: *mut c_void,
-    ) -> c_int {
-        syllabix_llama_generate(
-            llm, roles, contents, n_messages, thinking, n_threads, abort, abort_user, cb, user,
-        )
-    }
-
-    #[cfg(coverage)]
-    pub unsafe fn syllabix_llama_count_prompt_tokens_with_lfm_tools(
-        llm: *mut LlamaHandle,
-        roles: *const *const c_char,
-        contents: *const *const c_char,
-        n_messages: c_int,
-        thinking: c_int,
-        _tools: *const c_char,
-    ) -> c_int {
-        syllabix_llama_count_prompt_tokens(llm, roles, contents, n_messages, thinking)
+        if !err_out.is_null() && err_cap > 0 {
+            *err_out = 0;
+        }
+        let _ = (session, tools_json, thinking, n_threads);
+        let msg = text(messages_json);
+        if msg.contains("chat-error") {
+            return -1;
+        }
+        if msg.contains("cancel") {
+            return 1;
+        }
+        match cb {
+            Some(cb) => {
+                let piece = c"fake chat reply";
+                let rc = cb(piece.as_ptr(), 0, user);
+                if rc != 0 {
+                    return rc;
+                }
+                cb(c"".as_ptr(), 1, user)
+            }
+            None => 0,
+        }
     }
 
     #[cfg(coverage)]
@@ -850,6 +893,27 @@ pub struct LlamaGenerate {
 /// In-process llama.cpp context loaded from a GGUF.
 pub struct LlamaContext {
     raw: *mut ffi::LlamaHandle,
+    chat: Option<ChatSession>,
+}
+
+/// llama.cpp `common` chat session (Jinja apply + tool-call parse).
+pub struct ChatSession {
+    raw: *mut ffi::ChatSessionHandle,
+}
+
+/// One tool call parsed from model output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedChatToolCall {
+    pub name: String,
+    pub arguments: String,
+    pub id: String,
+}
+
+/// Assistant turn after `common_chat_parse`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ParsedChatOutput {
+    pub content: String,
+    pub tool_calls: Vec<ParsedChatToolCall>,
 }
 
 unsafe impl Send for LlamaContext {}
@@ -869,7 +933,113 @@ impl LlamaContext {
         if raw.is_null() {
             return Err(format!("failed to load llama.cpp GGUF at {path}"));
         }
-        Ok(Self { raw })
+        Ok(Self { raw, chat: None })
+    }
+
+    fn chat_session(&mut self) -> Result<&mut ChatSession, LlamaError> {
+        if self.chat.is_none() {
+            let mut err = vec![0u8; 512];
+            let _ggml = ggml_lock();
+            let raw = unsafe {
+                ffi::syllabix_chat_session_new(self.raw, err.as_mut_ptr().cast(), err.len())
+            };
+            if raw.is_null() {
+                let end = err.iter().position(|&b| b == 0).unwrap_or(err.len());
+                let message = String::from_utf8_lossy(&err[..end]).into_owned();
+                return Err(LlamaError::Failed(if message.is_empty() {
+                    "failed to open chat session".into()
+                } else {
+                    message
+                }));
+            }
+            self.chat = Some(ChatSession { raw });
+        }
+        Ok(self.chat.as_mut().expect("chat session"))
+    }
+
+    pub fn chat_tools_supported(&mut self) -> Result<bool, LlamaError> {
+        let session = self.chat_session()?;
+        let _ggml = ggml_lock();
+        Ok(unsafe { ffi::syllabix_chat_tools_supported(session.raw) != 0 })
+    }
+
+    pub fn chat_apply_prompt(
+        &mut self,
+        messages_json: &str,
+        tools_json: &str,
+        enable_thinking: bool,
+    ) -> Result<String, LlamaError> {
+        let session = self.chat_session()?;
+        chat_apply_prompt_raw(session.raw, messages_json, tools_json, enable_thinking)
+    }
+
+    pub fn chat_parse_output(
+        &mut self,
+        text: &str,
+        is_partial: bool,
+    ) -> Result<ParsedChatOutput, LlamaError> {
+        let session = self.chat_session()?;
+        chat_parse_output_raw(session.raw, text, is_partial)
+    }
+
+    pub fn chat_last_format_name(&mut self) -> Result<String, LlamaError> {
+        let session = self.chat_session()?;
+        let _ggml = ggml_lock();
+        let name = unsafe { ffi::syllabix_chat_last_format_name(session.raw) };
+        if name.is_null() {
+            return Ok(String::new());
+        }
+        Ok(unsafe { CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned())
+    }
+
+    #[allow(clippy::missing_safety_doc, clippy::too_many_arguments)]
+    pub unsafe fn chat_generate(
+        &mut self,
+        messages_json: &str,
+        tools_json: &str,
+        enable_thinking: bool,
+        append_thinking_off_suffix: bool,
+        opts: LlamaGenerate,
+        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        abort_user: *mut c_void,
+        on_piece: &mut dyn FnMut(&str, bool) -> Result<(), LlamaError>,
+    ) -> Result<(), LlamaError> {
+        let c_messages = CString::new(messages_json)
+            .map_err(|_| LlamaError::Failed("messages_json NUL".into()))?;
+        let c_tools =
+            CString::new(tools_json).map_err(|_| LlamaError::Failed("tools_json NUL".into()))?;
+        let session = self.chat_session()?;
+        let mut err = vec![0u8; 512];
+        let mut sink = TokenSink { on_piece };
+        let _ggml = ggml_lock();
+        let rc = unsafe {
+            ffi::syllabix_chat_generate(
+                session.raw,
+                c_messages.as_ptr(),
+                c_tools.as_ptr(),
+                i32::from(enable_thinking),
+                if append_thinking_off_suffix { 0 } else { 1 },
+                opts.n_threads,
+                abort,
+                abort_user,
+                Some(on_token_piece),
+                (&mut sink as *mut TokenSink).cast(),
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        match rc {
+            0 => Ok(()),
+            1 => Err(LlamaError::Cancelled),
+            _ => {
+                let end = err.iter().position(|&b| b == 0).unwrap_or(err.len());
+                Err(LlamaError::Failed(
+                    String::from_utf8_lossy(&err[..end]).into_owned(),
+                ))
+            }
+        }
     }
 
     /// llama.cpp context size after load (`n_ctx_train` when `n_ctx` was 0).
@@ -921,70 +1091,6 @@ impl LlamaContext {
             ));
         }
         Ok(count as usize)
-    }
-
-    /// Render a Qwen tools-aware prompt without loading weights.
-    ///
-    /// Pure unit-test seam for the `<tools>` preamble and `tool`-role
-    /// grouping. `tools_json` is the JSON array of tool
-    /// definitions; empty means the tool-free Qwen framing.
-    pub fn render_qwen_prompt(
-        messages: &[ChatMessage],
-        tools_json: &str,
-        thinking_off_suffix: bool,
-    ) -> Result<String, LlamaError> {
-        let roles: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.role.as_str()).map_err(|_| LlamaError::Failed("role NUL".into()))
-            })
-            .collect();
-        let contents: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.content.as_str())
-                    .map_err(|_| LlamaError::Failed("content NUL".into()))
-            })
-            .collect();
-        let roles = roles?;
-        let contents = contents?;
-        let role_ptrs: Vec<*const c_char> = roles.iter().map(|s| s.as_ptr()).collect();
-        let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
-        let c_tools =
-            CString::new(tools_json).map_err(|_| LlamaError::Failed("tools_json NUL".into()))?;
-        // Measure, then render. The renderer is pure (no model handle), so no
-        // ggml lock is needed here.
-        let len = unsafe {
-            ffi::syllabix_llama_render_qwen(
-                role_ptrs.as_ptr(),
-                content_ptrs.as_ptr(),
-                messages.len() as c_int,
-                c_tools.as_ptr(),
-                if thinking_off_suffix { 0 } else { 1 },
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if len < 1 {
-            return Err(LlamaError::Failed("qwen prompt rendering failed".into()));
-        }
-        let mut out = vec![0u8; (len as usize) + 1];
-        let rc = unsafe {
-            ffi::syllabix_llama_render_qwen(
-                role_ptrs.as_ptr(),
-                content_ptrs.as_ptr(),
-                messages.len() as c_int,
-                c_tools.as_ptr(),
-                if thinking_off_suffix { 0 } else { 1 },
-                out.as_mut_ptr().cast::<c_char>(),
-                out.len() as c_int,
-            )
-        };
-        if rc != len {
-            return Err(LlamaError::Failed("qwen prompt rendering failed".into()));
-        }
-        out.pop();
-        String::from_utf8(out).map_err(|_| LlamaError::Failed("qwen prompt is not UTF-8".into()))
     }
 
     /// Stream greedy pieces. `on_piece` is invoked in order; the last call has `is_last`.
@@ -1046,302 +1152,189 @@ impl LlamaContext {
             _ => Err(LlamaError::Failed("llama.cpp generate failed".into())),
         }
     }
+}
 
-    /// Stream greedy pieces through the tools-aware entry.
-    ///
-    /// With empty `tools_json` the shim delegates to the plain path, so
-    /// tool-free generation stays byte-identical.
-    ///
-    /// # Safety
-    /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
-    pub unsafe fn generate_with_tools(
-        &mut self,
-        messages: &[ChatMessage],
-        tools_json: &str,
-        opts: LlamaGenerate,
-        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
-        abort_user: *mut c_void,
-        on_piece: &mut dyn FnMut(&str, bool) -> Result<(), LlamaError>,
-    ) -> Result<(), LlamaError> {
-        if messages.is_empty() {
-            return Err(LlamaError::Failed("no chat messages".into()));
-        }
-        let roles: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.role.as_str()).map_err(|_| LlamaError::Failed("role NUL".into()))
-            })
-            .collect();
-        let roles = roles?;
-        let contents: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.content.as_str())
-                    .map_err(|_| LlamaError::Failed("content NUL".into()))
-            })
-            .collect();
-        let contents = contents?;
-        let role_ptrs: Vec<*const c_char> = roles.iter().map(|s| s.as_ptr()).collect();
-        let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
-        let c_tools =
-            CString::new(tools_json).map_err(|_| LlamaError::Failed("tools_json NUL".into()))?;
+/// Chat apply/parse without loading GGUF weights (Jinja template string only).
+pub struct ChatTemplateSession {
+    raw: *mut ffi::ChatSessionHandle,
+}
 
-        let mut sink = TokenSink { on_piece };
+impl ChatTemplateSession {
+    pub fn from_template(template: &str) -> Result<Self, LlamaError> {
+        let c_template =
+            CString::new(template).map_err(|_| LlamaError::Failed("template NUL".into()))?;
+        let mut err = vec![0u8; 512];
         let _ggml = ggml_lock();
-        let rc = unsafe {
-            ffi::syllabix_llama_generate_with_tools(
-                self.raw,
-                role_ptrs.as_ptr(),
-                content_ptrs.as_ptr(),
-                messages.len() as c_int,
-                if opts.append_thinking_off_suffix {
-                    0
-                } else {
-                    1
-                },
-                c_tools.as_ptr(),
-                opts.n_threads,
-                abort,
-                abort_user,
-                Some(on_token_piece),
-                (&mut sink as *mut TokenSink).cast(),
+        let raw = unsafe {
+            ffi::syllabix_chat_session_from_template(
+                c_template.as_ptr(),
+                err.as_mut_ptr().cast(),
+                err.len(),
             )
         };
-        match rc {
-            0 => Ok(()),
-            1 => Err(LlamaError::Cancelled),
-            _ => Err(LlamaError::Failed("llama.cpp generate failed".into())),
-        }
-    }
-
-    /// Return the prompt-token count for a tools-aware prompt.
-    pub fn prompt_token_count_with_tools(
-        &mut self,
-        messages: &[ChatMessage],
-        append_thinking_off_suffix: bool,
-        tools_json: &str,
-    ) -> Result<usize, LlamaError> {
-        let roles: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.role.as_str()).map_err(|_| LlamaError::Failed("role NUL".into()))
-            })
-            .collect();
-        let contents: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.content.as_str())
-                    .map_err(|_| LlamaError::Failed("content NUL".into()))
-            })
-            .collect();
-        let roles = roles?;
-        let contents = contents?;
-        let role_ptrs: Vec<*const c_char> = roles.iter().map(|s| s.as_ptr()).collect();
-        let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
-        let c_tools =
-            CString::new(tools_json).map_err(|_| LlamaError::Failed("tools_json NUL".into()))?;
-        let _ggml = ggml_lock();
-        let count = unsafe {
-            ffi::syllabix_llama_count_prompt_tokens_with_tools(
-                self.raw,
-                role_ptrs.as_ptr(),
-                content_ptrs.as_ptr(),
-                messages.len() as c_int,
-                if append_thinking_off_suffix { 0 } else { 1 },
-                c_tools.as_ptr(),
-            )
-        };
-        if count < 1 {
+        if raw.is_null() {
+            let end = err.iter().position(|&b| b == 0).unwrap_or(err.len());
             return Err(LlamaError::Failed(
-                "llama.cpp prompt tokenization failed".into(),
+                String::from_utf8_lossy(&err[..end]).into_owned(),
             ));
         }
-        Ok(count as usize)
+        Ok(Self { raw })
     }
 
-    /// Render an LFM tools-aware prompt without loading weights.
-    ///
-    /// Pure unit-test seam for the `List of tools:` preamble and
-    /// `tool`-role turns. `tools_json` is the JSON array of tool
-    /// definitions; empty means the tool-free LFM framing. Separate from
-    /// the Qwen renderer (second-dialect exception).
-    pub fn render_lfm_prompt(
-        messages: &[ChatMessage],
-        tools_json: &str,
-    ) -> Result<String, LlamaError> {
-        Self::render_lfm_prompt_inner(messages, tools_json)
-    }
-
-    fn render_lfm_prompt_inner(
-        messages: &[ChatMessage],
-        tools_json: &str,
-    ) -> Result<String, LlamaError> {
-        let roles: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.role.as_str()).map_err(|_| LlamaError::Failed("role NUL".into()))
-            })
-            .collect();
-        let contents: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.content.as_str())
-                    .map_err(|_| LlamaError::Failed("content NUL".into()))
-            })
-            .collect();
-        let roles = roles?;
-        let contents = contents?;
-        let role_ptrs: Vec<*const c_char> = roles.iter().map(|s| s.as_ptr()).collect();
-        let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
-        let c_tools =
-            CString::new(tools_json).map_err(|_| LlamaError::Failed("tools_json NUL".into()))?;
-        let len = unsafe {
-            ffi::syllabix_llama_render_lfm(
-                role_ptrs.as_ptr(),
-                content_ptrs.as_ptr(),
-                messages.len() as c_int,
-                c_tools.as_ptr(),
-                1,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if len < 1 {
-            return Err(LlamaError::Failed("lfm prompt rendering failed".into()));
-        }
-        let mut out = vec![0u8; (len as usize) + 1];
-        let rc = unsafe {
-            ffi::syllabix_llama_render_lfm(
-                role_ptrs.as_ptr(),
-                content_ptrs.as_ptr(),
-                messages.len() as c_int,
-                c_tools.as_ptr(),
-                1,
-                out.as_mut_ptr().cast::<c_char>(),
-                out.len() as c_int,
-            )
-        };
-        if rc != len {
-            return Err(LlamaError::Failed("lfm prompt rendering failed".into()));
-        }
-        out.pop();
-        String::from_utf8(out).map_err(|_| LlamaError::Failed("lfm prompt is not UTF-8".into()))
-    }
-
-    /// Stream greedy pieces through the LFM tools-aware entry.
-    ///
-    /// With empty `tools_json` the shim delegates to the plain path, so
-    /// tool-free generation stays byte-identical.
-    ///
-    /// # Safety
-    /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
-    pub unsafe fn generate_with_lfm_tools(
+    pub fn apply_prompt(
         &mut self,
-        messages: &[ChatMessage],
+        messages_json: &str,
         tools_json: &str,
-        opts: LlamaGenerate,
-        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
-        abort_user: *mut c_void,
-        on_piece: &mut dyn FnMut(&str, bool) -> Result<(), LlamaError>,
-    ) -> Result<(), LlamaError> {
-        if messages.is_empty() {
-            return Err(LlamaError::Failed("no chat messages".into()));
-        }
-        let roles: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.role.as_str()).map_err(|_| LlamaError::Failed("role NUL".into()))
-            })
-            .collect();
-        let roles = roles?;
-        let contents: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.content.as_str())
-                    .map_err(|_| LlamaError::Failed("content NUL".into()))
-            })
-            .collect();
-        let contents = contents?;
-        let role_ptrs: Vec<*const c_char> = roles.iter().map(|s| s.as_ptr()).collect();
-        let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
-        let c_tools =
-            CString::new(tools_json).map_err(|_| LlamaError::Failed("tools_json NUL".into()))?;
-
-        let mut sink = TokenSink { on_piece };
-        let _ggml = ggml_lock();
-        let rc = unsafe {
-            ffi::syllabix_llama_generate_with_lfm_tools(
-                self.raw,
-                role_ptrs.as_ptr(),
-                content_ptrs.as_ptr(),
-                messages.len() as c_int,
-                if opts.append_thinking_off_suffix {
-                    0
-                } else {
-                    1
-                },
-                c_tools.as_ptr(),
-                opts.n_threads,
-                abort,
-                abort_user,
-                Some(on_token_piece),
-                (&mut sink as *mut TokenSink).cast(),
-            )
-        };
-        match rc {
-            0 => Ok(()),
-            1 => Err(LlamaError::Cancelled),
-            _ => Err(LlamaError::Failed("llama.cpp generate failed".into())),
-        }
+        enable_thinking: bool,
+    ) -> Result<String, LlamaError> {
+        chat_apply_prompt_raw(self.raw, messages_json, tools_json, enable_thinking)
     }
 
-    /// Return the prompt-token count for an LFM tools-aware prompt.
-    pub fn prompt_token_count_with_lfm_tools(
+    pub fn parse_output(
         &mut self,
-        messages: &[ChatMessage],
-        tools_json: &str,
-    ) -> Result<usize, LlamaError> {
-        let roles: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.role.as_str()).map_err(|_| LlamaError::Failed("role NUL".into()))
-            })
-            .collect();
-        let contents: Result<Vec<CString>, LlamaError> = messages
-            .iter()
-            .map(|m| {
-                CString::new(m.content.as_str())
-                    .map_err(|_| LlamaError::Failed("content NUL".into()))
-            })
-            .collect();
-        let roles = roles?;
-        let contents = contents?;
-        let role_ptrs: Vec<*const c_char> = roles.iter().map(|s| s.as_ptr()).collect();
-        let content_ptrs: Vec<*const c_char> = contents.iter().map(|s| s.as_ptr()).collect();
-        let c_tools =
-            CString::new(tools_json).map_err(|_| LlamaError::Failed("tools_json NUL".into()))?;
-        let _ggml = ggml_lock();
-        let count = unsafe {
-            ffi::syllabix_llama_count_prompt_tokens_with_lfm_tools(
-                self.raw,
-                role_ptrs.as_ptr(),
-                content_ptrs.as_ptr(),
-                messages.len() as c_int,
-                1,
-                c_tools.as_ptr(),
-            )
-        };
-        if count < 1 {
-            return Err(LlamaError::Failed(
-                "llama.cpp prompt tokenization failed".into(),
-            ));
+        text: &str,
+        is_partial: bool,
+    ) -> Result<ParsedChatOutput, LlamaError> {
+        chat_parse_output_raw(self.raw, text, is_partial)
+    }
+}
+
+impl Drop for ChatTemplateSession {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _ggml = ggml_lock();
+            unsafe { ffi::syllabix_chat_session_free(self.raw) };
+            self.raw = std::ptr::null_mut();
         }
-        Ok(count as usize)
+    }
+}
+
+fn chat_apply_prompt_raw(
+    session: *mut ffi::ChatSessionHandle,
+    messages_json: &str,
+    tools_json: &str,
+    enable_thinking: bool,
+) -> Result<String, LlamaError> {
+    let c_messages =
+        CString::new(messages_json).map_err(|_| LlamaError::Failed("messages_json NUL".into()))?;
+    let c_tools =
+        CString::new(tools_json).map_err(|_| LlamaError::Failed("tools_json NUL".into()))?;
+    let mut prompt_out: *mut c_char = std::ptr::null_mut();
+    let mut err = vec![0u8; 512];
+    let _ggml = ggml_lock();
+    let rc = unsafe {
+        ffi::syllabix_chat_apply(
+            session,
+            c_messages.as_ptr(),
+            c_tools.as_ptr(),
+            i32::from(enable_thinking),
+            &mut prompt_out,
+            err.as_mut_ptr().cast(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        let end = err.iter().position(|&b| b == 0).unwrap_or(err.len());
+        return Err(LlamaError::Failed(
+            String::from_utf8_lossy(&err[..end]).into_owned(),
+        ));
+    }
+    let prompt = unsafe { CStr::from_ptr(prompt_out) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { ffi::syllabix_chat_string_free(prompt_out) };
+    Ok(prompt)
+}
+
+fn chat_parse_output_raw(
+    session: *mut ffi::ChatSessionHandle,
+    text: &str,
+    is_partial: bool,
+) -> Result<ParsedChatOutput, LlamaError> {
+    let c_text = CString::new(text).map_err(|_| LlamaError::Failed("text NUL".into()))?;
+    let mut result_out: *mut c_char = std::ptr::null_mut();
+    let mut err = vec![0u8; 512];
+    let _ggml = ggml_lock();
+    let rc = unsafe {
+        ffi::syllabix_chat_parse(
+            session,
+            c_text.as_ptr(),
+            i32::from(is_partial),
+            &mut result_out,
+            err.as_mut_ptr().cast(),
+            err.len(),
+        )
+    };
+    if rc != 0 {
+        let end = err.iter().position(|&b| b == 0).unwrap_or(err.len());
+        return Err(LlamaError::Failed(
+            String::from_utf8_lossy(&err[..end]).into_owned(),
+        ));
+    }
+    let json_text = unsafe { CStr::from_ptr(result_out) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { ffi::syllabix_chat_string_free(result_out) };
+    parse_chat_output_json(&json_text)
+}
+
+fn parse_chat_output_json(json_text: &str) -> Result<ParsedChatOutput, LlamaError> {
+    let value: serde_json::Value = serde_json::from_str(json_text)
+        .map_err(|err| LlamaError::Failed(format!("chat parse json: {err}")))?;
+    let content = value
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let mut tool_calls = Vec::new();
+    if let Some(array) = value.get("tool_calls").and_then(|v| v.as_array()) {
+        for entry in array {
+            let name = entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let arguments = entry
+                .get("arguments")
+                .map(|v| {
+                    if v.is_string() {
+                        v.as_str().unwrap_or_default().to_string()
+                    } else {
+                        v.to_string()
+                    }
+                })
+                .unwrap_or_else(|| "{}".to_string());
+            let id = entry
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            tool_calls.push(ParsedChatToolCall {
+                name,
+                arguments,
+                id,
+            });
+        }
+    }
+    Ok(ParsedChatOutput {
+        content,
+        tool_calls,
+    })
+}
+
+impl Drop for ChatSession {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _ggml = ggml_lock();
+            unsafe { ffi::syllabix_chat_session_free(self.raw) };
+            self.raw = std::ptr::null_mut();
+        }
     }
 }
 
 impl Drop for LlamaContext {
     fn drop(&mut self) {
+        drop(self.chat.take());
         if !self.raw.is_null() {
             let _ggml = ggml_lock();
             unsafe { ffi::syllabix_llama_free(self.raw) };
@@ -1889,135 +1882,6 @@ mod tests {
         assert_eq!(msg.role, "user");
     }
 
-    fn qwen_messages() -> Vec<ChatMessage> {
-        vec![
-            ChatMessage {
-                role: "system".into(),
-                content: "You are helpful.".into(),
-            },
-            ChatMessage {
-                role: "user".into(),
-                content: "What time is it?".into(),
-            },
-        ]
-    }
-
-    #[test]
-    fn qwen_tool_free_prompt_matches_chatml_framing() {
-        let prompt = LlamaContext::render_qwen_prompt(&qwen_messages(), "", true).expect("render");
-        assert!(prompt.contains("<|im_start|>system\nYou are helpful.<|im_end|>\n"));
-        assert!(prompt.contains("<|im_start|>user\nWhat time is it?<|im_end|>\n"));
-        assert!(prompt.ends_with("<|im_start|>assistant\n<think>\n</think>\n"));
-        assert!(!prompt.contains("<tools>"));
-    }
-
-    #[test]
-    fn qwen_tools_preamble_folds_the_system_message() {
-        let tools = r#"[{"type":"function","function":{"name":"shell"}}]"#;
-        let prompt =
-            LlamaContext::render_qwen_prompt(&qwen_messages(), tools, true).expect("render");
-        assert!(prompt.contains("<tools>\n"));
-        assert!(prompt.contains(tools));
-        assert!(prompt.contains("</tools>"));
-        assert!(prompt.contains("<tool_call>"));
-        // The system text joins the preamble; it must not repeat as a block.
-        assert_eq!(prompt.matches("You are helpful.").count(), 1);
-        assert!(prompt.contains("<|im_start|>user\nWhat time is it?<|im_end|>\n"));
-        assert!(prompt.ends_with("<|im_start|>assistant\n<think>\n</think>\n"));
-    }
-
-    #[test]
-    fn qwen_tool_results_group_into_one_user_turn() {
-        let messages = vec![
-            ChatMessage {
-                role: "user".into(),
-                content: "How much space?".into(),
-            },
-            ChatMessage {
-                role: "tool".into(),
-                content: "first result".into(),
-            },
-            ChatMessage {
-                role: "tool".into(),
-                content: "second result".into(),
-            },
-        ];
-        let prompt = LlamaContext::render_qwen_prompt(&messages, "", true).expect("render");
-        assert!(prompt.contains(
-            "<|im_start|>user\n<tool_response>\nfirst result\n</tool_response>\n<tool_response>\nsecond result\n</tool_response>\n<|im_end|>\n"
-        ));
-        assert!(!prompt.contains("<|im_start|>tool"));
-    }
-
-    #[test]
-    fn qwen_render_rejects_empty_messages() {
-        assert!(LlamaContext::render_qwen_prompt(&[], "", true).is_err());
-    }
-
-    fn lfm_messages() -> Vec<ChatMessage> {
-        vec![
-            ChatMessage {
-                role: "system".into(),
-                content: "You are helpful.".into(),
-            },
-            ChatMessage {
-                role: "user".into(),
-                content: "What time is it?".into(),
-            },
-        ]
-    }
-
-    #[test]
-    fn lfm_tool_free_prompt_uses_im_framing_without_tools_list() {
-        let prompt = LlamaContext::render_lfm_prompt(&lfm_messages(), "").expect("render");
-        assert!(prompt.contains("<|im_start|>system\nYou are helpful.<|im_end|>\n"));
-        assert!(prompt.contains("<|im_start|>user\nWhat time is it?<|im_end|>\n"));
-        assert!(prompt.ends_with("<|im_start|>assistant\n"));
-        assert!(!prompt.contains("List of tools:"));
-        assert!(!prompt.contains("tool_call_start"));
-    }
-
-    #[test]
-    fn lfm_tools_preamble_lists_tools_and_folds_the_system_message() {
-        let tools = r#"[{"name":"shell"}]"#;
-        let prompt = LlamaContext::render_lfm_prompt(&lfm_messages(), tools).expect("render");
-        assert!(prompt.contains("<|im_start|>system\nList of tools: "));
-        assert!(prompt.contains(tools));
-        assert!(prompt.contains("<|im_end|>\n"));
-        // The system text joins the preamble; it must not repeat as a block.
-        assert_eq!(prompt.matches("You are helpful.").count(), 1);
-        assert!(prompt.contains("<|im_start|>user\nWhat time is it?<|im_end|>\n"));
-        assert!(prompt.ends_with("<|im_start|>assistant\n"));
-    }
-
-    #[test]
-    fn lfm_tool_results_render_as_native_tool_turns() {
-        let messages = vec![
-            ChatMessage {
-                role: "user".into(),
-                content: "How much space?".into(),
-            },
-            ChatMessage {
-                role: "tool".into(),
-                content: "first result".into(),
-            },
-            ChatMessage {
-                role: "tool".into(),
-                content: "second result".into(),
-            },
-        ];
-        let prompt = LlamaContext::render_lfm_prompt(&messages, "").expect("render");
-        assert!(prompt.contains("<|im_start|>tool\nfirst result<|im_end|>\n"));
-        assert!(prompt.contains("<|im_start|>tool\nsecond result<|im_end|>\n"));
-        assert!(!prompt.contains("<tool_response>"));
-    }
-
-    #[test]
-    fn lfm_render_rejects_empty_messages() {
-        assert!(LlamaContext::render_lfm_prompt(&[], "").is_err());
-    }
-
-    #[cfg(coverage)]
     #[test]
     fn coverage_exercises_whisper_wrapper_without_weights() {
         assert!(WhisperContext::load("fail-whisper").is_err());
@@ -2145,57 +2009,58 @@ mod tests {
             )
         }
         .is_err());
-        assert!(ctx
-            .prompt_token_count_with_tools(&messages, false, "[]")
-            .is_ok());
-        assert!(unsafe {
-            ctx.generate_with_tools(
-                &messages,
+        assert!(ctx.chat_tools_supported().unwrap());
+        let messages_json = r#"[{"role":"user","content":"hello"}]"#;
+        let prompt = ctx
+            .chat_apply_prompt(messages_json, "[]", false)
+            .expect("chat apply");
+        assert!(prompt.contains("fake-chat-prompt"));
+        assert!(ctx.chat_apply_prompt("bad\0json", "[]", false).is_err());
+        let tool_parse = ctx
+            .chat_parse_output("tool_call", false)
+            .expect("chat parse tools");
+        assert_eq!(tool_parse.tool_calls.len(), 1);
+        let plain = ctx
+            .chat_parse_output("hello", false)
+            .expect("chat parse content");
+        assert_eq!(plain.content, "fake reply");
+        assert!(ctx.chat_parse_output("parse-fail", false).is_err());
+        assert!(ctx.chat_last_format_name().unwrap().contains("CONTENT"));
+        unsafe {
+            ctx.chat_generate(
+                messages_json,
                 "[]",
+                false,
+                true,
                 opts,
                 None,
                 std::ptr::null_mut(),
                 &mut |_, _| Ok(()),
             )
+            .expect("chat generate");
+            assert!(ctx
+                .chat_generate(
+                    r#"chat-error"#,
+                    "[]",
+                    false,
+                    true,
+                    opts,
+                    None,
+                    std::ptr::null_mut(),
+                    &mut |_, _| Ok(()),
+                )
+                .is_err());
         }
-        .is_ok());
-        assert!(unsafe {
-            ctx.generate_with_tools(
-                &messages,
-                "bad\0tools",
-                opts,
-                None,
-                std::ptr::null_mut(),
-                &mut |_, _| Ok(()),
-            )
-        }
-        .is_err());
-        assert!(ctx
-            .prompt_token_count_with_lfm_tools(&messages, "[]")
-            .is_ok());
-        assert!(LlamaContext::render_lfm_prompt(&messages, "[]").is_ok());
-        assert!(unsafe {
-            ctx.generate_with_lfm_tools(
-                &messages,
-                "[]",
-                opts,
-                None,
-                std::ptr::null_mut(),
-                &mut |_, _| Ok(()),
-            )
-        }
-        .is_ok());
-        assert!(unsafe {
-            ctx.generate_with_lfm_tools(
-                &messages,
-                "bad\0tools",
-                opts,
-                None,
-                std::ptr::null_mut(),
-                &mut |_, _| Ok(()),
-            )
-        }
-        .is_err());
+        let mut tmpl =
+            ChatTemplateSession::from_template("fake-template").expect("template session");
+        assert!(tmpl
+            .apply_prompt(messages_json, "[]", false)
+            .expect("template apply")
+            .contains("fake-chat-prompt"));
+        let parsed = tmpl
+            .parse_output("tool_call", false)
+            .expect("template parse");
+        assert_eq!(parsed.tool_calls.len(), 1);
     }
 
     #[cfg(coverage)]

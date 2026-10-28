@@ -74,26 +74,23 @@ fn lfm_tool_turn_parses_a_native_call_into_the_shared_contract() {
     // with synthesized ids, or the turn fails closed with a
     // `rejected` event and no calls.
     let events = Llm::take_tool_events(llm);
-    if calls.is_empty() {
-        assert!(
-            events.iter().any(|e| e.kind == "rejected"),
-            "empty tool turn must record a rejection, got {events:?}"
-        );
-    } else {
-        for (i, call) in calls.iter().enumerate() {
-            assert_eq!(call.id, format!("local-call-{i}"));
-            assert!(matches!(call.name.as_str(), "web_fetch" | "shell"));
-            assert!(call.arguments.is_object());
-        }
-        assert!(
-            events.iter().any(|e| e.kind == "call"),
-            "non-empty tool turn must record call events, got {events:?}"
-        );
-        assert!(
-            chunks[0].text.len() <= LFM_TOOL_TURN_MAX_CHARS + 1_048_576,
-            "tool turn respects the thinking bound"
-        );
+    assert!(
+        !calls.is_empty(),
+        "LFM tool turn must yield at least one parsed call (events: {events:?})"
+    );
+    for (i, call) in calls.iter().enumerate() {
+        assert_eq!(call.id, format!("local-call-{i}"));
+        assert!(matches!(call.name.as_str(), "web_fetch" | "shell"));
+        assert!(call.arguments.is_object());
     }
+    assert!(
+        events.iter().any(|e| e.kind == "call"),
+        "non-empty tool turn must record call events, got {events:?}"
+    );
+    assert!(
+        chunks[0].text.len() <= LFM_TOOL_TURN_MAX_CHARS + 1_048_576,
+        "tool turn respects the thinking bound"
+    );
 }
 
 #[test]
