@@ -1,8 +1,8 @@
 name: Weekly full check
 
-# Full cross-platform safety net: Linux/Windows on GitHub-hosted runners,
-# macOS on the self-hosted runner (Apple Silicon, 0 billed minutes). When
-# the Mac is offline, manually dispatch with the hosted pool for that run.
+# Full cross-platform safety net on GitHub-hosted runners (Linux, Windows,
+# and macOS arm64 via macos-latest). Manual dispatch can still select the
+# self-hosted Mac pool when it is online (0 billed minutes).
 # The per-PR fast gate (fmt / clippy / coverage) lives in ci.yml on
 # GitHub-hosted Linux. Native-weight coverage is native-tests.yml
 # (PRs, main, and manual dispatch).
@@ -13,12 +13,12 @@ on:
   workflow_dispatch:
     inputs:
       macos_pool:
-        description: "Runner pool for the macOS leg (default: self-hosted, free)"
+        description: "Runner pool for the macOS leg (default: GitHub-hosted)"
         type: choice
-        default: '["self-hosted", "macOS"]'
+        default: '["macos-latest"]'
         options:
-          - '["self-hosted", "macOS"]'
           - '["macos-latest"]'
+          - '["self-hosted", "macOS"]'
 
 permissions:
   contents: read
@@ -90,13 +90,12 @@ jobs:
           chmod +x scripts/check-one-ggml.sh
           scripts/check-one-ggml.sh "target/${{ matrix.target }}/release/syllabix"
 
-  # macOS leg, self-hosted only (0 billed minutes): native Apple-Silicon
-  # test plus Intel cross-compile check. Scheduled runs always use the
-  # self-hosted Mac; when it is offline, manually dispatch this workflow
-  # with the hosted pool for that run.
+  # macOS leg on GitHub-hosted arm64 (macos-latest): native Apple-Silicon
+  # test plus Intel cross-compile check. Manual dispatch may select the
+  # self-hosted Mac pool instead when it is online.
   test-macos:
     name: test / macos-arm64
-    runs-on: ${{ fromJSON(inputs.macos_pool || '["self-hosted", "macOS"]') }}
+    runs-on: ${{ fromJSON(inputs.macos_pool || '["macos-latest"]') }}
     timeout-minutes: 40
     env:
       # Self-hosted macOS runners ship Homebrew Rust; rustup-init otherwise
@@ -118,11 +117,9 @@ jobs:
         with:
           path: ${{ github.workspace }}/.syllabix-cache
           key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-pocket-tts
-      # Cache only when dispatched to the hosted pool. The self-hosted
-      # runner keeps target/ on disk between runs, so restore always missed
-      # while every green job uploaded ~1 GB over the home uplink (see ci.yml).
+      # Rust cache on GitHub-hosted runs; skip on self-hosted (target/ stays on disk).
       - uses: Swatinem/rust-cache@v2
-        if: contains(inputs.macos_pool || '', 'macos-latest')
+        if: ${{ !contains(inputs.macos_pool || '', 'self-hosted') }}
         with:
           key: macos-arm64
       - name: Unit and CLI tests
