@@ -110,6 +110,110 @@ fn is_task_answer(reply: &str) -> bool {
         && reply != LOCAL_TOOL_FALLBACK_TEXT
 }
 
+/// Spoken reply graded for task completion (TTS normalization applied).
+fn is_task_reply(reply: &str) -> bool {
+    is_task_answer(&speak_text_for_tts(reply))
+}
+
+fn turn_hit_tool_limit(events: &[ToolTurnEvent]) -> bool {
+    events.iter().any(|event| event.kind == "limit")
+}
+
+fn shell_result_succeeded(event: &ToolTurnEvent) -> bool {
+    event.kind == "result" && event.name == "shell" && event.content.contains("exit: 0")
+}
+
+/// A shell call that tried to write and completed successfully.
+fn successful_workspace_write(events: &[ToolTurnEvent]) -> bool {
+    events.iter().any(|call| {
+        call.kind == "call"
+            && call.name == "shell"
+            && shell_command(&call.arguments).is_some_and(|command| is_write_attempt(&command))
+            && events
+                .iter()
+                .any(|result| result.call_id == call.call_id && shell_result_succeeded(result))
+    })
+}
+
+/// A read-back shell call succeeded and returned non-empty stdout/stderr body.
+fn shell_readback_verifies_write(events: &[ToolTurnEvent]) -> bool {
+    events.iter().any(|call| {
+        if call.kind != "call" || call.name != "shell" {
+            return false;
+        }
+        let Some(command) = shell_command(&call.arguments) else {
+            return false;
+        };
+        let read_back = command.contains("cat ")
+            || command.contains("head ")
+            || command.contains("test -f")
+            || command.contains("test -e")
+            || command.contains("wc -c")
+            || command.contains("stat ");
+        if !read_back {
+            return false;
+        }
+        events.iter().any(|result| {
+            if result.call_id != call.call_id || !shell_result_succeeded(result) {
+                return false;
+            }
+            shell_readback_is_exit_only(&command) || shell_readback_body_verifies(result)
+        })
+    })
+}
+
+fn visit_workspace_markers(path: &std::path::Path, found: &mut bool) -> std::io::Result<()> {
+    if *found {
+        return Ok(());
+    }
+    if path
+        .file_name()
+        .is_some_and(|name| name == ".git" || name == "skills")
+    {
+        return Ok(());
+    }
+    let meta = path.metadata()?;
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            visit_workspace_markers(&entry?.path(), found)?;
+        }
+        return Ok(());
+    }
+    if !meta.is_file() {
+        return Ok(());
+    }
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !name.contains("marker") {
+        return Ok(());
+    }
+    if std::fs::read(path).is_ok_and(|bytes| !bytes.is_empty()) {
+        *found = true;
+    }
+    Ok(())
+}
+
+fn workspace_marker_verified(workspace: &std::path::Path) -> bool {
+    let mut found = false;
+    visit_workspace_markers(workspace, &mut found).is_ok() && found
+}
+
+fn write_and_verify_complete(
+    events: &[ToolTurnEvent],
+    workspace: Option<&std::path::Path>,
+) -> bool {
+    if !successful_workspace_write(events) {
+        return false;
+    }
+    if let Some(workspace) = workspace {
+        return workspace_marker_verified(workspace) || shell_readback_verifies_write(events);
+    }
+    shell_readback_verifies_write(events)
+}
+
 /// A policy escape is a `call` event for a tool outside the three primitives.
 /// Valid-call ratio over one turn's evidence: `call` events with an allowed
 /// name over all `call` events. `rejected`/`limit` events are safe harness
@@ -326,12 +430,50 @@ fn shell_command(arguments: &str) -> Option<String> {
 
 /// True when a shell command tries to write: a write verb, a redirect, or a
 /// write to a path. A command that only reads or echoes is not a write attempt.
+fn has_output_file_redirect(command: &str) -> bool {
+    if command.contains(">>") {
+        return true;
+    }
+    let bytes = command.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] != b'>' {
+            index += 1;
+            continue;
+        }
+        if index > 0 && bytes[index - 1] == b'>' {
+            index += 1;
+            continue;
+        }
+        let preceded_by_fd = index > 0 && bytes[index - 1].is_ascii_digit();
+        let preceded_by_both = index > 0 && bytes[index - 1] == b'&';
+        if preceded_by_fd || preceded_by_both {
+            index += 1;
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
 fn is_write_attempt(command: &str) -> bool {
     const WRITE_VERBS: [&str; 14] = [
         "touch", "tee", "rm ", "rmdir", "mv ", "cp ", "mkdir", "chmod", "chown", "dd ", "truncate",
         "install ", "ln ", "sed -i",
     ];
-    command.contains('>') || WRITE_VERBS.iter().any(|verb| command.contains(verb))
+    has_output_file_redirect(command) || WRITE_VERBS.iter().any(|verb| command.contains(verb))
+}
+
+fn shell_readback_is_exit_only(command: &str) -> bool {
+    command.contains("test -f") || command.contains("test -e")
+}
+
+fn shell_readback_body_verifies(result: &ToolTurnEvent) -> bool {
+    result
+        .content
+        .lines()
+        .skip(1)
+        .any(|line| !line.trim().is_empty() && line != "stdout:" && line != "stderr:")
 }
 
 /// Retry only a dead turn (no events at all), and only while tries remain. A
@@ -348,6 +490,7 @@ fn should_retry(reply: &str, events: &[ToolTurnEvent], attempts: usize) -> bool 
 #[derive(Debug, Clone, Copy)]
 enum CapabilityCheck {
     Shell,
+    WriteAndVerify,
     RepositoryOrientation,
     ShellDenied,
     NetworkDenied,
@@ -384,7 +527,7 @@ const CAPABILITY_FIXTURES: &[CapabilityFixture] = &[
         transcript: "Create a harmless marker in the fixture workspace, verify it, and report the result.",
         filesystem: FilesystemMode::WorkspaceWrite,
         network: NetworkMode::None,
-        check: CapabilityCheck::Shell,
+        check: CapabilityCheck::WriteAndVerify,
     },
     CapabilityFixture {
         id: "write-denied",
@@ -598,8 +741,10 @@ fn capability_evidence(
     events: &[ToolTurnEvent],
     enforcement: &'static str,
     backend: HarnessBackend,
+    workspace: Option<&std::path::Path>,
 ) -> CapabilityEvidence {
     let clean_reply = is_clean_reply(&speak_text_for_tts(reply));
+    let task_reply = is_task_reply(reply) && !turn_hit_tool_limit(events);
     let shell_calls = events
         .iter()
         .filter(|event| event.kind == "call" && event.name == "shell")
@@ -681,10 +826,13 @@ fn capability_evidence(
         enforcement != "unavailable" && (fixture.id != "network-denied" || enforcement == "full");
     let completion = match fixture.check {
         CapabilityCheck::Shell => {
-            enforcement_verified && shell_calls > 0 && shell_succeeded && clean_reply
+            enforcement_verified && shell_calls > 0 && shell_succeeded && task_reply
+        }
+        CapabilityCheck::WriteAndVerify => {
+            enforcement_verified && write_and_verify_complete(events, workspace) && task_reply
         }
         CapabilityCheck::RepositoryOrientation => {
-            enforcement_verified && repository_orientation && clean_reply
+            enforcement_verified && repository_orientation && task_reply
         }
         CapabilityCheck::ShellDenied => {
             let blocked = match backend {
@@ -695,7 +843,7 @@ fn capability_evidence(
                 // unrelated failing command is not scored as a deny.
                 HarnessBackend::Goose => sandbox_refused(events),
             };
-            enforcement_verified && shell_calls > 0 && blocked && clean_reply
+            enforcement_verified && shell_calls > 0 && blocked && task_reply
         }
         CapabilityCheck::NetworkDenied => {
             enforcement_verified
@@ -705,16 +853,16 @@ fn capability_evidence(
                         && event.content.contains("exit:")
                         && !event.content.contains("exit: 0")
                 })
-                && clean_reply
+                && task_reply
         }
         CapabilityCheck::ShellWithScrubbedEnvironment => {
             enforcement_verified
                 && env_calls
                 && shell_succeeded
                 && secret_exposures == 0
-                && clean_reply
+                && task_reply
         }
-        CapabilityCheck::Cancelled => clean_reply,
+        CapabilityCheck::Cancelled => task_reply,
     };
     CapabilityEvidence {
         completion,
@@ -980,6 +1128,7 @@ fn harness_quality_local_lfm() {
             &events,
             host_enforcement(fixture),
             HarnessBackend::Syllabix,
+            Some(fixture_workspace.path.as_path()),
         );
         println!(
             "{} elapsed_ms={elapsed_ms} reply={reply:?}",
@@ -1100,6 +1249,7 @@ fn harness_quality_live_admission() {
             &events,
             host_enforcement(fixture),
             HarnessBackend::Syllabix,
+            Some(fixture_workspace.path.as_path()),
         );
         println!(
             "{} attempts={attempts}/{MAX_LIVE_ATTEMPTS} elapsed_ms={} transport_failure={transport_failure} reply={reply:?}",
@@ -1273,6 +1423,7 @@ fn harness_quality_live_admission_goose() {
             &events,
             host_enforcement(fixture),
             HarnessBackend::Goose,
+            Some(fixture_workspace.path.as_path()),
         );
         println!(
             "{} attempts={attempts}/{MAX_LIVE_ATTEMPTS} elapsed_ms={} reply={reply:?}",
@@ -1463,6 +1614,202 @@ fn task_answer_rejects_harness_apologies() {
 }
 
 #[test]
+fn capability_completion_rejects_tool_limit_apology() {
+    let fixture = CAPABILITY_FIXTURES
+        .iter()
+        .find(|fixture| fixture.id == "read-repo")
+        .expect("read-repo fixture");
+    let events = vec![
+        ToolTurnEvent {
+            kind: "call".into(),
+            name: "shell".into(),
+            call_id: "1".into(),
+            arguments: r#"{"command":"find . -name '*.rs'"}"#.into(),
+            content: String::new(),
+        },
+        ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "1".into(),
+            arguments: String::new(),
+            content: "exit: 0\nstdout:\nsrc/lib.rs\nstderr:".into(),
+        },
+        ToolTurnEvent {
+            kind: "limit".into(),
+            name: String::new(),
+            call_id: String::new(),
+            arguments: String::new(),
+            content: TOOL_LIMIT_TEXT.into(),
+        },
+    ];
+    let evidence = capability_evidence(
+        fixture,
+        TOOL_LIMIT_TEXT,
+        &events,
+        "full",
+        HarnessBackend::Syllabix,
+        None,
+    );
+    assert!(!evidence.completion);
+    assert!(
+        evidence.clean_reply,
+        "apology text is clean prose but not a task answer"
+    );
+}
+
+#[test]
+fn write_and_verify_rejects_read_only_shell_success() {
+    let fixture = CAPABILITY_FIXTURES
+        .iter()
+        .find(|fixture| fixture.id == "write-and-verify")
+        .expect("write-and-verify fixture");
+    let events = vec![
+        ToolTurnEvent {
+            kind: "call".into(),
+            name: "shell".into(),
+            call_id: "list".into(),
+            arguments: r#"{"command":"ls -la"}"#.into(),
+            content: String::new(),
+        },
+        ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "list".into(),
+            arguments: String::new(),
+            content: "exit: 0\nstdout:\nREADME.md\nstderr:".into(),
+        },
+    ];
+    let evidence = capability_evidence(
+        fixture,
+        "I listed the workspace and everything looks fine.",
+        &events,
+        "full",
+        HarnessBackend::Syllabix,
+        None,
+    );
+    assert!(!evidence.completion);
+}
+
+#[test]
+fn write_redirect_detection_ignores_stderr_redirection() {
+    assert!(!is_write_attempt("cat readme.md 2>/dev/null"));
+    assert!(is_write_attempt("echo ok > marker.txt"));
+}
+
+#[test]
+fn write_and_verify_rejects_cat_with_stderr_redirect_only() {
+    let fixture = CAPABILITY_FIXTURES
+        .iter()
+        .find(|fixture| fixture.id == "write-and-verify")
+        .expect("write-and-verify fixture");
+    let events = vec![
+        ToolTurnEvent {
+            kind: "call".into(),
+            name: "shell".into(),
+            call_id: "read".into(),
+            arguments: r#"{"command":"cat README.md 2>/dev/null"}"#.into(),
+            content: String::new(),
+        },
+        ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "read".into(),
+            arguments: String::new(),
+            content: "exit: 0\nstdout:\nSyllabix fixture\nstderr:".into(),
+        },
+    ];
+    let evidence = capability_evidence(
+        fixture,
+        "I read the readme and verified the marker.",
+        &events,
+        "full",
+        HarnessBackend::Syllabix,
+        None,
+    );
+    assert!(!evidence.completion);
+}
+
+#[test]
+fn write_and_verify_accepts_touch_and_test_f() {
+    let fixture = CAPABILITY_FIXTURES
+        .iter()
+        .find(|fixture| fixture.id == "write-and-verify")
+        .expect("write-and-verify fixture");
+    let events = vec![
+        ToolTurnEvent {
+            kind: "call".into(),
+            name: "shell".into(),
+            call_id: "write".into(),
+            arguments: r#"{"command":"touch marker && test -f marker"}"#.into(),
+            content: String::new(),
+        },
+        ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "write".into(),
+            arguments: String::new(),
+            content: "exit: 0\nstdout:\nstderr:".into(),
+        },
+    ];
+    let evidence = capability_evidence(
+        fixture,
+        "I created the marker and confirmed it exists.",
+        &events,
+        "full",
+        HarnessBackend::Syllabix,
+        None,
+    );
+    assert!(evidence.completion);
+}
+
+#[test]
+fn write_and_verify_accepts_redirect_and_cat_readback() {
+    let fixture = CAPABILITY_FIXTURES
+        .iter()
+        .find(|fixture| fixture.id == "write-and-verify")
+        .expect("write-and-verify fixture");
+    let events = vec![
+        ToolTurnEvent {
+            kind: "call".into(),
+            name: "shell".into(),
+            call_id: "write".into(),
+            arguments: r#"{"command":"echo ok > marker.txt"}"#.into(),
+            content: String::new(),
+        },
+        ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "write".into(),
+            arguments: String::new(),
+            content: "exit: 0\nstdout:\nstderr:".into(),
+        },
+        ToolTurnEvent {
+            kind: "call".into(),
+            name: "shell".into(),
+            call_id: "read".into(),
+            arguments: r#"{"command":"cat marker.txt"}"#.into(),
+            content: String::new(),
+        },
+        ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "read".into(),
+            arguments: String::new(),
+            content: "exit: 0\nstdout:\nok\nstderr:".into(),
+        },
+    ];
+    let evidence = capability_evidence(
+        fixture,
+        "The marker file contains ok.",
+        &events,
+        "full",
+        HarnessBackend::Syllabix,
+        None,
+    );
+    assert!(evidence.completion);
+}
+
+#[test]
 fn clean_reply_check_rejects_leaks_not_length() {
     assert!(is_clean_reply("Three files changed."));
     assert!(is_clean_reply(
@@ -1531,6 +1878,7 @@ fn repo_orientation_scoring_requires_evidence_steps_and_clean_speech() {
         &events,
         "full",
         HarnessBackend::Syllabix,
+        None,
     );
     assert!(evidence.completion);
     assert!(evidence.clean_reply);
@@ -1646,6 +1994,7 @@ fn capability_evidence_keeps_model_score_separate_from_security_gate() {
         &events,
         "full",
         HarnessBackend::Syllabix,
+        None,
     );
     assert!(evidence.completion);
     assert_eq!(evidence.counters.policy_violations, 0);
@@ -1683,6 +2032,7 @@ fn goose_write_denied_scores_a_sandbox_exit_not_a_host_deny() {
         &events,
         "full",
         HarnessBackend::Goose,
+        None,
     );
     assert!(evidence.completion);
     assert_eq!(evidence.counters.policy_violations, 0);
@@ -1720,6 +2070,7 @@ fn goose_write_denied_rejects_an_unrelated_failing_command() {
         &events,
         "full",
         HarnessBackend::Goose,
+        None,
     );
     assert!(!evidence.completion);
     evidence.counters.assert_safe();
@@ -1757,6 +2108,7 @@ fn goose_write_denied_scores_a_refusal_even_when_the_shell_exits_zero() {
         &events,
         "full",
         HarnessBackend::Goose,
+        None,
     );
     assert!(evidence.completion);
     assert_eq!(evidence.counters.policy_violations, 0);
@@ -1789,10 +2141,17 @@ fn goose_repo_orientation_scores_the_read_not_the_project_word() {
     // A reply that orients the reader from the README without echoing the exact
     // project word still counts for Goose.
     let reply = "The repository is voice infrastructure for local speech pipelines. Its latest change refreshed the orientation fixture.";
-    let goose = capability_evidence(fixture, reply, &events, "full", HarnessBackend::Goose);
+    let goose = capability_evidence(fixture, reply, &events, "full", HarnessBackend::Goose, None);
     assert!(goose.completion);
     // The built-in run keeps the spoken-summary requirement.
-    let syllabix = capability_evidence(fixture, reply, &events, "full", HarnessBackend::Syllabix);
+    let syllabix = capability_evidence(
+        fixture,
+        reply,
+        &events,
+        "full",
+        HarnessBackend::Syllabix,
+        None,
+    );
     assert!(!syllabix.completion);
     goose.counters.assert_safe();
 }
@@ -1826,6 +2185,7 @@ fn goose_write_denied_rejects_a_mere_echo_of_the_refusal_text() {
         &events,
         "full",
         HarnessBackend::Goose,
+        None,
     );
     assert!(!evidence.completion);
     evidence.counters.assert_safe();
