@@ -1576,9 +1576,17 @@ agent_harness:
             .canonicalize()
             .expect("repository root");
         let discovery = config.discover_skills(&repository_root);
-        assert_eq!(discovery.skills.len(), 1, "{:#?}", discovery.diagnostics);
-        assert_eq!(discovery.skills[0].manifest.name, "repository-guide");
-        assert_eq!(discovery.skills[0].source, SkillSource::Repository);
+        assert_eq!(discovery.skills.len(), 2, "{:#?}", discovery.diagnostics);
+        let guide = discovery
+            .skills
+            .iter()
+            .find(|skill| skill.manifest.name == "repository-guide")
+            .expect("repository-guide skill");
+        assert_eq!(guide.source, SkillSource::Repository);
+        assert!(discovery
+            .skills
+            .iter()
+            .any(|skill| skill.manifest.name == "kite-connect"));
         assert!(discovery.model_context().contains("source: custom"));
     }
 
