@@ -71,6 +71,12 @@ mod ffi {
         pub fn syllabix_llama_free(llm: *mut LlamaHandle);
         pub fn syllabix_llama_n_ctx(llm: *const LlamaHandle) -> c_int;
         pub fn syllabix_llama_n_ctx_train(llm: *const LlamaHandle) -> c_int;
+        pub fn syllabix_llama_chat_lfm_sampler_preset(
+            llm: *const LlamaHandle,
+            temp_out: *mut f32,
+            top_k_out: *mut c_int,
+            repeat_penalty_out: *mut f32,
+        ) -> c_int;
         pub fn syllabix_llama_count_prompt_tokens(
             llm: *mut LlamaHandle,
             roles: *const *const c_char,
@@ -229,7 +235,6 @@ mod ffi {
     pub unsafe fn syllabix_llama_backend_init() {}
 
     #[cfg(coverage)]
-    #[cfg(coverage)]
     pub unsafe fn syllabix_llama_n_gpu_layers() -> c_int {
         if cfg!(target_os = "macos") {
             -1
@@ -327,6 +332,16 @@ mod ffi {
     #[cfg(coverage)]
     pub unsafe fn syllabix_llama_n_ctx_train(_llm: *const LlamaHandle) -> c_int {
         4096
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_llama_chat_lfm_sampler_preset(
+        _llm: *const LlamaHandle,
+        _temp_out: *mut f32,
+        _top_k_out: *mut c_int,
+        _repeat_penalty_out: *mut f32,
+    ) -> c_int {
+        0
     }
 
     #[cfg(coverage)]
@@ -678,6 +693,17 @@ mod ffi {
         *out.add(n) = 0;
         0
     }
+}
+
+/// Resolved LFM chat sampler preset (template or GGUF metadata).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LfmChatSamplerPreset {
+    /// Sampling temperature.
+    pub temp: f32,
+    /// Top-k limit.
+    pub top_k: i32,
+    /// Repeat penalty.
+    pub repeat_penalty: f32,
 }
 
 /// One chat message passed into llama.cpp's template.
@@ -1050,6 +1076,30 @@ impl LlamaContext {
     /// GGUF trained context length.
     pub fn n_ctx_train(&self) -> i32 {
         unsafe { ffi::syllabix_llama_n_ctx_train(self.raw) }
+    }
+
+    /// LiquidAI / GGUF `general.sampling.*` chat preset when present.
+    pub fn chat_lfm_sampler_preset(&self) -> Option<LfmChatSamplerPreset> {
+        let mut temp = 0.0f32;
+        let mut top_k = 0;
+        let mut repeat_penalty = 0.0f32;
+        let ok = unsafe {
+            ffi::syllabix_llama_chat_lfm_sampler_preset(
+                self.raw,
+                &mut temp,
+                &mut top_k,
+                &mut repeat_penalty,
+            )
+        };
+        if ok == 0 {
+            None
+        } else {
+            Some(LfmChatSamplerPreset {
+                temp,
+                top_k,
+                repeat_penalty,
+            })
+        }
     }
 
     /// Count the exact chat-template prompt tokens used by generation.

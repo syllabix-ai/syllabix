@@ -20,7 +20,7 @@ mic → VAD → STT → LLM / agentic LLM (⇄ sandboxed shell, tool exec) → T
 
 Download `syllabix`, run it, and talk. You do not need Python, pip, or an API key for the default setup. Your audio stays on your machine.
 
-Default models: Whisper `small` (STT), LFM2.5-2.6B (local small LLM), and Pocket TTS (TTS).
+Default models: Whisper `small` (STT), LFM3-1.7B (local small LLM), and Pocket TTS (TTS).
 
 ## Download
 
@@ -58,13 +58,13 @@ Always pass `--tag vX.Y.Z`. Do not install from `main`. You need CMake, a C++ co
 
 ### Fully local
 
-No API key. Default `run` uses on-device Whisper, LFM2.5-2.6B, and Pocket TTS.
+No API key. Default `run` uses on-device Whisper, LFM3-1.7B, and Pocket TTS.
 
 ```bash
 ./syllabix run
 ```
 
-The first local run downloads the models (Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS — about 2.2 GB) into `~/.cache/syllabix/models/v1` (or `%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows). You can change that folder with `$SYLLABIX_CACHE_DIR`. Once cached, it needs no internet.
+The first local run downloads the models (Silero, Whisper `small`, LFM3-1.7B, and Pocket TTS — about 2.5 GB) into `~/.cache/syllabix/models/v1` (or `%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows). You can change that folder with `$SYLLABIX_CACHE_DIR`. Once cached, it needs no internet.
 
 ![Fully local `syllabix run` terminal UI](docs/assets/tui-run.png)
 
@@ -92,12 +92,12 @@ Full command list: [docs/cli.md](docs/cli.md).
 
 ## Supported models
 
-VAD is always `silero`. Default stack is `whisper-small` + `lfm2.5-2.6b` + `pocket-tts`.
+VAD is always `silero`. Default stack is `whisper-small` + `lfm3-1.7b` + `pocket-tts`.
 
 | Stage | Models |
 | --- | --- |
 | STT | `whisper-small` (default), `whisper-medium`, `whisper-large-v3-turbo`, `whisper-medium-q5_0`, `whisper-large-v3-turbo-q5_0`, `moonshine-streaming-small`, `moonshine-streaming-medium`, `qwen3-asr-0.6` |
-| Local LLM | `lfm2.5-2.6b` (default), `lfm2.5-350m`, `lfm2.5-230m`, `llama-3.2-1b`, `qwen3.5-0.8b`, `qwen3.5-2b` |
+| Local LLM | `lfm3-1.7b` (default), `lfm3-1.7b-bf16`, `lfm2.5-2.6b`, `lfm2.5-350m`, `lfm2.5-230m`, `llama-3.2-1b`, `qwen3.5-0.8b`, `qwen3.5-2b` |
 | Online LLM | Any OpenAI-compatible endpoint, e.g. model `gpt-5.4` at `https://api.openai.com/v1` (needs `SYLLABIX_LLM_API_KEY`) |
 | TTS | `pocket-tts` (default), `kokoro`, `qwen3-0.6`, `qwen3-1.7` |
 

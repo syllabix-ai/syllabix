@@ -68,7 +68,7 @@ pub struct AgentConfig {
     pub inherit_current_session: bool,
     /// LLM provider.
     pub llm: LlmProvider,
-    /// LLM model id (`lfm2.5-2.6b`, `lfm2.5-350m`, `lfm2.5-230m`, `llama-3.2-1b`, `qwen3.5-0.8b`, or `qwen3.5-2b`).
+    /// LLM model id (`lfm3-1.7b`, `lfm3-1.7b-bf16`, `lfm2.5-2.6b`, `lfm2.5-350m`, `lfm2.5-230m`, `llama-3.2-1b`, `qwen3.5-0.8b`, or `qwen3.5-2b`).
     pub llm_model: String,
     /// Qwen thinking. Default false; yaml `thinking: true` enables it on
     /// `qwen3.5-2b` only and is rejected for every other model.
@@ -1238,13 +1238,15 @@ fn parse_llm_model(provider: &LlmProvider, value: &str) -> Result<String> {
                 crate::llm::QWEN35_08B_ASSET
                 | crate::llm::QWEN35_2B_ASSET
                 | crate::llm::LLAMA_32_1B_ASSET
+                | crate::llm::LFM3_1_7B_ASSET
+                | crate::llm::LFM3_1_7B_BF16_ASSET
                 | crate::llm::LFM25_2_6B_ASSET
                 | crate::llm::LFM25_350M_ASSET
                 | crate::llm::LFM25_230M_ASSET => Ok(value.to_string()),
                 other => Err(unsupported(
                     "pipeline.llm.model",
                     other,
-                    "lfm2.5-2.6b, lfm2.5-350m, lfm2.5-230m, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b, or a .gguf path",
+                    "lfm3-1.7b, lfm3-1.7b-bf16, lfm2.5-2.6b, lfm2.5-350m, lfm2.5-230m, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b, or a .gguf path",
                 )),
             }
         }
@@ -1372,7 +1374,7 @@ mod tests {
     fn generated_yaml_round_trips() {
         let yaml = AgentConfig::v0().to_yaml();
         assert!(yaml.contains("language: en"));
-        assert!(yaml.contains("model: lfm2.5-2.6b"));
+        assert!(yaml.contains("model: lfm3-1.7b"));
         assert!(yaml.contains("thinking: false"));
         assert!(yaml.contains("system_prompt:"));
         assert!(yaml.contains("{language}"));
@@ -1627,7 +1629,7 @@ name: harness
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: local, model: lfm2.5-2.6b }
+  llm: { provider: local, model: lfm3-1.7b }
   tts: { provider: local, model: kokoro }
 agent_harness:
   agent: syllabix
@@ -1834,7 +1836,7 @@ name: demo
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: local, model: lfm2.5-2.6b }
+  llm: { provider: local, model: lfm3-1.7b }
   tts: { provider: local, model: pocket-tts }
 "#,
         )
@@ -1851,7 +1853,7 @@ name: demo
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: local, model: lfm2.5-2.6b }
+  llm: { provider: local, model: lfm3-1.7b }
   tts: { provider: local, model: pocket-tts }
 auto-timeout:
   mic_mute_ms: 0
@@ -1871,7 +1873,7 @@ name: demo
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: local, model: lfm2.5-2.6b }
+  llm: { provider: local, model: lfm3-1.7b }
   tts: { provider: local, model: pocket-tts }
 auto-timeout:
   mic_mute_ms: 60000
@@ -1891,7 +1893,7 @@ name: demo
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: local, model: lfm2.5-2.6b }
+  llm: { provider: local, model: lfm3-1.7b }
   tts: { provider: local, model: pocket-tts }
 auto-timeout:
   mic_mute_ms: 100000
@@ -1910,7 +1912,7 @@ name: demo
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: local, model: lfm2.5-2.6b }
+  llm: { provider: local, model: lfm3-1.7b }
   tts: { provider: local, model: pocket-tts }
 auto-timeout:
   idle_ms: 1
@@ -1924,7 +1926,7 @@ name: demo
 pipeline:
   vad: { provider: silero }
   stt: { provider: local, model: whisper-small, language: en }
-  llm: { provider: local, model: lfm2.5-2.6b }
+  llm: { provider: local, model: lfm3-1.7b }
   tts: { provider: local, model: pocket-tts }
 auto-timeout:
   mic_mute_ms: -1
@@ -1966,7 +1968,7 @@ auto-timeout:
             .join("../../examples/demo-fully-self-hosted-voice-agents.yaml");
         let config = AgentConfig::load_path(&path).expect("load example");
         assert_eq!(config.name, "demo-fully-self-hosted-voice-agents");
-        assert_eq!(config.llm_model, "lfm2.5-2.6b");
+        assert_eq!(config.llm_model, "lfm3-1.7b");
         assert_eq!(config.language, "en");
     }
 
@@ -2032,7 +2034,7 @@ pipeline:
     language: en
   llm:
     provider: local
-    model: lfm2.5-2.6b
+    model: lfm3-1.7b
   tts:
     provider: local
     model: pocket-tts
@@ -2044,31 +2046,36 @@ pipeline:
     fn yaml_qwen_sizes_and_thinking_on() {
         let two = AgentConfig::v0()
             .to_yaml()
-            .replace("model: lfm2.5-2.6b", "model: qwen3.5-2b")
+            .replace("model: lfm3-1.7b", "model: qwen3.5-2b")
             .replace("thinking: false", "thinking: true");
         let cfg = AgentConfig::parse_yaml(&two).unwrap();
         assert_eq!(cfg.llm_model, "qwen3.5-2b");
         assert!(cfg.thinking);
         let small = AgentConfig::v0()
             .to_yaml()
-            .replace("model: lfm2.5-2.6b", "model: qwen3.5-0.8b");
+            .replace("model: lfm3-1.7b", "model: qwen3.5-0.8b");
         let cfg = AgentConfig::parse_yaml(&small).unwrap();
         assert_eq!(cfg.llm_model, "qwen3.5-0.8b");
         assert!(!cfg.thinking);
 
         let llama = AgentConfig::v0()
             .to_yaml()
-            .replace("model: lfm2.5-2.6b", "model: llama-3.2-1b");
+            .replace("model: lfm3-1.7b", "model: llama-3.2-1b");
         let cfg = AgentConfig::parse_yaml(&llama).unwrap();
         assert_eq!(cfg.llm_model, "llama-3.2-1b");
         assert!(!cfg.thinking);
         let lfm_default = AgentConfig::v0();
-        assert_eq!(lfm_default.llm_model, "lfm2.5-2.6b");
+        assert_eq!(lfm_default.llm_model, "lfm3-1.7b");
         assert!(!lfm_default.thinking);
-        for model in ["lfm2.5-350m", "lfm2.5-230m"] {
+        for model in [
+            "lfm2.5-2.6b",
+            "lfm2.5-350m",
+            "lfm2.5-230m",
+            "lfm3-1.7b-bf16",
+        ] {
             let yaml = AgentConfig::v0()
                 .to_yaml()
-                .replace("model: lfm2.5-2.6b", &format!("model: {model}"));
+                .replace("model: lfm3-1.7b", &format!("model: {model}"));
             let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
             assert_eq!(cfg.llm_model, model);
             assert!(!cfg.thinking);
@@ -2078,6 +2085,8 @@ pipeline:
     #[test]
     fn thinking_true_is_rejected_except_on_the_2b_model() {
         for model in [
+            "lfm3-1.7b",
+            "lfm3-1.7b-bf16",
             "lfm2.5-2.6b",
             "lfm2.5-350m",
             "lfm2.5-230m",
@@ -2086,7 +2095,7 @@ pipeline:
         ] {
             let yaml = AgentConfig::v0()
                 .to_yaml()
-                .replace("model: lfm2.5-2.6b", &format!("model: {model}"))
+                .replace("model: lfm3-1.7b", &format!("model: {model}"))
                 .replace("thinking: false", "thinking: true");
             let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
             assert!(err.to_string().contains("pipeline.llm.thinking"), "{err}");
@@ -2097,7 +2106,7 @@ pipeline:
     fn unknown_llm_model_is_field_level() {
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("model: lfm2.5-2.6b", "model: huge");
+            .replace("model: lfm3-1.7b", "model: huge");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.model"), "{err}");
         assert!(err.to_string().contains("huge"), "{err}");
@@ -2273,7 +2282,7 @@ pipeline:
                 "  llm:\n    provider: local",
                 "  llm:\n    provider: openai-compatible",
             )
-            .replace("model: lfm2.5-2.6b", "model: gpt-4o-mini");
+            .replace("model: lfm3-1.7b", "model: gpt-4o-mini");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.base_url"), "{err}");
         assert!(err.to_string().contains("required"), "{err}");
@@ -2283,7 +2292,7 @@ pipeline:
     fn local_provider_still_enforces_the_gguf_menu() {
         let yaml = AgentConfig::v0()
             .to_yaml()
-            .replace("model: lfm2.5-2.6b", "model: gpt-4o-mini");
+            .replace("model: lfm3-1.7b", "model: gpt-4o-mini");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.model"), "{err}");
     }
@@ -2355,7 +2364,7 @@ pipeline:
     base_url: {base_url}
   llm:
     provider: local
-    model: lfm2.5-2.6b
+    model: lfm3-1.7b
   tts:
     provider: local
     model: pocket-tts
@@ -2751,7 +2760,7 @@ pipeline:
     language: en
   llm:
     provider: local
-    model: lfm2.5-2.6b
+    model: lfm3-1.7b
   tts:
     provider: online
     model: pocket-tts
@@ -3049,7 +3058,7 @@ pipeline:
                 "  llm:\n    provider: online",
             )
             .replace(
-                "model: lfm2.5-2.6b",
+                "model: lfm3-1.7b",
                 "model: gpt-test\n    base_url: https://example.test/v1",
             );
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
@@ -3065,7 +3074,7 @@ pipeline:
                 "  llm:\n    provider: local",
                 "  llm:\n    provider: ollama",
             )
-            .replace("model: lfm2.5-2.6b", "model: llama3.2");
+            .replace("model: lfm3-1.7b", "model: llama3.2");
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.llm.provider"), "{err}");
         assert!(
@@ -3114,7 +3123,7 @@ pipeline:
             (
                 AgentConfig::v0()
                     .to_yaml()
-                    .replace("model: lfm2.5-2.6b", "model: huge"),
+                    .replace("model: lfm3-1.7b", "model: huge"),
                 "pipeline.llm.model:",
             ),
             (extra, "pipeline.extra:"),

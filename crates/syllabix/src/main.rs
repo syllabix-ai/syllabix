@@ -108,7 +108,7 @@ mod tests {
         assert_eq!(
             default_filter_for(&cli::Commands::BenchLlmWorker {
                 out: PathBuf::from("worker.jsonl"),
-                model: String::from("lfm2.5-2.6b"),
+                model: String::from("lfm3-1.7b"),
             }),
             "info"
         );

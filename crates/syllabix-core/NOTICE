@@ -92,12 +92,25 @@ https://huggingface.co/Mazino0/moonshine-streaming-medium-onnx
 It is fetched only when `pipeline.stt.provider: local` and
 `pipeline.stt.model: moonshine-streaming-medium` are selected.
 
-### LFM2.5-2.6B QAD Q4_0 (`LFM2.5-2.6B-QAD-Q4_0.gguf`, default)
+### LFM3-1.7B Q8_0 (`LFM3-1.7B-Q8_0.gguf`, default)
+
+LiquidAI LFM 1.0 license. Copyright LiquidAI.
+Source: https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF
+LFM is not distributed under the Apache-2.0 license that covers the
+rest of Syllabix.
+
+### LFM3-1.7B BF16 (`LFM3-1.7B-BF16.gguf`, optional)
+
+LiquidAI LFM 1.0 license. Copyright LiquidAI.
+Source: https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF
+Selected only when `syllabix.yaml` sets `pipeline.llm.model: lfm3-1.7b-bf16`.
+
+### LFM2.5-2.6B QAD Q4_0 (`LFM2.5-2.6B-QAD-Q4_0.gguf`, optional)
 
 LiquidAI LFM 1.0 license. Copyright LiquidAI.
 Source: https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF
-LFM is not distributed under the Apache-2.0 license that covers the
-rest of Syllabix.
+
+Selected only when `syllabix.yaml` sets `pipeline.llm.model: lfm2.5-2.6b`.
 
 ### LFM2.5-350M QAD Q4_0 (`LFM2.5-350M-QAD-Q4_0.gguf`, optional)
 

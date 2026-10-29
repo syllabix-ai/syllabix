@@ -63,6 +63,14 @@ void syllabix_llama_free(struct syllabix_llama *llm);
 int syllabix_llama_n_ctx(const struct syllabix_llama *llm);
 int syllabix_llama_n_ctx_train(const struct syllabix_llama *llm);
 
+/* 1 when chat decoding uses the LFM sampler (LFM template or GGUF
+ * general.sampling.*). Writes preset fields when non-NULL. */
+int syllabix_llama_chat_lfm_sampler_preset(
+    const struct syllabix_llama *llm,
+    float *temp_out,
+    int *top_k_out,
+    float *repeat_penalty_out);
+
 struct llama_model;
 struct llama_model *syllabix_llama_model(struct syllabix_llama *llm);
 
