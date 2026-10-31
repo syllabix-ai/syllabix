@@ -14,7 +14,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::cancel::Cancel;
-use crate::policy::{resolve_effective, DeveloperPermissions, FilesystemMode, NetworkMode};
+use crate::policy::{
+    resolve_effective, widening_denied_message, DeveloperPermissions, FilesystemMode, NetworkMode,
+};
 use crate::sandbox::{current_provider, SandboxRequest};
 use crate::types::ToolCall;
 
@@ -165,8 +167,32 @@ pub fn execute_with_permissions(
 ) -> crate::types::ToolResult {
     let result = match validate_call(call, workspace) {
         Ok(ValidatedCall::Shell(request)) => execute_shell(request, workspace, session, cancel),
-        Ok(ValidatedCall::WebFetch { url }) => execute_fetch(&url, cancel),
-        Ok(ValidatedCall::WebSearch { query, count }) => execute_search(&query, count, cancel),
+        Ok(ValidatedCall::WebFetch { url }) => {
+            if cancel.is_shutdown() {
+                Err("web_fetch cancelled".into())
+            } else if session.network != NetworkMode::Allow {
+                Err(widening_denied_message(
+                    "network mode",
+                    "allow",
+                    session.network.as_str(),
+                ))
+            } else {
+                execute_fetch(&url, cancel)
+            }
+        }
+        Ok(ValidatedCall::WebSearch { query, count }) => {
+            if cancel.is_shutdown() {
+                Err("web_search cancelled".into())
+            } else if session.network != NetworkMode::Allow {
+                Err(widening_denied_message(
+                    "network mode",
+                    "allow",
+                    session.network.as_str(),
+                ))
+            } else {
+                execute_search(&query, count, cancel)
+            }
+        }
         Err(message) => Err(message),
     };
     crate::types::ToolResult {
@@ -1308,7 +1334,72 @@ mod tests {
         assert!(!result.ok);
         assert_eq!(
             result.content,
-            "workspace-write required; configured filesystem mode is read-only"
+            widening_denied_message("filesystem mode", "workspace-write", "read-only")
+        );
+    }
+
+    #[test]
+    fn web_tools_are_denied_when_network_is_none() {
+        let workspace = std::env::current_dir().unwrap();
+        let fetch = execute_with_permissions(
+            &call(
+                "web_fetch",
+                serde_json::json!({"url": "https://example.com/"}),
+            ),
+            &workspace,
+            &DeveloperPermissions::default_session(),
+            &Cancel::new(),
+        );
+        assert!(!fetch.ok);
+        assert_eq!(
+            fetch.content,
+            widening_denied_message("network mode", "allow", "none")
+        );
+        let search = execute_with_permissions(
+            &call("web_search", serde_json::json!({"query": "example"})),
+            &workspace,
+            &DeveloperPermissions::default_session(),
+            &Cancel::new(),
+        );
+        assert!(!search.ok);
+        assert_eq!(
+            search.content,
+            widening_denied_message("network mode", "allow", "none")
+        );
+    }
+
+    #[test]
+    fn web_fetch_under_allow_still_rejects_a_loopback_target() {
+        let workspace = std::env::current_dir().unwrap();
+        let session = DeveloperPermissions {
+            filesystem: FilesystemMode::ReadOnly,
+            network: NetworkMode::Allow,
+            secrets: crate::policy::SecretPolicy::None,
+        };
+        let fetch = execute_with_permissions(
+            &call(
+                "web_fetch",
+                serde_json::json!({"url": "https://127.0.0.1/"}),
+            ),
+            &workspace,
+            &session,
+            &Cancel::new(),
+        );
+        assert!(!fetch.ok);
+        assert!(
+            fetch.content.contains("web_fetch request failed"),
+            "{}",
+            fetch.content
+        );
+        assert!(
+            !fetch.content.contains("required; configured"),
+            "allow must pass the network gate before the public-address reject, got {}",
+            fetch.content
+        );
+        let denied = public_resolver("127.0.0.1:443").expect_err("loopback must be rejected");
+        assert_eq!(
+            denied.to_string(),
+            "web_fetch target is not a public address"
         );
     }
 

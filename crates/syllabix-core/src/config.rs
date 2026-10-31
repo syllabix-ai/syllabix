@@ -59,7 +59,7 @@ pub struct AgentConfig {
     pub stt_compute: TtsCompute,
     /// STT language code: a whisper-supported ISO code or `auto`.
     pub language: String,
-    /// `agent_harness.agent` (`none`, `syllabix`, or `goose`). Default `none`.
+    /// `agent_harness.agent` (`none`, `syllabix`, or `goose`). Default `syllabix`.
     /// `goose` uses `pipeline.llm` to configure Goose's provider and model.
     pub agent: AgentBackend,
     /// `agent_harness.inherit_current_session`. Default `true`: sandboxed
@@ -145,14 +145,14 @@ impl AgentConfig {
             stt_base_url: None,
             stt_compute: TtsCompute::Auto,
             language: defaults.language.to_string(),
-            agent: AgentBackend::None,
+            agent: AgentBackend::Syllabix,
             inherit_current_session: true,
             llm: defaults.llm.clone(),
             llm_model: defaults.llm_model.to_string(),
             thinking: defaults.llm_thinking,
             system_prompt: crate::llm::VOICE_SYSTEM_PROMPT_TEMPLATE.to_string(),
             llm_base_url: None,
-            llm_agent_harness: false,
+            llm_agent_harness: true,
             llm_developer_permissions: DeveloperPermissions::default_session(),
             skills: SkillsConfig::default(),
             tts: defaults.tts,
@@ -340,13 +340,11 @@ pipeline:
     }
 
     fn render_agent_harness_block(&self) -> String {
-        if self.agent == AgentBackend::None && self.inherit_current_session {
+        if self.agent == AgentBackend::Syllabix && self.inherit_current_session {
             return String::new();
         }
         let mut out = String::from("agent_harness:\n");
-        if self.agent != AgentBackend::None {
-            out.push_str(&format!("  agent: {}\n", self.agent.as_str()));
-        }
+        out.push_str(&format!("  agent: {}\n", self.agent.as_str()));
         if !self.inherit_current_session {
             out.push_str("  inherit_current_session: false\n");
         }
@@ -819,13 +817,13 @@ fn mapping<'a>(value: &'a Value, field: &str) -> Result<&'a serde_yaml::Mapping>
 
 fn parse_agent_harness(root: &serde_yaml::Mapping) -> Result<(AgentBackend, bool)> {
     let Some(value) = root.get("agent_harness") else {
-        return Ok((AgentBackend::None, true));
+        return Ok((AgentBackend::Syllabix, true));
     };
     let map = mapping(value, "agent_harness")?;
     deny_unknown(map, "agent_harness", &["agent", "inherit_current_session"])?;
     let agent = match optional_string(map, "agent_harness", "agent")? {
         Some(value) => parse_agent_field("agent_harness.agent", &value)?,
-        None => AgentBackend::None,
+        None => AgentBackend::Syllabix,
     };
     let inherit_current_session =
         optional_bool(map, "agent_harness", "inherit_current_session", true)?;
@@ -1385,18 +1383,19 @@ mod tests {
         assert!(yaml.contains("preroll_ms: 200"));
         assert!(
             !yaml.contains("agent:"),
-            "init yaml omits the none agent default"
+            "init yaml omits the syllabix agent default"
         );
         assert_eq!(AgentConfig::parse_yaml(&yaml).unwrap(), AgentConfig::v0());
-        assert_eq!(AgentConfig::v0().agent, AgentBackend::None);
+        assert_eq!(AgentConfig::v0().agent, AgentBackend::Syllabix);
+        assert!(AgentConfig::v0().llm_agent_harness);
     }
 
     #[test]
-    fn agent_harness_agent_defaults_to_none_and_accepts_syllabix_and_goose() {
+    fn agent_harness_agent_defaults_to_syllabix_and_accepts_none_and_goose() {
         let yaml = AgentConfig::v0().to_yaml();
         let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
-        assert_eq!(parsed.agent, AgentBackend::None);
-        assert!(!parsed.llm_agent_harness);
+        assert_eq!(parsed.agent, AgentBackend::Syllabix);
+        assert!(parsed.llm_agent_harness);
         assert!(parsed.inherit_current_session);
         let none = format!("{yaml}agent_harness:\n  agent: none\n",);
         let parsed = AgentConfig::parse_yaml(&none).unwrap();
@@ -1594,6 +1593,8 @@ pipeline:
   stt: { provider: local, model: whisper-small, language: en }
   llm: { provider: openai-compatible, model: gpt-test, base_url: https://example.test/v1 }
   tts: { provider: local, model: kokoro }
+agent_harness:
+  agent: none
 skills:
   roots:
     - path: skills
@@ -1607,8 +1608,8 @@ skills:
 
     #[test]
     fn agent_harness_tools_follow_agent() {
-        assert!(!AgentConfig::v0().llm_agent_harness);
-        assert_eq!(AgentConfig::v0().agent, AgentBackend::None);
+        assert!(AgentConfig::v0().llm_agent_harness);
+        assert_eq!(AgentConfig::v0().agent, AgentBackend::Syllabix);
         let enabled = AgentConfig::parse_yaml(
             r#"
 name: harness
@@ -1672,7 +1673,7 @@ agent_harness:
     #[test]
     fn developer_permissions_default_and_gated() {
         let defaults = AgentConfig::v0();
-        assert!(!defaults.llm_agent_harness);
+        assert!(defaults.llm_agent_harness);
         assert_eq!(
             defaults.llm_developer_permissions,
             DeveloperPermissions::default_session()
@@ -1754,6 +1755,8 @@ pipeline:
     developer_permissions:
       filesystem: read-only
   tts: { provider: local, model: kokoro }
+agent_harness:
+  agent: none
 "#,
         )
         .expect_err("permissions without harness are rejected");

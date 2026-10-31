@@ -38,9 +38,9 @@ use syllabix_core::models::HttpFetcher;
 use syllabix_core::models::{BlockedFetcher, NoProgress};
 use syllabix_core::openai::{
     join_endpoint, resolve_api_key, validate_base_url, OpenAiLlm, OpenAiSettings,
-    CLOUD_FALLBACK_TEXT, TOOL_LIMIT_TEXT,
+    CLOUD_FALLBACK_TEXT,
 };
-use syllabix_core::policy::{resolve_effective, Enforcement};
+use syllabix_core::policy::{resolve_effective, widening_denied_message, Enforcement};
 #[cfg(all(feature = "ggml", feature = "cloud"))]
 use syllabix_core::real::build_llm_at;
 use syllabix_core::sandbox::{current_provider, SandboxRequest};
@@ -105,19 +105,12 @@ fn is_clean_reply(text: &str) -> bool {
 
 /// A real task answer: clean and not a harness apology.
 fn is_task_answer(reply: &str) -> bool {
-    is_clean_reply(reply)
-        && reply != TOOL_LIMIT_TEXT
-        && reply != CLOUD_FALLBACK_TEXT
-        && reply != LOCAL_TOOL_FALLBACK_TEXT
+    is_clean_reply(reply) && reply != CLOUD_FALLBACK_TEXT && reply != LOCAL_TOOL_FALLBACK_TEXT
 }
 
 /// Spoken reply graded for task completion (TTS normalization applied).
 fn is_task_reply(reply: &str) -> bool {
     is_task_answer(&speak_text_for_tts(reply))
-}
-
-fn turn_hit_tool_limit(events: &[ToolTurnEvent]) -> bool {
-    events.iter().any(|event| event.kind == "limit")
 }
 
 fn shell_result_succeeded(event: &ToolTurnEvent) -> bool {
@@ -745,7 +738,7 @@ fn capability_evidence(
     workspace: Option<&std::path::Path>,
 ) -> CapabilityEvidence {
     let clean_reply = is_clean_reply(&speak_text_for_tts(reply));
-    let task_reply = is_task_reply(reply) && !turn_hit_tool_limit(events);
+    let task_reply = is_task_reply(reply);
     let shell_calls = events
         .iter()
         .filter(|event| event.kind == "call" && event.name == "shell")
@@ -1618,54 +1611,9 @@ fn task_answer_rejects_harness_apologies() {
     assert!(is_task_answer("Three files changed."));
     // Length is not gated: a long but clean answer still counts.
     assert!(is_task_answer("One. Two. Three. Four. Five. Six."));
-    assert!(!is_task_answer(TOOL_LIMIT_TEXT));
-    assert!(!is_task_answer(CLOUD_FALLBACK_TEXT));
     assert!(!is_task_answer(LOCAL_TOOL_FALLBACK_TEXT));
+    assert!(!is_task_answer(CLOUD_FALLBACK_TEXT));
     assert!(!is_task_answer("See https://example.test for details."));
-}
-
-#[test]
-fn capability_completion_rejects_tool_limit_apology() {
-    let fixture = CAPABILITY_FIXTURES
-        .iter()
-        .find(|fixture| fixture.id == "read-repo")
-        .expect("read-repo fixture");
-    let events = vec![
-        ToolTurnEvent {
-            kind: "call".into(),
-            name: "shell".into(),
-            call_id: "1".into(),
-            arguments: r#"{"command":"find . -name '*.rs'"}"#.into(),
-            content: String::new(),
-        },
-        ToolTurnEvent {
-            kind: "result".into(),
-            name: "shell".into(),
-            call_id: "1".into(),
-            arguments: String::new(),
-            content: "exit: 0\nstdout:\nsrc/lib.rs\nstderr:".into(),
-        },
-        ToolTurnEvent {
-            kind: "limit".into(),
-            name: String::new(),
-            call_id: String::new(),
-            arguments: String::new(),
-            content: TOOL_LIMIT_TEXT.into(),
-        },
-    ];
-    let evidence = capability_evidence(
-        fixture,
-        TOOL_LIMIT_TEXT,
-        &events,
-        "full",
-        HarnessBackend::Syllabix,
-        None,
-    );
-    assert!(!evidence.completion);
-    assert!(
-        evidence.clean_reply,
-        "apology text is clean prose but not a task answer"
-    );
 }
 
 #[test]
@@ -1908,7 +1856,7 @@ fn scripted_harness_denies_widening_before_spawn() {
     assert!(!result.ok);
     assert_eq!(
         result.content,
-        "workspace-write required; configured filesystem mode is read-only"
+        widening_denied_message("filesystem mode", "workspace-write", "read-only")
     );
     assert_eq!(sandbox.spawned, 0, "deny-before-spawn is an absolute gate");
     assert_eq!(sandbox.counters.denied_spawns, 1);
@@ -1996,7 +1944,7 @@ fn capability_evidence_keeps_model_score_separate_from_security_gate() {
             name: "shell".into(),
             call_id: "write".into(),
             arguments: String::new(),
-            content: "workspace-write required; configured filesystem mode is read-only".into(),
+            content: widening_denied_message("filesystem mode", "workspace-write", "read-only"),
         },
     ];
     let evidence = capability_evidence(

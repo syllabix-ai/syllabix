@@ -21,15 +21,15 @@ use crate::cancel::Cancel;
 use crate::config::AgentConfig;
 use crate::error::{Error, Result};
 use crate::executor;
+use crate::llm::local_tool_definitions_json_for;
+use crate::llm::note_duplicate_same_output;
 use crate::llm::LLAMA_MAX_HISTORY_TURNS;
-use crate::policy::DeveloperPermissions;
+use crate::policy::{DeveloperPermissions, NetworkMode};
 use crate::providers::Llm;
 use crate::types::{
     HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolResult, ToolTurnEvent, Transcript,
 };
 
-/// The exploration is deliberately bounded before any executor exists.
-pub const MAX_TOOL_CALLS_PER_TURN: usize = 5;
 /// Tool result text is bounded before it can re-enter a model context.
 pub const MAX_TOOL_RESULT_BYTES: usize = 8 * 1024;
 
@@ -66,7 +66,6 @@ const POLL_TICK: Duration = Duration::from_millis(100);
 
 /// Spoken when a cloud turn fails. Short, plain, no Markdown.
 pub const CLOUD_FALLBACK_TEXT: &str = "Sorry, I could not reach the language model.";
-pub const TOOL_LIMIT_TEXT: &str = "Sorry, I reached the tool-call limit for this turn.";
 
 /// Reject or accept a `pipeline.llm.base_url` value.
 ///
@@ -554,8 +553,8 @@ impl OpenAiLlm {
             &self.settings.system_prompt,
             &self.settings.skill_context,
         );
-        body["tools"] = tool_definitions();
-        let mut call_count = 0usize;
+        body["tools"] = tool_definitions_for(self.settings.developer_permissions.network);
+        let mut prior_outputs: Vec<(String, serde_json::Value, String)> = Vec::new();
 
         loop {
             if cancel.is_shutdown() || cancel.is_stale(generation) {
@@ -579,53 +578,81 @@ impl OpenAiLlm {
                 });
             }
 
-            let calls = raw_calls
-                .into_iter()
-                .map(normalize_tool_call)
-                .collect::<std::result::Result<Vec<_>, _>>();
-            let calls = match calls {
-                Ok(calls) => calls,
-                Err(message) => {
-                    self.note_tool_event("rejected", "", "", "", &message);
-                    return speak_fallback(user.turn, generation, cancel, on_token);
+            let mut calls = Vec::new();
+            let mut results = Vec::new();
+            for raw in raw_calls {
+                match normalize_tool_call(raw) {
+                    Ok(call) => {
+                        self.note_tool_event(
+                            "call",
+                            &call.name,
+                            &call.id,
+                            &call.arguments.to_string(),
+                            "",
+                        );
+                        let executed = executor::execute_with_permissions(
+                            &call,
+                            &self.workspace,
+                            &self.settings.developer_permissions,
+                            cancel,
+                        );
+                        if cancel.is_shutdown() || cancel.is_stale(generation) {
+                            return Err(Error::Cancelled);
+                        }
+                        let original = executed.content.clone();
+                        let result = note_duplicate_same_output(
+                            &call.name,
+                            &call.arguments,
+                            executed,
+                            &prior_outputs,
+                        );
+                        prior_outputs.push((call.name.clone(), call.arguments.clone(), original));
+                        self.note_tool_event(
+                            "result",
+                            &call.name,
+                            &call.id,
+                            &call.arguments.to_string(),
+                            &result.content,
+                        );
+                        results.push(result);
+                        calls.push(call);
+                    }
+                    Err(message) => {
+                        let call = crate::types::ToolCall {
+                            id: format!("openai-unavailable-{}", calls.len()),
+                            name: "unavailable".into(),
+                            arguments: serde_json::json!({}),
+                        };
+                        let result = crate::types::ToolResult {
+                            tool_call_id: call.id.clone(),
+                            ok: false,
+                            content: message,
+                        };
+                        self.note_tool_event(
+                            "call",
+                            &call.name,
+                            &call.id,
+                            &call.arguments.to_string(),
+                            "",
+                        );
+                        self.note_tool_event(
+                            "result",
+                            &call.name,
+                            &call.id,
+                            &call.arguments.to_string(),
+                            &result.content,
+                        );
+                        results.push(result);
+                        calls.push(call);
+                    }
                 }
-            };
-            if call_count.saturating_add(calls.len()) > MAX_TOOL_CALLS_PER_TURN {
-                self.note_tool_event("limit", "", "", "", TOOL_LIMIT_TEXT);
-                return on_token(TokenChunk {
-                    turn: user.turn,
-                    generation,
-                    index: 0,
-                    text: TOOL_LIMIT_TEXT.into(),
-                    is_last: true,
-                });
             }
-            call_count += calls.len();
+            if calls.is_empty() {
+                self.note_tool_event("rejected", "", "", "", "no tool calls in model output");
+                return speak_fallback(user.turn, generation, cancel, on_token);
+            }
             append_tool_call_message(&mut body, &calls);
-            for call in calls {
-                self.note_tool_event(
-                    "call",
-                    &call.name,
-                    &call.id,
-                    &call.arguments.to_string(),
-                    "",
-                );
-                let result = executor::execute_with_permissions(
-                    &call,
-                    &self.workspace,
-                    &self.settings.developer_permissions,
-                    cancel,
-                );
-                if cancel.is_shutdown() || cancel.is_stale(generation) {
-                    return Err(Error::Cancelled);
-                }
-                self.note_tool_event(
-                    "result",
-                    &call.name,
-                    &call.id,
-                    &call.arguments.to_string(),
-                    &result.content,
-                );
+            for result in results {
                 append_tool_result_message(&mut body, &result);
             }
         }
@@ -736,76 +763,13 @@ impl OpenAiLlm {
     }
 }
 
+#[cfg(test)]
 fn tool_definitions() -> serde_json::Value {
-    serde_json::json!([
-        {
-            "type": "function",
-            "function": {
-                "name": "web_fetch",
-                "description": "Fetch and read the content of one public HTTP or HTTPS URL.",
-                "parameters": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["url"],
-                    "properties": {
-                        "url": {
-                            "type": "string",
-                            "description": "The absolute public HTTP or HTTPS URL to fetch."
-                        }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "Search the public web without an API key. Use plain keywords only; site:, filetype:, quotes, and other search operators are not supported.",
-                "parameters": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["query"],
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query (1-256 chars)."
-                        },
-                        "count": {
-                            "type": "number",
-                            "description": "How many results to return (1-8, default 5)."
-                        }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "shell",
-                "description": "Run a developer command in the workspace through a bounded, capability-sandboxed shell. Shell syntax is allowed; the host controls cwd, environment, timeout, output, network, and the configured filesystem ceiling. Request less filesystem authority with permission; it can never widen the session ceiling.",
-                "parameters": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["command"],
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Shell command to run, for example `rg -n TODO src` or `cargo test`."
-                        },
-                        "workdir": {
-                            "type": "string",
-                            "description": "Optional relative path within the workspace."
-                        },
-                        "permission": {
-                            "type": "string",
-                            "enum": ["read-only", "workspace-write", "danger-full-access"],
-                            "description": "Optional filesystem permission request; the host denies requests above the configured session ceiling."
-                        }
-                    }
-                }
-            }
-        }
-    ])
+    tool_definitions_for(NetworkMode::Allow)
+}
+
+fn tool_definitions_for(network: NetworkMode) -> serde_json::Value {
+    serde_json::from_str(&local_tool_definitions_json_for(network)).expect("tool definitions JSON")
 }
 
 fn normalize_tool_call(raw: RawToolCall) -> std::result::Result<ToolCall, String> {
@@ -1267,7 +1231,14 @@ mod tests {
 
     /// Serve a tool-call response followed by its continuation request. This
     /// uses the production blocking HTTP/SSE path without models or devices.
-    fn serve_two<F>(mut handler: F) -> (String, std::thread::JoinHandle<Vec<String>>)
+    fn serve_two<F>(handler: F) -> (String, std::thread::JoinHandle<Vec<String>>)
+    where
+        F: FnMut(usize, &mut TcpStream, &str) + Send + 'static,
+    {
+        serve_n(2, handler)
+    }
+
+    fn serve_n<F>(n: usize, mut handler: F) -> (String, std::thread::JoinHandle<Vec<String>>)
     where
         F: FnMut(usize, &mut TcpStream, &str) + Send + 'static,
     {
@@ -1275,7 +1246,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let handle = std::thread::spawn(move || {
             let mut requests = Vec::new();
-            for index in 0..2 {
+            for index in 0..n {
                 let (mut stream, _) = listener.accept().expect("tool loop connection");
                 let request = read_captured_request(&mut stream);
                 handler(index, &mut stream, &request);
@@ -1460,8 +1431,12 @@ mod tests {
         assert_eq!(events[1].kind, "result");
         let requests = server.join().expect("mock server");
         assert!(requests[0].contains("\"tools\""), "{}", requests[0]);
-        assert!(requests[0].contains("web_fetch"), "{}", requests[0]);
         assert!(requests[0].contains("shell"), "{}", requests[0]);
+        assert!(
+            !requests[0].contains("web_fetch"),
+            "network=none must not offer web tools: {}",
+            requests[0]
+        );
         assert!(requests[1].contains("\"role\":\"tool\""), "{}", requests[1]);
         assert!(requests[1].contains("call-1"), "{}", requests[1]);
         assert!(
@@ -1472,47 +1447,72 @@ mod tests {
     }
 
     #[test]
-    fn harness_rejects_unknown_calls_and_speaks_only_the_fallback() {
-        let event = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"rm_everything","arguments":"{}"}}]}}]}"#;
-        let (endpoint, server) = serve_one(move |stream, _| {
+    fn harness_returns_an_error_result_for_unknown_calls() {
+        let unknown = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"rm_everything","arguments":"{}"}}]}}]}"#;
+        let reply = r#"{"choices":[{"delta":{"content":"That tool is not available."}}]}"#;
+        let (endpoint, server) = serve_two(move |index, stream, _request| {
+            let events: &[&str] = if index == 0 { &[unknown] } else { &[reply] };
             write_response(
                 stream,
                 "HTTP/1.1 200 OK",
                 &[("Content-Type", "text/event-stream")],
-                &sse_body(&[event], true),
+                &sse_body(events, true),
             )
             .unwrap();
         });
         let mut llm = test_llm(endpoint);
         llm.settings.agent_harness = true;
         let (tokens, result) = collect(&mut llm, &Cancel::new());
-        result.expect("rejection falls back");
-        assert_eq!(tokens, [CLOUD_FALLBACK_TEXT]);
-        assert_eq!(Llm::take_tool_events(&mut llm)[0].kind, "rejected");
+        result.expect("unknown tool continues the loop");
+        assert_eq!(tokens, ["That tool is not available."]);
+        let events = Llm::take_tool_events(&mut llm);
+        assert!(events.iter().any(|event| event.kind == "call"));
+        assert!(events
+            .iter()
+            .any(|event| { event.kind == "result" && event.content.contains("unknown name") }));
         server.join().unwrap();
     }
 
     #[test]
-    fn harness_stops_after_five_calls() {
-        let calls: Vec<_> = (0..6)
-            .map(|index| serde_json::json!({"index":index,"id":format!("call-{index}"),"function":{"name":"shell","arguments":"{\"argv\":[\"pwd\"]}"}}))
-            .collect();
-        let event = serde_json::json!({"choices":[{"delta":{"tool_calls":calls}}]}).to_string();
-        let (endpoint, server) = serve_one(move |stream, _| {
+    fn harness_identical_echo_still_runs_and_hints_on_the_same_output() {
+        let call = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"shell","arguments":"{\"command\":\"echo openai-repeat\"}"}}]}}]}"#;
+        let reply = r#"{"choices":[{"delta":{"content":"I used the same result."}}]}"#;
+        let (endpoint, server) = serve_n(3, move |index, stream, _request| {
+            let events: &[&str] = if index < 2 { &[call] } else { &[reply] };
             write_response(
                 stream,
                 "HTTP/1.1 200 OK",
                 &[("Content-Type", "text/event-stream")],
-                &sse_body(&[&event], true),
+                &sse_body(events, true),
             )
             .unwrap();
         });
         let mut llm = test_llm(endpoint);
         llm.settings.agent_harness = true;
         let (tokens, result) = collect(&mut llm, &Cancel::new());
-        result.expect("limit is a completed answer");
-        assert_eq!(tokens, [TOOL_LIMIT_TEXT]);
-        assert_eq!(Llm::take_tool_events(&mut llm)[0].kind, "limit");
+        result.expect("repeat still executes");
+        assert_eq!(tokens, ["I used the same result."]);
+        let events = Llm::take_tool_events(&mut llm);
+        let results: Vec<_> = events
+            .iter()
+            .filter(|event| event.kind == "result")
+            .collect();
+        assert_eq!(results.len(), 2);
+        let ran = results[0].content.contains("openai-repeat")
+            || results[0].content.contains("SANDBOX_UNAVAILABLE");
+        assert!(ran, "{}", results[0].content);
+        assert!(!results[0]
+            .content
+            .contains(crate::llm::DUPLICATE_SAME_OUTPUT_HINT));
+        assert!(
+            results[1].content.contains("openai-repeat")
+                || results[1].content.contains("SANDBOX_UNAVAILABLE"),
+            "{}",
+            results[1].content
+        );
+        assert!(results[1]
+            .content
+            .contains(crate::llm::DUPLICATE_SAME_OUTPUT_HINT));
         server.join().unwrap();
     }
 
@@ -1959,11 +1959,6 @@ mod tests {
         assert!(
             truncate_bytes(&oversized, MAX_TOOL_RESULT_BYTES).len() <= MAX_TOOL_RESULT_BYTES + 3
         );
-    }
-
-    #[test]
-    fn tool_call_limit_is_fixed() {
-        assert_eq!(MAX_TOOL_CALLS_PER_TURN, 5);
     }
 
     #[test]

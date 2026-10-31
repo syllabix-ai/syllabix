@@ -5,12 +5,20 @@
 #include "whisper.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 struct syllabix_llama {
     struct llama_model *model;
     struct llama_context *ctx;
+    /* Last fully decoded token sequence (prompt + generated). Reused as a
+     * prefix across tool-loop steps so the host does not re-prefill the
+     * shared system/user tokens on every step. */
+    llama_token *cache_tokens;
+    int32_t cache_n;
+    int32_t cache_cap;
 };
 
 struct llama_model *syllabix_llama_model(struct syllabix_llama *llm) {
@@ -31,6 +39,14 @@ static int aborted(bool (*abort_cb)(void *user), void *abort_user) {
 
 static int min_int(int a, int b) {
     return a < b ? a : b;
+}
+
+static double now_monotonic_s(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0.0;
+    }
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
 /* Darwin: Metal. Vulkan Linux builds: offload when a device exists.
@@ -212,7 +228,9 @@ struct syllabix_llama *syllabix_llama_load(const char *path, int n_threads) {
     const int trained = llama_model_n_ctx_train(model);
     struct llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = 0;
-    ctx_params.n_batch = (uint32_t)min_int(trained > 0 ? trained : 512, 512);
+    /* 2048 is the llama.cpp CPU default; 512 forced extra prefill rounds on
+     * long tools-aware prompts. Cap at the trained window. */
+    ctx_params.n_batch = (uint32_t)min_int(trained > 0 ? trained : 2048, 2048);
     ctx_params.n_ubatch = ctx_params.n_batch;
     ctx_params.n_threads = n_threads;
     ctx_params.n_threads_batch = n_threads;
@@ -232,6 +250,9 @@ struct syllabix_llama *syllabix_llama_load(const char *path, int n_threads) {
     }
     llm->model = model;
     llm->ctx = ctx;
+    llm->cache_tokens = NULL;
+    llm->cache_n = 0;
+    llm->cache_cap = 0;
     return llm;
 }
 
@@ -303,6 +324,7 @@ void syllabix_llama_free(struct syllabix_llama *llm) {
     if (llm->model != NULL) {
         llama_model_free(llm->model);
     }
+    free(llm->cache_tokens);
     free(llm);
 }
 
@@ -519,10 +541,31 @@ static int run_prompt(
         return -1;
     }
 
+    int prefix = 0;
+    if (llm->cache_tokens != NULL && llm->cache_n > 0) {
+        const int max_prefix = min_int(llm->cache_n, n_tokens);
+        while (prefix < max_prefix && llm->cache_tokens[prefix] == tokens[prefix]) {
+            prefix += 1;
+        }
+    }
+    /* Reuse only when the new prompt strictly extends the cached prefix so
+     * auto-assigned batch positions continue from the current KV length. */
+    if (prefix <= 0 || prefix >= n_tokens) {
+        llama_memory_clear(llama_get_memory(llm->ctx), true);
+        prefix = 0;
+    } else if (prefix < llm->cache_n) {
+        if (!llama_memory_seq_rm(llama_get_memory(llm->ctx), 0, (llama_pos)prefix, -1)) {
+            llama_memory_clear(llama_get_memory(llm->ctx), true);
+            prefix = 0;
+        }
+    }
+
     const int n_batch = (int)llama_n_batch(llm->ctx);
-    int pos = 0;
+    const double prefill_t0 = now_monotonic_s();
+    int pos = prefix;
     while (pos < n_tokens) {
         if (aborted(abort_cb, abort_user)) {
+            llm->cache_n = 0;
             free(tokens);
             return 1;
         }
@@ -530,15 +573,19 @@ static int run_prompt(
         struct llama_batch batch = llama_batch_get_one(tokens + pos, n);
         const int rc = llama_decode(llm->ctx, batch);
         if (rc != 0) {
+            llm->cache_n = 0;
             free(tokens);
             return (rc == 2 || aborted(abort_cb, abort_user)) ? 1 : -1;
         }
         pos += n;
     }
-    free(tokens);
+    const double prefill_s = now_monotonic_s() - prefill_t0;
+    const int prefill_new = n_tokens - prefix;
 
     struct llama_sampler *smpl = make_chat_sampler(llm, vocab, thinking);
     if (smpl == NULL) {
+        llm->cache_n = 0;
+        free(tokens);
         return -1;
     }
 
@@ -548,6 +595,9 @@ static int run_prompt(
     int status = 0;
 
     int generated = 0;
+    llama_token *gen_ids = NULL;
+    int32_t gen_cap = 0;
+    const double gen_t0 = now_monotonic_s();
     for (;;) {
         if (aborted(abort_cb, abort_user)) {
             status = 1;
@@ -560,6 +610,17 @@ static int run_prompt(
         if (id == LLAMA_TOKEN_NULL || llama_vocab_is_eog(vocab, id)) {
             break;
         }
+        if (generated >= gen_cap) {
+            const int32_t next_cap = gen_cap == 0 ? 64 : gen_cap * 2;
+            llama_token *grown = (llama_token *)realloc(gen_ids, (size_t)next_cap * sizeof(*grown));
+            if (grown == NULL) {
+                status = -1;
+                break;
+            }
+            gen_ids = grown;
+            gen_cap = next_cap;
+        }
+        gen_ids[generated] = id;
         char piece[257];
         /* Template-preserved tokens (tool-call markers such as LFM's
          * <|tool_call_start|>) must reach the chat parser verbatim, matching
@@ -596,6 +657,40 @@ static int run_prompt(
         }
         generated += 1;
     }
+    const double gen_s = now_monotonic_s() - gen_t0;
+    if (getenv("SYLLABIX_LLM_TIMING") != NULL) {
+        const double pp_tps = prefill_s > 0.0 ? (double)prefill_new / prefill_s : 0.0;
+        const double tg_tps = gen_s > 0.0 ? (double)generated / gen_s : 0.0;
+        fprintf(
+            stderr,
+            "syllabix-llm-timing prompt_tokens=%d reused=%d prefill_new=%d prefill_s=%.3f pp_tok_s=%.1f gen_tokens=%d gen_s=%.3f tg_tok_s=%.1f n_batch=%d\n",
+            n_tokens, prefix, prefill_new, prefill_s, pp_tps, generated, gen_s, tg_tps, n_batch);
+    }
+
+    if (status == 0) {
+        const int32_t total = n_tokens + generated;
+        if (total > llm->cache_cap) {
+            llama_token *grown = (llama_token *)realloc(
+                llm->cache_tokens, (size_t)total * sizeof(*grown));
+            if (grown != NULL) {
+                llm->cache_tokens = grown;
+                llm->cache_cap = total;
+            }
+        }
+        if (llm->cache_tokens != NULL && llm->cache_cap >= total) {
+            memcpy(llm->cache_tokens, tokens, (size_t)n_tokens * sizeof(*tokens));
+            if (generated > 0 && gen_ids != NULL) {
+                memcpy(llm->cache_tokens + n_tokens, gen_ids, (size_t)generated * sizeof(*gen_ids));
+            }
+            llm->cache_n = total;
+        } else {
+            llm->cache_n = 0;
+        }
+    } else {
+        llm->cache_n = 0;
+    }
+    free(tokens);
+    free(gen_ids);
 
     if (status == 0) {
         if (pending_len > 0) {
@@ -640,7 +735,6 @@ int syllabix_llama_run_prompt(
     }
     llama_set_n_threads(llm->ctx, n_threads, n_threads);
     llama_set_abort_callback(llm->ctx, abort_cb, abort_user);
-    llama_memory_clear(llama_get_memory(llm->ctx), true);
     char *owned = (char *)malloc((size_t)prompt_len + 1);
     if (owned == NULL) {
         return -1;
@@ -675,7 +769,6 @@ int syllabix_llama_generate(
 
     llama_set_n_threads(llm->ctx, n_threads, n_threads);
     llama_set_abort_callback(llm->ctx, abort_cb, abort_user);
-    llama_memory_clear(llama_get_memory(llm->ctx), true);
 
     struct llama_chat_message *chat =
         (struct llama_chat_message *)calloc((size_t)n_messages, sizeof(struct llama_chat_message));
