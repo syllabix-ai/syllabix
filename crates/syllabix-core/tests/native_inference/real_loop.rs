@@ -184,8 +184,8 @@ fn turn_summaries(
 
 #[test]
 fn six_real_turns_complete_within_queue_and_memory_bounds() {
-    // Default launch stack (2.6B trio, including unset SYLLABIX_NATIVE_MODELS):
-    // run the loop on lfm2.5-2.6b via n.llm(). Weekly CI sets whisper-small
+    // Default launch stack (LFM3-1.7B when SYLLABIX_NATIVE_MODELS is unset):
+    // run the loop on lfm3-1.7b via n.llm(). Weekly CI sets whisper-small
     // + lfm2.5-230m + pocket-tts instead; run the same completion check on
     // 230m via the dedicated LFM slot. Other id lists skip.
     let weekly_230m_stack = !launch_stack_selected()
@@ -194,7 +194,7 @@ fn six_real_turns_complete_within_queue_and_memory_bounds() {
         && native_model_selected(LFM25_230M_ASSET);
     if !launch_stack_selected() && !weekly_230m_stack {
         eprintln!(
-            "skipping six-turn native test (needs whisper-small, pocket-tts, and lfm2.5-2.6b or lfm2.5-230m in SYLLABIX_NATIVE_MODELS)"
+            "skipping six-turn native test (needs whisper-small, pocket-tts, and lfm3-1.7b or lfm2.5-230m in SYLLABIX_NATIVE_MODELS)"
         );
         return;
     }

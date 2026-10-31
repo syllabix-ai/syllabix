@@ -4,7 +4,7 @@
 //! process. `cargo llvm-cov` sets `--cfg coverage` and skips weight loads;
 //! a fake loop still runs so this binary is not a coverage hole.
 //!
-//! Default `cargo test` loads Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS.
+//! Default `cargo test` loads Silero, Whisper `small`, LFM3-1.7B Q8_0, and Pocket TTS.
 //! Set `SYLLABIX_NATIVE_MODELS` to a comma-separated list of YAML
 //! `pipeline.*.model` identifiers to run only those native suites. Unknown
 //! identifiers fail fast, and identifiers without a native suite fail
@@ -15,6 +15,8 @@
 mod kokoro;
 #[cfg(not(coverage))]
 mod lfm;
+#[cfg(not(coverage))]
+mod lfm3;
 #[cfg(not(coverage))]
 mod llama;
 #[cfg(not(coverage))]
@@ -35,8 +37,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use syllabix_core::defaults::{SttModel, TtsModel};
 use syllabix_core::llm::{
-    LFM25_230M_ASSET, LFM25_2_6B_ASSET, LFM25_350M_ASSET, LLAMA_32_1B_ASSET, QWEN35_08B_ASSET,
-    QWEN35_2B_ASSET,
+    LFM25_230M_ASSET, LFM25_2_6B_ASSET, LFM25_350M_ASSET, LFM3_1_7B_ASSET, LFM3_1_7B_BF16_ASSET,
+    LLAMA_32_1B_ASSET, QWEN35_08B_ASSET, QWEN35_2B_ASSET,
 };
 
 #[cfg(not(coverage))]
@@ -50,10 +52,10 @@ use syllabix_core::stt::WhisperStt;
 use syllabix_core::{AgentConfig, Cancel, ModelCache};
 
 /// YAML identifiers covered by the default native test set.
-const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM25_2_6B_ASSET, "pocket-tts"];
+const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM3_1_7B_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
-const SUITED_NATIVE_IDS: [&str; 11] = [
+const SUITED_NATIVE_IDS: [&str; 12] = [
     "whisper-small",
     LLAMA_32_1B_ASSET,
     "kokoro",
@@ -62,6 +64,7 @@ const SUITED_NATIVE_IDS: [&str; 11] = [
     "qwen3-asr-0.6",
     QWEN35_08B_ASSET,
     "pocket-tts",
+    LFM3_1_7B_ASSET,
     LFM25_2_6B_ASSET,
     LFM25_350M_ASSET,
     LFM25_230M_ASSET,
@@ -102,6 +105,8 @@ fn all_yaml_model_ids() -> BTreeSet<&'static str> {
     ids.insert(LLAMA_32_1B_ASSET);
     ids.insert(QWEN35_08B_ASSET);
     ids.insert(QWEN35_2B_ASSET);
+    ids.insert(LFM3_1_7B_ASSET);
+    ids.insert(LFM3_1_7B_BF16_ASSET);
     ids.insert(LFM25_2_6B_ASSET);
     ids.insert(LFM25_350M_ASSET);
     ids.insert(LFM25_230M_ASSET);
@@ -323,7 +328,7 @@ impl Native {
             let mut progress = StderrProgress::new();
             let cancel = Cancel::new();
             let llm = LlamaLlm::from_cache(&cache, &HttpFetcher, &mut progress, &cancel)
-                .expect("load LFM2.5-2.6B QAD Q4_0 once");
+                .expect("load LFM3-1.7B Q8_0 once");
             assert!(!llm.thinking(), "v0 thinking is off until yaml enables it");
             self.llm = Some(llm);
         }
@@ -399,7 +404,7 @@ fn unset_native_models_selects_the_launch_stack() {
         ids,
         BTreeSet::from([
             "whisper-small".into(),
-            "lfm2.5-2.6b".into(),
+            "lfm3-1.7b".into(),
             "pocket-tts".into()
         ])
     );

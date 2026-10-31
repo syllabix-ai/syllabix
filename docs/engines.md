@@ -2,7 +2,7 @@
 
 The ids you can put in `syllabix.yaml`. Key syntax: [syllabix.yaml](syllabix-yaml.md). Measured timings: [workload benchmark](workload_benchmark/workload_benchmark.md). Licenses of fetched weights: [NOTICE](../NOTICE).
 
-Weights download on first use of each id (HTTPS URL pinned in the binary, SHA-256 check, then reuse from cache). Default `run` fetches only the launch stack: Silero, Whisper `small`, LFM2.5-2.6B, Pocket TTS (~2.2 GB). `--help` and `init` download nothing.
+Weights download on first use of each id (HTTPS URL pinned in the binary, SHA-256 check, then reuse from cache). Default `run` fetches only the launch stack: Silero, Whisper `small`, LFM3-1.7B, Pocket TTS (~2.5 GB). `--help` and `init` download nothing.
 
 Cache path (files land in `models/v1` under the cache root), first match wins:
 
@@ -19,7 +19,7 @@ Share downloads across the CLI and embed hosts by leaving the variable unset or 
 | | What ships / what is known |
 | --- | --- |
 | **Release artifacts** | Linux x64, macOS Apple Silicon, macOS Intel, Windows x64 |
-| **Default cache** | ~2.2 GB on first `run` |
+| **Default cache** | ~2.5 GB on first `run` |
 | **Compute** | Darwin: Metal + Accelerate for STT/LLM. Linux/Windows: portable CPU by default. Opt-in Linux Vulkan builds (`SYLLABIX_GGML_VULKAN=1`) offload whisper/llama/Qwen when a device is present. Qwen TTS/ASR stay CPU unless `compute` selects Metal/Vulkan (or Auto probes them). |
 | **RAM** | Not a published gate. The default stack is the combination measured for an Apple M4 / 16 GiB class machine; see [reference profiles](reference-profiles.md). |
 | **Network** | First fetch of each id needs HTTPS. After the cache is full, default `run` needs none. |
@@ -51,7 +51,9 @@ Local menu (unknown ids fail at load):
 
 | Yaml `pipeline.llm.model` | Notes | Source |
 | --- | --- | --- |
-| `lfm2.5-2.6b` | Default; first-run cache | https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF |
+| `lfm3-1.7b` | Default; first-run cache (~1.85 GB) | https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF |
+| `lfm3-1.7b-bf16` | Fetched when selected (~3.5 GB) | same |
+| `lfm2.5-2.6b` | Fetched when selected | https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF |
 | `lfm2.5-350m` | Fetched when selected | https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF |
 | `lfm2.5-230m` | Fetched when selected | https://huggingface.co/LiquidAI/LFM2.5-230M-GGUF |
 | `llama-3.2-1b` | Fetched when selected | https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF |
@@ -60,7 +62,7 @@ Local menu (unknown ids fail at load):
 
 `pipeline.llm.provider: openai-compatible` uses any id the OpenAI-compatible endpoint serves. Audio stays on the machine; only transcript text leaves. The API key is `SYLLABIX_LLM_API_KEY` (environment only, never yaml).
 
-`agent_harness.agent: goose` downloads a pinned Goose CLI for this OS/arch into the model cache and checks its SHA-256 before unpacking. Syllabix writes Goose's provider and model from `pipeline.llm` into `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` before each run; see Goose's [provider docs](https://goose-docs.ai/docs/getting-started/providers/). On Linux and macOS, unpacking needs the `bzip2` program. `agent_harness.agent: none` and `syllabix` do not download Goose. Goose can search the web and fetch pages.
+`agent_harness.agent: goose` downloads a pinned Goose CLI for this OS/arch into the model cache and checks its SHA-256 before unpacking. Syllabix writes Goose's provider and model from `pipeline.llm` into `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` before each run; see Goose's [provider docs](https://goose-docs.ai/docs/getting-started/providers/). On Linux and macOS, unpacking needs the `bzip2` program. `agent_harness.agent: none` and `syllabix` do not download Goose. Goose bundled with the pinned CLI cannot load LFM3 GGUFs yet; use `agent_harness.agent: syllabix` for LFM3 tools. Goose can search the web and fetch pages.
 
 ## TTS
 
