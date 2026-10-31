@@ -186,7 +186,7 @@ int syllabix_chat_apply(struct syllabix_chat_session *session, const char *messa
         inputs.messages              = common_chat_msgs_parse_oaicompat(messages);
         inputs.use_jinja             = true;
         inputs.add_generation_prompt = true;
-        inputs.parallel_tool_calls   = false;
+        inputs.parallel_tool_calls   = true;
         inputs.tool_choice           = COMMON_CHAT_TOOL_CHOICE_AUTO;
         inputs.enable_thinking       = enable_thinking != 0;
         // Match llama-server's default (--reasoning-format auto/deepseek):
@@ -209,7 +209,21 @@ int syllabix_chat_apply(struct syllabix_chat_session *session, const char *messa
                 }
             }
         }
-        *prompt_out = dup_cstr(params.prompt);
+        std::string prompt = params.prompt;
+        if (enable_thinking == 0) {
+            const std::string src = common_chat_templates_source(session->tmpls.get());
+            if (src.find("<think>") != std::string::npos) {
+                const auto last_open = prompt.rfind("<think>");
+                const auto last_close = prompt.rfind("</think>");
+                if (last_open != std::string::npos
+                    && (last_close == std::string::npos || last_close < last_open)) {
+                    prompt += "</think>\n";
+                } else if (last_open == std::string::npos) {
+                    prompt += "<think>\n</think>\n";
+                }
+            }
+        }
+        *prompt_out = dup_cstr(prompt);
         if (*prompt_out == NULL) {
             write_err(err_out, err_cap, "out of memory");
             return -1;

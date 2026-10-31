@@ -201,11 +201,11 @@ impl LlmProvider {
     }
 }
 
-/// `agent_harness.agent` yaml value. Default `None`.
+/// `agent_harness.agent` yaml value. Default [`Self::Syllabix`].
 /// `Goose` uses `pipeline.llm` to write Goose's provider/model config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentBackend {
-    /// Plain voice chat with no sandboxed tools (default).
+    /// Plain voice chat with no sandboxed tools.
     None,
     /// Built-in Syllabix harness with sandboxed shell tools.
     Syllabix,

@@ -3482,6 +3482,16 @@ std::optional<common_chat_params> common_chat_try_specialized_template(
         return common_chat_params_init_cohere2moe(tmpl, params);
     }
 
+    // LFM3 uses Qwen3-Coder XML tool calls (`<tool_call><function=`). Detect
+    // that dialect before LFM2/LFM2.5 so leftover tool-list tokens cannot
+    // steal the parse onto the pythonic LFM2 grammar.
+    if (src.find("<tool_call>") != std::string::npos &&
+        src.find("<function=") != std::string::npos &&
+        src.find("<parameter=") != std::string::npos) {
+        LOG_DBG("Using specialized template: Qwen3-Coder (LFM3 XML)\n");
+        return common_chat_params_init_qwen3_coder(tmpl, params);
+    }
+
     if (is_lfm2_template(src)) {
         LOG_DBG("Using specialized template: LFM2\n");
         return common_chat_params_init_lfm2(tmpl, params, /* tool_list_tokens = */ true);
@@ -3539,14 +3549,6 @@ std::optional<common_chat_params> common_chat_try_specialized_template(
         src.find("<param name=\"") != std::string::npos) {
         LOG_DBG("Using specialized template: MiniCPM5\n");
         return common_chat_params_init_minicpm5(tmpl, params);
-    }
-
-    // Qwen3-Coder XML tool calls, also used by Nemotron Nano 3, Qwen3.5 and StepFun-3.5-Flash
-    if (src.find("<tool_call>") != std::string::npos &&
-        src.find("<function=") != std::string::npos &&
-        src.find("<parameter=") != std::string::npos) {
-        LOG_DBG("Using specialized template: Qwen3-Coder\n");
-        return common_chat_params_init_qwen3_coder(tmpl, params);
     }
 
     return std::nullopt;

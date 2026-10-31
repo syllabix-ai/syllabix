@@ -167,7 +167,7 @@ The selected backend is recorded as `backend` in component benchmark JSONL.
 
 ### `provider`
 
-With `agent_harness.agent: syllabix` or `none` (default), only `local` and `openai-compatible` are valid.
+With `agent_harness.agent: syllabix` (default) or `none`, only `local` and `openai-compatible` are valid.
 
 - `local` — GGUF in-process via llama.cpp. `model` is a catalogue id or a path to a `.gguf` file.
 - `openai-compatible` — any OpenAI-style `chat/completions` endpoint (`base_url` + `model`). Audio stays on the machine; only transcript text leaves. The old value `online` was renamed to `openai-compatible`.
@@ -255,10 +255,10 @@ Optional top-level `agent_harness:` block. `init` omits it. Unknown keys fail at
 
 ### `agent`
 
-Default `none` (omitted). Values: `none` \| `syllabix` \| `goose`.
+Default `syllabix` (omitted). Values: `none` \| `syllabix` \| `goose`.
 
-- `none` — plain voice chat with no sandboxed tools (the default `init` path).
-- `syllabix` — built-in agent harness with sandboxed shell tools. Works with `provider: local` (any catalogue id or `.gguf` path whose GGUF embeds a Jinja `chat_template` that supports tools—LFM, Qwen3.5, Llama 3.x, Gemma 4 / Nemotron Bolt, and similar) or `openai-compatible`. Templates without tool support fail closed with a spoken error at harness start; you do not need a separate `llama-server` for local tool turns. The old yaml value `builtin` was renamed to `syllabix`; the removed `pipeline.llm.developer_harness` flag is replaced by `agent_harness.agent: syllabix`.
+- `none` — plain voice chat with no sandboxed tools. Set this explicitly to turn the harness off.
+- `syllabix` — built-in agent harness with sandboxed shell tools (the default `init` path). Works with `provider: local` (any catalogue id or `.gguf` path whose GGUF embeds a Jinja `chat_template` that supports tools—LFM, Qwen3.5, Llama 3.x, Gemma 4 / Nemotron Bolt, and similar) or `openai-compatible`. If the loaded local template cannot run tools, Syllabix falls back to plain voice chat for that turn instead of failing. You do not need a separate `llama-server` for local tool turns. The old yaml value `builtin` was renamed to `syllabix`; the removed `pipeline.llm.developer_harness` flag is replaced by `agent_harness.agent: syllabix`.
 - `goose` — Goose runs the reply backend. Uses `pipeline.llm` as the single place to pick provider and model. Syllabix writes them into `{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` (merging with keys you added by hand) before starting Goose. Selecting `goose` downloads a pinned Goose CLI into the model cache and checks its SHA-256 before unpacking. Goose can search the web and fetch pages. Details: [engines](engines.md).
 
 With `agent: syllabix`, the harness uses a generic shell through the host sandbox: macOS Seatbelt and Linux Bubblewrap, with Landlock fallback. The model may request less filesystem authority per call, but the session ceiling is fixed at process start and cannot be widened in-session. Bounded output, cancellation, and a workspace-contained working directory apply to every command. It has no wall-clock deadline; cancellation still stops the active command.
