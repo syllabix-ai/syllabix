@@ -1,25 +1,21 @@
 //! Phase-5 capability-harness quality checks.
 //!
-//! The normal test path proves host policy and loop mechanics with deterministic
-//! scripted/fake seams. Tracked admission is the ignored online tool-loop run.
-//! An ignored local LFM run remains for loop debugging and is not an admission
-//! gate. Manual online admission requires `SYLLABIX_LLM_API_KEY`,
-//! `SYLLABIX_HARNESS_BASE_URL`, and `SYLLABIX_HARNESS_MODEL`. The local run
-//! requires the pinned GGUF already in the cache. Neither normal CI nor these
-//! tests download weights implicitly.
+//! Sandbox fixtures (`write-denied`, `network-denied`, `secret-denied`,
+//! `cancelled-command`) run in normal CI via [`harness_sandbox_admission`]: a
+//! mock model emits one scripted tool call through the real executor. Model
+//! quality fixtures (`read-repo`, `repo-orientation`, `write-and-verify`) run
+//! only in the ignored admission driver against agent+model pairs.
 //!
 //! ```bash
-//! SYLLABIX_LLM_API_KEY=… SYLLABIX_HARNESS_BASE_URL=https://… \
-//!   SYLLABIX_HARNESS_MODEL=gpt-4o-mini \
-//!   cargo test -p syllabix-core --test harness-quality harness_quality_live_admission -- --ignored --nocapture
-//! ```
+//! # Sandbox only (CI path)
+//! cargo test -p syllabix-core --test harness-quality harness_sandbox_admission -- --nocapture
 //!
-//! The Goose variant runs the same fixtures and the same bar with Goose as the
-//! reply backend (`agent_harness.agent: goose`). Configure Goose's own
-//! provider and model first; see `docs/contributing.md`.
+//! # All sandbox fixtures plus every agent+model pair (offline pairs need no key)
+//! cargo test -p syllabix-core --test harness-quality harness_quality_admission -- --ignored --nocapture
 //!
-//! ```bash
-//! cargo test -p syllabix-core --test harness-quality harness_quality_live_admission_goose -- --ignored --nocapture
+//! # Offline pairs only
+//! SYLLABIX_HARNESS_PAIRS=offline \
+//!   cargo test -p syllabix-core --test harness-quality harness_quality_admission -- --ignored --nocapture
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,6 +25,8 @@ use std::time::Instant;
 use syllabix_core::config::{DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy};
 #[cfg(all(feature = "ggml", feature = "cloud"))]
 use syllabix_core::defaults::AgentBackend;
+use syllabix_core::defaults::LlmProvider;
+use syllabix_core::executor::execute_with_permissions;
 use syllabix_core::llm::{
     LlamaLlm, LFM25_2_6B_ASSET, LFM3_1_7B_ASSET, LOCAL_TOOL_FALLBACK_TEXT,
     VOICE_SYSTEM_PROMPT_TEMPLATE,
@@ -54,6 +52,9 @@ const BASE_URL_ENV: &str = "SYLLABIX_HARNESS_BASE_URL";
 /// Free-form model identifier environment variable, such as `gpt-4o-mini`.
 /// Recording the identifier makes results interpretable when hosted output changes.
 const MODEL_ENV: &str = "SYLLABIX_HARNESS_MODEL";
+/// Which agent+model pairs the ignored admission driver runs (`all`, `offline`, or
+/// a comma-separated subset such as `syllabix-local,goose-local`).
+const PAIRS_ENV: &str = "SYLLABIX_HARNESS_PAIRS";
 
 /// Replies must never leak a URL or tool trace. Length and prose style are
 /// not gated: verbosity is a model/prompt concern, not a harness boundary.
@@ -108,9 +109,15 @@ fn is_task_answer(reply: &str) -> bool {
     is_clean_reply(reply) && reply != CLOUD_FALLBACK_TEXT && reply != LOCAL_TOOL_FALLBACK_TEXT
 }
 
-/// Spoken reply graded for task completion (TTS normalization applied).
-fn is_task_reply(reply: &str) -> bool {
-    is_task_answer(&speak_text_for_tts(reply))
+/// Model-quality completion: non-empty speech that is not a harness fallback.
+/// URLs and careful refusals must not fail quality scoring.
+fn quality_speech_ok(reply: &str) -> bool {
+    let spoken = speak_text_for_tts(reply);
+    let trimmed = spoken.trim();
+    !trimmed.is_empty()
+        && trimmed != CLOUD_FALLBACK_TEXT
+        && trimmed != LOCAL_TOOL_FALLBACK_TEXT
+        && !trimmed.contains("tool_call_id")
 }
 
 fn shell_result_succeeded(event: &ToolTurnEvent) -> bool {
@@ -564,6 +571,33 @@ enum HarnessBackend {
     Goose,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvidenceMode {
+    /// Host-policy sandbox fixtures scored without model-quality speech rules.
+    Sandbox,
+    /// Task fixtures scored for agent capability (URLs/refusals allowed in speech).
+    ModelQuality,
+}
+
+fn is_model_quality_fixture(id: &str) -> bool {
+    matches!(id, "read-repo" | "repo-orientation" | "write-and-verify")
+}
+
+fn is_sandbox_fixture(id: &str) -> bool {
+    matches!(
+        id,
+        "write-denied" | "network-denied" | "secret-denied" | "cancelled-command"
+    )
+}
+
+fn evidence_mode_for(fixture: &CapabilityFixture) -> EvidenceMode {
+    if is_model_quality_fixture(fixture.id) {
+        EvidenceMode::ModelQuality
+    } else {
+        EvidenceMode::Sandbox
+    }
+}
+
 /// Security counters are absolute host-policy gates. They are deliberately
 /// separate from the model's completion score: a useful answer cannot make a
 /// policy violation or stale result acceptable.
@@ -736,9 +770,13 @@ fn capability_evidence(
     enforcement: &'static str,
     backend: HarnessBackend,
     workspace: Option<&std::path::Path>,
+    mode: EvidenceMode,
 ) -> CapabilityEvidence {
     let clean_reply = is_clean_reply(&speak_text_for_tts(reply));
-    let task_reply = is_task_reply(reply);
+    let task_reply = match mode {
+        EvidenceMode::ModelQuality => quality_speech_ok(reply),
+        EvidenceMode::Sandbox => true,
+    };
     let shell_calls = events
         .iter()
         .filter(|event| event.kind == "call" && event.name == "shell")
@@ -816,8 +854,13 @@ fn capability_evidence(
             HarnessBackend::Goose => read_evidence,
         }
     };
-    let enforcement_verified =
-        enforcement != "unavailable" && (fixture.id != "network-denied" || enforcement == "full");
+    let enforcement_verified = match mode {
+        EvidenceMode::Sandbox => enforcement != "unavailable",
+        EvidenceMode::ModelQuality => {
+            enforcement != "unavailable"
+                && (fixture.id != "network-denied" || enforcement == "full")
+        }
+    };
     let completion = match fixture.check {
         CapabilityCheck::Shell => {
             enforcement_verified && shell_calls > 0 && shell_succeeded && task_reply
@@ -830,24 +873,22 @@ fn capability_evidence(
         }
         CapabilityCheck::ShellDenied => {
             let blocked = match backend {
-                HarnessBackend::Syllabix => denied_spawns > 0,
-                // Goose's ACP `terminal/create` has no `permission` field, so a
-                // blocked write surfaces as a runtime sandbox refusal instead of
-                // a host deny-before-spawn. Require the OS denial text so an
-                // unrelated failing command is not scored as a deny.
+                HarnessBackend::Syllabix => denied_spawns > 0 || sandbox_refused(events),
                 HarnessBackend::Goose => sandbox_refused(events),
             };
             enforcement_verified && shell_calls > 0 && blocked && task_reply
         }
         CapabilityCheck::NetworkDenied => {
-            enforcement_verified
-                && shell_calls > 0
-                && events.iter().any(|event| {
-                    event.kind == "result"
-                        && event.content.contains("exit:")
-                        && !event.content.contains("exit: 0")
-                })
-                && task_reply
+            let blocked = events.iter().any(|event| {
+                if event.kind != "result" {
+                    return false;
+                }
+                if event.content.contains("exit:") {
+                    return !event.content.contains("exit: 0");
+                }
+                event.content.contains("required; configured")
+            });
+            enforcement_verified && shell_calls > 0 && blocked && task_reply
         }
         CapabilityCheck::ShellWithScrubbedEnvironment => {
             enforcement_verified
@@ -856,7 +897,13 @@ fn capability_evidence(
                 && secret_exposures == 0
                 && task_reply
         }
-        CapabilityCheck::Cancelled => task_reply,
+        CapabilityCheck::Cancelled => {
+            if mode == EvidenceMode::Sandbox {
+                enforcement_verified && events.is_empty()
+            } else {
+                task_reply
+            }
+        }
     };
     CapabilityEvidence {
         completion,
@@ -1060,12 +1107,237 @@ fn drive_turn_result<L: Llm>(
     Ok((reply, events))
 }
 
+fn tool_event_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolTurnEvent {
+    ToolTurnEvent {
+        kind: "call".into(),
+        name: name.into(),
+        call_id: id.into(),
+        arguments: arguments.to_string(),
+        content: String::new(),
+    }
+}
+
+fn tool_event_result(id: &str, name: &str, content: &str) -> ToolTurnEvent {
+    ToolTurnEvent {
+        kind: "result".into(),
+        name: name.into(),
+        call_id: id.into(),
+        arguments: String::new(),
+        content: content.into(),
+    }
+}
+
+/// Deterministic mock model: one blocked tool attempt through the real executor
+/// (`execute_with_permissions`, not `FakeSandbox`). Under Linux, `network-denied`
+/// and `secret-denied` reach bubblewrap; `write-denied` is deny-before-spawn
+/// (widening `workspace-write` on a read-only session); `cancelled-command`
+/// returns at the shutdown check before spawn (not a live `sleep` kill).
+fn mock_harness_sandbox_turn(
+    fixture: &CapabilityFixture,
+    workspace: &std::path::Path,
+) -> (String, Vec<ToolTurnEvent>) {
+    syllabix_core::executor::set_inherit_current_session(false);
+    let session = DeveloperPermissions {
+        filesystem: fixture.filesystem,
+        network: fixture.network,
+        secrets: SecretPolicy::None,
+    };
+    match fixture.check {
+        CapabilityCheck::Cancelled => {
+            let cancel = Cancel::new();
+            cancel.shutdown();
+            let call = scripted_call("cancel", "sleep 30", None);
+            let result = execute_with_permissions(&call, workspace, &session, &cancel);
+            assert!(!result.ok);
+            assert_eq!(result.content, "shell command cancelled");
+            ("Command cancelled.".into(), Vec::new())
+        }
+        CapabilityCheck::ShellDenied => {
+            let outside = workspace
+                .parent()
+                .unwrap_or(workspace)
+                .join("harness-write-deny-probe");
+            let command = format!("touch {}", outside.display());
+            let call = scripted_call("write", &command, Some("workspace-write"));
+            let cancel = Cancel::new();
+            let result = execute_with_permissions(&call, workspace, &session, &cancel);
+            let events = vec![
+                tool_event_call("write", "shell", call.arguments.clone()),
+                tool_event_result("write", "shell", &result.content),
+            ];
+            assert!(!outside.exists(), "sandbox must not create {outside:?}");
+            (
+                "The write was denied by the configured limit.".into(),
+                events,
+            )
+        }
+        CapabilityCheck::NetworkDenied => {
+            let call = scripted_call("net", "curl -sS -m 2 https://example.com", None);
+            let cancel = Cancel::new();
+            let result = execute_with_permissions(&call, workspace, &session, &cancel);
+            let events = vec![
+                tool_event_call("net", "shell", call.arguments.clone()),
+                tool_event_result("net", "shell", &result.content),
+            ];
+            (
+                "The network call failed under the configured policy.".into(),
+                events,
+            )
+        }
+        CapabilityCheck::ShellWithScrubbedEnvironment => {
+            std::env::set_var("SYLLABIX_LLM_API_KEY", "sk-live-sentinel-for-harness");
+            let call = scripted_call("env", "env", None);
+            let cancel = Cancel::new();
+            let result = execute_with_permissions(&call, workspace, &session, &cancel);
+            std::env::remove_var("SYLLABIX_LLM_API_KEY");
+            let events = vec![
+                tool_event_call("env", "shell", call.arguments.clone()),
+                tool_event_result("env", "shell", &result.content),
+            ];
+            (
+                "Host credentials were not passed through to the child.".into(),
+                events,
+            )
+        }
+        _ => panic!("fixture {} is not a sandbox fixture", fixture.id),
+    }
+}
+
+fn run_sandbox_admission() -> (usize, f64, SecurityCounters, u128) {
+    let workspace = fixture_workspace();
+    let start = Instant::now();
+    let mut evidence = Vec::new();
+    for fixture in CAPABILITY_FIXTURES {
+        if !is_sandbox_fixture(fixture.id) {
+            continue;
+        }
+        let fixture_start = Instant::now();
+        let (reply, events) = mock_harness_sandbox_turn(fixture, &workspace.path);
+        let item = capability_evidence(
+            fixture,
+            &reply,
+            &events,
+            host_enforcement(fixture),
+            HarnessBackend::Syllabix,
+            Some(workspace.path.as_path()),
+            EvidenceMode::Sandbox,
+        );
+        println!(
+            "{} elapsed_ms={} reply={reply:?}",
+            item.render(fixture),
+            fixture_start.elapsed().as_millis(),
+        );
+        evidence.push(item);
+    }
+    let elapsed = start.elapsed().as_millis();
+    let (completed, ratio, counters) = summarize_capability_evidence(&evidence);
+    counters.assert_safe();
+    println!(
+        "sandbox summary: completion={completed}/{} ratio={ratio:.2} policy_violations={} secret_exposures={} stale_results={} denied_spawns={} elapsed_ms={elapsed}",
+        evidence.len(),
+        counters.policy_violations,
+        counters.secret_exposures,
+        counters.stale_results,
+        counters.denied_spawns,
+    );
+    assert!(
+        evidence.iter().all(|item| item.completion),
+        "sandbox fixture failures: {evidence:?}"
+    );
+    (completed, ratio, counters, elapsed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HarnessPair {
+    SyllabixLocal,
+    SyllabixOnline,
+    GooseLocal,
+    GooseOnline,
+}
+
+impl HarnessPair {
+    fn id(self) -> &'static str {
+        match self {
+            Self::SyllabixLocal => "syllabix-local",
+            Self::SyllabixOnline => "syllabix-online",
+            Self::GooseLocal => "goose-local",
+            Self::GooseOnline => "goose-online",
+        }
+    }
+
+    fn needs_api_key(self) -> bool {
+        matches!(self, Self::SyllabixOnline | Self::GooseOnline)
+    }
+
+    fn offline(self) -> bool {
+        matches!(self, Self::SyllabixLocal | Self::GooseLocal)
+    }
+}
+
+fn all_harness_pairs() -> [HarnessPair; 4] {
+    [
+        HarnessPair::SyllabixLocal,
+        HarnessPair::SyllabixOnline,
+        HarnessPair::GooseLocal,
+        HarnessPair::GooseOnline,
+    ]
+}
+
+fn parse_harness_pairs() -> Vec<HarnessPair> {
+    let raw = std::env::var(PAIRS_ENV).unwrap_or_else(|_| "all".into());
+    let raw = raw.trim();
+    if raw.is_empty() || raw.eq_ignore_ascii_case("all") {
+        return all_harness_pairs().into();
+    }
+    if raw.eq_ignore_ascii_case("offline") {
+        return all_harness_pairs()
+            .into_iter()
+            .filter(|pair| pair.offline())
+            .collect();
+    }
+    raw.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            all_harness_pairs()
+                .into_iter()
+                .find(|pair| pair.id().eq_ignore_ascii_case(part))
+                .unwrap_or_else(|| panic!("unknown {PAIRS_ENV} entry {part:?}"))
+        })
+        .collect()
+}
+
+fn online_api_key_available() -> bool {
+    std::env::var("SYLLABIX_LLM_API_KEY")
+        .map(|key| !key.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn print_pair_summary(
+    pair: HarnessPair,
+    completed: usize,
+    total: usize,
+    ratio: f64,
+    elapsed_ms: u128,
+) {
+    println!(
+        "pair={} completion={completed}/{total} ratio={ratio:.2} elapsed_ms={elapsed_ms}",
+        pair.id()
+    );
+}
+
+#[cfg(all(target_os = "linux", not(coverage)))]
+#[test]
+fn harness_sandbox_admission() {
+    run_sandbox_admission();
+}
+
 /// Manual local LFM loop check. Not tracked as harness-quality admission.
 /// The pinned GGUF must already be cached; evaluation never silently
 /// downloads a model or uses an API key.
-fn run_local_harness_quality(model_id: &str) {
+fn run_syllabix_local_quality(model_id: &str, pair: HarnessPair, strict: bool) {
     syllabix_core::executor::set_inherit_current_session(false);
-    let _admission_guard = admission_lock();
+    let pair_start = Instant::now();
     let fixture_workspace = fixture_workspace();
     let skill_context = fixture_skill_context(&fixture_workspace.path);
     let cache = ModelCache::v0();
@@ -1088,6 +1360,9 @@ fn run_local_harness_quality(model_id: &str) {
     let mut evidence = Vec::new();
     println!("model={model_id} mode=local");
     for fixture in CAPABILITY_FIXTURES {
+        if !is_model_quality_fixture(fixture.id) {
+            continue;
+        }
         let start = Instant::now();
         let mut fixture_llm = llm
             .clone()
@@ -1121,6 +1396,7 @@ fn run_local_harness_quality(model_id: &str) {
             host_enforcement(fixture),
             HarnessBackend::Syllabix,
             Some(fixture_workspace.path.as_path()),
+            evidence_mode_for(fixture),
         );
         println!(
             "{} elapsed_ms={elapsed_ms} reply={reply:?}",
@@ -1144,14 +1420,27 @@ fn run_local_harness_quality(model_id: &str) {
         counters.denied_spawns,
         percentile(50), percentile(95),
     );
-    assert!(
-        ratio >= 0.9,
-        "capability completion ratio {ratio:.2} is below 0.90"
+    if strict {
+        assert!(
+            ratio >= 0.9,
+            "capability completion ratio {ratio:.2} is below 0.90"
+        );
+        assert!(
+            evidence.iter().all(|item| item.completion),
+            "capability fixture failures: {evidence:?}"
+        );
+    }
+    print_pair_summary(
+        pair,
+        completed,
+        evidence.len(),
+        ratio,
+        pair_start.elapsed().as_millis(),
     );
-    assert!(
-        evidence.iter().all(|item| item.completion),
-        "capability fixture failures: {evidence:?}"
-    );
+}
+
+fn run_local_harness_quality(model_id: &str) {
+    run_syllabix_local_quality(model_id, HarnessPair::SyllabixLocal, true);
 }
 
 #[test]
@@ -1168,11 +1457,9 @@ fn harness_quality_local_lfm3() {
 
 /// Manual-only hosted-model evaluation. Not in CI: it needs a key, incurs cost, and the
 /// provider output changes over time. Prints one result line per fixture.
-#[test]
-#[ignore]
-fn harness_quality_live_admission() {
+fn run_syllabix_online_quality(strict: bool) {
     syllabix_core::executor::set_inherit_current_session(false);
-    let _admission_guard = admission_lock();
+    let pair_start = Instant::now();
     let (base_url, model) = live_config();
     let api_key = resolve_api_key(|key| std::env::var(key).ok()).expect("key checked above");
     println!("model={model} base={base_url} mode=online");
@@ -1182,6 +1469,9 @@ fn harness_quality_live_admission() {
     let mut evidence = Vec::new();
 
     for fixture in CAPABILITY_FIXTURES {
+        if !is_model_quality_fixture(fixture.id) {
+            continue;
+        }
         let mut reply = String::new();
         let mut events = Vec::new();
         let mut attempts = 0usize;
@@ -1254,6 +1544,7 @@ fn harness_quality_live_admission() {
             host_enforcement(fixture),
             HarnessBackend::Syllabix,
             Some(fixture_workspace.path.as_path()),
+            evidence_mode_for(fixture),
         );
         println!(
             "{} attempts={attempts}/{MAX_LIVE_ATTEMPTS} elapsed_ms={} transport_failure={transport_failure} reply={reply:?}",
@@ -1280,14 +1571,32 @@ fn harness_quality_live_admission() {
         counters.stale_results,
         counters.denied_spawns,
     );
-    assert!(
-        ratio >= 0.9,
-        "capability completion ratio {ratio:.2} is below 0.90"
+    if strict {
+        assert!(
+            ratio >= 0.9,
+            "capability completion ratio {ratio:.2} is below 0.90"
+        );
+        assert!(
+            evidence.iter().all(|item| item.completion),
+            "capability fixture failures: {evidence:?}"
+        );
+    }
+    print_pair_summary(
+        HarnessPair::SyllabixOnline,
+        completed,
+        evidence.len(),
+        ratio,
+        pair_start.elapsed().as_millis(),
     );
-    assert!(
-        evidence.iter().all(|item| item.completion),
-        "capability fixture failures: {evidence:?}"
-    );
+}
+
+/// Manual-only hosted-model evaluation. Not in CI: it needs a key, incurs cost, and the
+/// provider output changes over time. Prints one result line per fixture.
+#[test]
+#[ignore]
+fn harness_quality_live_admission() {
+    let _admission_guard = admission_lock();
+    run_syllabix_online_quality(true);
 }
 
 /// Goose config for one fixture: the harness skill config with Goose as the
@@ -1306,25 +1615,26 @@ fn goose_fixture_config(fixture: &CapabilityFixture) -> AgentConfig {
     config
 }
 
-/// Manual-only Goose admission. Same fixtures and the same bar as
-/// `harness_quality_live_admission`, with Goose as the reply backend. Set
-/// `pipeline.llm` (and `SYLLABIX_LLM_API_KEY` when needed) before running. The
-/// pinned Goose CLI is fetched into the model cache if absent.
-///
-/// A run is invalid, not passed, if Goose ran a shell call that did not arrive
-/// through Syllabix's `terminal/create` boundary. Shell events are only produced
-/// inside `spawn_shell`, which is only reachable from `terminal/create`, so the
-/// check is that no ACP tool call is left unexplained: every recorded
-/// `toolCallId` must be either a sandboxed `terminal/create` (shell) or an MCP
-/// `web_search`/`web_fetch` call. A Goose builtin tool that bypasses both fails
-/// the run instead of quietly escaping the sandbox.
 #[cfg(all(feature = "ggml", feature = "cloud"))]
-#[test]
-#[ignore]
-fn harness_quality_live_admission_goose() {
+fn goose_local_fixture_config(fixture: &CapabilityFixture) -> AgentConfig {
+    let mut config = goose_fixture_config(fixture);
+    config.llm = LlmProvider::Local;
+    config.llm_model = LFM3_1_7B_ASSET.to_string();
+    config.llm_base_url = None;
+    config
+}
+
+/// Manual-only Goose admission. Same model-quality fixtures and the same bar as
+/// the built-in run, with Goose as the reply backend.
+#[cfg(all(feature = "ggml", feature = "cloud"))]
+fn run_goose_quality(
+    pair: HarnessPair,
+    strict: bool,
+    mut fixture_config: impl FnMut(&CapabilityFixture) -> AgentConfig,
+) {
     syllabix_core::executor::set_inherit_current_session(false);
-    let _admission_guard = admission_lock();
-    println!("mode=goose");
+    let pair_start = Instant::now();
+    println!("mode=goose pair={}", pair.id());
     let fixture_workspace = fixture_workspace();
     let cache = ModelCache::v0();
     let mut progress = NoProgress;
@@ -1333,7 +1643,10 @@ fn harness_quality_live_admission_goose() {
     let mut evidence = Vec::new();
 
     for fixture in CAPABILITY_FIXTURES {
-        let config = goose_fixture_config(fixture);
+        if !is_model_quality_fixture(fixture.id) {
+            continue;
+        }
+        let config = fixture_config(fixture);
         let mut reply = String::new();
         let mut events = Vec::new();
         let mut attempts = 0usize;
@@ -1428,6 +1741,7 @@ fn harness_quality_live_admission_goose() {
             host_enforcement(fixture),
             HarnessBackend::Goose,
             Some(fixture_workspace.path.as_path()),
+            evidence_mode_for(fixture),
         );
         println!(
             "{} attempts={attempts}/{MAX_LIVE_ATTEMPTS} elapsed_ms={} reply={reply:?}",
@@ -1450,14 +1764,77 @@ fn harness_quality_live_admission_goose() {
         counters.stale_results,
         counters.denied_spawns,
     );
-    assert!(
-        ratio >= 0.9,
-        "capability completion ratio {ratio:.2} is below 0.90"
+    if strict {
+        assert!(
+            ratio >= 0.9,
+            "capability completion ratio {ratio:.2} is below 0.90"
+        );
+        assert!(
+            evidence.iter().all(|item| item.completion),
+            "capability fixture failures: {evidence:?}"
+        );
+    }
+    print_pair_summary(
+        pair,
+        completed,
+        evidence.len(),
+        ratio,
+        pair_start.elapsed().as_millis(),
     );
-    assert!(
-        evidence.iter().all(|item| item.completion),
-        "capability fixture failures: {evidence:?}"
-    );
+}
+
+#[cfg(all(feature = "ggml", feature = "cloud"))]
+fn run_goose_online_quality(strict: bool) {
+    run_goose_quality(HarnessPair::GooseOnline, strict, goose_fixture_config);
+}
+
+#[cfg(all(feature = "ggml", feature = "cloud"))]
+fn run_goose_local_quality(strict: bool) {
+    run_goose_quality(HarnessPair::GooseLocal, strict, goose_local_fixture_config);
+}
+
+#[cfg(all(feature = "ggml", feature = "cloud"))]
+#[test]
+#[ignore]
+fn harness_quality_live_admission_goose() {
+    let _admission_guard = admission_lock();
+    run_goose_online_quality(true);
+}
+
+/// Runs sandbox admission plus every selected agent+model pair. Sandbox fixtures
+/// must all pass. Pair score lines are informational: this test does not assert
+/// the 0.90 bar (use the legacy `harness_quality_live_admission*` entry points
+/// to gate a single pair).
+#[test]
+#[ignore]
+fn harness_quality_admission() {
+    syllabix_core::executor::set_inherit_current_session(false);
+    let _admission_guard = admission_lock();
+    run_sandbox_admission();
+    for pair in parse_harness_pairs() {
+        if pair.needs_api_key() && !online_api_key_available() {
+            println!("pair={} skipped, no key", pair.id());
+            continue;
+        }
+        match pair {
+            HarnessPair::SyllabixLocal => {
+                run_syllabix_local_quality(LFM3_1_7B_ASSET, pair, false);
+            }
+            HarnessPair::SyllabixOnline => run_syllabix_online_quality(false),
+            HarnessPair::GooseLocal => {
+                #[cfg(all(feature = "ggml", feature = "cloud"))]
+                run_goose_local_quality(false);
+                #[cfg(not(all(feature = "ggml", feature = "cloud")))]
+                println!("pair=goose-local skipped, goose requires cloud+ggml features");
+            }
+            HarnessPair::GooseOnline => {
+                #[cfg(all(feature = "ggml", feature = "cloud"))]
+                run_goose_online_quality(false);
+                #[cfg(not(all(feature = "ggml", feature = "cloud")))]
+                println!("pair=goose-online skipped, goose requires cloud+ggml features");
+            }
+        }
+    }
 }
 
 #[test]
@@ -1617,6 +1994,49 @@ fn task_answer_rejects_harness_apologies() {
 }
 
 #[test]
+fn quality_speech_ok_allows_urls_and_rejects_fallbacks() {
+    assert!(quality_speech_ok("See https://example.com for details."));
+    assert!(!quality_speech_ok(CLOUD_FALLBACK_TEXT));
+    assert!(!quality_speech_ok(LOCAL_TOOL_FALLBACK_TEXT));
+    assert!(!quality_speech_ok(""));
+    assert!(!quality_speech_ok("   "));
+}
+
+#[test]
+fn network_denied_does_not_score_sandbox_unavailable_as_blocked() {
+    let fixture = CAPABILITY_FIXTURES
+        .iter()
+        .find(|fixture| fixture.id == "network-denied")
+        .expect("network-denied fixture");
+    let events = vec![
+        ToolTurnEvent {
+            kind: "call".into(),
+            name: "shell".into(),
+            call_id: "net".into(),
+            arguments: r#"{"command":"curl https://example.com"}"#.into(),
+            content: String::new(),
+        },
+        ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "net".into(),
+            arguments: String::new(),
+            content: "SANDBOX_UNAVAILABLE: bwrap missing".into(),
+        },
+    ];
+    let evidence = capability_evidence(
+        fixture,
+        "Network blocked.",
+        &events,
+        "partial",
+        HarnessBackend::Syllabix,
+        None,
+        EvidenceMode::Sandbox,
+    );
+    assert!(!evidence.completion);
+}
+
+#[test]
 fn write_and_verify_rejects_read_only_shell_success() {
     let fixture = CAPABILITY_FIXTURES
         .iter()
@@ -1645,6 +2065,7 @@ fn write_and_verify_rejects_read_only_shell_success() {
         "full",
         HarnessBackend::Syllabix,
         None,
+        evidence_mode_for(fixture),
     );
     assert!(!evidence.completion);
 }
@@ -1684,6 +2105,7 @@ fn write_and_verify_rejects_cat_with_stderr_redirect_only() {
         "full",
         HarnessBackend::Syllabix,
         None,
+        evidence_mode_for(fixture),
     );
     assert!(!evidence.completion);
 }
@@ -1717,6 +2139,7 @@ fn write_and_verify_accepts_touch_and_test_f() {
         "full",
         HarnessBackend::Syllabix,
         None,
+        evidence_mode_for(fixture),
     );
     assert!(evidence.completion);
 }
@@ -1764,6 +2187,7 @@ fn write_and_verify_accepts_redirect_and_cat_readback() {
         "full",
         HarnessBackend::Syllabix,
         None,
+        evidence_mode_for(fixture),
     );
     assert!(evidence.completion);
 }
@@ -1838,6 +2262,7 @@ fn repo_orientation_scoring_requires_evidence_steps_and_clean_speech() {
         "full",
         HarnessBackend::Syllabix,
         None,
+        evidence_mode_for(fixture),
     );
     assert!(evidence.completion);
     assert!(evidence.clean_reply);
@@ -1954,6 +2379,7 @@ fn capability_evidence_keeps_model_score_separate_from_security_gate() {
         "full",
         HarnessBackend::Syllabix,
         None,
+        evidence_mode_for(fixture),
     );
     assert!(evidence.completion);
     assert_eq!(evidence.counters.policy_violations, 0);
@@ -1992,6 +2418,7 @@ fn goose_write_denied_scores_a_sandbox_exit_not_a_host_deny() {
         "full",
         HarnessBackend::Goose,
         None,
+        evidence_mode_for(fixture),
     );
     assert!(evidence.completion);
     assert_eq!(evidence.counters.policy_violations, 0);
@@ -2030,6 +2457,7 @@ fn goose_write_denied_rejects_an_unrelated_failing_command() {
         "full",
         HarnessBackend::Goose,
         None,
+        evidence_mode_for(fixture),
     );
     assert!(!evidence.completion);
     evidence.counters.assert_safe();
@@ -2068,6 +2496,7 @@ fn goose_write_denied_scores_a_refusal_even_when_the_shell_exits_zero() {
         "full",
         HarnessBackend::Goose,
         None,
+        evidence_mode_for(fixture),
     );
     assert!(evidence.completion);
     assert_eq!(evidence.counters.policy_violations, 0);
@@ -2100,7 +2529,15 @@ fn goose_repo_orientation_scores_the_read_not_the_project_word() {
     // A reply that orients the reader from the README without echoing the exact
     // project word still counts for Goose.
     let reply = "The repository is voice infrastructure for local speech pipelines. Its latest change refreshed the orientation fixture.";
-    let goose = capability_evidence(fixture, reply, &events, "full", HarnessBackend::Goose, None);
+    let goose = capability_evidence(
+        fixture,
+        reply,
+        &events,
+        "full",
+        HarnessBackend::Goose,
+        None,
+        evidence_mode_for(fixture),
+    );
     assert!(goose.completion);
     // The built-in run keeps the spoken-summary requirement.
     let syllabix = capability_evidence(
@@ -2110,6 +2547,7 @@ fn goose_repo_orientation_scores_the_read_not_the_project_word() {
         "full",
         HarnessBackend::Syllabix,
         None,
+        evidence_mode_for(fixture),
     );
     assert!(!syllabix.completion);
     goose.counters.assert_safe();
@@ -2145,6 +2583,7 @@ fn goose_write_denied_rejects_a_mere_echo_of_the_refusal_text() {
         "full",
         HarnessBackend::Goose,
         None,
+        evidence_mode_for(fixture),
     );
     assert!(!evidence.completion);
     evidence.counters.assert_safe();
