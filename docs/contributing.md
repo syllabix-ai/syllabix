@@ -121,67 +121,64 @@ cargo run -p syllabix --release -- run
 python3 scripts/summarize-timelines.py target/turn-debug
 ```
 
-## Tool-harness admission (manual, keyed)
+## Tool-harness admission (manual)
 
-`--test harness-quality` is the Phase-5 capability admission eval. It uses
-fixed task fixtures through the real online tool loop, while the normal CI
-half uses scripted model output and fake sandbox seams. The live half never
-runs in CI: it needs a key, spends billing, and the provider drifts. One retry
-per dead transport turn is allowed; a provider failure is not a passing
-fixture.
+`--test harness-quality` splits **sandbox** checks from **model-quality** checks.
 
-```bash
-SYLLABIX_LLM_API_KEY=… \
-SYLLABIX_HARNESS_BASE_URL=https://api.openai.com/v1 \
-SYLLABIX_HARNESS_MODEL=gpt-5.4-mini \
-cargo test -p syllabix-core --test harness-quality harness_quality_live_admission -- --ignored --nocapture
-```
+**Gated (must pass):** `harness_sandbox_admission` runs the four sandbox fixtures
+in normal CI. A mock model emits one scripted tool call through the real executor
+(`execute_with_permissions`, not `FakeSandbox`). Under Linux, `network-denied` and
+`secret-denied` spawn through bubblewrap; `write-denied` is deny-before-spawn
+(widening `workspace-write` on a read-only session); `cancelled-command` returns
+at the shutdown check before spawn. No LLM and no API key are required; the test
+asserts every sandbox fixture completes.
 
-All three variables are required and nothing is defaulted; the key comes from
-the environment only, never from yaml. The report includes
-`read-repo`, `repo-orientation`, `write-and-verify`, `write-denied`,
-`network-denied`, `secret-denied`, and `cancelled-command`, with completion,
-enforcement, and denied-spawn fields. The `repo-orientation` fixture loads the
-configured instruction-only skill and requires two read-only shell steps: one
-for repository purpose and one for bounded recent history. Admission requires
-at least 90% task completion. The
-hard host-policy gate is absolute: `policy_violations=0`,
-`secret_exposures=0`, and `stale_results=0`; a model score cannot compensate
-for any non-zero counter. Give the key rate-limit headroom first — quota
-exhaustion fails the fixture as unreachable, not as a model verdict.
+**Informational (0.90 bar not enforced by the combined driver):**
+`harness_quality_admission` runs sandbox admission plus model-quality fixtures for
+each selected agent+model pair and prints `pair=… completion=… ratio=…` lines.
+Quality scoring allows careful refusals and spoken URLs; it does not re-test
+sandbox policy. The combined test always exits successfully even when a pair is
+below 0.90 (for example `pair=goose-local completion=0/3`). Use the legacy entry
+points below when you need a hard gate on one pair. The PR evidence workflow only
+requires a `pair=` line (or `skipped, no key`) per pair you ran, not a passing ratio.
 
-Tracked CI admission is the builtin openai-compatible run. Goose local-GGUF admission is a
-manual operator run; its evidence is pasted into the pull request description.
-An ignored `harness_quality_local_lfm` test still exists for local-loop
-debugging; it is not part of CI admission and its report is not pasted into
-pull requests. The built-in agent harness is on by default (`agent_harness.agent: syllabix`);
-set `agent: none` for plain voice chat with no sandboxed tools.
-
-The Goose variant runs the same fixtures and the same completion and security
-checks with `agent_harness.agent: goose` as the reply backend. Set
-`pipeline.llm` to the Goose provider and model under test; Syllabix writes
-`{SYLLABIX_CACHE_DIR}/goose/config/config.yaml` before starting Goose. It
-fetches the pinned Goose CLI into the model cache if it is absent.
+**Gated at 0.90 on a single pair:** `harness_quality_live_admission` (syllabix +
+online), `harness_quality_live_admission_goose` (goose + online yaml),
+`harness_quality_local_lfm`, and `harness_quality_local_lfm3` assert the bar.
 
 ```bash
-cargo test -p syllabix-core --test harness-quality harness_quality_live_admission_goose -- --ignored --nocapture
+# Sandbox only (CI path)
+cargo test -p syllabix-core --test harness-quality harness_sandbox_admission -- --nocapture
+
+# Sandbox + all four pairs (online pairs print `skipped, no key` without SYLLABIX_LLM_API_KEY)
+cargo test -p syllabix-core --test harness-quality harness_quality_admission -- --ignored --nocapture
+
+# Offline pairs only (syllabix-local + goose-local; no API key)
+SYLLABIX_HARNESS_PAIRS=offline \
+  cargo test -p syllabix-core --test harness-quality harness_quality_admission -- --ignored --nocapture
+
+# Subset of pairs (comma-separated ids: syllabix-local, syllabix-online, goose-local, goose-online)
+SYLLABIX_HARNESS_PAIRS=syllabix-local,syllabix-online \
+  cargo test -p syllabix-core --test harness-quality harness_quality_admission -- --ignored --nocapture
 ```
 
-A Goose run is invalid, not passed, if a Goose shell call reached the model
-loop without going through Syllabix's `terminal/create` boundary: every recorded
-Agent Client Protocol (ACP) `toolCallId` must be either a sandboxed
-`terminal/create` (shell) or an advertised Model Context Protocol (MCP)
-`web_search`/`web_fetch` call. Goose's `terminal/create` carries no `permission`
-field, so the `write-denied` fixture is proven by the sandbox refusing a
-write-like command at runtime — the OS denial text (`Operation not permitted`,
-`Read-only file system`, …) in that command's output — rather than a host-side
-rejection before the process starts; this also holds when Goose wraps the write
-so the shell still exits 0. Likewise, Goose's `repo-orientation` completion is graded
-from the files and history it actually read rather than from an exact project
-word in its spoken reply. The security counters and clean-reply checks are
-identical to the built-in run.
+Online pairs need `SYLLABIX_LLM_API_KEY`, `SYLLABIX_HARNESS_BASE_URL`, and
+`SYLLABIX_HARNESS_MODEL` (nothing defaulted). Local pairs need the pinned GGUF
+already in the model cache; evaluation never silently downloads weights.
 
-If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`, `src/openai.rs`, `src/types.rs`, `src/providers.rs`, `src/policy.rs`, `src/sandbox/`, or `tests/harness-quality.rs`), paste the online verdict report into the PR body inside an HTML comment starting with `<!-- syllabix-harness-quality -->`, including the seven fixture lines (`[read-repo]`, `[repo-orientation]`, `[write-and-verify]`, `[write-denied]`, `[network-denied]`, `[secret-denied]`, `[cancelled-command]`) and a summary such as `summary: completion=7/7 ratio=1.00 policy_violations=0 secret_exposures=0 stale_results=0`. A CI check enforces this; CI itself never calls the model. Import-only edits on those files (moved `use` lines, comments, or type paths with no behavior change) do not need a pasted report; the evidence workflow skips them.
+The built-in agent harness is on by default (`agent_harness.agent: syllabix`);
+set `agent: none` for plain voice chat with no sandboxed tools. Goose local
+(`goose-local`) uses Goose's own llama.cpp stack, not Syllabix's vendored LFM3
+build; a low score there is a known Goose×local-LFM seam, not a missing cache file.
+
+If your PR touches the harness boundary (`crates/syllabix-core/src/executor.rs`,
+`src/openai.rs`, `src/types.rs`, `src/providers.rs`, `src/policy.rs`,
+`src/sandbox/`, or `tests/harness-quality.rs`), paste the admission report into
+the PR body inside an HTML comment starting with `<!-- syllabix-harness-quality
+-->`, including the four sandbox fixture lines, the `sandbox summary:` line, and
+a `pair=` line for each agent+model pair you ran (or `skipped, no key` for online
+pairs without a key). A CI check enforces this; CI itself never calls the model.
+Import-only edits on those files do not need a pasted report.
 
 ## Packaging (maintainers)
 
