@@ -18,6 +18,7 @@
 | `SYLLABIX_SERVE_TOKEN is required…` | `syllabix serve` on a non-loopback bind needs that env var. Loopback may omit it. [CLI serve](cli.md#serve). |
 | Every reply is "Sorry, I could not reach the language model." | The cloud turn failed (bad key → HTTP 401, endpoint down, or idle timeout) and spoke its fallback instead of hanging. Check the key, `base_url`, and the endpoint; diagnostics sidecars carry the endpoint and request id. |
 | Linux build fails linking ALSA | Contributors need `libasound2-dev`. Users of the Release binary never compile anything. |
+| Debug lines like `local-harness-step …` clutter the TUI | They are off by default. Set `SYLLABIX_HARNESS_TRACE=1` in the shell before `syllabix run` when you need harness tool-step traces on stderr. |
 
 ## Check that your download isn't damaged (optional)
 
