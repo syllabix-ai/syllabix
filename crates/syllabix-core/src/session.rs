@@ -138,6 +138,12 @@ impl AudioCapture for DynCapture {
     fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<AudioFrame>> {
         self.0.next_frame(cancel)
     }
+    fn discard_buffered_audio(&mut self) {
+        self.0.discard_buffered_audio();
+    }
+    fn enable_pcm_tap(&mut self) {
+        self.0.enable_pcm_tap();
+    }
 }
 
 /// Compose a conversation loop without wiring [`crate::load_real_providers`],
@@ -347,6 +353,10 @@ impl Session {
                 config.auto_timeout_exit_ms,
             )
         });
+        let wants_wavs = turn_debug
+            .as_ref()
+            .is_some_and(|debug| debug.collects_audio());
+        let (mut input, sink) = resolve_io(&config, &events, turn_debug.as_ref(), input, sink)?;
         let (vad, stt, llm, tts) = resolve_ml(
             &config,
             &cancel,
@@ -358,7 +368,12 @@ impl Session {
             llm,
             tts,
         )?;
-        let (input, sink) = resolve_io(&config, &events, turn_debug.as_ref(), input, sink)?;
+        if let ResolvedInput::Capture(capture) = &mut input {
+            capture.discard_buffered_audio();
+            if wants_wavs {
+                capture.enable_pcm_tap();
+            }
+        }
         if let Some(events) = &events {
             let _ = events.send(LoopEvent::Ready);
         }
@@ -578,15 +593,10 @@ fn resolve_io(
     use crate::turn_debug::PlaybackWatch;
 
     let watch = turn_debug.map(|debug| PlaybackWatch::new(debug.clone()));
-    let wants_wavs = turn_debug.is_some_and(TurnDebug::collects_audio);
     match (input, sink) {
         (Input::Default, None) => {
             let (sink, echo_reference) = NativePlayback::open_with_echo_and_watch(watch)?;
-            let mut capture =
-                NativeCapture::open_with_echo_and_events(echo_reference, events.clone())?;
-            if wants_wavs {
-                capture.enable_pcm_tap();
-            }
+            let capture = NativeCapture::open_with_echo_and_events(echo_reference, events.clone())?;
             eprintln!(
                 "mic: {}  speaker: {}  agent: {}",
                 capture.device_name, sink.device_name, config.name
@@ -594,10 +604,7 @@ fn resolve_io(
             Ok((ResolvedInput::Capture(Box::new(capture)), Box::new(sink)))
         }
         (Input::Default, Some(sink)) => {
-            let mut capture = NativeCapture::open()?;
-            if wants_wavs {
-                capture.enable_pcm_tap();
-            }
+            let capture = NativeCapture::open()?;
             eprintln!("mic: {}  agent: {}", capture.device_name, config.name);
             Ok((ResolvedInput::Capture(Box::new(capture)), sink))
         }

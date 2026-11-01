@@ -9,12 +9,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
 #[cfg(not(coverage))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(not(coverage))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 #[cfg(not(coverage))]
-use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
+use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig, SupportedStreamConfigRange};
 
 use crate::audio::convert::{f32_to_i16, i16_to_f32, FrameSplitter, PcmConverter, PcmFormat};
 use crate::audio::devices::DeviceChoice;
@@ -237,12 +237,185 @@ impl DeviceInventory for CpalInventory {
 }
 
 #[cfg(not(coverage))]
+const CPAL_RECOVERY_HINT: &str =
+    "Close other apps using the device, then retry. If this is a laptop, check the OS sound panel and microphone permission.";
+
+#[cfg(not(coverage))]
 fn map_cpal(err: impl std::fmt::Display, what: &str) -> Error {
     Error::AudioDevice {
         message: format!(
-            "{what}: {err}. Close other apps using the device, then retry. If this is a laptop, check the OS sound panel and microphone permission."
+            "{what}: {}. {CPAL_RECOVERY_HINT}",
+            err.to_string().trim_end_matches('.')
         ),
     }
+}
+
+/// Backend text from a [`map_cpal`] message, without the recovery hint.
+#[cfg(not(coverage))]
+fn audio_device_backend_text(message: &str) -> Option<&str> {
+    let head = message.split(". Close other apps").next()?;
+    head.split_once(": ").map(|(_, backend)| backend)
+}
+
+/// True when the cpal/backend message is permission, access, or device-in-use.
+#[cfg(not(coverage))]
+fn cpal_backend_text_is_fatal(backend: &str) -> bool {
+    let lower = backend.to_ascii_lowercase();
+    lower.contains("permission denied")
+        || lower.contains("denied permission")
+        || lower.contains("access denied")
+        || lower.contains("access is denied")
+        || lower.contains("device busy")
+        || lower.contains("device is busy")
+        || lower.contains("already in use")
+        || lower.contains(" in use")
+        || lower.ends_with("in use")
+}
+
+/// Permission, access, and device-in-use failures are not retried.
+#[cfg(not(coverage))]
+fn open_failure_is_fatal(err: &Error) -> bool {
+    let Error::AudioDevice { message } = err else {
+        return true;
+    };
+    let Some(backend) = audio_device_backend_text(message) else {
+        return false;
+    };
+    cpal_backend_text_is_fatal(backend)
+}
+
+/// How long a device open keeps retrying transient failures before it reports failure.
+#[cfg(not(coverage))]
+const OPEN_RETRY_WINDOW: Duration = Duration::from_secs(3);
+
+/// Pause between device open attempts.
+#[cfg(not(coverage))]
+const OPEN_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+/// Run `attempt` until it succeeds or `window` elapses, then return its error.
+///
+/// Only retryable failures sleep between attempts, so a healthy device opens on
+/// the first try with no added latency.
+#[cfg(not(coverage))]
+fn open_with_retries<T>(
+    what: &str,
+    window: Duration,
+    delay: Duration,
+    mut attempt: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    let started = Instant::now();
+    let mut retries = 0u32;
+    loop {
+        match attempt() {
+            Ok(opened) => {
+                if retries > 0 {
+                    eprintln!("syllabix: {what} opened after {retries} retries");
+                }
+                return Ok(opened);
+            }
+            Err(err) => {
+                if open_failure_is_fatal(&err) || started.elapsed() >= window {
+                    return Err(err);
+                }
+                retries += 1;
+                eprintln!("syllabix: {what} did not open yet (attempt {retries}); retrying");
+                thread::sleep(delay);
+            }
+        }
+    }
+}
+
+/// Sample rate to request from a supported range: standard rates first.
+#[cfg(not(coverage))]
+fn preferred_sample_rate(range: &SupportedStreamConfigRange) -> cpal::SampleRate {
+    let min = range.min_sample_rate().0;
+    let max = range.max_sample_rate().0;
+    let rate = if (min..=max).contains(&48_000) {
+        48_000
+    } else if (min..=max).contains(&44_100) {
+        44_100
+    } else {
+        max
+    };
+    cpal::SampleRate(rate)
+}
+
+/// Sort key: float samples first, 16-bit integer last, then rate and channels.
+#[cfg(not(coverage))]
+fn config_rank(cfg: &SupportedStreamConfig) -> (u8, u32, u8) {
+    let format = match cfg.sample_format() {
+        SampleFormat::F32 => 0,
+        SampleFormat::I16 => 2,
+        _ => 1,
+    };
+    let rate = match cfg.sample_rate().0 {
+        48_000 => 0,
+        44_100 => 1,
+        rate => rate.abs_diff(48_000),
+    };
+    let channels = match cfg.channels() {
+        2 => 0,
+        1 => 1,
+        _ => 2,
+    };
+    (format, rate, channels)
+}
+
+/// The device default first, then every other format it advertises.
+#[cfg(not(coverage))]
+fn config_candidates(
+    default: Option<SupportedStreamConfig>,
+    ranges: impl IntoIterator<Item = SupportedStreamConfigRange>,
+) -> Vec<SupportedStreamConfig> {
+    let mut extras: Vec<SupportedStreamConfig> = ranges
+        .into_iter()
+        .map(|range| range.with_sample_rate(preferred_sample_rate(&range)))
+        .collect();
+    extras.sort_by_key(config_rank);
+    let mut configs = Vec::new();
+    if let Some(default) = default {
+        configs.push(default);
+    }
+    for cfg in extras {
+        if !configs.contains(&cfg) {
+            configs.push(cfg);
+        }
+    }
+    configs
+}
+
+/// Build the open candidates for one device, default config first.
+#[cfg(not(coverage))]
+fn open_candidates(
+    device: cpal::Device,
+    choice: &DeviceChoice,
+    default: Option<SupportedStreamConfig>,
+    ranges: impl IntoIterator<Item = SupportedStreamConfigRange>,
+    what: &str,
+) -> Result<Vec<SelectedCpalDevice>> {
+    let configs = config_candidates(default, ranges);
+    if configs.is_empty() {
+        return Err(Error::AudioDevice {
+            message: format!(
+                "{what} '{}' reported no usable stream format. Reconnect it and retry.",
+                choice.device.name
+            ),
+        });
+    }
+    Ok(configs
+        .into_iter()
+        .map(|cfg| {
+            let (device_format, sample_format, config) = supported_to_config(cfg);
+            SelectedCpalDevice {
+                name: choice.device.name.clone(),
+                reason: choice.reason,
+                device_format,
+                sample_format,
+                device: device.clone(),
+                config,
+            }
+        })
+        .collect())
 }
 
 #[cfg(not(coverage))]
@@ -257,37 +430,29 @@ fn supported_to_config(cfg: SupportedStreamConfig) -> (PcmFormat, SampleFormat, 
 }
 
 #[cfg(not(coverage))]
-fn open_input(choice: &DeviceChoice, host: &cpal::Host) -> Result<SelectedCpalDevice> {
+fn open_input(choice: &DeviceChoice, host: &cpal::Host) -> Result<Vec<SelectedCpalDevice>> {
     let device = find_input(host, &choice.device.name)?;
-    let cfg = device
-        .default_input_config()
-        .map_err(|e| map_cpal(e, "Could not read microphone format"))?;
-    let (device_format, sample_format, config) = supported_to_config(cfg);
-    Ok(SelectedCpalDevice {
-        name: choice.device.name.clone(),
-        reason: choice.reason,
-        device_format,
-        sample_format,
-        device,
-        config,
-    })
+    let supported = device.supported_input_configs().ok();
+    open_candidates(
+        device.clone(),
+        choice,
+        device.default_input_config().ok(),
+        supported.into_iter().flatten(),
+        "Microphone",
+    )
 }
 
 #[cfg(not(coverage))]
-fn open_output(choice: &DeviceChoice, host: &cpal::Host) -> Result<SelectedCpalDevice> {
+fn open_output(choice: &DeviceChoice, host: &cpal::Host) -> Result<Vec<SelectedCpalDevice>> {
     let device = find_output(host, &choice.device.name)?;
-    let cfg = device
-        .default_output_config()
-        .map_err(|e| map_cpal(e, "Could not read speaker format"))?;
-    let (device_format, sample_format, config) = supported_to_config(cfg);
-    Ok(SelectedCpalDevice {
-        name: choice.device.name.clone(),
-        reason: choice.reason,
-        device_format,
-        sample_format,
-        device,
-        config,
-    })
+    let supported = device.supported_output_configs().ok();
+    open_candidates(
+        device.clone(),
+        choice,
+        device.default_output_config().ok(),
+        supported.into_iter().flatten(),
+        "Speakers",
+    )
 }
 
 #[cfg(not(coverage))]
@@ -332,6 +497,163 @@ fn find_output(host: &cpal::Host, name: &str) -> Result<cpal::Device> {
             "Speakers '{name}' disappeared before they could be opened. Reconnect them and retry."
         ),
     })
+}
+
+/// One successfully opened capture stream and its ring.
+#[cfg(not(coverage))]
+struct OpenedInputStream {
+    stream: Stream,
+    ring: Arc<SampleRing>,
+    name: String,
+    device_format: PcmFormat,
+}
+
+/// One successfully opened playback stream, its ring, and the AEC tap ring.
+#[cfg(not(coverage))]
+struct OpenedOutputStream {
+    stream: Stream,
+    ring: Arc<SampleRing>,
+    echo_ring: Option<Arc<SampleRing>>,
+    name: String,
+    device_format: PcmFormat,
+}
+
+/// Try every candidate config once, returning the first stream that starts.
+#[cfg(not(coverage))]
+fn open_input_stream(candidates: &[SelectedCpalDevice]) -> Result<OpenedInputStream> {
+    let mut last_error = None;
+    for selected in candidates {
+        let cap = device_ring_capacity_samples(
+            selected.device_format.sample_rate_hz,
+            selected.device_format.channels,
+        )
+        .max(256);
+        let ring = Arc::new(SampleRing::new(cap));
+        let stream = match build_input_stream(selected, Arc::clone(&ring)) {
+            Ok(stream) => stream,
+            Err(err) => {
+                last_error = Some(err);
+                continue;
+            }
+        };
+        if let Err(err) = stream.play() {
+            last_error = Some(map_cpal(err, "Could not start the microphone"));
+            continue;
+        }
+        return Ok(OpenedInputStream {
+            stream,
+            ring,
+            name: selected.name.clone(),
+            device_format: selected.device_format,
+        });
+    }
+    Err(last_error.unwrap_or_else(|| no_open_attempts("microphone")))
+}
+
+/// [`open_input_stream`], for the speaker side, with the AEC render tap.
+#[cfg(not(coverage))]
+fn open_output_stream(
+    candidates: &[SelectedCpalDevice],
+    tap_render: bool,
+    watch: Option<PlaybackWatch>,
+    drain: PlaybackDrain,
+) -> Result<OpenedOutputStream> {
+    let mut last_error = None;
+    for selected in candidates {
+        let cap = device_ring_capacity_samples(
+            selected.device_format.sample_rate_hz,
+            selected.device_format.channels,
+        )
+        .max(256);
+        let ring = Arc::new(SampleRing::new(cap));
+        let echo_ring = tap_render.then(|| Arc::new(SampleRing::new(cap)));
+        let stream = match build_output_stream(
+            selected,
+            Arc::clone(&ring),
+            echo_ring.as_ref().map(Arc::clone),
+            watch.clone(),
+            drain.clone(),
+        ) {
+            Ok(stream) => stream,
+            Err(err) => {
+                last_error = Some(err);
+                continue;
+            }
+        };
+        if let Err(err) = stream.play() {
+            last_error = Some(map_cpal(err, "Could not start the speakers"));
+            continue;
+        }
+        return Ok(OpenedOutputStream {
+            stream,
+            ring,
+            echo_ring,
+            name: selected.name.clone(),
+            device_format: selected.device_format,
+        });
+    }
+    Err(last_error.unwrap_or_else(|| no_open_attempts("speakers")))
+}
+
+/// Retry `preferred` until `window` elapses; on transient failure with a fallback, run it once.
+#[cfg(not(coverage))]
+fn open_preferred_then_fallback<T>(
+    what: &str,
+    window: Duration,
+    delay: Duration,
+    has_fallback: bool,
+    mut preferred: impl FnMut() -> Result<T>,
+    fallback: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    match open_with_retries(what, window, delay, &mut preferred) {
+        Ok(opened) => Ok(opened),
+        Err(retry_err) => {
+            if open_failure_is_fatal(&retry_err) || !has_fallback {
+                return Err(retry_err);
+            }
+            fallback()
+        }
+    }
+}
+
+/// Retry the preferred config, then try other formats once after a transient timeout.
+#[cfg(not(coverage))]
+fn open_input_preferred_then_fallback(
+    candidates: &[SelectedCpalDevice],
+) -> Result<OpenedInputStream> {
+    open_preferred_then_fallback(
+        "microphone",
+        OPEN_RETRY_WINDOW,
+        OPEN_RETRY_DELAY,
+        candidates.len() > 1,
+        || open_input_stream(&candidates[0..1]),
+        || open_input_stream(&candidates[1..]),
+    )
+}
+
+/// [`open_input_preferred_then_fallback`], for speakers.
+#[cfg(not(coverage))]
+fn open_output_preferred_then_fallback(
+    candidates: &[SelectedCpalDevice],
+    tap_render: bool,
+    watch: Option<PlaybackWatch>,
+    drain: PlaybackDrain,
+) -> Result<OpenedOutputStream> {
+    open_preferred_then_fallback(
+        "speakers",
+        OPEN_RETRY_WINDOW,
+        OPEN_RETRY_DELAY,
+        candidates.len() > 1,
+        || open_output_stream(&candidates[0..1], tap_render, watch.clone(), drain.clone()),
+        || open_output_stream(&candidates[1..], tap_render, watch.clone(), drain.clone()),
+    )
+}
+
+#[cfg(not(coverage))]
+fn no_open_attempts(what: &str) -> Error {
+    Error::AudioDevice {
+        message: format!("Could not open the {what}: no stream format was tried."),
+    }
 }
 
 /// Owns a cpal stream on a thread so [`NativeCapture`] / [`NativePlayback`] stay `Send`.
@@ -380,27 +702,17 @@ fn spawn_input(choice: DeviceChoice) -> Result<OpenedStream> {
                     return;
                 }
             };
-            let cap = device_ring_capacity_samples(
-                selected.device_format.sample_rate_hz,
-                selected.device_format.channels,
-            )
-            .max(256);
-            let ring = Arc::new(SampleRing::new(cap));
-            let stream = match build_input_stream(&selected, Arc::clone(&ring)) {
-                Ok(s) => s,
+            let opened = match open_input_preferred_then_fallback(&selected) {
+                Ok(opened) => opened,
                 Err(err) => {
                     let _ = ready_tx.send(Err(err));
                     return;
                 }
             };
-            if let Err(err) = stream.play() {
-                let _ = ready_tx.send(Err(map_cpal(err, "Could not start the microphone")));
-                return;
-            }
             let meta = (
-                selected.name.clone(),
-                selected.device_format,
-                Arc::clone(&ring),
+                opened.name.clone(),
+                opened.device_format,
+                Arc::clone(&opened.ring),
                 None,
             );
             let _ = ready_tx.send(Ok(meta));
@@ -409,7 +721,7 @@ fn spawn_input(choice: DeviceChoice) -> Result<OpenedStream> {
             while !*done {
                 done = cv.wait(done).expect("stream stop");
             }
-            drop(stream);
+            drop(opened.stream);
         })
         .map_err(|err| Error::AudioDevice {
             message: format!("Could not start the microphone thread: {err}"),
@@ -448,35 +760,23 @@ fn spawn_output(
                     return;
                 }
             };
-            let cap = device_ring_capacity_samples(
-                selected.device_format.sample_rate_hz,
-                selected.device_format.channels,
-            )
-            .max(256);
-            let ring = Arc::new(SampleRing::new(cap));
-            let echo_ring = tap_render.then(|| Arc::new(SampleRing::new(cap)));
-            let stream = match build_output_stream(
+            let opened = match open_output_preferred_then_fallback(
                 &selected,
-                Arc::clone(&ring),
-                echo_ring.as_ref().map(Arc::clone),
-                watch,
-                drain,
+                tap_render,
+                watch.clone(),
+                drain.clone(),
             ) {
-                Ok(s) => s,
+                Ok(opened) => opened,
                 Err(err) => {
                     let _ = ready_tx.send(Err(err));
                     return;
                 }
             };
-            if let Err(err) = stream.play() {
-                let _ = ready_tx.send(Err(map_cpal(err, "Could not start the speakers")));
-                return;
-            }
             let meta = (
-                selected.name.clone(),
-                selected.device_format,
-                Arc::clone(&ring),
-                echo_ring.as_ref().map(Arc::clone),
+                opened.name.clone(),
+                opened.device_format,
+                Arc::clone(&opened.ring),
+                opened.echo_ring.as_ref().map(Arc::clone),
             );
             let _ = ready_tx.send(Ok(meta));
             let (lock, cv) = &*stop_thread;
@@ -484,7 +784,7 @@ fn spawn_output(
             while !*done {
                 done = cv.wait(done).expect("stream stop");
             }
-            drop(stream);
+            drop(opened.stream);
         })
         .map_err(|err| Error::AudioDevice {
             message: format!("Could not start the speaker thread: {err}"),
@@ -586,12 +886,18 @@ impl NativeCapture {
         self.echo.as_mut()
     }
 
+    /// Drop anything the device captured before the pipeline starts reading.
+    ///
+    /// Capture is opened before the model load, so the microphone keeps recording
+    /// while weights page in. Those seconds are stale and would otherwise open a
+    /// turn on speech from before the app was ready.
+    pub fn discard_buffered_audio(&mut self) {
+        AudioCapture::discard_buffered_audio(self);
+    }
+
     /// Align pre-AEC PCM with each clean frame for the diagnostics WAVs.
     pub fn enable_pcm_tap(&mut self) {
-        self.pcm_tap = true;
-        if let Some(echo) = &mut self.echo {
-            echo.enable_debug_tap();
-        }
+        AudioCapture::enable_pcm_tap(self);
     }
 
     fn attach_capture_pcm(
@@ -624,6 +930,19 @@ impl Drop for NativeCapture {
 impl AudioCapture for NativeCapture {
     fn name(&self) -> &'static str {
         backend_name()
+    }
+
+    fn discard_buffered_audio(&mut self) {
+        self.pending.clear();
+        self.capture_leftover.clear();
+        self.ring.clear();
+    }
+
+    fn enable_pcm_tap(&mut self) {
+        self.pcm_tap = true;
+        if let Some(echo) = &mut self.echo {
+            echo.enable_debug_tap();
+        }
     }
 
     fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<AudioFrame>> {
@@ -1059,6 +1378,293 @@ mod tests {
         assert!(message.contains("device busy"));
         assert!(message.contains("Close other apps"));
         assert!(message.contains("microphone permission"));
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn cpal_errors_do_not_double_the_full_stop() {
+        let error = map_cpal(
+            "The requested stream configuration is not supported by the device.",
+            "Could not open the speakers",
+        );
+        let Error::AudioDevice { message } = error else {
+            panic!("expected an audio device error");
+        };
+        assert!(
+            message.contains("by the device. Close other apps"),
+            "{message}"
+        );
+        assert!(!message.contains("device.."), "{message}");
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn open_with_retries_succeeds_immediately_without_sleeping() {
+        let started = Instant::now();
+        let opened =
+            open_with_retries("test device", OPEN_RETRY_WINDOW, OPEN_RETRY_DELAY, || Ok(7))
+                .expect("first attempt succeeds");
+        assert_eq!(opened, 7);
+        assert!(
+            started.elapsed() < Duration::from_millis(5),
+            "elapsed {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn open_with_retries_does_not_retry_fatal_errors() {
+        let mut attempts = 0;
+        let error = open_with_retries(
+            "test microphone",
+            Duration::from_secs(1),
+            Duration::from_millis(1),
+            || -> Result<()> {
+                attempts += 1;
+                Err(map_cpal("device busy", "Could not open the microphone"))
+            },
+        )
+        .expect_err("device busy is fatal");
+        assert_eq!(attempts, 1, "fatal open errors fail fast");
+        let Error::AudioDevice { message } = error else {
+            panic!("expected audio device error");
+        };
+        let backend = audio_device_backend_text(&message).expect("mapped cpal message");
+        assert!(cpal_backend_text_is_fatal(backend), "{backend}");
+        assert!(backend.contains("device busy"));
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn mapped_stream_config_not_supported_is_retryable() {
+        let err = map_cpal(
+            "The requested stream configuration is not supported by the device.",
+            "Could not open the speakers",
+        );
+        assert!(
+            !open_failure_is_fatal(&err),
+            "recovery hint must not make stream-config races fatal"
+        );
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn open_with_retries_on_stream_config_not_supported_race() {
+        let mut attempts = 0;
+        let opened = open_with_retries(
+            "test speakers",
+            Duration::from_millis(500),
+            Duration::from_millis(1),
+            || {
+                attempts += 1;
+                if attempts < 2 {
+                    Err(map_cpal(
+                        "The requested stream configuration is not supported by the device.",
+                        "Could not open the speakers",
+                    ))
+                } else {
+                    Ok(attempts)
+                }
+            },
+        )
+        .expect("second attempt succeeds after transient stream-config error");
+        assert_eq!(opened, 2);
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn fatal_preferred_open_never_runs_fallback() {
+        let mut fallback_calls = 0;
+        let error = open_preferred_then_fallback(
+            "test microphone",
+            Duration::from_millis(50),
+            Duration::from_millis(1),
+            true,
+            || Err(map_cpal("device busy", "Could not open the microphone")),
+            || {
+                fallback_calls += 1;
+                Ok(())
+            },
+        )
+        .expect_err("fatal preferred error");
+        assert_eq!(fallback_calls, 0);
+        let Error::AudioDevice { message } = error else {
+            panic!("expected audio device error");
+        };
+        let backend = audio_device_backend_text(&message).expect("mapped cpal message");
+        assert!(backend.contains("device busy"));
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn transient_preferred_timeout_returns_fallback_error() {
+        let error = open_preferred_then_fallback(
+            "test speakers",
+            Duration::from_millis(25),
+            Duration::from_millis(5),
+            true,
+            || -> Result<()> {
+                Err(map_cpal(
+                    "The requested stream configuration is not supported by the device.",
+                    "Could not open the speakers",
+                ))
+            },
+            || {
+                Err(Error::AudioDevice {
+                    message: "fallback format failed".into(),
+                })
+            },
+        )
+        .expect_err("fallback error wins after transient retry window");
+        assert_eq!(error.to_string(), "fallback format failed");
+        assert!(
+            !error.to_string().contains("not supported"),
+            "must not return the retry error"
+        );
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn discard_buffered_audio_clears_pending_leftover_and_ring() {
+        let mut capture = test_capture();
+        capture
+            .pending
+            .push(AudioFrame::new(0, 16_000, 1, vec![1; 160]).expect("frame"));
+        capture.capture_leftover.extend_from_slice(&[2, 3, 4]);
+        capture.ring.try_push_slice(&[0.5; 64]);
+        assert!(!capture.pending.is_empty());
+        assert!(!capture.capture_leftover.is_empty());
+        assert!(capture.ring.occupancy() > 0);
+
+        capture.discard_buffered_audio();
+
+        assert!(capture.pending.is_empty());
+        assert!(capture.capture_leftover.is_empty());
+        assert_eq!(capture.ring.occupancy(), 0);
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn open_retries_transient_failures() {
+        let mut attempts = 0;
+        let opened = open_with_retries(
+            "test speakers",
+            Duration::from_millis(500),
+            Duration::from_millis(1),
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(Error::AudioDevice {
+                        message: "transient".into(),
+                    })
+                } else {
+                    Ok(attempts)
+                }
+            },
+        )
+        .expect("third attempt succeeds");
+        assert_eq!(opened, 3);
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn open_stops_retrying_once_the_window_closes() {
+        let mut attempts = 0;
+        let error = open_with_retries(
+            "test speakers",
+            Duration::from_millis(25),
+            Duration::from_millis(5),
+            || -> Result<()> {
+                attempts += 1;
+                Err(Error::AudioDevice {
+                    message: "still busy".into(),
+                })
+            },
+        )
+        .expect_err("a permanently busy device fails");
+        assert!(attempts > 1, "retried {attempts} times");
+        assert!(error.to_string().contains("still busy"));
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn default_config_comes_first_and_repeats_are_dropped() {
+        let default = cpal::SupportedStreamConfig::new(
+            2,
+            cpal::SampleRate(44_100),
+            cpal::SupportedBufferSize::Unknown,
+            SampleFormat::F32,
+        );
+        let ranges = [
+            cpal::SupportedStreamConfigRange::new(
+                2,
+                cpal::SampleRate(44_100),
+                cpal::SampleRate(44_100),
+                cpal::SupportedBufferSize::Unknown,
+                SampleFormat::F32,
+            ),
+            cpal::SupportedStreamConfigRange::new(
+                1,
+                cpal::SampleRate(44_100),
+                cpal::SampleRate(96_000),
+                cpal::SupportedBufferSize::Unknown,
+                SampleFormat::F32,
+            ),
+        ];
+        let configs = config_candidates(Some(default.clone()), ranges);
+
+        assert_eq!(configs.first(), Some(&default));
+        assert_eq!(configs.len(), 2, "{configs:?}");
+        assert_eq!(
+            configs[1],
+            cpal::SupportedStreamConfig::new(
+                1,
+                cpal::SampleRate(48_000),
+                cpal::SupportedBufferSize::Unknown,
+                SampleFormat::F32,
+            )
+        );
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn float_default_stays_ahead_of_integer_fallbacks() {
+        let default = cpal::SupportedStreamConfig::new(
+            2,
+            cpal::SampleRate(48_000),
+            cpal::SupportedBufferSize::Unknown,
+            SampleFormat::F32,
+        );
+        let ranges = [cpal::SupportedStreamConfigRange::new(
+            2,
+            cpal::SampleRate(48_000),
+            cpal::SampleRate(48_000),
+            cpal::SupportedBufferSize::Unknown,
+            SampleFormat::I16,
+        )];
+        let configs = config_candidates(Some(default.clone()), ranges);
+
+        assert_eq!(configs.first(), Some(&default));
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[1].sample_format(), SampleFormat::I16);
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
+    fn supported_rate_prefers_the_standard_rates() {
+        let range = |min: u32, max: u32| {
+            cpal::SupportedStreamConfigRange::new(
+                2,
+                cpal::SampleRate(min),
+                cpal::SampleRate(max),
+                cpal::SupportedBufferSize::Unknown,
+                SampleFormat::F32,
+            )
+        };
+        assert_eq!(preferred_sample_rate(&range(44_100, 96_000)).0, 48_000);
+        assert_eq!(preferred_sample_rate(&range(44_100, 44_100)).0, 44_100);
+        assert_eq!(preferred_sample_rate(&range(96_000, 192_000)).0, 192_000);
     }
 
     #[test]
