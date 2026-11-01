@@ -57,7 +57,7 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// Assets for the default Silero, whisper.cpp `small`, LFM2.5-2.6B, and
+    /// Assets for the default Silero, whisper.cpp `small`, LFM3-1.7B Q8_0, and
     /// Pocket TTS stack, plus models selectable through YAML.
     pub fn v0() -> Self {
         Self {
@@ -344,6 +344,24 @@ impl Manifest {
                     "202c1fbf3a0f00b7586ca45b8328d696cc6cd980c3798979eaa4fefe8efd8320",
                     401_129_632,
                 ),
+                // LiquidAI LFM3-1.7B Q8_0 GGUF (default local LLM). Pinned HF
+                // commit; SHA-256 is the LFS object id; lfm1.0 license.
+                asset(
+                    "lfm3-1.7b",
+                    ModelLayer::Llm,
+                    "LFM3-1.7B-Q8_0.gguf",
+                    "https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/4b423c332fd97961416f2e8b69467758fd27370d/LFM3-1.7B-Q8_0.gguf",
+                    "8f6b24182258205e9e01e21f1f24a1f208c1e8115578825d202ce39976af20b6",
+                    1_846_238_496,
+                ),
+                asset(
+                    "lfm3-1.7b-bf16",
+                    ModelLayer::Llm,
+                    "LFM3-1.7B-BF16.gguf",
+                    "https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/4b423c332fd97961416f2e8b69467758fd27370d/LFM3-1.7B-BF16.gguf",
+                    "39158a79f56edb85e0c4252ce6447b8d7883ef82ffedd02f0cda7c84da5e9f68",
+                    3_466_626_336,
+                ),
                 // LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF. SHA-256 is the HF LFS
                 // object id, size is the LFS/XET byte count, and the model uses
                 // the `lfm1.0` license.
@@ -413,8 +431,8 @@ mod tests {
         // Silero + five whisper ids + eight moonshine assets (small+medium) +
         // Qwen3-ASR 0.6B decoder/mmproj + three GGUFs + Kokoro weights + voice +
         // eight internal-only Pocket TTS assets + two Qwen3-TTS backbones, each
-        // with its own projector, plus three LFM assets.
-        assert_eq!(m.assets.len(), 36);
+        // with its own projector, plus five LFM assets.
+        assert_eq!(m.assets.len(), 38);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -517,6 +535,16 @@ mod tests {
             "8d18c94acb2addd042f97da63c98be144eafa76d0d9495177eab65130cf85129"
         );
         assert_eq!(m.asset("lfm2.5-2.6b").unwrap().layer, ModelLayer::Llm);
+        assert_eq!(
+            m.asset("lfm3-1.7b").unwrap().sha256,
+            "8f6b24182258205e9e01e21f1f24a1f208c1e8115578825d202ce39976af20b6"
+        );
+        assert_eq!(m.asset("lfm3-1.7b").unwrap().size_bytes, 1_846_238_496);
+        assert_eq!(
+            m.asset("lfm3-1.7b-bf16").unwrap().sha256,
+            "39158a79f56edb85e0c4252ce6447b8d7883ef82ffedd02f0cda7c84da5e9f68"
+        );
+        assert_eq!(m.asset("lfm3-1.7b-bf16").unwrap().size_bytes, 3_466_626_336);
         assert_eq!(
             m.asset("lfm2.5-2.6b").unwrap().sha256,
             "a247afd6414918eac8e520a9e6137dc271235461ecbe1180462221d5b8d40b03"

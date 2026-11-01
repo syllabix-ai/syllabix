@@ -103,7 +103,7 @@ Always pass `--tag vX.Y.Z`. Do not install from `main`. This builds the on-devic
 | Environment | `SYLLABIX_LLM_API_KEY` for `pipeline.llm.provider: openai-compatible` (never yaml). `SYLLABIX_STT_API_KEY` for online STT. `SYLLABIX_TTS_API_KEY` for online TTS. `SYLLABIX_CACHE_DIR` to share or relocate the model cache. |
 | Exit codes | `0` success. `1` I/O, config, device, cache, cancel, provider, or pipeline failure. `2` command not implemented. |
 
-`--help` and `init` download nothing. First `run` of the default stack fetches about 2.2 GB into the cache (below).
+`--help` and `init` download nothing. First `run` of the default stack fetches about 2.5 GB into the cache (below).
 
 ## Lane 2 — Embed the live loop
 
@@ -257,7 +257,7 @@ Optional: Linux Vulkan is `SYLLABIX_GGML_VULKAN=1` (needs Vulkan headers). Defau
 
 ## Cache
 
-The first run of the default models downloads about **2.2 GB** (Silero, Whisper `small`, LFM2.5-2.6B, Pocket TTS). Files are fetched over HTTPS, checked, then reused. `--help` and `init` download nothing. Other yaml model ids download the first time you use that id. Full list: [engines](engines.md).
+The first run of the default models downloads about **2.5 GB** (Silero, Whisper `small`, LFM3-1.7B, Pocket TTS). Files are fetched over HTTPS, checked, then reused. `--help` and `init` download nothing. Other yaml model ids download the first time you use that id. Full list: [engines](engines.md).
 
 Files always go in `<cache-root>/models/v1`.
 
@@ -283,7 +283,7 @@ Hosts that embed `syllabix-core` ship Syllabix code plus vendored audio/ML and f
 | ONNX Runtime (`ort`) | MIT | Transitive. |
 | Default VAD (Silero) | MIT | Fetched into the cache. |
 | Default STT (Whisper `small`) | MIT (OpenAI Whisper) | Fetched into the cache. |
-| Default LLM (LFM2.5-2.6B) | LiquidAI LFM 1.0 | **Not** Apache-2.0. Governs the default local weights. |
+| Default LLM (LFM3-1.7B) | LiquidAI LFM 1.0 | **Not** Apache-2.0. Governs the default local weights. |
 | Default TTS (Pocket TTS) | CC BY 4.0 | Fetched into the cache; attribution in NOTICE. |
 | Optional yaml models | Llama 3.2 Community, Qwen Apache-2.0, Kokoro Apache-2.0, Moonshine MIT, … | Only if you select that id. |
 

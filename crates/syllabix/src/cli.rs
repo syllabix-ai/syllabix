@@ -350,13 +350,13 @@ mod tests {
             "--out",
             "worker.jsonl",
             "--model",
-            "lfm2.5-2.6b",
+            "lfm3-1.7b",
         ])
         .expect("parse worker");
         match cli.command {
             Commands::BenchLlmWorker { out, model } => {
                 assert_eq!(out, PathBuf::from("worker.jsonl"));
-                assert_eq!(model, "lfm2.5-2.6b");
+                assert_eq!(model, "lfm3-1.7b");
             }
             _ => panic!("expected LLM worker"),
         }
@@ -490,7 +490,7 @@ mod tests {
             Cli {
                 command: Commands::BenchLlmWorker {
                     out: PathBuf::from("worker.jsonl"),
-                    model: String::from("lfm2.5-2.6b"),
+                    model: String::from("lfm3-1.7b"),
                 },
             },
             Cli {

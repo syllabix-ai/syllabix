@@ -42,7 +42,7 @@ This build needs the same packages as [Compile](#compile). Projects that embed t
 
 ## First run
 
-The first `run` downloads the default models over HTTPS: Silero, Whisper `small`, LFM2.5-2.6B, and Pocket TTS (about **2.2 GB**). Each file is checked, then stored under the cache root:
+The first `run` downloads the default models over HTTPS: Silero, Whisper `small`, LFM3-1.7B, and Pocket TTS (about **2.5 GB**). Each file is checked, then stored under the cache root:
 
 | When | Asset directory |
 | --- | --- |

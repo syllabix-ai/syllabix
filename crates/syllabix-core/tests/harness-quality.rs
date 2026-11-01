@@ -30,7 +30,8 @@ use syllabix_core::config::{DeveloperPermissions, FilesystemMode, NetworkMode, S
 #[cfg(all(feature = "ggml", feature = "cloud"))]
 use syllabix_core::defaults::AgentBackend;
 use syllabix_core::llm::{
-    LlamaLlm, LFM25_2_6B_ASSET, LOCAL_TOOL_FALLBACK_TEXT, VOICE_SYSTEM_PROMPT_TEMPLATE,
+    LlamaLlm, LFM25_2_6B_ASSET, LFM3_1_7B_ASSET, LOCAL_TOOL_FALLBACK_TEXT,
+    VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
 #[cfg(all(feature = "ggml", feature = "cloud"))]
 use syllabix_core::models::HttpFetcher;
@@ -1069,9 +1070,7 @@ fn drive_turn_result<L: Llm>(
 /// Manual local LFM loop check. Not tracked as harness-quality admission.
 /// The pinned GGUF must already be cached; evaluation never silently
 /// downloads a model or uses an API key.
-#[test]
-#[ignore]
-fn harness_quality_local_lfm() {
+fn run_local_harness_quality(model_id: &str) {
     syllabix_core::executor::set_inherit_current_session(false);
     let _admission_guard = admission_lock();
     let fixture_workspace = fixture_workspace();
@@ -1084,7 +1083,7 @@ fn harness_quality_local_lfm() {
         &fetcher,
         &mut progress,
         &Cancel::new(),
-        LFM25_2_6B_ASSET,
+        model_id,
         false,
     )
     .expect("local harness-quality requires the pinned LFM GGUF in the model cache")
@@ -1094,7 +1093,7 @@ fn harness_quality_local_lfm() {
 
     let mut elapsed = Vec::new();
     let mut evidence = Vec::new();
-    println!("model={LFM25_2_6B_ASSET} mode=local");
+    println!("model={model_id} mode=local");
     for fixture in CAPABILITY_FIXTURES {
         let start = Instant::now();
         let mut fixture_llm = llm
@@ -1160,6 +1159,18 @@ fn harness_quality_local_lfm() {
         evidence.iter().all(|item| item.completion),
         "capability fixture failures: {evidence:?}"
     );
+}
+
+#[test]
+#[ignore]
+fn harness_quality_local_lfm() {
+    run_local_harness_quality(LFM25_2_6B_ASSET);
+}
+
+#[test]
+#[ignore]
+fn harness_quality_local_lfm3() {
+    run_local_harness_quality(LFM3_1_7B_ASSET);
 }
 
 /// Manual-only hosted-model evaluation. Not in CI: it needs a key, incurs cost, and the

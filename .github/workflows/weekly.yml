@@ -71,7 +71,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-pocket-tts
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm3-1.7b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-pocket-tts
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
@@ -116,7 +116,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-2.6b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-pocket-tts
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm3-1.7b-qwen3.5-0.8b-qwen3.5-2b-llama-3.2-1b-pocket-tts
       # Rust cache on GitHub-hosted runs; skip on self-hosted (target/ stays on disk).
       - uses: Swatinem/rust-cache@v2
         if: ${{ !contains(inputs.macos_pool || '', 'self-hosted') }}

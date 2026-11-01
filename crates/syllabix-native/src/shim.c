@@ -357,6 +357,102 @@ static int is_llama32_template(const char *tmpl) {
     return tmpl != NULL && strstr(tmpl, "<|start_header_id|>") != NULL;
 }
 
+struct syllabix_lfm_sampler_params {
+    int use_lfm;
+    int top_k;
+    float temp;
+    float repeat_penalty;
+    int repeat_last_n;
+};
+
+static int read_meta_float(const struct llama_model *model, const char *key, float *out) {
+    char buf[64];
+    if (llama_model_meta_val_str(model, key, buf, sizeof(buf)) <= 0) {
+        return 0;
+    }
+    *out = (float)atof(buf);
+    return 1;
+}
+
+static int read_meta_int32(const struct llama_model *model, const char *key, int32_t *out) {
+    char buf[64];
+    if (llama_model_meta_val_str(model, key, buf, sizeof(buf)) <= 0) {
+        return 0;
+    }
+    *out = (int32_t)atoi(buf);
+    return 1;
+}
+
+static void resolve_lfm_sampler_params(const struct llama_model *model,
+                                       const char *tmpl,
+                                       struct syllabix_lfm_sampler_params *params) {
+    memset(params, 0, sizeof(*params));
+    params->top_k = SYLLABIX_LFM_TOP_K;
+    params->temp = SYLLABIX_LFM_TEMPERATURE;
+    params->repeat_penalty = SYLLABIX_LFM_REPEAT_PENALTY;
+    params->repeat_last_n = SYLLABIX_LFM_REPEAT_LAST_N;
+
+    float temp = 0.0f;
+    float repeat = 0.0f;
+    int32_t top_k = 0;
+    int32_t last_n = 0;
+    const int has_temp = read_meta_float(model, "general.sampling.temp", &temp);
+    const int has_top_k = read_meta_int32(model, "general.sampling.top_k", &top_k);
+    if (has_temp && has_top_k) {
+        params->use_lfm = 1;
+        params->temp = temp;
+        params->top_k = (int)top_k;
+        if (read_meta_float(model, "general.sampling.penalty_repeat", &repeat)) {
+            params->repeat_penalty = repeat;
+        }
+        if (read_meta_int32(model, "general.sampling.penalty_last_n", &last_n) && last_n > 0) {
+            params->repeat_last_n = (int)last_n;
+        }
+        return;
+    }
+    if (is_lfm_template(tmpl)) {
+        params->use_lfm = 1;
+    }
+}
+
+static void add_lfm_sampler_chain(struct llama_sampler *smpl,
+                                  const struct llama_vocab *vocab,
+                                  const struct syllabix_lfm_sampler_params *params) {
+    llama_sampler_chain_add(
+        smpl,
+        llama_sampler_init_penalties(
+            llama_vocab_n_tokens(vocab), params->repeat_last_n, params->repeat_penalty, 0.0f,
+            0.0f));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(params->top_k));
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp(params->temp));
+    llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+}
+
+int syllabix_llama_chat_lfm_sampler_preset(const struct syllabix_llama *llm,
+                                           float *temp_out,
+                                           int *top_k_out,
+                                           float *repeat_penalty_out) {
+    if (llm == NULL || llm->model == NULL) {
+        return 0;
+    }
+    const char *tmpl = llama_model_chat_template(llm->model, NULL);
+    struct syllabix_lfm_sampler_params params;
+    resolve_lfm_sampler_params(llm->model, tmpl, &params);
+    if (!params.use_lfm) {
+        return 0;
+    }
+    if (temp_out != NULL) {
+        *temp_out = params.temp;
+    }
+    if (top_k_out != NULL) {
+        *top_k_out = params.top_k;
+    }
+    if (repeat_penalty_out != NULL) {
+        *repeat_penalty_out = params.repeat_penalty;
+    }
+    return 1;
+}
+
 static struct llama_sampler *make_chat_sampler(const struct syllabix_llama *llm,
                                                const struct llama_vocab *vocab,
                                                int thinking) {
@@ -365,15 +461,10 @@ static struct llama_sampler *make_chat_sampler(const struct syllabix_llama *llm,
         return NULL;
     }
     const char *tmpl = llama_model_chat_template(llm->model, NULL);
-    if (is_lfm_template(tmpl)) {
-        llama_sampler_chain_add(
-            smpl,
-            llama_sampler_init_penalties(
-                llama_vocab_n_tokens(vocab), SYLLABIX_LFM_REPEAT_LAST_N,
-                SYLLABIX_LFM_REPEAT_PENALTY, 0.0f, 0.0f));
-        llama_sampler_chain_add(smpl, llama_sampler_init_top_k(SYLLABIX_LFM_TOP_K));
-        llama_sampler_chain_add(smpl, llama_sampler_init_temp(SYLLABIX_LFM_TEMPERATURE));
-        llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    struct syllabix_lfm_sampler_params lfm;
+    resolve_lfm_sampler_params(llm->model, tmpl, &lfm);
+    if (lfm.use_lfm) {
+        add_lfm_sampler_chain(smpl, vocab, &lfm);
     } else if (is_qwen_template(tmpl)) {
         const float top_p = thinking ? SYLLABIX_QWEN_THINK_TOP_P : SYLLABIX_QWEN_TOP_P;
         const float presence =

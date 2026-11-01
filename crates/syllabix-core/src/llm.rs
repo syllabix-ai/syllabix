@@ -34,8 +34,13 @@ pub const QWEN35_2B_ASSET: &str = "qwen3.5-2b";
 /// Manifest id for the yaml-only Llama 3.2 1B instruct GGUF.
 pub const LLAMA_32_1B_ASSET: &str = "llama-3.2-1b";
 
-/// Manifest id for the LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF.
-/// It is the default local `pipeline.llm.model`; the other ids are yaml opt-ins.
+/// Manifest id for the default LiquidAI LFM3-1.7B Q8_0 GGUF.
+pub const LFM3_1_7B_ASSET: &str = "lfm3-1.7b";
+
+/// Manifest id for the yaml-only LiquidAI LFM3-1.7B BF16 GGUF.
+pub const LFM3_1_7B_BF16_ASSET: &str = "lfm3-1.7b-bf16";
+
+/// Manifest id for the LiquidAI LFM2.5-2.6B QAD Q4_0 GGUF (yaml selectable).
 /// Named `2_6B` (not `26B`) so the constant cannot be read as twenty-six billion.
 pub const LFM25_2_6B_ASSET: &str = "lfm2.5-2.6b";
 
@@ -127,7 +132,9 @@ pub const LLAMA_MAX_HISTORY_TURNS: usize = 8;
 pub const LLAMA_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Every yaml-selectable local GGUF id, default first.
-pub const V0_LLM_MODELS: [&str; 6] = [
+pub const V0_LLM_MODELS: [&str; 8] = [
+    LFM3_1_7B_ASSET,
+    LFM3_1_7B_BF16_ASSET,
     LFM25_2_6B_ASSET,
     LFM25_350M_ASSET,
     LFM25_230M_ASSET,
@@ -210,7 +217,7 @@ impl LlamaLlm {
         })
     }
 
-    /// Resolve the default `lfm2.5-2.6b` GGUF from the manifest cache, then load it.
+    /// Resolve the default `lfm3-1.7b` GGUF from the manifest cache, then load it.
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -240,7 +247,7 @@ impl LlamaLlm {
             return Err(Error::Config {
                 field: "pipeline.llm.model".into(),
                 message: format!(
-                    "unsupported value {model_id:?} (allowed: lfm2.5-2.6b, lfm2.5-350m, lfm2.5-230m, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b)"
+                    "unsupported value {model_id:?} (allowed: lfm3-1.7b, lfm3-1.7b-bf16, lfm2.5-2.6b, lfm2.5-350m, lfm2.5-230m, llama-3.2-1b, qwen3.5-0.8b, qwen3.5-2b)"
                 ),
             });
         }
@@ -1262,7 +1269,10 @@ mod native {
 }
 
 fn is_thinking_tag_supported_model(model_id: &str) -> bool {
-    matches!(model_id, QWEN35_2B_ASSET)
+    matches!(
+        model_id,
+        QWEN35_2B_ASSET | LFM3_1_7B_ASSET | LFM3_1_7B_BF16_ASSET
+    )
 }
 
 /// Tool schemas for the local tools-aware prompt. The same
@@ -1666,13 +1676,15 @@ mod tests {
             ..ScriptedEngine::default()
         }));
         assert_eq!(llm.name(), "local");
-        assert_eq!(LFM25_2_6B_ASSET, BuiltinDefaults::v0().llm_model);
+        assert_eq!(LFM3_1_7B_ASSET, BuiltinDefaults::v0().llm_model);
         assert_eq!(QWEN35_08B_ASSET, "qwen3.5-0.8b");
         assert_eq!(QWEN35_2B_ASSET, "qwen3.5-2b");
         assert_eq!(LLAMA_32_1B_ASSET, "llama-3.2-1b");
         assert_eq!(
             V0_LLM_MODELS,
             [
+                LFM3_1_7B_ASSET,
+                LFM3_1_7B_BF16_ASSET,
                 LFM25_2_6B_ASSET,
                 LFM25_350M_ASSET,
                 LFM25_230M_ASSET,
@@ -1973,7 +1985,7 @@ mod tests {
             Ok(_) => panic!("empty manifest should fail"),
         };
         assert!(matches!(err, Error::ModelCache { .. }));
-        assert!(err.to_string().contains("lfm2.5-2.6b"));
+        assert!(err.to_string().contains("lfm3-1.7b"));
     }
 
     #[test]
@@ -2001,10 +2013,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_2b_model_gets_the_thinking_off_prompt_suffix() {
+    fn thinking_off_suffix_models_include_qwen_2b_and_lfm3() {
         assert!(is_thinking_tag_supported_model(QWEN35_2B_ASSET));
+        assert!(is_thinking_tag_supported_model(LFM3_1_7B_ASSET));
+        assert!(is_thinking_tag_supported_model(LFM3_1_7B_BF16_ASSET));
         assert!(!is_thinking_tag_supported_model(QWEN35_08B_ASSET));
         assert!(!is_thinking_tag_supported_model(LLAMA_32_1B_ASSET));
+        assert!(!is_thinking_tag_supported_model(LFM25_2_6B_ASSET));
     }
 
     #[test]
@@ -2201,9 +2216,13 @@ mod tests {
 
     #[test]
     fn lfm_asset_is_manifest_pinned_and_selectable() {
+        assert_eq!(LFM3_1_7B_ASSET, "lfm3-1.7b");
+        assert_eq!(LFM3_1_7B_BF16_ASSET, "lfm3-1.7b-bf16");
         assert_eq!(LFM25_2_6B_ASSET, "lfm2.5-2.6b");
         assert_eq!(LFM25_350M_ASSET, "lfm2.5-350m");
         assert_eq!(LFM25_230M_ASSET, "lfm2.5-230m");
+        assert!(is_v0_llm_model(LFM3_1_7B_ASSET));
+        assert!(is_v0_llm_model(LFM3_1_7B_BF16_ASSET));
         assert!(is_v0_llm_model(LFM25_2_6B_ASSET));
         assert!(is_v0_llm_model(LFM25_350M_ASSET));
         assert!(is_v0_llm_model(LFM25_230M_ASSET));

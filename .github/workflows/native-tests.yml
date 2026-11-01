@@ -33,7 +33,7 @@ env:
   SYLLABIX_CACHE_DIR: ${{ github.workspace }}/.syllabix-cache
   RUSTUP_INIT_SKIP_PATH_CHECK: yes
   # Native-eval ids for hosted Linux. Not LAUNCH_NATIVE_IDS and not
-  # product `syllabix run` (those stay lfm2.5-2.6b).
+  # product `syllabix run` (default LLM is lfm3-1.7b).
   SYLLABIX_NATIVE_MODELS: whisper-small,lfm2.5-230m,pocket-tts
 
 concurrency:
