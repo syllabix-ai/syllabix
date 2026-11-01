@@ -85,7 +85,7 @@ pub struct AgentConfig {
     pub llm_agent_harness: bool,
     /// Session capability ceiling when `llm_agent_harness` is on
     /// (`pipeline.llm.developer_permissions`). Defaults to read-only /
-    /// network none / secrets none. Rejected unless the harness is enabled.
+    /// network allow / secrets none. Rejected unless the harness is enabled.
     pub llm_developer_permissions: DeveloperPermissions,
     /// Explicit repository/global skill roots.
     /// The built-in read-only root is added by skill discovery.
@@ -856,7 +856,7 @@ fn parse_developer_permissions(
     };
     let network = match optional_string(map, "pipeline.llm.developer_permissions", "network")? {
         Some(raw) => parse_network_mode(&raw)?,
-        None => NetworkMode::None,
+        None => NetworkMode::Allow,
     };
     let secrets = match optional_string(map, "pipeline.llm.developer_permissions", "secrets")? {
         Some(raw) => parse_secret_policy(&raw)?,
@@ -1684,7 +1684,7 @@ agent_harness:
         );
         assert_eq!(
             defaults.llm_developer_permissions.network,
-            NetworkMode::None
+            NetworkMode::Allow
         );
         assert_eq!(
             defaults.llm_developer_permissions.secrets,
@@ -1741,6 +1741,44 @@ agent_harness:
             configured.llm_developer_permissions.secrets,
             SecretPolicy::None
         );
+
+        let network_none = AgentConfig::parse_yaml(
+            r#"
+name: harness
+pipeline:
+  vad: { provider: silero }
+  stt: { provider: local, model: whisper-small, language: en }
+  llm:
+    provider: openai-compatible
+    model: gpt-test
+    base_url: https://example.test/v1
+    developer_permissions:
+      network: none
+  tts: { provider: local, model: kokoro }
+agent_harness:
+  agent: syllabix
+"#,
+        )
+        .expect("explicit network none parses");
+        assert_eq!(
+            network_none.llm_developer_permissions.network,
+            NetworkMode::None
+        );
+        let tools_json: serde_json::Value = serde_json::from_str(
+            &crate::llm::local_tool_definitions_json_for(NetworkMode::None),
+        )
+        .expect("tool JSON");
+        let tool_names: Vec<&str> = tools_json
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| {
+                tool["function"]["name"]
+                    .as_str()
+                    .expect("tool name in developer_permissions network none test")
+            })
+            .collect();
+        assert_eq!(tool_names, vec!["shell"]);
 
         let err = AgentConfig::parse_yaml(
             r#"

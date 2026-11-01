@@ -1771,6 +1771,7 @@ fn pythonic_args_to_json(src: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::{FilesystemMode, SecretPolicy};
     use crate::types::TurnId;
     use std::collections::VecDeque;
     use std::thread;
@@ -2358,6 +2359,33 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&local_tool_definitions_json_for(NetworkMode::None))
                 .expect("valid tools JSON");
+        let names: Vec<&str> = value
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .expect("function name")
+            })
+            .collect();
+        assert_eq!(names, vec!["shell"]);
+    }
+
+    #[test]
+    fn llama_harness_uses_write_and_verify_permissions_for_tool_json() {
+        let llm = LlamaLlm::with_engine(Box::new(ScriptedEngine::default()))
+            .with_agent_harness(true)
+            .with_developer_permissions(DeveloperPermissions {
+                filesystem: FilesystemMode::WorkspaceWrite,
+                network: NetworkMode::None,
+                secrets: SecretPolicy::None,
+            });
+        let value: serde_json::Value = serde_json::from_str(&local_tool_definitions_json_for(
+            llm.developer_permissions.network,
+        ))
+        .expect("valid tools JSON");
         let names: Vec<&str> = value
             .as_array()
             .expect("tools array")

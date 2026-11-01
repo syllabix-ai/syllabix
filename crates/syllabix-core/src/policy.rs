@@ -100,11 +100,12 @@ pub struct DeveloperPermissions {
 }
 
 impl DeveloperPermissions {
-    /// Default session ceiling: read-only filesystem, no network, no secrets.
+    /// Default session ceiling: read-only filesystem, network allowed, no secrets.
+    /// Matches yaml when `developer_permissions` or `network` is omitted.
     pub fn default_session() -> Self {
         Self {
             filesystem: FilesystemMode::ReadOnly,
-            network: NetworkMode::None,
+            network: NetworkMode::Allow,
             secrets: SecretPolicy::None,
         }
     }
@@ -234,7 +235,7 @@ mod tests {
         let session = DeveloperPermissions::default_session();
         assert_eq!(DeveloperPermissions::default(), session);
         assert_eq!(session.filesystem, FilesystemMode::ReadOnly);
-        assert_eq!(session.network, NetworkMode::None);
+        assert_eq!(session.network, NetworkMode::Allow);
         assert_eq!(session.secrets, SecretPolicy::None);
     }
 

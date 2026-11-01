@@ -30,8 +30,57 @@ pub(crate) fn apply_sandbox_shell_env(command: &mut Command) {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_PAGER", "cat")
-        .env("GIT_EXTERNAL_DIFF", "")
         .env("GIT_TERMINAL_PROMPT", "0");
+}
+
+/// Temporarily set inherit-session policy for one closure (production and tests).
+///
+/// Under `cfg(test)`, uses [`inherit_session_test_guard`] so parallel unit tests
+/// do not race on the global atomic.
+pub(crate) fn with_inherit_current_session<R>(inherit: bool, f: impl FnOnce() -> R) -> R {
+    #[cfg(test)]
+    {
+        let _guard = inherit_session_test_guard(inherit);
+        f()
+    }
+    #[cfg(not(test))]
+    {
+        let previous = inherit_current_session();
+        set_inherit_current_session(inherit);
+        let result = f();
+        set_inherit_current_session(previous);
+        result
+    }
+}
+
+#[cfg(test)]
+static INHERIT_SESSION_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serialize tests that flip [`set_inherit_current_session`] (global atomic).
+#[cfg(test)]
+pub struct InheritSessionTestGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: bool,
+}
+
+#[cfg(test)]
+pub fn inherit_session_test_guard(inherit: bool) -> InheritSessionTestGuard {
+    let lock = INHERIT_SESSION_TEST_MUTEX
+        .lock()
+        .expect("inherit session test lock");
+    let previous = inherit_current_session();
+    set_inherit_current_session(inherit);
+    InheritSessionTestGuard {
+        _lock: lock,
+        previous,
+    }
+}
+
+#[cfg(test)]
+impl Drop for InheritSessionTestGuard {
+    fn drop(&mut self) {
+        set_inherit_current_session(self.previous);
+    }
 }
 
 #[cfg(test)]
@@ -39,36 +88,24 @@ mod tests {
     use super::*;
     use std::process::Command;
 
-    struct InheritGuard(bool);
-
-    impl InheritGuard {
-        fn set(inherit: bool) -> Self {
-            let previous = inherit_current_session();
-            set_inherit_current_session(inherit);
-            Self(previous)
-        }
-    }
-
-    impl Drop for InheritGuard {
-        fn drop(&mut self) {
-            set_inherit_current_session(self.0);
-        }
-    }
-
     #[test]
     fn fresh_session_clears_path_and_git_env() {
-        let _guard = InheritGuard::set(false);
+        let _guard = inherit_session_test_guard(false);
         let mut command = Command::new("/bin/true");
         command.env("SYLLABIX_LLM_API_KEY", "secret");
         apply_sandbox_shell_env(&mut command);
         let envs = command.get_envs().collect::<Vec<_>>();
         assert!(!envs.iter().any(|(key, _)| *key == "SYLLABIX_LLM_API_KEY"));
         assert!(envs.iter().any(|(key, _)| *key == "PATH"));
+        assert!(
+            !envs.iter().any(|(key, _)| *key == "GIT_EXTERNAL_DIFF"),
+            "fresh session must not set GIT_EXTERNAL_DIFF"
+        );
     }
 
     #[test]
     fn inherit_session_keeps_launcher_variables() {
-        let _guard = InheritGuard::set(true);
+        let _guard = inherit_session_test_guard(true);
         let mut command = Command::new("/bin/true");
         command.env("CUSTOM_SKILL_KEY", "present");
         apply_sandbox_shell_env(&mut command);
