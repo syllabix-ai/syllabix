@@ -104,8 +104,15 @@ jobs:
           components: clippy
       - name: Compile dependencies (Linux)
         run: ./scripts/setup-linux.sh
+      - name: Allow bubblewrap user namespaces
+        run: |
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Harness sandbox admission (real bwrap; skipped under cfg coverage)
+        run: cargo test -p syllabix-core --test harness-quality harness_sandbox_admission -- --nocapture
       - name: chat template golden tests (common chat apply/parse)
         run: cargo test -p syllabix-native --test chat_template_golden
       - name: cargo check ggml without cloud
