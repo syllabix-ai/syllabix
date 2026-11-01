@@ -52,6 +52,17 @@ fn apply_parse(template_file: &str, assistant_text: &str) -> ParsedChatOutput {
 }
 
 #[test]
+fn lfm3_template_parses_qwen_xml_tool_call() {
+    let text = concat!(
+        "<|im_start|>assistant\n",
+        "<tool_call>\n<function=shell>\n<parameter=command>\ndate\n",
+        "</parameter>\n</function>\n</tool_call>"
+    );
+    let out = apply_parse("LFM3-Instruct.jinja", text);
+    assert_eq!(shell_command(&out), "date");
+}
+
+#[test]
 fn lfm_template_parses_pythonic_tool_call() {
     let text = concat!(
         "<|im_start|>assistant\n",

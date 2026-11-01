@@ -157,6 +157,17 @@ impl std::fmt::Display for PolicyDeny {
 
 impl std::error::Error for PolicyDeny {}
 
+/// Model-visible widening denial.
+///
+/// Keeps the `required; configured` token the harness scorer matches, and
+/// states that a wider retry will also fail so a tool-calling model explains
+/// the session limit instead of looping.
+pub fn widening_denied_message(axis: &str, requested: &str, configured: &str) -> String {
+    format!(
+        "{requested} is not available in this session (required; configured {axis} is {configured}). Do not retry with a wider {axis}; explain this limit."
+    )
+}
+
 /// Resolve the effective permissions for one call.
 ///
 /// `requested` may only narrow `session`. Widening any axis returns
@@ -172,8 +183,8 @@ pub fn resolve_effective(
 
     if requested.filesystem > session.filesystem {
         return Err(PolicyDeny {
-            message: format!(
-                "{} required; configured filesystem mode is {}",
+            message: widening_denied_message(
+                "filesystem mode",
                 requested.filesystem.as_str(),
                 session.filesystem.as_str(),
             ),
@@ -181,8 +192,8 @@ pub fn resolve_effective(
     }
     if requested.network > session.network {
         return Err(PolicyDeny {
-            message: format!(
-                "{} required; configured network mode is {}",
+            message: widening_denied_message(
+                "network mode",
                 requested.network.as_str(),
                 session.network.as_str(),
             ),
@@ -190,8 +201,8 @@ pub fn resolve_effective(
     }
     if requested.secrets > session.secrets {
         return Err(PolicyDeny {
-            message: format!(
-                "{} required; configured secrets policy is {}",
+            message: widening_denied_message(
+                "secrets policy",
                 requested.secrets.as_str(),
                 session.secrets.as_str(),
             ),
@@ -230,11 +241,12 @@ mod tests {
     #[test]
     fn policy_deny_displays_and_errors() {
         let deny = PolicyDeny {
-            message: String::from("allow required; configured network mode is none"),
+            message: widening_denied_message("network mode", "allow", "none"),
         };
+        assert!(deny.to_string().contains("required; configured"));
         assert_eq!(
             deny.to_string(),
-            "allow required; configured network mode is none"
+            "allow is not available in this session (required; configured network mode is none). Do not retry with a wider network mode; explain this limit."
         );
         let _: &dyn std::error::Error = &deny;
     }
@@ -295,7 +307,7 @@ mod tests {
         let err = resolve_effective(&session, Some(&requested)).unwrap_err();
         assert_eq!(
             err.message,
-            "workspace-write required; configured filesystem mode is read-only"
+            widening_denied_message("filesystem mode", "workspace-write", "read-only")
         );
     }
 
@@ -314,7 +326,7 @@ mod tests {
         let err = resolve_effective(&session, Some(&requested)).unwrap_err();
         assert_eq!(
             err.message,
-            "allow required; configured network mode is none"
+            widening_denied_message("network mode", "allow", "none")
         );
     }
 
@@ -332,7 +344,7 @@ mod tests {
         let err = resolve_effective(&session, Some(&requested)).unwrap_err();
         assert_eq!(
             err.message,
-            "danger-full-access required; configured filesystem mode is workspace-write"
+            widening_denied_message("filesystem mode", "danger-full-access", "workspace-write")
         );
     }
 }
