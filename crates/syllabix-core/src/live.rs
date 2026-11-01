@@ -126,6 +126,18 @@ fn run_live_inner(
 
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
+    let watch = turn_debug
+        .as_ref()
+        .map(|debug| PlaybackWatch::new(debug.clone()));
+    let wants_wavs = turn_debug
+        .as_ref()
+        .is_some_and(|debug| debug.collects_audio());
+    // Open both devices before the model load. Some backends refuse a valid
+    // stream while the process is busy paging in large weights; an already
+    // running stream is left alone, and the devices render silence and record
+    // until the pipeline needs them.
+    let (sink, echo_reference) = NativePlayback::open_with_echo_and_watch(watch)?;
+    let mut capture = NativeCapture::open_with_echo_and_events(echo_reference, events.clone())?;
     let (vad, stt, llm, tts) = load_real_providers(
         &cache,
         &HttpFetcher,
@@ -136,14 +148,8 @@ fn run_live_inner(
         stt_api_key.as_ref(),
         tts_api_key.as_ref(),
     )?;
-    let watch = turn_debug
-        .as_ref()
-        .map(|debug| PlaybackWatch::new(debug.clone()));
-    let wants_wavs = turn_debug
-        .as_ref()
-        .is_some_and(|debug| debug.collects_audio());
-    let (sink, echo_reference) = NativePlayback::open_with_echo_and_watch(watch)?;
-    let mut capture = NativeCapture::open_with_echo_and_events(echo_reference, events.clone())?;
+    // Everything recorded during the load predates the agent being ready.
+    capture.discard_buffered_audio();
     if wants_wavs {
         capture.enable_pcm_tap();
     }

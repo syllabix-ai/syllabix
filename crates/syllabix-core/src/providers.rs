@@ -307,4 +307,10 @@ pub trait AudioCapture: Send {
     ///
     /// Must return [`crate::Error::Cancelled`] when `cancel` is shut down.
     fn next_frame(&mut self, cancel: &Cancel) -> Result<Option<AudioFrame>>;
+
+    /// Drop mic samples recorded before the pipeline is ready (native devices only).
+    fn discard_buffered_audio(&mut self) {}
+
+    /// Align pre-AEC PCM with each frame for diagnostics WAVs (native devices only).
+    fn enable_pcm_tap(&mut self) {}
 }
