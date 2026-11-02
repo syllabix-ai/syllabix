@@ -52,6 +52,7 @@ pub mod vad;
 mod cancel;
 mod error;
 mod fake;
+mod harness_trace;
 mod language;
 #[cfg(all(feature = "ggml", feature = "device-audio"))]
 mod live;

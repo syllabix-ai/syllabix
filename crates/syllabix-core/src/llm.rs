@@ -18,6 +18,7 @@ use crate::defaults::BuiltinDefaults;
 use crate::error::{Error, Result};
 use crate::executor;
 use crate::fake::LlmCall;
+use crate::harness_trace_eprintln;
 use crate::models::{Fetcher, ModelCache, Progress};
 use crate::policy::{DeveloperPermissions, NetworkMode};
 use crate::providers::Llm;
@@ -694,7 +695,7 @@ impl LlamaLlm {
                     }
                     Err(CommonChatCollectError::Failed(err)) => return Err(err),
                     Err(CommonChatCollectError::Parse(message)) => {
-                        eprintln!("local-harness-fallback reason=parse {message}");
+                        harness_trace_eprintln!("local-harness-fallback reason=parse {message}");
                         self.note_tool_event("rejected", "", "", "", &message);
                         return emit_local_harness_reply(
                             user.turn,
@@ -711,7 +712,7 @@ impl LlamaLlm {
                     .trim()
                     .is_empty()
                 {
-                    eprintln!(
+                    harness_trace_eprintln!(
                         "local-harness-fallback reason=empty-spoken raw={}",
                         raw_snippet(&_text)
                     );
@@ -764,7 +765,7 @@ impl LlamaLlm {
                                 available_tool_names(self.developer_permissions.network)
                             ),
                         };
-                        eprintln!(
+                        harness_trace_eprintln!(
                             "local-harness-tool-error name={} message={message} raw={}",
                             parsed.name,
                             raw_snippet(&_text)
@@ -783,7 +784,7 @@ impl LlamaLlm {
                             &call.arguments.to_string(),
                             &result.content,
                         );
-                        eprintln!(
+                        harness_trace_eprintln!(
                             "local-harness-step id={} name={} ok={} args={} result={}",
                             call.id,
                             call.name,
@@ -827,7 +828,7 @@ impl LlamaLlm {
                     &call.arguments.to_string(),
                     &result.content,
                 );
-                eprintln!(
+                harness_trace_eprintln!(
                     "local-harness-step id={} name={} ok={} args={} result={}",
                     call.id,
                     call.name,
