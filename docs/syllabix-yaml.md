@@ -233,7 +233,7 @@ Optional session ceiling under `pipeline.llm`. Valid only when `agent_harness.ag
 | Key | Values | Default |
 | --- | --- | --- |
 | `filesystem` | `read-only` \| `workspace-write` \| `danger-full-access` | `read-only` |
-| `network` | `none` \| `allow` | `none` |
+| `network` | `none` \| `allow` | `allow` |
 | `secrets` | `none` only | `none` |
 
 ```yaml
@@ -243,11 +243,17 @@ pipeline:
   llm:
     developer_permissions:
       filesystem: workspace-write
-      network: none
+      network: allow
       secrets: none
 ```
 
-Omitting `developer_permissions` uses `read-only`, `none`, and `none`.
+Omitting `developer_permissions` uses `read-only`, `allow`, and `none`. Explicit `network: none` in yaml still wins for that session.
+
+When `network` is `none`:
+
+- Sandboxed `shell` commands cannot open outbound network connections.
+- `web_fetch` and `web_search` are omitted from the harness tool list shown to the model.
+- Direct `web_fetch` / `web_search` calls are rejected before any HTTP request (same widening denial as asking for `allow` on a `none` session).
 
 ## Agent backend and shell environment (`agent_harness`)
 
@@ -267,7 +273,7 @@ With barge-in on (`run --barge-in`), speaking while Goose is answering cancels t
 
 ### `inherit_current_session`
 
-Default `true`. When `true`, each command the agent runs (syllabix or Goose) starts with the environment of the shell that launched Syllabix, like a forked shell — the agent can read every variable you have exported there. Set `inherit_current_session: false` for a clean session: the environment is cleared and only safe defaults (for example `PATH` and git non-interactive settings) are set. File and network sandbox rules are unchanged either way. Secret values are never written to diagnostics or trajectory logs.
+Default `true`. When `true`, each command the agent runs (syllabix or Goose) starts with the environment of the shell that launched Syllabix, like a forked shell — the agent can read every variable you have exported there. Set `inherit_current_session: false` for a clean session: the environment is cleared and only safe defaults (for example `PATH`, non-interactive git config isolation via `GIT_CONFIG_*`, and `GIT_PAGER=cat`) are set. File and network sandbox rules are unchanged either way. Secret values are never written to diagnostics or trajectory logs.
 
 ```yaml
 agent_harness:

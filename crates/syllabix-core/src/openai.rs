@@ -1422,6 +1422,10 @@ mod tests {
         });
         let mut llm = test_llm(endpoint);
         llm.settings.agent_harness = true;
+        llm.settings.developer_permissions = crate::policy::DeveloperPermissions {
+            network: crate::policy::NetworkMode::None,
+            ..crate::policy::DeveloperPermissions::default_session()
+        };
         let (tokens, result) = collect(&mut llm, &Cancel::new());
         result.expect("tool continuation completes");
         assert_eq!(tokens, ["Live lookup is unavailable."]);
@@ -1895,6 +1899,18 @@ mod tests {
             .map(|tool| tool["function"]["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, ["web_fetch", "web_search", "shell"]);
+    }
+
+    #[test]
+    fn network_none_omits_web_tools_from_harness_definitions() {
+        let tools = tool_definitions_for(crate::policy::NetworkMode::None);
+        let names: Vec<_> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["shell"]);
     }
 
     #[test]

@@ -40,7 +40,7 @@ pub const DEFAULT_SEARCH_RESULTS: usize = 5;
 const FETCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const FETCH_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
-use crate::session_env::{apply_sandbox_shell_env, inherit_current_session};
+use crate::session_env::apply_sandbox_shell_env;
 
 pub use crate::session_env::set_inherit_current_session;
 
@@ -146,16 +146,14 @@ pub enum ValidatedCall {
 /// becomes a bounded, model-visible rejection rather than a provider failure.
 #[allow(dead_code)] // compatibility helper for executor unit tests and callers
 pub fn execute(call: &ToolCall, workspace: &Path, cancel: &Cancel) -> crate::types::ToolResult {
-    let previous = inherit_current_session();
-    set_inherit_current_session(false);
-    let result = execute_with_permissions(
-        call,
-        workspace,
-        &DeveloperPermissions::default_session(),
-        cancel,
-    );
-    set_inherit_current_session(previous);
-    result
+    crate::session_env::with_inherit_current_session(false, || {
+        execute_with_permissions(
+            call,
+            workspace,
+            &DeveloperPermissions::default_session(),
+            cancel,
+        )
+    })
 }
 
 /// Execute one call using the immutable session capability ceiling.
@@ -1218,6 +1216,7 @@ fn resolve_workspace_path(workspace: &Path, requested: &str) -> Result<PathBuf, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::SecretPolicy;
     use crate::types::ToolCall;
 
     fn call(name: &str, arguments: serde_json::Value) -> ToolCall {
@@ -1341,13 +1340,18 @@ mod tests {
     #[test]
     fn web_tools_are_denied_when_network_is_none() {
         let workspace = std::env::current_dir().unwrap();
+        let session = DeveloperPermissions {
+            filesystem: FilesystemMode::ReadOnly,
+            network: NetworkMode::None,
+            secrets: SecretPolicy::None,
+        };
         let fetch = execute_with_permissions(
             &call(
                 "web_fetch",
                 serde_json::json!({"url": "https://example.com/"}),
             ),
             &workspace,
-            &DeveloperPermissions::default_session(),
+            &session,
             &Cancel::new(),
         );
         assert!(!fetch.ok);
@@ -1358,7 +1362,7 @@ mod tests {
         let search = execute_with_permissions(
             &call("web_search", serde_json::json!({"query": "example"})),
             &workspace,
-            &DeveloperPermissions::default_session(),
+            &session,
             &Cancel::new(),
         );
         assert!(!search.ok);
@@ -1366,6 +1370,147 @@ mod tests {
             search.content,
             widening_denied_message("network mode", "allow", "none")
         );
+    }
+
+    #[test]
+    fn network_none_omits_web_tools_from_definitions_and_denies_execution() {
+        use crate::llm::local_tool_definitions_json_for;
+
+        let value: serde_json::Value =
+            serde_json::from_str(&local_tool_definitions_json_for(NetworkMode::None))
+                .expect("valid tools JSON");
+        let names: Vec<&str> = value
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .expect("function name")
+            })
+            .collect();
+        assert_eq!(names, vec!["shell"]);
+
+        let workspace = std::env::current_dir().unwrap();
+        let session = DeveloperPermissions {
+            filesystem: FilesystemMode::ReadOnly,
+            network: NetworkMode::None,
+            secrets: SecretPolicy::None,
+        };
+        let fetch = execute_with_permissions(
+            &call(
+                "web_fetch",
+                serde_json::json!({"url": "https://example.com/"}),
+            ),
+            &workspace,
+            &session,
+            &Cancel::new(),
+        );
+        assert!(!fetch.ok);
+        assert!(
+            fetch
+                .content
+                .contains("required; configured network mode is none"),
+            "{}",
+            fetch.content
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sandboxed_shell_cannot_connect_when_network_is_none() {
+        use std::path::Path;
+
+        let command = if Path::new("/usr/bin/nc").exists() || Path::new("/bin/nc").exists() {
+            "nc -z -w 1 1.1.1.1 53"
+        } else if Path::new("/usr/bin/python3").exists() {
+            "python3 -c \"import socket; socket.create_connection(('1.1.1.1',53),1)\""
+        } else {
+            return;
+        };
+        let workspace = std::env::current_dir().unwrap();
+        let session = DeveloperPermissions {
+            filesystem: FilesystemMode::ReadOnly,
+            network: NetworkMode::None,
+            secrets: SecretPolicy::None,
+        };
+        let result = execute_with_permissions(
+            &call("shell", serde_json::json!({"command": command})),
+            &workspace,
+            &session,
+            &Cancel::new(),
+        );
+        if result.content.starts_with("SANDBOX_UNAVAILABLE:") {
+            return;
+        }
+        assert!(
+            !result.ok || !result.content.contains("exit: 0"),
+            "network probe should fail under network:none, got {}",
+            result.content
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fresh_session_git_diff_works_in_the_sandbox() {
+        use std::process::Command;
+
+        crate::session_env::with_inherit_current_session(false, || {
+            let root =
+                std::env::temp_dir().join(format!("syllabix-git-diff-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).expect("workspace dir");
+            let workspace = root.canonicalize().expect("canonical workspace");
+
+            let run_git = |args: &[&str]| {
+                let status = Command::new("git")
+                    .current_dir(&workspace)
+                    .args(args)
+                    .status()
+                    .expect("git available in test environment");
+                assert!(status.success(), "git {:?} failed", args);
+            };
+            run_git(&["init"]);
+            run_git(&["config", "user.email", "test@example.test"]);
+            run_git(&["config", "user.name", "test"]);
+            std::fs::write(workspace.join("tracked.txt"), "first\n").expect("write");
+            run_git(&["add", "tracked.txt"]);
+            run_git(&["commit", "-m", "first"]);
+            std::fs::write(workspace.join("tracked.txt"), "second\n").expect("write");
+            run_git(&["add", "tracked.txt"]);
+            run_git(&["commit", "-m", "second"]);
+
+            let session = DeveloperPermissions {
+                filesystem: FilesystemMode::WorkspaceWrite,
+                network: NetworkMode::None,
+                secrets: SecretPolicy::None,
+            };
+            let result = execute_with_permissions(
+                &call(
+                    "shell",
+                    serde_json::json!({"command": "git diff HEAD~1..HEAD"}),
+                ),
+                &workspace,
+                &session,
+                &Cancel::new(),
+            );
+            let _ = std::fs::remove_dir_all(&root);
+            if result.content.starts_with("SANDBOX_UNAVAILABLE:") {
+                return;
+            }
+            assert!(result.ok, "{}", result.content);
+            assert!(
+                !result.content.contains("external diff died"),
+                "fresh session must not set GIT_EXTERNAL_DIFF to empty: {}",
+                result.content
+            );
+            assert!(
+                result.content.contains("first") || result.content.contains("-"),
+                "expected diff body, got {}",
+                result.content
+            );
+        });
     }
 
     #[test]
@@ -1904,10 +2049,18 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn shell_executes_direct_argv_under_the_read_only_network_denied_profile() {
+        // macOS-only smoke: shell runs under read-only + network:none seatbelt.
+        // Network denial on Linux is covered by `sandboxed_shell_cannot_connect_when_network_is_none`.
         let workspace = std::env::current_dir().unwrap();
-        let result = execute(
+        let session = DeveloperPermissions {
+            filesystem: FilesystemMode::ReadOnly,
+            network: NetworkMode::None,
+            secrets: SecretPolicy::None,
+        };
+        let result = execute_with_permissions(
             &call("shell", serde_json::json!({"command":"pwd"})),
             &workspace,
+            &session,
             &Cancel::new(),
         );
         if result.ok {
