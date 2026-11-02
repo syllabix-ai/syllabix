@@ -99,7 +99,7 @@ impl ServeState {
         self.job.lock().unwrap_or_else(|err| err.into_inner())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     fn fill_queue(&self) {
         self.waiters.store(MAX_QUEUED + 1, Ordering::SeqCst);
     }
@@ -992,10 +992,15 @@ impl Read for ChannelReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use std::io::{Read, Write};
+    #[cfg(target_os = "linux")]
     use std::net::{Shutdown, TcpStream};
+    #[cfg(target_os = "linux")]
     use std::sync::Arc;
+    #[cfg(target_os = "linux")]
     use std::thread;
+    #[cfg(target_os = "linux")]
     use std::time::{Duration, Instant};
 
     fn getenv_none(_: &str) -> Option<String> {
@@ -1894,6 +1899,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     fn http_payload(resp: &[u8]) -> Vec<u8> {
         let Some(idx) = find_bytes(resp, b"\r\n\r\n") else {
             return Vec::new();
@@ -1907,6 +1913,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn decode_chunked(mut src: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         loop {
