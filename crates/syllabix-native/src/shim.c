@@ -10,6 +10,10 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 struct syllabix_llama {
     struct llama_model *model;
     struct llama_context *ctx;
@@ -42,11 +46,23 @@ static int min_int(int a, int b) {
 }
 
 static double now_monotonic_s(void) {
+#if defined(_WIN32)
+    static LARGE_INTEGER freq = {0};
+    LARGE_INTEGER counter;
+    if (freq.QuadPart == 0 && !QueryPerformanceFrequency(&freq)) {
+        return 0.0;
+    }
+    if (!QueryPerformanceCounter(&counter)) {
+        return 0.0;
+    }
+    return (double)counter.QuadPart / (double)freq.QuadPart;
+#else
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
         return 0.0;
     }
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+#endif
 }
 
 /* Darwin: Metal. Vulkan Linux builds: offload when a device exists.

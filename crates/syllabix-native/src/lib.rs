@@ -1932,6 +1932,7 @@ mod tests {
         assert_eq!(msg.role, "user");
     }
 
+    #[cfg(coverage)]
     #[test]
     fn coverage_exercises_whisper_wrapper_without_weights() {
         assert!(WhisperContext::load("fail-whisper").is_err());
