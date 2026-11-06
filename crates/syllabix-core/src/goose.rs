@@ -726,11 +726,21 @@ pub(crate) struct GooseBinGuard {
 
 #[cfg(test)]
 impl GooseBinGuard {
+    // Unix-only: injects a shebang Goose binary (Windows cannot execute it).
+    #[cfg(unix)]
     pub(crate) fn set(path: PathBuf) -> Self {
         let serial = TEST_GOOSE_BIN_SERIAL
             .lock()
             .expect("goose test-bin serial mutex");
         *TEST_GOOSE_BIN.lock().expect("goose test-bin mutex") = Some(path);
+        Self { _serial: serial }
+    }
+
+    pub(crate) fn lock() -> Self {
+        let serial = TEST_GOOSE_BIN_SERIAL
+            .lock()
+            .expect("goose test-bin serial mutex");
+        *TEST_GOOSE_BIN.lock().expect("goose test-bin mutex") = None;
         Self { _serial: serial }
     }
 }

@@ -1301,10 +1301,18 @@ mod tests {
         for (name, value) in headers {
             response.push_str(&format!("{name}: {value}\r\n"));
         }
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("Connection"))
+        {
+            response.push_str("Connection: close\r\n");
+        }
         response.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
         response.push_str(body);
         stream.write_all(response.as_bytes())?;
-        stream.flush()
+        stream.flush()?;
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+        Ok(())
     }
 
     fn sse_body(events: &[&str], done: bool) -> String {
