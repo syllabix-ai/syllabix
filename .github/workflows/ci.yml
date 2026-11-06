@@ -70,6 +70,11 @@ jobs:
         # Native inference is an opt-in integration suite. Keep it out of this
         # unit-coverage gate: it is neither a model run nor unit-test coverage.
         run: cargo llvm-cov --no-clean --workspace --fail-under-lines 85 --fail-under-file-lines 85 --cobertura --output-path coverage.xml
+      - name: Harness sandbox admission without coverage cfg
+        # `cargo llvm-cov` builds with `--cfg coverage`, which omits the Linux
+        # sandbox modules and would skip the global-SKILL.md admission. Run the
+        # same admission again with a normal test build.
+        run: cargo test -p syllabix-core --test harness-quality harness_sandbox_admission -- --nocapture
       - name: Store coverage report
         # Best-effort evidence: the >=85% gate is enforced by the run step
         # above, so a stalled artifact upload must not fail a green run.
@@ -111,7 +116,7 @@ jobs:
           fi
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Harness sandbox admission (real bwrap; skipped under cfg coverage)
+      - name: Harness sandbox admission (Linux sandbox; includes global SKILL.md read check)
         run: cargo test -p syllabix-core --test harness-quality harness_sandbox_admission -- --nocapture
       - name: chat template golden tests (common chat apply/parse)
         run: cargo test -p syllabix-native --test chat_template_golden

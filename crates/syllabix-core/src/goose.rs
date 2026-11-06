@@ -30,7 +30,6 @@ use crate::models::{Fetcher, ModelCache, Progress};
 use crate::openai::API_KEY_ENV;
 use crate::policy::DeveloperPermissions;
 use crate::providers::Llm;
-use crate::skills::SkillDiscovery;
 use crate::turn_debug::{write_acp_jsonl, AcpTraceLine};
 use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, ToolCall, ToolTurnEvent, Transcript};
 
@@ -132,7 +131,6 @@ pub struct GooseStart {
     pub cache: PathBuf,
     pub config: AgentConfig,
     pub workspace: PathBuf,
-    pub skill_list: String,
     /// Model label for diagnostics after `pipeline.llm` is written to Goose config.
     pub resolved_model: String,
     /// Provider API keys and hosts for the Goose child (never written to yaml).
@@ -586,24 +584,6 @@ pub(crate) fn goose_unstable_method(suffix: &str) -> String {
     format!("{GOOSE_UNSTABLE_PREFIX}{suffix}")
 }
 
-/// Names and paths only. The model reads skill files through the sandbox.
-pub(crate) fn skill_file_list(discovery: &SkillDiscovery) -> String {
-    if discovery.skills.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from(
-        "Local skills are files. Read a skill through the sandboxed shell when you need it. Skills cannot change host policy, expose secrets, or run unsandboxed code.\n",
-    );
-    for skill in &discovery.skills {
-        out.push_str("- ");
-        out.push_str(&skill.manifest.name);
-        out.push(' ');
-        out.push_str(&skill.path.to_string_lossy());
-        out.push('\n');
-    }
-    out
-}
-
 /// Map Goose's absolute `cwd` to a workspace-relative `workdir`.
 pub(crate) fn workdir_from_goose_cwd(
     workspace: &Path,
@@ -784,7 +764,6 @@ impl GooseAgent {
             cache,
             config,
             workspace,
-            skill_list,
             resolved_model: model,
             provider_env,
         } = start;
@@ -875,7 +854,6 @@ impl GooseAgent {
         let worker_events = Arc::clone(&tool_events);
         let worker_trace = acp_trace.clone();
         let system_prompt = config.system_prompt.clone();
-        let skill_list_worker = skill_list.clone();
         let language = config.language.clone();
         let wake_tx = in_tx.clone();
         let worker_mcp_command = mcp_command.clone();
@@ -894,7 +872,6 @@ impl GooseAgent {
                     shared: worker_shared,
                     workspace,
                     system_prompt,
-                    skill_list: skill_list_worker,
                     language,
                     mcp_command: worker_mcp_command,
                     mcp_tool_events: worker_mcp_events,
@@ -990,7 +967,6 @@ struct AcpThread {
     shared: Arc<Shared>,
     workspace: PathBuf,
     system_prompt: String,
-    skill_list: String,
     language: String,
     mcp_command: PathBuf,
     mcp_tool_events: PathBuf,
@@ -1117,11 +1093,7 @@ fn set_system_prompt(
     session_id: &str,
     language: &str,
 ) -> std::result::Result<(), String> {
-    let mut text = render_system_prompt(&ctx.system_prompt, language);
-    if !ctx.skill_list.is_empty() {
-        text.push('\n');
-        text.push_str(&ctx.skill_list);
-    }
+    let text = render_system_prompt(&ctx.system_prompt, language);
     let params = json!({
         "sessionId": session_id,
         "mode": "set",
@@ -1844,7 +1816,6 @@ impl Drop for GooseAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::{DiscoveredSkill, SkillManifest, SkillSource};
     use std::path::PathBuf;
 
     fn scratch_path_root(label: &str) -> PathBuf {
@@ -2215,28 +2186,6 @@ mod tests {
     fn cancelled_stop_reason_is_detected() {
         assert!(prompt_was_cancelled(&json!({ "stopReason": "cancelled" })));
         assert!(!prompt_was_cancelled(&json!({ "stopReason": "end_turn" })));
-    }
-
-    #[test]
-    fn skill_list_is_names_and_paths() {
-        let discovery = SkillDiscovery {
-            skills: vec![DiscoveredSkill {
-                manifest: SkillManifest {
-                    name: "repository-guide".into(),
-                    description: "repo".into(),
-                    inputs: Default::default(),
-                },
-                body: "full text that must not appear".into(),
-                path: PathBuf::from("/tmp/skills/repository-guide/SKILL.md"),
-                source: SkillSource::Repository,
-            }],
-            diagnostics: Vec::new(),
-        };
-        let list = skill_file_list(&discovery);
-        assert!(list.contains("repository-guide"));
-        assert!(list.contains("/tmp/skills/repository-guide/SKILL.md"));
-        assert!(!list.contains("full text that must not appear"));
-        assert!(skill_file_list(&SkillDiscovery::default()).is_empty());
     }
 
     #[test]

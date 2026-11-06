@@ -351,7 +351,7 @@ skills:
       source: global
 ```
 
-Each root contains one directory per skill with a UTF-8 `SKILL.md`. Front matter currently accepts only name, description, and harmless declarative inputs; the Markdown body is shown to the harness as labelled `default` or `custom` reference text. Unknown metadata, invalid skills, and duplicate names are retained only as diagnostics and are never shown to the model. Phase 6 rejects entrypoints and executes no skill code. Skill text never grants filesystem, network, or secret access.
+Each root contains one directory per skill with a UTF-8 `SKILL.md`. Front matter currently accepts only name, description, and harmless declarative inputs; the host still reads and validates the Markdown body, but the harness system prompt lists only the skill name, description, and file path (labelled `default` or `custom`). Paths under the workspace are shown relative to the workspace root; paths outside it (for example global roots) stay absolute. The model reads the file contents when it needs the instructions. Unknown metadata, invalid skills, and duplicate names are retained only as diagnostics and are never shown in that listing. Phase 6 rejects entrypoints and executes no skill code. Skill text never grants filesystem, network, or secret access.
 
 ## Auto-timeout — idle mic-mute / exit
 

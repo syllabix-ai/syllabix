@@ -29,7 +29,7 @@ mic → Silero VAD → STT → LLM ⇄ sandboxed shell → … → TTS → speak
 
 Set `agent_harness.agent: none` for plain voice chat with no tools: one STT transcript goes to the LLM, then TTS.
 
-[Skills](syllabix-yaml.md#skills--local-instruction-packages) are optional instruction packages (`SKILL.md` under configured roots). Their text is shown to the harness as reference; they do not run code and do not widen sandbox permissions. Tool policy and ceilings: [agent_harness.agent](syllabix-yaml.md#agent-backend-and-shell-environment-agent_harness).
+[Skills](syllabix-yaml.md#skills--local-instruction-packages) are optional instruction packages (`SKILL.md` under configured roots). The harness prompt names each skill, summarizes it, and points at the file path (workspace-relative when the skill lives under the project); the model pulls in the body when it uses a skill. They do not run code and do not widen sandbox permissions. Tool policy and ceilings: [agent_harness.agent](syllabix-yaml.md#agent-backend-and-shell-environment-agent_harness).
 
 ## Barge-in
 

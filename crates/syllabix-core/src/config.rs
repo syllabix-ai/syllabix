@@ -1580,7 +1580,9 @@ agent_harness:
         assert_eq!(discovery.skills.len(), 1, "{:#?}", discovery.diagnostics);
         assert_eq!(discovery.skills[0].manifest.name, "repository-guide");
         assert_eq!(discovery.skills[0].source, SkillSource::Repository);
-        assert!(discovery.model_context().contains("source: custom"));
+        assert!(discovery
+            .model_context(&repository_root)
+            .contains("source: custom"));
     }
 
     #[test]
