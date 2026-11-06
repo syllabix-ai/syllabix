@@ -451,6 +451,7 @@ fn generate_streams_tokens_without_sending_history() {
 
 #[test]
 fn generate_cancel_wakes_without_waiting_for_idle_timeout() {
+    let _idle = GooseIdleGuard::set(Duration::from_secs(20));
     let (mut agent, _) = start_fake();
     let cancel = Cancel::new();
     let watcher = cancel.clone();

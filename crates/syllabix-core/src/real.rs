@@ -761,6 +761,10 @@ mod production {
 
         #[test]
         fn goose_fetches_the_pinned_binary() {
+            // GooseBinGuard lives in mod goose (ggml+cloud); without cloud there is
+            // no TEST_GOOSE_BIN to isolate from.
+            #[cfg(feature = "cloud")]
+            let _bin = crate::goose::GooseBinGuard::lock();
             let (cache, config) = goose_config_with_local_gguf("goose-fetch");
             let fetcher = BlockedFetcher::default();
             let err = build_llm(
@@ -790,6 +794,7 @@ mod production {
         #[cfg(feature = "cloud")]
         #[test]
         fn goose_syncs_pipeline_llm_before_binary_fetch() {
+            let _bin = crate::goose::GooseBinGuard::lock();
             let (cache, config) = goose_config_with_local_gguf("goose-sync-config");
             let config_path =
                 crate::goose::goose_config_path(&crate::goose::goose_path_root(&cache));
@@ -824,7 +829,8 @@ mod production {
             }
         }
 
-        #[cfg(feature = "cloud")]
+        // Unix-only: spawns a shebang script Windows cannot execute (os error 193).
+        #[cfg(all(unix, feature = "cloud"))]
         #[test]
         fn goose_local_build_llm_returns_the_goose_slot() {
             let binary = {
