@@ -72,15 +72,19 @@ pub const LOCAL_TOOL_FALLBACK_TEXT: &str = "Sorry, I could not complete that too
 /// codes (which never reach the LLM in a real run) stay `English`.
 pub const LANGUAGE_PLACEHOLDER: &str = "{language}";
 
+/// General verify-with-tools rule appended to voice system prompts.
+pub const VOICE_SYSTEM_PROMPT_VERIFY_RULE: &str =
+    "For facts that change over time, use a tool to verify before you answer; do not guess or rely on memory.";
+
 /// Default system prompt template. Written by `init`; used when yaml omits
 /// `pipeline.llm.system_prompt`. Shared by `local` GGUF and `online`
 /// chat/completions: the reply is still spoken, so the prompt is voice-native
 /// rather than naming where the weights run.
-pub const VOICE_SYSTEM_PROMPT_TEMPLATE: &str = "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji.";
+pub const VOICE_SYSTEM_PROMPT_TEMPLATE: &str = "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji. For facts that change over time, use a tool to verify before you answer; do not guess or rely on memory.";
 
 /// English rendering of [`VOICE_SYSTEM_PROMPT_TEMPLATE`]. Zero-config `run`
 /// with STT `en` sends this byte-for-byte.
-pub const VOICE_SYSTEM_PROMPT: &str = "You are a smart assistant. This is a spoken conversation. Reply in spoken English, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji.";
+pub const VOICE_SYSTEM_PROMPT: &str = "You are a smart assistant. This is a spoken conversation. Reply in spoken English, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji. For facts that change over time, use a tool to verify before you answer; do not guess or rely on memory.";
 
 /// Render a system-prompt template for the turn's STT language.
 ///
@@ -1918,7 +1922,7 @@ mod tests {
         assert_eq!(system_prompt_for("en"), VOICE_SYSTEM_PROMPT);
         assert_eq!(
             system_prompt_for("fr"),
-            "You are a smart assistant. This is a spoken conversation. Reply in spoken French, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji."
+            "You are a smart assistant. This is a spoken conversation. Reply in spoken French, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji. For facts that change over time, use a tool to verify before you answer; do not guess or rely on memory."
         );
         assert_eq!(system_prompt_for("de"), system_prompt_for("de"));
         assert!(system_prompt_for("de").contains("German"));

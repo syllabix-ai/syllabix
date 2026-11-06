@@ -138,7 +138,7 @@ asserts every sandbox fixture completes.
 each selected agent+model pair and prints `pair=… completion=… ratio=…` lines.
 Quality scoring allows careful refusals and spoken URLs; it does not re-test
 sandbox policy. The combined test always exits successfully even when a pair is
-below 0.90 (for example `pair=goose-local completion=0/3`). Use the legacy entry
+below 0.90 (for example `pair=goose-local completion=0/4`). Use the legacy entry
 points below when you need a hard gate on one pair. The PR evidence workflow only
 requires a `pair=` line (or `skipped, no key`) per pair you ran, not a passing ratio.
 
@@ -165,6 +165,14 @@ SYLLABIX_HARNESS_PAIRS=syllabix-local,syllabix-online \
 Online pairs need `SYLLABIX_LLM_API_KEY`, `SYLLABIX_HARNESS_BASE_URL`, and
 `SYLLABIX_HARNESS_MODEL` (nothing defaulted). Local pairs need the pinned GGUF
 already in the model cache; evaluation never silently downloads weights.
+
+Model-quality fixture `current-date` checks realtime facts.
+`current-date` accepts the run machine's local calendar day plus one day
+before or after (timezone and midnight edges) in the spoken reply; a tool
+call is optional (strong models may already know the date).
+
+Host `web_fetch` / `web_search` use bounded public HTTP (15s read deadline per
+page) — not the model-cache `BlockedFetcher`.
 
 The built-in agent harness is on by default (`agent_harness.agent: syllabix`);
 set `agent: none` for plain voice chat with no sandboxed tools. Goose local

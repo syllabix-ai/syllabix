@@ -3,8 +3,8 @@
 //! Sandbox fixtures (`write-denied`, `network-denied`, `secret-denied`,
 //! `cancelled-command`) run in normal CI via [`harness_sandbox_admission`]: a
 //! mock model emits one scripted tool call through the real executor. Model
-//! quality fixtures (`read-repo`, `repo-orientation`, `write-and-verify`) run
-//! only in the ignored admission driver against agent+model pairs.
+//! quality fixtures (`read-repo`, `repo-orientation`, `write-and-verify`,
+//! `current-date`) run only in the ignored admission driver against agent+model pairs.
 //!
 //! ```bash
 //! # Sandbox only (CI path)
@@ -31,9 +31,7 @@ use syllabix_core::llm::{
     LlamaLlm, LFM25_2_6B_ASSET, LFM3_1_7B_ASSET, LOCAL_TOOL_FALLBACK_TEXT,
     VOICE_SYSTEM_PROMPT_TEMPLATE,
 };
-#[cfg(all(feature = "ggml", feature = "cloud"))]
-use syllabix_core::models::HttpFetcher;
-use syllabix_core::models::{BlockedFetcher, NoProgress};
+use syllabix_core::models::{BlockedFetcher, HttpFetcher, NoProgress};
 use syllabix_core::openai::{
     join_endpoint, resolve_api_key, validate_base_url, OpenAiLlm, OpenAiSettings,
     CLOUD_FALLBACK_TEXT,
@@ -143,6 +141,181 @@ fn quality_speech_ok(reply: &str) -> bool {
         && trimmed != CLOUD_FALLBACK_TEXT
         && trimmed != LOCAL_TOOL_FALLBACK_TEXT
         && !trimmed.contains("tool_call_id")
+}
+
+fn run_date_format(args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("date")
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if line.is_empty() {
+        None
+    } else {
+        Some(line)
+    }
+}
+
+/// Local calendar days accepted for the current-date fixture: today plus one
+/// day before and after to tolerate timezone and midnight edges.
+fn harness_reference_calendar_days() -> Option<Vec<String>> {
+    let today = run_date_format(&["+%F"])?;
+    let mut days = vec![today];
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(day) = run_date_format(&["-d", "yesterday", "+%F"]) {
+            days.push(day);
+        }
+        if let Some(day) = run_date_format(&["-d", "tomorrow", "+%F"]) {
+            days.push(day);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(day) = run_date_format(&["-v-1d", "+%F"]) {
+            days.push(day);
+        }
+        if let Some(day) = run_date_format(&["-v+1d", "+%F"]) {
+            days.push(day);
+        }
+    }
+    Some(days)
+}
+
+const MONTH_NAMES: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+const MONTH_ABBREV: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+fn spoken_date_markers(iso_day: &str) -> Vec<String> {
+    let parts: Vec<&str> = iso_day.split('-').collect();
+    if parts.len() != 3 {
+        return vec![iso_day.to_string()];
+    }
+    let year = parts[0];
+    let month: u32 = parts[1].parse().unwrap_or(0);
+    let day: u32 = parts[2].parse().unwrap_or(0);
+    if !(1..=12).contains(&month) || day == 0 {
+        return vec![iso_day.to_string()];
+    }
+    let month_name = MONTH_NAMES[month as usize - 1];
+    let month_short = MONTH_ABBREV[month as usize - 1];
+    vec![
+        iso_day.to_string(),
+        format!("{month_name} {day}, {year}"),
+        format!("{month_short} {day}, {year}"),
+        format!("{month_name} {day} {year}"),
+        format!("{month_short} {day} {year}"),
+        format!("{month}/{day}/{year}"),
+        format!("{day}/{month}/{year}"),
+    ]
+}
+
+fn month_num_from_iso(parts: &[&str]) -> u32 {
+    parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+fn reply_contains_acceptable_date(reply: &str, iso_days: &[String]) -> bool {
+    let spoken = speak_text_for_tts(reply).to_lowercase();
+    for iso in iso_days {
+        for marker in spoken_date_markers(iso) {
+            if spoken.contains(&marker.to_lowercase()) {
+                return true;
+            }
+        }
+        let parts: Vec<&str> = iso.split('-').collect();
+        if parts.len() == 3 {
+            let month_num = month_num_from_iso(&parts);
+            let day: u32 = parts[2].parse().unwrap_or(0);
+            let year = parts[0];
+            if month_num > 0
+                && (spoken.contains(&format!("{month_num}/{day}/{year}"))
+                    || spoken.contains(&format!("{day}/{month_num}/{year}")))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True when text looks like default `date(1)` output:
+/// `Thu Nov 5 01:11:19 IST 2026` (weekday, abbreviated month, day without a
+/// leading zero, time and timezone, year). The month/day pair and year must
+/// both appear; the day is not matched as a prefix of a longer number.
+fn locale_date_command_output_matches(text: &str, iso_days: &[String]) -> bool {
+    let lower = text.to_lowercase();
+    let normalized = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    for iso in iso_days {
+        let parts: Vec<&str> = iso.split('-').collect();
+        if parts.len() != 3 {
+            continue;
+        }
+        let year = parts[0];
+        if !lower.contains(year) {
+            continue;
+        }
+        let month: u32 = parts[1].parse().unwrap_or(0);
+        let day: u32 = parts[2].parse().unwrap_or(0);
+        if !(1..=12).contains(&month) || day == 0 {
+            continue;
+        }
+        let month_short = MONTH_ABBREV[month as usize - 1].to_lowercase();
+        let month_name = MONTH_NAMES[month as usize - 1].to_lowercase();
+        if contains_locale_month_and_day(&normalized, &month_short, day)
+            || contains_locale_month_and_day(&normalized, &month_name, day)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn contains_locale_month_and_day(lower: &str, month: &str, day: u32) -> bool {
+    let needle = format!("{month} {day}");
+    let mut start = 0usize;
+    while let Some(rel) = lower[start..].find(&needle) {
+        let after = start + rel + needle.len();
+        if after >= lower.len() || !lower.as_bytes()[after].is_ascii_digit() {
+            return true;
+        }
+        start = start + rel + 1;
+    }
+    false
+}
+
+fn tool_results_contain_acceptable_date(events: &[ToolTurnEvent], iso_days: &[String]) -> bool {
+    events.iter().any(|event| {
+        if event.kind != "result" {
+            return false;
+        }
+        let body = if event.name == "shell" {
+            let mut lines = event.content.lines();
+            lines.next();
+            lines.collect::<Vec<_>>().join("\n")
+        } else {
+            event.content.clone()
+        };
+        reply_contains_acceptable_date(&body, iso_days)
+            || locale_date_command_output_matches(&body, iso_days)
+    })
 }
 
 fn shell_result_succeeded(event: &ToolTurnEvent) -> bool {
@@ -332,21 +505,51 @@ fn called_tool(events: &[ToolTurnEvent], argv0: &str) -> bool {
     })
 }
 
-/// Digit runs in a text: `1.98.0` yields `1`, `98`, `0`.
-fn number_tokens(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    for c in text.chars() {
-        if c.is_ascii_digit() {
-            current.push(c);
-        } else if !current.is_empty() {
-            tokens.push(std::mem::take(&mut current));
+/// Decimal literals in free text (`23%`, `1.98.0`).
+fn numeric_literals(text: &str) -> Vec<f64> {
+    let mut values = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if !c.is_ascii_digit() {
+            continue;
+        }
+        let mut token = String::from(c);
+        while let Some(&next) = chars.peek() {
+            if next.is_ascii_digit() || next == '.' {
+                token.push(next);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        while token.ends_with('.') {
+            token.pop();
+        }
+        if token.is_empty() {
+            continue;
+        }
+        if let Ok(value) = token.parse::<f64>() {
+            if value.is_finite() {
+                values.push(value);
+            }
         }
     }
-    if !current.is_empty() {
-        tokens.push(current);
+    values
+}
+
+fn numeric_reuse_candidate(value: f64) -> bool {
+    if value.abs() < 1.0 {
+        return false;
     }
-    tokens
+    value.fract().abs() > f64::EPSILON || value.abs() >= 10.0
+}
+
+fn numbers_match_for_reuse(tool: f64, reply: f64) -> bool {
+    if (tool - reply).abs() <= 0.02 {
+        return true;
+    }
+    let scale = tool.abs().max(reply.abs()).max(1.0);
+    (tool - reply).abs() <= 0.001 * scale
 }
 
 /// True when the reply reuses a number from a tool result — partial match on
@@ -354,9 +557,14 @@ fn number_tokens(text: &str) -> Vec<String> {
 /// skipped so the exit code cannot match, and single digits do not count, so
 /// a stray `0` is not a pass.
 fn reply_reuses_tool_numbers(events: &[ToolTurnEvent], reply: &str) -> bool {
-    let reply_numbers: std::collections::HashSet<String> =
-        number_tokens(reply).into_iter().collect();
-    events
+    let reply_values: Vec<f64> = numeric_literals(&speak_text_for_tts(reply))
+        .into_iter()
+        .filter(|value| numeric_reuse_candidate(*value))
+        .collect();
+    if reply_values.is_empty() {
+        return false;
+    }
+    let tool_values: Vec<f64> = events
         .iter()
         .filter(|event| event.kind == "result")
         .flat_map(|event| {
@@ -368,9 +576,14 @@ fn reply_reuses_tool_numbers(events: &[ToolTurnEvent], reply: &str) -> bool {
             } else {
                 event.content.clone()
             };
-            number_tokens(&body)
+            numeric_literals(&body)
         })
-        .any(|token| token.len() >= 2 && reply_numbers.contains(&token))
+        .collect();
+    reply_values.iter().any(|reply| {
+        tool_values
+            .iter()
+            .any(|tool| numbers_match_for_reuse(*tool, *reply))
+    })
 }
 /// The normalizer must reject these before execution; seeing one live means
 /// the harness boundary failed.
@@ -518,6 +731,7 @@ enum CapabilityCheck {
     Shell,
     WriteAndVerify,
     RepositoryOrientation,
+    CurrentDate,
     ShellDenied,
     NetworkDenied,
     ShellWithScrubbedEnvironment,
@@ -554,6 +768,13 @@ const CAPABILITY_FIXTURES: &[CapabilityFixture] = &[
         filesystem: FilesystemMode::WorkspaceWrite,
         network: NetworkMode::None,
         check: CapabilityCheck::WriteAndVerify,
+    },
+    CapabilityFixture {
+        id: "current-date",
+        transcript: "What's today's date?",
+        filesystem: FilesystemMode::ReadOnly,
+        network: NetworkMode::None,
+        check: CapabilityCheck::CurrentDate,
     },
     CapabilityFixture {
         id: "write-denied",
@@ -605,7 +826,10 @@ enum EvidenceMode {
 }
 
 fn is_model_quality_fixture(id: &str) -> bool {
-    matches!(id, "read-repo" | "repo-orientation" | "write-and-verify")
+    matches!(
+        id,
+        "read-repo" | "repo-orientation" | "write-and-verify" | "current-date"
+    )
 }
 
 fn is_sandbox_fixture(id: &str) -> bool {
@@ -788,6 +1012,7 @@ fn run_scripted_turn(
     Some(format!("{} {}", model.answer_prefix, result.content))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capability_evidence(
     fixture: &CapabilityFixture,
     reply: &str,
@@ -895,6 +1120,10 @@ fn capability_evidence(
         }
         CapabilityCheck::RepositoryOrientation => {
             enforcement_verified && repository_orientation && task_reply
+        }
+        CapabilityCheck::CurrentDate => {
+            let days = harness_reference_calendar_days().unwrap_or_default();
+            enforcement_verified && reply_contains_acceptable_date(reply, &days) && task_reply
         }
         CapabilityCheck::ShellDenied => {
             let blocked = match backend {
@@ -2306,6 +2535,7 @@ fn capability_fixtures_cover_the_phase5_contract() {
         "read-repo",
         "repo-orientation",
         "write-and-verify",
+        "current-date",
         "write-denied",
         "network-denied",
         "secret-denied",
@@ -2313,7 +2543,7 @@ fn capability_fixtures_cover_the_phase5_contract() {
     ] {
         assert!(ids.contains(&required), "fixture {required} is fixed");
     }
-    assert_eq!(ids.len(), 7, "the capability fixture set is versioned");
+    assert_eq!(ids.len(), 8, "the capability fixture set is versioned");
 }
 
 #[test]
@@ -2359,6 +2589,102 @@ fn repo_orientation_scoring_requires_evidence_steps_and_clean_speech() {
     assert!(evidence.completion);
     assert!(evidence.clean_reply);
     evidence.counters.assert_safe();
+}
+
+#[test]
+fn current_date_scoring_accepts_reply_without_tool_and_rejects_wrong_day() {
+    let fixture = CAPABILITY_FIXTURES
+        .iter()
+        .find(|fixture| fixture.id == "current-date")
+        .expect("current-date fixture");
+    let days = harness_reference_calendar_days().expect("date command");
+    let marker = spoken_date_markers(&days[0]).into_iter().next().unwrap();
+    let correct_reply = format!("Today is {marker}.");
+    let events = vec![
+        ToolTurnEvent {
+            kind: "call".into(),
+            name: "shell".into(),
+            call_id: "date".into(),
+            arguments: serde_json::json!({"command": "date"}).to_string(),
+            content: String::new(),
+        },
+        ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "date".into(),
+            arguments: String::new(),
+            content: "exit: 0\nstdout:\nThu Nov 5 01:11:19 IST 2026\nstderr:\n".into(),
+        },
+    ];
+    let with_tool = capability_evidence(
+        fixture,
+        &correct_reply,
+        &events,
+        "full",
+        HarnessBackend::Syllabix,
+        None,
+        evidence_mode_for(fixture),
+    );
+    assert!(with_tool.completion);
+    let no_tool = capability_evidence(
+        fixture,
+        &correct_reply,
+        &[],
+        "full",
+        HarnessBackend::Syllabix,
+        None,
+        evidence_mode_for(fixture),
+    );
+    assert!(
+        no_tool.completion,
+        "correct spoken date must pass without a tool call"
+    );
+    let wrong_reply = "Today is January 1, 1999.";
+    assert!(
+        !capability_evidence(
+            fixture,
+            wrong_reply,
+            &[],
+            "full",
+            HarnessBackend::Syllabix,
+            None,
+            evidence_mode_for(fixture),
+        )
+        .completion
+    );
+    assert!(
+        !capability_evidence(
+            fixture,
+            wrong_reply,
+            &events,
+            "full",
+            HarnessBackend::Syllabix,
+            None,
+            evidence_mode_for(fixture),
+        )
+        .completion
+    );
+}
+
+#[test]
+fn locale_date_command_output_matches_default_date_command() {
+    let iso = "2026-11-05".to_string();
+    let stdout = "Thu Nov 5 01:11:19 IST 2026";
+    assert!(locale_date_command_output_matches(
+        stdout,
+        std::slice::from_ref(&iso)
+    ));
+    let shell_body = format!("exit: 0\nstdout:\n{stdout}\nstderr:\n");
+    assert!(tool_results_contain_acceptable_date(
+        &[ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "1".into(),
+            arguments: "{}".into(),
+            content: shell_body,
+        }],
+        &[iso],
+    ));
 }
 
 #[test]
