@@ -37,9 +37,10 @@ pub const MAX_FETCH_REDIRECTS: u32 = 3;
 pub const MAX_SEARCH_QUERY_BYTES: usize = 256;
 pub const MAX_SEARCH_RESULTS: usize = 8;
 pub const DEFAULT_SEARCH_RESULTS: usize = 5;
-const FETCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-const FETCH_READ_TIMEOUT: Duration = Duration::from_secs(2);
-const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Interactive page fetch: connect quickly, allow slow HTML/JSON bodies.
+const FETCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const FETCH_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 use crate::session_env::apply_sandbox_shell_env;
 
 pub use crate::session_env::set_inherit_current_session;
@@ -417,15 +418,8 @@ fn execute_search(query: &str, count: usize, cancel: &Cancel) -> Result<String, 
         "https://html.duckduckgo.com/html/?q={}",
         percent_encode(query)
     );
-    let output = fetch_bytes(&url, cancel).map_err(|message| {
-        if cancel.is_stale(generation) || message == "web_fetch cancelled" {
-            return "web_search cancelled".into();
-        }
-        if message == "web_fetch timed out" {
-            return "web_search timed out".into();
-        }
-        "web_search request failed".to_string()
-    })?;
+    let output = fetch_bytes(&url, cancel)
+        .map_err(|message| map_web_fetch_err_to_search(message, generation, cancel))?;
     let mut results = parse_duckduckgo_results(&String::from_utf8_lossy(&output), count);
     if results.is_empty() {
         // DDG serves a bot-challenge (HTTP 202 `anomaly-modal`) to flagged
@@ -492,14 +486,8 @@ fn search_parallel_mcp(
     if cancel.is_stale(generation) {
         return Err("web_search cancelled".into());
     }
-    let output = post_json_bytes(PARALLEL_MCP_URL, &mcp_search_request(query), cancel).map_err(
-        |message| {
-            if cancel.is_stale(generation) || message == "web_fetch cancelled" {
-                return "web_search cancelled".into();
-            }
-            "web_search request failed".to_string()
-        },
-    )?;
+    let output = post_json_bytes(PARALLEL_MCP_URL, &mcp_search_request(query), cancel)
+        .map_err(|message| map_web_fetch_err_to_search(message, generation, cancel))?;
     Ok(parse_mcp_search_response(&output, count))
 }
 
@@ -929,10 +917,7 @@ fn fetch_bytes(url: &str, cancel: &Cancel) -> Result<Vec<u8>, String> {
         .set("User-Agent", "Mozilla/5.0 (compatible; syllabix/0.1)")
         .set("Accept", "text/html,*/*;q=0.8")
         .call()
-        .map_err(|err| match err {
-            ureq::Error::Status(code, _) => format!("web_fetch failed with HTTP {code} for {url}"),
-            _ => format!("web_fetch request failed for {url}"),
-        })?;
+        .map_err(|err| web_fetch_error(url, err))?;
     read_bounded_body(response.into_reader(), cancel, generation, FETCH_TIMEOUT)
 }
 
@@ -958,7 +943,7 @@ fn post_json_bytes(url: &str, body: &str, cancel: &Cancel) -> Result<Vec<u8>, St
         .set("Content-Type", "application/json")
         .set("Accept", "application/json, text/event-stream")
         .send_string(body)
-        .map_err(|_| format!("web_search request failed for {url}"))?;
+        .map_err(|err| web_fetch_error(url, err))?;
     read_bounded_body(response.into_reader(), cancel, generation, MCP_TIMEOUT)
 }
 
@@ -1126,18 +1111,45 @@ fn truncate_utf8(text: &str, limit: usize) -> String {
 }
 
 fn public_resolver(netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
-    let addresses: Vec<_> = netloc.to_socket_addrs()?.collect();
-    if addresses.is_empty()
-        || addresses
-            .iter()
-            .any(|address| !is_public_address(address.ip()))
-    {
+    let mut addresses: Vec<_> = netloc
+        .to_socket_addrs()?
+        .filter(|address| is_public_address(address.ip()))
+        .collect();
+    if addresses.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "web_fetch target is not a public address",
         ));
     }
+    // Prefer IPv4: many hosts publish AAAA records but the egress path has no IPv6.
+    addresses.sort_by_key(|address| matches!(address.ip(), IpAddr::V6(_)));
     Ok(addresses)
+}
+
+fn web_fetch_error(url: &str, err: ureq::Error) -> String {
+    match err {
+        ureq::Error::Status(code, _) => format!("web_fetch failed with HTTP {code} for {url}"),
+        ureq::Error::Transport(detail) => {
+            format!("web_fetch transport error for {url}: {detail}")
+        }
+    }
+}
+
+fn map_web_fetch_err_to_search(
+    message: String,
+    generation: crate::types::GenerationId,
+    cancel: &Cancel,
+) -> String {
+    if cancel.is_stale(generation) || message == "web_fetch cancelled" {
+        return "web_search cancelled".into();
+    }
+    if message == "web_fetch timed out" {
+        return "web_search timed out".into();
+    }
+    if message.starts_with("web_fetch ") {
+        return message.replacen("web_fetch", "web_search", 1);
+    }
+    format!("web_search request failed: {message}")
 }
 
 fn is_public_address(address: IpAddr) -> bool {
@@ -1532,7 +1544,10 @@ mod tests {
         );
         assert!(!fetch.ok);
         assert!(
-            fetch.content.contains("web_fetch request failed"),
+            fetch.content.contains("web_fetch")
+                && (fetch.content.contains("public address")
+                    || fetch.content.contains("transport error")
+                    || fetch.content.contains("request failed")),
             "{}",
             fetch.content
         );
@@ -1546,6 +1561,41 @@ mod tests {
             denied.to_string(),
             "web_fetch target is not a public address"
         );
+    }
+
+    #[test]
+    fn public_resolver_prefers_ipv4_when_both_exist() {
+        use std::net::IpAddr;
+        let addresses = public_resolver("example.com:443").expect("example.com resolves");
+        assert!(!addresses.is_empty());
+        assert!(addresses
+            .iter()
+            .all(|address| is_public_address(address.ip())));
+        let has_v4 = addresses
+            .iter()
+            .any(|address| matches!(address.ip(), IpAddr::V4(_)));
+        let has_v6 = addresses
+            .iter()
+            .any(|address| matches!(address.ip(), IpAddr::V6(_)));
+        if has_v4 && has_v6 {
+            assert!(
+                matches!(addresses[0].ip(), IpAddr::V4(_)),
+                "expected IPv4 first, got {addresses:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn map_web_fetch_err_to_search_preserves_transport_detail() {
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let mapped = map_web_fetch_err_to_search(
+            "web_fetch transport error for https://example.com/: connection refused".into(),
+            generation,
+            &cancel,
+        );
+        assert!(mapped.contains("web_search transport error"));
+        assert!(mapped.contains("connection refused"));
     }
 
     #[test]
@@ -2220,5 +2270,47 @@ mod tests {
         assert!(!std::env::temp_dir()
             .join(format!("syllabix-sandbox-warm-{}", std::process::id()))
             .exists());
+    }
+
+    #[test]
+    #[ignore = "requires outbound network"]
+    fn web_fetch_allow_network_via_execute_with_permissions() {
+        let workspace = std::env::current_dir().expect("cwd");
+        let session = DeveloperPermissions {
+            filesystem: FilesystemMode::ReadOnly,
+            network: NetworkMode::Allow,
+            secrets: crate::policy::SecretPolicy::None,
+        };
+        let cancel = Cancel::new();
+        let fetch = execute_with_permissions(
+            &call(
+                "web_fetch",
+                serde_json::json!({"url": "https://example.com/"}),
+            ),
+            &workspace,
+            &session,
+            &cancel,
+        );
+        assert!(fetch.ok, "web_fetch failed: {}", fetch.content);
+        assert!(
+            fetch.content.contains("Example Domain") || fetch.content.contains("example"),
+            "unexpected body: {}",
+            fetch.content
+        );
+
+        let search = execute_with_permissions(
+            &call(
+                "web_search",
+                serde_json::json!({"query": "example domain iana", "count": 3}),
+            ),
+            &workspace,
+            &session,
+            &cancel,
+        );
+        assert!(search.ok, "web_search failed: {}", search.content);
+        assert!(
+            !search.content.is_empty(),
+            "web_search returned empty content"
+        );
     }
 }
