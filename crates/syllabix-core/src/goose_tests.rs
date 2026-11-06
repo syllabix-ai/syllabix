@@ -349,7 +349,6 @@ fn start_fake_with(config: crate::AgentConfig) -> (GooseAgent, PathBuf) {
         cache: home.clone(),
         config,
         workspace,
-        skill_list: String::new(),
         resolved_model: "lfm2.5-2.6b".into(),
         provider_env: Vec::new(),
     })
@@ -598,7 +597,6 @@ fn goose_crash_is_a_provider_error() {
         cache: home,
         config: goose_config(),
         workspace: scratch().join("ws"),
-        skill_list: String::new(),
         resolved_model: "lfm2.5-2.6b".into(),
         provider_env: Vec::new(),
     })
