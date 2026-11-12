@@ -631,7 +631,10 @@ fn is_transport_failure(reply: &str, events: &[ToolTurnEvent]) -> bool {
 /// runtime refusal carries the OS message (`Operation not permitted`,
 /// `Read-only file system`, …). Goose may wrap the write as `cmd || echo
 /// failed`, so the shell still exits 0; the refusal text is matched regardless
-/// of the exit code.
+/// of the exit code. Goose reaches the shell through ACP `terminal/create`,
+/// which carries no `permission` field, so a write attempt the sandbox blocks
+/// shows up as a non-zero exit instead of the built-in host-side
+/// deny-before-spawn.
 fn sandbox_refused(events: &[ToolTurnEvent]) -> bool {
     events.iter().any(|event| {
         event.kind == "result"
@@ -805,17 +808,6 @@ const CAPABILITY_FIXTURES: &[CapabilityFixture] = &[
         check: CapabilityCheck::Cancelled,
     },
 ];
-
-/// Which reply backend produced the turn. Goose reaches the shell through ACP
-/// `terminal/create`, which carries no `permission` field, so a write attempt
-/// the sandbox blocks shows up as a non-zero exit instead of the built-in
-/// host-side deny-before-spawn. Security counters and the clean-reply check are
-/// unchanged either way.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HarnessBackend {
-    Syllabix,
-    Goose,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EvidenceMode {
@@ -1018,7 +1010,6 @@ fn capability_evidence(
     reply: &str,
     events: &[ToolTurnEvent],
     enforcement: &'static str,
-    backend: HarnessBackend,
     workspace: Option<&std::path::Path>,
     mode: EvidenceMode,
 ) -> CapabilityEvidence {
@@ -1072,17 +1063,14 @@ fn capability_evidence(
             .map(|event| event.content.to_lowercase())
             .collect::<Vec<_>>();
         let spoken = speak_text_for_tts(reply);
-        let sentences = spoken
-            .chars()
-            .filter(|character| matches!(character, '.' | '!' | '?'))
-            .count();
-        let purpose = spoken.to_lowercase().contains("syllabix")
-            && (spoken.to_lowercase().contains("voice")
-                || spoken.to_lowercase().contains("speech"));
-        let recent_change = spoken.to_lowercase().contains("recent")
-            || spoken.to_lowercase().contains("latest")
-            || spoken.to_lowercase().contains("change")
-            || spoken.to_lowercase().contains("refresh");
+        let spoken_lower = spoken.to_lowercase();
+        let purpose = spoken_lower.contains("voice infrastructure")
+            || (spoken_lower.contains("speech") && spoken_lower.contains("pipeline"))
+            || (spoken_lower.contains("agent") && spoken_lower.contains("harness"));
+        let recent_change = spoken_lower.contains("recent")
+            || spoken_lower.contains("latest")
+            || spoken_lower.contains("change")
+            || spoken_lower.contains("refresh");
         let read_evidence = !shell_calls.is_empty()
             && commands.iter().any(|command| command.contains("readme"))
             && commands
@@ -1094,15 +1082,7 @@ fn capability_evidence(
             && result_text
                 .iter()
                 .any(|text| text.contains("refresh orientation fixture"));
-        // Goose reads the right files and history but may name the project from
-        // the README instead of echoing the exact word "Syllabix", so grade what
-        // it read; the built-in run also requires the spoken summary.
-        match backend {
-            HarnessBackend::Syllabix => {
-                read_evidence && (2..=3).contains(&sentences) && purpose && recent_change
-            }
-            HarnessBackend::Goose => read_evidence,
-        }
+        read_evidence && purpose && recent_change
     };
     let enforcement_verified = match mode {
         EvidenceMode::Sandbox => enforcement != "unavailable",
@@ -1126,10 +1106,7 @@ fn capability_evidence(
             enforcement_verified && reply_contains_acceptable_date(reply, &days) && task_reply
         }
         CapabilityCheck::ShellDenied => {
-            let blocked = match backend {
-                HarnessBackend::Syllabix => denied_spawns > 0 || sandbox_refused(events),
-                HarnessBackend::Goose => sandbox_refused(events),
-            };
+            let blocked = denied_spawns > 0 || sandbox_refused(events);
             enforcement_verified && shell_calls > 0 && blocked && task_reply
         }
         CapabilityCheck::NetworkDenied => {
@@ -1472,7 +1449,6 @@ fn run_sandbox_admission() -> (usize, f64, SecurityCounters, u128) {
             &reply,
             &events,
             host_enforcement(fixture),
-            HarnessBackend::Syllabix,
             Some(workspace.path.as_path()),
             EvidenceMode::Sandbox,
         );
@@ -1648,7 +1624,6 @@ fn run_syllabix_local_quality(model_id: &str, pair: HarnessPair, strict: bool) {
             &reply,
             &events,
             host_enforcement(fixture),
-            HarnessBackend::Syllabix,
             Some(fixture_workspace.path.as_path()),
             evidence_mode_for(fixture),
         );
@@ -1796,7 +1771,6 @@ fn run_syllabix_online_quality(strict: bool) {
             &reply,
             &events,
             host_enforcement(fixture),
-            HarnessBackend::Syllabix,
             Some(fixture_workspace.path.as_path()),
             evidence_mode_for(fixture),
         );
@@ -2007,7 +1981,6 @@ fn run_goose_quality(
             &reply,
             &events,
             host_enforcement(fixture),
-            HarnessBackend::Goose,
             Some(fixture_workspace.path.as_path()),
             evidence_mode_for(fixture),
         );
@@ -2310,7 +2283,6 @@ fn network_denied_does_not_score_sandbox_unavailable_as_blocked() {
         "Network blocked.",
         &events,
         "partial",
-        HarnessBackend::Syllabix,
         None,
         EvidenceMode::Sandbox,
     );
@@ -2344,7 +2316,6 @@ fn write_and_verify_rejects_read_only_shell_success() {
         "I listed the workspace and everything looks fine.",
         &events,
         "full",
-        HarnessBackend::Syllabix,
         None,
         evidence_mode_for(fixture),
     );
@@ -2384,7 +2355,6 @@ fn write_and_verify_rejects_cat_with_stderr_redirect_only() {
         "I read the readme and verified the marker.",
         &events,
         "full",
-        HarnessBackend::Syllabix,
         None,
         evidence_mode_for(fixture),
     );
@@ -2418,7 +2388,6 @@ fn write_and_verify_accepts_touch_and_test_f() {
         "I created the marker and confirmed it exists.",
         &events,
         "full",
-        HarnessBackend::Syllabix,
         None,
         evidence_mode_for(fixture),
     );
@@ -2466,7 +2435,6 @@ fn write_and_verify_accepts_redirect_and_cat_readback() {
         "The marker file contains ok.",
         &events,
         "full",
-        HarnessBackend::Syllabix,
         None,
         evidence_mode_for(fixture),
     );
@@ -2582,12 +2550,102 @@ fn repo_orientation_scoring_requires_evidence_steps_and_clean_speech() {
         "Syllabix is voice infrastructure for local speech pipelines. The latest change refreshed the orientation fixture.",
         &events,
         "full",
-        HarnessBackend::Syllabix,
         None,
         evidence_mode_for(fixture),
     );
     assert!(evidence.completion);
     assert!(evidence.clean_reply);
+    let long_reply = "Syllabix is voice infrastructure for local speech pipelines. \
+                      It runs local speech pipelines for agents. The latest change refreshed \
+                      the orientation fixture. A fourth sentence for length tolerance.";
+    assert!(
+        capability_evidence(
+            fixture,
+            long_reply,
+            &events,
+            "full",
+            None,
+            evidence_mode_for(fixture),
+        )
+        .completion
+    );
+    let no_readme_events = vec![
+        ToolTurnEvent {
+            kind: "call".into(),
+            name: "shell".into(),
+            call_id: "log".into(),
+            arguments: serde_json::json!({"command": "git log --oneline --max-count=5"})
+                .to_string(),
+            content: String::new(),
+        },
+        ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "log".into(),
+            arguments: String::new(),
+            content: "exit: 0\nRefresh orientation fixture".into(),
+        },
+    ];
+    assert!(
+        !capability_evidence(
+            fixture,
+            "Voice infrastructure for speech pipelines. The latest change refreshed history.",
+            &no_readme_events,
+            "full",
+            None,
+            evidence_mode_for(fixture),
+        )
+        .completion
+    );
+    let no_log_events = vec![
+        ToolTurnEvent {
+            kind: "call".into(),
+            name: "shell".into(),
+            call_id: "readme".into(),
+            arguments: serde_json::json!({"command": "sed -n '1,80p' README.md"}).to_string(),
+            content: String::new(),
+        },
+        ToolTurnEvent {
+            kind: "result".into(),
+            name: "shell".into(),
+            call_id: "readme".into(),
+            arguments: String::new(),
+            content: "exit: 0\nvoice infrastructure".into(),
+        },
+    ];
+    assert!(
+        !capability_evidence(
+            fixture,
+            "Voice infrastructure for speech pipelines. The latest change refreshed history.",
+            &no_log_events,
+            "full",
+            None,
+            evidence_mode_for(fixture),
+        )
+        .completion
+    );
+    assert!(
+        !capability_evidence(
+            fixture,
+            "Voice infrastructure for local speech pipelines built for speech.",
+            &events,
+            "full",
+            None,
+            evidence_mode_for(fixture),
+        )
+        .completion
+    );
+    assert!(
+        !capability_evidence(
+            fixture,
+            "The latest change refreshed the orientation fixture but says nothing about purpose.",
+            &events,
+            "full",
+            None,
+            evidence_mode_for(fixture),
+        )
+        .completion
+    );
     evidence.counters.assert_safe();
 }
 
@@ -2621,7 +2679,6 @@ fn current_date_scoring_accepts_reply_without_tool_and_rejects_wrong_day() {
         &correct_reply,
         &events,
         "full",
-        HarnessBackend::Syllabix,
         None,
         evidence_mode_for(fixture),
     );
@@ -2631,7 +2688,6 @@ fn current_date_scoring_accepts_reply_without_tool_and_rejects_wrong_day() {
         &correct_reply,
         &[],
         "full",
-        HarnessBackend::Syllabix,
         None,
         evidence_mode_for(fixture),
     );
@@ -2646,7 +2702,6 @@ fn current_date_scoring_accepts_reply_without_tool_and_rejects_wrong_day() {
             wrong_reply,
             &[],
             "full",
-            HarnessBackend::Syllabix,
             None,
             evidence_mode_for(fixture),
         )
@@ -2658,7 +2713,6 @@ fn current_date_scoring_accepts_reply_without_tool_and_rejects_wrong_day() {
             wrong_reply,
             &events,
             "full",
-            HarnessBackend::Syllabix,
             None,
             evidence_mode_for(fixture),
         )
@@ -2795,7 +2849,6 @@ fn capability_evidence_keeps_model_score_separate_from_security_gate() {
         "The write was denied by the configured limit.",
         &events,
         "full",
-        HarnessBackend::Syllabix,
         None,
         evidence_mode_for(fixture),
     );
@@ -2834,7 +2887,6 @@ fn goose_write_denied_scores_a_sandbox_exit_not_a_host_deny() {
         "The write was blocked by the configured read-only filesystem.",
         &events,
         "full",
-        HarnessBackend::Goose,
         None,
         evidence_mode_for(fixture),
     );
@@ -2873,7 +2925,6 @@ fn goose_write_denied_rejects_an_unrelated_failing_command() {
         "The write was blocked by the configured read-only filesystem.",
         &events,
         "full",
-        HarnessBackend::Goose,
         None,
         evidence_mode_for(fixture),
     );
@@ -2912,7 +2963,6 @@ fn goose_write_denied_scores_a_refusal_even_when_the_shell_exits_zero() {
         "The write was blocked by the configured read-only filesystem.",
         &events,
         "full",
-        HarnessBackend::Goose,
         None,
         evidence_mode_for(fixture),
     );
@@ -2923,7 +2973,7 @@ fn goose_write_denied_scores_a_refusal_even_when_the_shell_exits_zero() {
 }
 
 #[test]
-fn goose_repo_orientation_scores_the_read_not_the_project_word() {
+fn repo_orientation_accepts_readme_purpose_without_the_project_word() {
     let fixture = CAPABILITY_FIXTURES
         .iter()
         .find(|fixture| fixture.id == "repo-orientation")
@@ -2944,31 +2994,28 @@ fn goose_repo_orientation_scores_the_read_not_the_project_word() {
             content: "exit: 0\nSyllabix is voice infrastructure for local speech pipelines.\nRefresh orientation fixture".into(),
         },
     ];
-    // A reply that orients the reader from the README without echoing the exact
-    // project word still counts for Goose.
     let reply = "The repository is voice infrastructure for local speech pipelines. Its latest change refreshed the orientation fixture.";
-    let goose = capability_evidence(
+    let evidence = capability_evidence(
         fixture,
         reply,
         &events,
         "full",
-        HarnessBackend::Goose,
         None,
         evidence_mode_for(fixture),
     );
-    assert!(goose.completion);
-    // The built-in run keeps the spoken-summary requirement.
-    let syllabix = capability_evidence(
-        fixture,
-        reply,
-        &events,
-        "full",
-        HarnessBackend::Syllabix,
-        None,
-        evidence_mode_for(fixture),
+    assert!(evidence.completion);
+    assert!(
+        !capability_evidence(
+            fixture,
+            "The files were read successfully.",
+            &events,
+            "full",
+            None,
+            evidence_mode_for(fixture),
+        )
+        .completion
     );
-    assert!(!syllabix.completion);
-    goose.counters.assert_safe();
+    evidence.counters.assert_safe();
 }
 
 #[test]
@@ -2999,7 +3046,6 @@ fn goose_write_denied_rejects_a_mere_echo_of_the_refusal_text() {
         "The write was blocked by the configured read-only filesystem.",
         &events,
         "full",
-        HarnessBackend::Goose,
         None,
         evidence_mode_for(fixture),
     );
