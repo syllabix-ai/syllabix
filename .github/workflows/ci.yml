@@ -33,6 +33,22 @@ jobs:
     # Headroom for a cold instrumented build (vendored C++ + all deps).
     timeout-minutes: 25
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Throwaway Postgres for the Riley eval tests (#329). Trust auth: no
+    # password or secret involved.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SYLLABIX_RILEY_DATABASE_URL: postgres://postgres@localhost:5432/postgres
     steps:
       # Use the PR head so reported lines map to the submitted diff.
       - uses: actions/checkout@v6

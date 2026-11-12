@@ -267,7 +267,9 @@ only required when those features are on.
 
 Per-PR CI (`ci.yml`) runs on GitHub-hosted Linux: fmt, clippy, and llvm-cov
 ≥85% workspace lines and ≥85% lines in every reported `src/**/*.rs` file,
-without loading native weights. A **native inference** check
+without loading native weights. The coverage job also starts a throwaway
+Postgres for the [Riley eval](../crates/syllabix-riley-eval/README.md)
+tests. A **native inference** check
 (`native-tests.yml`) runs the real `whisper-small`, `lfm2.5-230m`,
 and `pocket-tts` weights on pull requests and pushes to `main` on
 `ubuntu-latest`. It runs when crates, lockfiles, setup scripts, or that
