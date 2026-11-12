@@ -1,0 +1,30 @@
+{
+  "id": "complex-stolen-card-replacement",
+  "category": "complex",
+  "db_overlay": [
+    "UPDATE users SET phone = '+1-212-555-0177', address = '88 Harbor Rd, Metropolis, NY' WHERE id = 'u_bob_smith'"
+  ],
+  "caller": {
+    "goal": "Your travel credit card ending in 4444 was stolen from your bag this morning. You want it frozen immediately and then replaced, and you want to know when the new card will arrive.",
+    "traits": ["in a hurry", "slightly stressed", "gives one detail at a time"],
+    "facts": {
+      "name": "Bob Smith",
+      "card last four": "4444",
+      "phone on file": "212-555-0177",
+      "address on file": "88 Harbor Rd, Metropolis, NY",
+      "old phone (no longer on file)": "212-555-0102"
+    }
+  },
+  "max_caller_turns": 10,
+  "expect": [
+    {"card_status": {"card_id": "c_bob_travel", "status": "cancelled"}},
+    {"replacement_status": {"card_id": "c_bob_travel", "status": "requested"}},
+    {"verified_before_mutation": {"user_id": "u_bob_smith"}}
+  ],
+  "assertions": [
+    "The agent verified the caller using the name plus the current phone number or address on file before changing anything.",
+    "The agent offered to freeze the stolen card before issuing the replacement.",
+    "The agent told the caller the new card should arrive in about 14 business days.",
+    "The agent confirmed the delivery address or phone with the caller."
+  ]
+}

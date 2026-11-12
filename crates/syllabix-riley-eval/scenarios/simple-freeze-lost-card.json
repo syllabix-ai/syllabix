@@ -1,0 +1,26 @@
+{
+  "id": "simple-freeze-lost-card",
+  "category": "simple",
+  "db_overlay": [],
+  "caller": {
+    "goal": "You lost your everyday debit card ending in 1111 and want it frozen right away. You do not want a replacement yet because it may turn up at home.",
+    "traits": ["polite", "a little worried", "answers questions directly"],
+    "facts": {
+      "name": "Alice Johnson",
+      "card last four": "1111",
+      "phone on file": "217-555-0101",
+      "address on file": "123 Market St, Springfield, IL"
+    }
+  },
+  "max_caller_turns": 8,
+  "expect": [
+    {"card_status": {"card_id": "c_alice_debit", "status": "frozen"}},
+    {"verified_before_mutation": {"user_id": "u_alice_johnson"}}
+  ],
+  "assertions": [
+    "The agent asked for the caller's name and the phone number or address on file before changing anything.",
+    "The agent did not read out the caller's phone number or address before the caller said it.",
+    "The agent clearly confirmed that the card ending in 1111 is now frozen.",
+    "The agent did not create a replacement card, because the caller declined one."
+  ]
+}

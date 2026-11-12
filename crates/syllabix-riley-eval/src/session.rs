@@ -3,8 +3,11 @@
 //! card tools) → TTS → [`crate::voice::RecordingSink`], driven by
 //! [`syllabix_core::run_loop_captured`]. The result carries the transcript,
 //! the tool trace, and the database before and after the call.
+//!
+//! [`run_session_with`] takes any [`CallerScript`] (A3's simulated caller);
+//! [`run_session`] keeps A2's fixed caller turns.
 
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -16,7 +19,7 @@ use syllabix_core::{
 };
 
 use crate::db::CardDb;
-use crate::voice::{CallerTurn, InjectedCapture, RecordingSink, Render};
+use crate::voice::{CallerScript, CallerTurn, FixedCaller, InjectedCapture, RecordingSink, Render};
 
 /// Mutating Riley tools (everything except the two lookups).
 pub const MUTATING_TOOLS: [&str; 3] = [
@@ -145,6 +148,9 @@ pub struct SessionReport {
     pub agent_samples: usize,
     /// Anything that went wrong. A non-empty list fails the call.
     pub errors: Vec<String>,
+    /// Per completed agent turn: `(first audio, last audio)` after the caller
+    /// stopped, in milliseconds.
+    pub turn_latency_ms: Vec<(u64, u64)>,
 }
 
 impl SessionReport {
@@ -185,6 +191,11 @@ impl SessionReport {
             "interruptions": self.interruptions,
             "agent_samples": self.agent_samples,
             "errors": self.errors,
+            "turn_latency_ms": self
+                .turn_latency_ms
+                .iter()
+                .map(|(first_audio, total)| json!({ "first_audio": first_audio, "total": total }))
+                .collect::<Vec<_>>(),
         })
     }
 }
@@ -201,6 +212,34 @@ pub struct Stages<V, S, L, T> {
     pub tts: T,
 }
 
+/// Loop events as they arrive, readable while the call runs.
+#[derive(Clone)]
+pub struct LiveLog(Arc<Mutex<(mpsc::Receiver<LoopEvent>, Vec<LoopEvent>)>>);
+
+impl LiveLog {
+    fn new(events: mpsc::Receiver<LoopEvent>) -> Self {
+        Self(Arc::new(Mutex::new((events, Vec::new()))))
+    }
+
+    /// Every event so far.
+    pub fn events(&self) -> Vec<LoopEvent> {
+        let mut guard = self.0.lock().expect("live log");
+        let (events, seen) = &mut *guard;
+        seen.extend(events.try_iter());
+        seen.clone()
+    }
+
+    /// Transcript so far (agent lines are not marked cut off).
+    pub fn lines(&self) -> Vec<Line> {
+        let events = self.events();
+        let mut lines = collect(&events, &[]).0;
+        for line in &mut lines {
+            line.cut_off = false;
+        }
+        lines
+    }
+}
+
 /// Run one call. `db` must be a second connection to the schema the LLM's
 /// tools use; it is only read (before and after). Never panics on stage
 /// failures: they land in [`SessionReport::errors`].
@@ -208,6 +247,22 @@ pub fn run_session<V, S, L, T>(
     config: &SessionConfig,
     stages: Stages<V, S, L, T>,
     caller: Vec<CallerTurn>,
+    db: &mut CardDb,
+) -> SessionReport
+where
+    V: Vad + 'static,
+    S: Stt + 'static,
+    L: Llm + 'static,
+    T: Tts + 'static,
+{
+    run_session_with(config, stages, Box::new(FixedCaller::new(caller)), db)
+}
+
+/// [`run_session`] with turns from `caller`, which sees the live transcript.
+pub fn run_session_with<V, S, L, T>(
+    config: &SessionConfig,
+    stages: Stages<V, S, L, T>,
+    caller: Box<dyn CallerScript>,
     db: &mut CardDb,
 ) -> SessionReport
 where
@@ -226,8 +281,11 @@ where
     // Auto-timeouts off: an eval call must not mute itself.
     let controls = RuntimeControls::with_auto_timeout(config.barge_in, 0, 0);
     let render = Render::new();
-    let capture = InjectedCapture::new(
+    let (event_tx, event_rx) = mpsc::channel();
+    let live = LiveLog::new(event_rx);
+    let capture = InjectedCapture::with_script(
         caller,
+        Some(live.clone()),
         controls.clone(),
         render.clone(),
         config.frame_pause,
@@ -235,7 +293,6 @@ where
         config.turn_timeout,
     );
     let sink = RecordingSink::new(render.clone(), config.realtime_playback);
-    let (event_tx, event_rx) = mpsc::channel();
     let loop_config = LoopConfig {
         defaults: BuiltinDefaults::v0(),
         mode: LoopMode::UntilInputEnds,
@@ -271,17 +328,26 @@ where
     if watchdog.join().unwrap_or(true) {
         errors.push(format!("call exceeded {:?}", config.call_timeout));
     }
-    let events: Vec<LoopEvent> = event_rx.try_iter().collect();
+    let events = live.events();
+    let mut turn_latency_ms = Vec::new();
     let (completed_ids, completed_turns, skipped_turns) = match &outcome {
-        Ok(report) => (
-            report
-                .turns
-                .iter()
-                .map(|turn| turn.id.0)
-                .collect::<Vec<_>>(),
-            report.turns.len(),
-            report.skipped_turns,
-        ),
+        Ok(report) => {
+            for turn in &report.turns {
+                turn_latency_ms.push((
+                    millis(turn.timings.ttfb + turn.timings.stt),
+                    millis(turn.timings.total),
+                ));
+            }
+            (
+                report
+                    .turns
+                    .iter()
+                    .map(|turn| turn.id.0)
+                    .collect::<Vec<_>>(),
+                report.turns.len(),
+                report.skipped_turns,
+            )
+        }
         Err(err) => {
             errors.push(format!("pipeline failed: {err}"));
             (Vec::new(), 0, 0)
@@ -299,6 +365,9 @@ where
             config.turn_timeout
         ));
     }
+    if let Some(message) = render.caller_error() {
+        errors.push(format!("caller failed: {message}"));
+    }
     let final_db = db.snapshot().unwrap_or_else(|err| {
         errors.push(format!("could not read the database after the call: {err}"));
         Value::Null
@@ -314,7 +383,12 @@ where
         interruptions,
         agent_samples,
         errors,
+        turn_latency_ms,
     }
+}
+
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Fold loop events into transcript lines and tool events.
@@ -425,8 +499,11 @@ mod tests {
             interruptions: 0,
             agent_samples: 0,
             errors: vec![],
+            turn_latency_ms: vec![(120, 900)],
         };
         let json = report.to_json();
+        assert_eq!(json["turn_latency_ms"][0]["first_audio"], 120);
+        assert_eq!(json["turn_latency_ms"][0]["total"], 900);
         assert_eq!(json["transcript"][0]["speaker"], "caller");
         assert_eq!(json["transcript"][1]["speaker"], "agent");
         assert_eq!(json["tool_trace"].as_array().unwrap().len(), 4);
