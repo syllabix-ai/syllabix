@@ -1,0 +1,1 @@
+mel_filters.npy from Prahaladha/hima-asr-ONNX rev 18fa854f8ecaf2f48fe7416035643f86da3834d8, Apache-2.0 (Hima/Qwen3-ASR audio frontend, not Gemma decoder weights); jfk_first2s_logmel.npy is reference _log_mel of the first 2 s of crates/syllabix-core/tests/fixtures/stt/jfk.wav.
