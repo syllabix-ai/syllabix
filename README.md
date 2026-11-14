@@ -22,6 +22,21 @@ Download `syllabix`, run it, and talk. You do not need Python, pip, or an API ke
 
 Default models: Whisper `small` (STT), LFM3-1.7B (local small LLM), and Pocket TTS (TTS).
 
+## For AI agents
+
+Syllabix is a local-first voice agent, shipped as the `syllabix` binary from GitHub Releases and the `syllabix-core` Rust library.
+
+| Goal | Page |
+| --- | --- |
+| Run it | [Install](docs/install.md), [CLI](docs/cli.md) |
+| Embed it in another app | [Embed](docs/embed.md) |
+| Configure it | [syllabix.yaml](docs/syllabix-yaml.md), [Engines](docs/engines.md) |
+| Debug it | [Troubleshooting](docs/troubleshooting.md), [Diagnostics](docs/diagnostics.md) |
+
+It is not a telephony or WebRTC platform (no SIP or SFU), a Python SDK, or a model zoo. The `syllabix` CLI is not on crates.io; `syllabix serve` hosts STT and TTS only.
+
+The full agent map is [llms.txt](llms.txt). [AGENTS.md](AGENTS.md) is only for contributing changes to this repo.
+
 ## Download
 
 ```bash
@@ -148,6 +163,7 @@ A starter file is in [`examples/demo-fully-self-hosted-voice-agents.yaml`](examp
 | [FAQ](docs/faq.md) | Large first run, barge-in, API keys |
 | [Contributing](docs/contributing.md) | Tests, packaging, CI |
 | [Issues](docs/issues.md) | Bugs, features, and security reports |
+| [llms.txt](llms.txt) | Map for AI agents: install, run, embed, configure, debug |
 
 ## License
 
