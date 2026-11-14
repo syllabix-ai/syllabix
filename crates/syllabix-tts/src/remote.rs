@@ -5,7 +5,7 @@
 //! PCM can play before the rest of the body arrives. Barge-in drops the
 //! in-flight request. The API key comes from the environment only
 //! ([`TTS_API_KEY_ENV`]).
-//! Cancel, connect/idle timeouts, and a best-effort warm-up match [`crate::openai`].
+//! Cancel, connect/idle timeouts, and a best-effort warm-up match syllabix-core's OpenAI LLM client.
 
 use std::io::{Cursor, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,18 +16,17 @@ use std::time::{Duration, Instant};
 use ureq::Agent;
 use zeroize::Zeroizing;
 
-use crate::audio::{f32_to_i16, i16_to_f32, read_wav, PcmConverter, PcmFormat};
-use crate::cancel::Cancel;
-use crate::config::AgentConfig;
-use crate::error::{Error, Result};
-use crate::openai::OpenAiTimeouts;
-use crate::providers::Tts;
 use crate::speech_text::{speak_text_for_tts, take_sentences, ThinkFilter};
-use crate::types::{
+use crate::Tts;
+use syllabix_native::audio::{f32_to_i16, i16_to_f32, read_wav, PcmConverter, PcmFormat};
+use syllabix_native::cancel::Cancel;
+use syllabix_native::error::{Error, Result};
+use syllabix_native::timeouts::OpenAiTimeouts;
+use syllabix_native::types::{
     GenerationId, SynthesizedAudio, TokenChunk, TurnId, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ,
 };
 
-/// Config / log name. Same word as [`crate::defaults::TtsProvider::Online`].
+/// Config / log name. Same word as yaml `pipeline.tts.provider: online`.
 pub const PROVIDER_NAME: &str = "online";
 
 /// Environment variable for an online TTS API key. Never read from yaml.
@@ -76,7 +75,7 @@ pub fn resolve_api_key(getenv: impl Fn(&str) -> Option<String>) -> Result<Zeroiz
     }
 }
 
-/// Endpoint + model resolved from [`AgentConfig`].
+/// Endpoint, model, and voice for one online TTS run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteTtsSettings {
     /// Absolute speech URL (`{base_url}/audio/speech`).
@@ -99,15 +98,6 @@ impl RemoteTtsSettings {
             model: model.to_string(),
             voice: voice.to_string(),
         })
-    }
-
-    /// Build from a validated online TTS config (`base_url` already required).
-    pub fn from_config(config: &AgentConfig) -> Result<Self> {
-        Self::from_parts(
-            config.tts_base_url.as_deref(),
-            &config.tts_model_id,
-            DEFAULT_VOICE,
-        )
     }
 }
 
@@ -661,16 +651,17 @@ fn resample_to_pipeline(format: &PcmFormat, samples: &[i16]) -> Result<Vec<i16>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::{write_wav, WavPcm};
-    use crate::config::STT_API_KEY_ENV;
-    use crate::defaults::TtsProvider;
-    use crate::types::GenerationId;
     use std::io::Write;
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
     use std::time::Duration;
+    use syllabix_native::audio::{write_wav, WavPcm};
+    use syllabix_native::types::GenerationId;
 
     const TEST_KEY: &str = "sk-tts-test";
+
+    /// The STT key name, spelled out: it must never satisfy TTS.
+    const STT_API_KEY_ENV: &str = "SYLLABIX_STT_API_KEY";
 
     fn token(text: &str, is_last: bool) -> TokenChunk {
         TokenChunk {
@@ -813,21 +804,6 @@ mod tests {
             join_speech_endpoint("http://127.0.0.1:8092/v1/"),
             "http://127.0.0.1:8092/v1/audio/speech"
         );
-    }
-
-    #[test]
-    fn settings_require_online_base_url() {
-        let mut config = AgentConfig::v0();
-        config.tts = TtsProvider::Online;
-        let err = RemoteTtsSettings::from_config(&config).expect_err("missing base_url");
-        assert!(err.to_string().contains("pipeline.tts.base_url"), "{err}");
-
-        config.tts_base_url = Some("http://127.0.0.1:8092/v1".into());
-        config.tts_model_id = "tts-1".into();
-        let settings = RemoteTtsSettings::from_config(&config).expect("online settings");
-        assert_eq!(settings.endpoint, "http://127.0.0.1:8092/v1/audio/speech");
-        assert_eq!(settings.model, "tts-1");
-        assert_eq!(settings.voice, DEFAULT_VOICE);
     }
 
     #[test]

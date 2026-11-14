@@ -132,6 +132,10 @@ mod production {
         /// OpenAI-compatible speech endpoint. No local TTS weights.
         #[cfg(feature = "cloud")]
         Remote(RemoteTts),
+        /// Test-only inner engine so `backend_id` can be checked without
+        /// syllabix-tts private constructors.
+        #[cfg(test)]
+        Fake(Box<dyn crate::providers::Tts>),
     }
 
     impl LiveTts {
@@ -150,6 +154,8 @@ mod production {
                 Self::Pocket(tts) => tts.name(),
                 #[cfg(feature = "cloud")]
                 Self::Remote(tts) => tts.name(),
+                #[cfg(test)]
+                Self::Fake(tts) => tts.name(),
             }
         }
 
@@ -160,6 +166,8 @@ mod production {
                 Self::Pocket(tts) => tts.model_id(),
                 #[cfg(feature = "cloud")]
                 Self::Remote(tts) => tts.model_id(),
+                #[cfg(test)]
+                Self::Fake(tts) => tts.model_id(),
             }
         }
 
@@ -170,6 +178,8 @@ mod production {
                 Self::Pocket(tts) => tts.backend_id(),
                 #[cfg(feature = "cloud")]
                 Self::Remote(tts) => tts.backend_id(),
+                #[cfg(test)]
+                Self::Fake(tts) => tts.backend_id(),
             }
         }
 
@@ -184,6 +194,8 @@ mod production {
                 Self::Pocket(tts) => tts.synthesize_chunk(token, cancel),
                 #[cfg(feature = "cloud")]
                 Self::Remote(tts) => tts.synthesize_chunk(token, cancel),
+                #[cfg(test)]
+                Self::Fake(tts) => tts.synthesize_chunk(token, cancel),
             }
         }
 
@@ -199,6 +211,8 @@ mod production {
                 Self::Pocket(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
                 #[cfg(feature = "cloud")]
                 Self::Remote(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
+                #[cfg(test)]
+                Self::Fake(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
             }
         }
     }
@@ -1020,6 +1034,36 @@ mod production {
                 Ok(_) => panic!("online STT needs cloud"),
             };
             assert!(err.to_string().contains("`cloud` feature"), "{err}");
+        }
+
+        #[test]
+        fn live_tts_delegates_backend_id_to_the_inner_engine() {
+            struct FakeTts {
+                backend: Option<&'static str>,
+            }
+            impl crate::providers::Tts for FakeTts {
+                fn name(&self) -> &'static str {
+                    "fake"
+                }
+                fn backend_id(&self) -> Option<&str> {
+                    self.backend
+                }
+                fn synthesize_chunk(
+                    &mut self,
+                    _token: &crate::types::TokenChunk,
+                    _cancel: &Cancel,
+                ) -> Result<Vec<crate::types::SynthesizedAudio>> {
+                    Ok(Vec::new())
+                }
+            }
+
+            let live = LiveTts::Fake(Box::new(FakeTts {
+                backend: Some("metal"),
+            }));
+            assert_eq!(crate::providers::Tts::backend_id(&live), Some("metal"));
+            assert_eq!(live.backend_id(), Some("metal"));
+            let none = LiveTts::Fake(Box::new(FakeTts { backend: None }));
+            assert_eq!(crate::providers::Tts::backend_id(&none), None);
         }
 
         #[test]

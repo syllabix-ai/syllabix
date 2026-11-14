@@ -1,13 +1,15 @@
 //! Text-to-speech engines and the [`Tts`] trait they share.
 
-use crate::cancel::Cancel;
-use crate::error::Result;
-use crate::types::{SynthesizedAudio, TokenChunk};
+use syllabix_native::cancel::Cancel;
+use syllabix_native::error::Result;
+use syllabix_native::types::{SynthesizedAudio, TokenChunk};
 
 mod engines;
+#[cfg(feature = "kokoro")]
 pub mod g2p;
+#[cfg(feature = "pocket")]
 pub mod pocket;
-#[cfg(feature = "cloud")]
+#[cfg(feature = "remote")]
 pub mod remote;
 pub mod speech_text;
 
@@ -100,7 +102,9 @@ impl TtsModel {
             Self::Kokoro => KOKORO_ASSET,
             Self::Qwen06 => QWEN_TTS_06B_ASSET,
             Self::Qwen17 => QWEN_TTS_ASSET,
-            Self::PocketTts => pocket::POCKET_TTS_TEXT_CONDITIONER_ASSET,
+            // Same id as `pocket::POCKET_TTS_TEXT_CONDITIONER_ASSET` (checked in
+            // pocket's tests); spelled out so this builds without `pocket`.
+            Self::PocketTts => "pocket-tts-text-conditioner",
         }
     }
 
@@ -129,7 +133,6 @@ impl TtsModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::defaults::BuiltinDefaults;
 
     #[test]
     fn tts_menu_ids_round_trip() {
@@ -143,18 +146,9 @@ mod tests {
         for bad in ["qwen", "pansori", "neutts"] {
             assert!(TtsModel::parse(bad).is_none(), "{bad}");
         }
-        assert_eq!(
-            BuiltinDefaults::v0().tts_model,
-            TtsModel::PocketTts,
-            "`pocket-tts` is the launch default"
-        );
         assert_eq!(TtsModel::Kokoro.asset_id(), KOKORO_ASSET);
         assert_eq!(TtsModel::Qwen06.asset_id(), QWEN_TTS_06B_ASSET);
         assert_eq!(TtsModel::Qwen17.asset_id(), QWEN_TTS_ASSET);
-        assert_eq!(
-            TtsModel::PocketTts.asset_id(),
-            pocket::POCKET_TTS_TEXT_CONDITIONER_ASSET
-        );
         assert_eq!(TtsModel::Kokoro.mmproj_asset_id(), None);
         assert_eq!(
             TtsModel::Qwen06.mmproj_asset_id(),
