@@ -17,7 +17,6 @@ pub mod config;
 pub mod defaults;
 pub mod dist;
 pub mod executor;
-pub mod g2p;
 #[cfg(all(not(coverage), feature = "ggml", feature = "cloud"))]
 mod goose;
 pub mod llm;
@@ -26,17 +25,13 @@ pub mod memory;
 pub mod models;
 pub mod openai;
 pub mod pipeline;
-pub mod pocket_tts;
 pub mod policy;
 pub mod queue;
 #[cfg(any(coverage, feature = "ggml"))]
 pub mod real;
-#[cfg(feature = "cloud")]
-pub mod remote_tts;
 pub mod sandbox;
 mod session_env;
 pub mod skills;
-pub mod speech_text;
 pub mod stt;
 pub mod testing;
 pub mod trajectory;
@@ -63,6 +58,15 @@ pub mod qwen_asr { pub use crate::stt::qwen_asr::*; }
 #[rustfmt::skip]
 pub mod remote_stt { pub use crate::stt::remote::*; }
 pub(crate) use stt::language;
+#[rustfmt::skip]
+pub mod g2p { pub use crate::tts::g2p::*; }
+#[rustfmt::skip]
+pub mod speech_text { pub use crate::tts::speech_text::*; }
+#[rustfmt::skip]
+pub mod pocket_tts { pub use crate::tts::pocket::*; }
+#[cfg(feature = "cloud")]
+#[rustfmt::skip]
+pub mod remote_tts { pub use crate::tts::remote::*; }
 
 // Unit tests in this crate still write `crate::LlmProvider`. That name is
 // not a crate-root `pub use`, so it stays off the freeze list.

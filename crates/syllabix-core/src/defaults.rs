@@ -203,75 +203,7 @@ impl TtsCompute {
     }
 }
 
-/// TTS model menu under `provider: local`. Pocket TTS is the default;
-/// Kokoro and the Qwen3-TTS backbones are YAML opt-ins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TtsModel {
-    /// Kokoro ONNX (`af_heart`, English).
-    Kokoro,
-    /// Qwen3-TTS-12Hz-0.6B-Base GGUF (~344 MB fetch).
-    Qwen06,
-    /// Qwen3-TTS-12Hz-1.7B-Base GGUF.
-    Qwen17,
-    /// Pocket TTS English ONNX graph set.
-    PocketTts,
-}
-
-impl TtsModel {
-    /// Every menu id, in documentation order.
-    pub const ALL: [TtsModel; 4] = [
-        TtsModel::Kokoro,
-        TtsModel::Qwen06,
-        TtsModel::Qwen17,
-        TtsModel::PocketTts,
-    ];
-
-    /// Config / log name.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Kokoro => "kokoro",
-            Self::Qwen06 => "qwen3-0.6",
-            Self::Qwen17 => "qwen3-1.7",
-            Self::PocketTts => "pocket-tts",
-        }
-    }
-
-    /// Parse a yaml `pipeline.tts.model` id.
-    pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|m| m.as_str() == value)
-    }
-
-    /// Manifest asset holding this model's primary weights.
-    pub fn asset_id(self) -> &'static str {
-        match self {
-            Self::Kokoro => crate::tts::KOKORO_ASSET,
-            Self::Qwen06 => crate::tts::QWEN_TTS_06B_ASSET,
-            Self::Qwen17 => crate::tts::QWEN_TTS_ASSET,
-            Self::PocketTts => crate::pocket_tts::POCKET_TTS_TEXT_CONDITIONER_ASSET,
-        }
-    }
-
-    /// Manifest id of the matching speech-tokenizer projector (qwen ids
-    /// only; Kokoro has none).
-    pub fn mmproj_asset_id(self) -> Option<&'static str> {
-        match self {
-            Self::Kokoro => None,
-            Self::Qwen06 => Some(crate::tts::QWEN_TTS_06B_MMPROJ_ASSET),
-            Self::Qwen17 => Some(crate::tts::QWEN_TTS_MMPROJ_ASSET),
-            Self::PocketTts => None,
-        }
-    }
-
-    /// Turn-debug / log identity of the loaded weights.
-    pub fn model_id(self) -> &'static str {
-        match self {
-            Self::Kokoro => crate::tts::KOKORO_ASSET,
-            Self::Qwen06 => "qwen3-tts-0.6b-base",
-            Self::Qwen17 => "qwen3-tts-1.7b-base",
-            Self::PocketTts => "pocket-tts",
-        }
-    }
-}
+pub use crate::tts::TtsModel;
 
 /// Stack used when YAML is missing and written by `init`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,24 +306,5 @@ mod tests {
         assert_eq!(BuiltinDefaults::v0().stt, SttProvider::Local);
         assert_eq!(BuiltinDefaults::v0().llm, LlmProvider::Local);
         assert_eq!(BuiltinDefaults::v0().tts, TtsProvider::Local);
-    }
-
-    #[test]
-    fn tts_menu_ids_round_trip() {
-        let ids = ["kokoro", "qwen3-0.6", "qwen3-1.7", "pocket-tts"];
-        for (model, id) in TtsModel::ALL.into_iter().zip(ids) {
-            assert_eq!(model.as_str(), id);
-            assert_eq!(TtsModel::parse(id), Some(model));
-            assert!(TtsModel::parse(&format!("{id}-nope")).is_none());
-        }
-        // Provider names are not valid model identifiers.
-        for bad in ["qwen", "pansori", "neutts"] {
-            assert!(TtsModel::parse(bad).is_none(), "{bad}");
-        }
-        assert_eq!(
-            BuiltinDefaults::v0().tts_model,
-            TtsModel::PocketTts,
-            "`pocket-tts` is the launch default"
-        );
     }
 }
