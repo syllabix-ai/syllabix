@@ -22,7 +22,7 @@ use crate::audio::{f32_to_i16, PcmConverter, PcmFormat};
 use crate::cancel::Cancel;
 #[cfg(all(not(coverage), any(feature = "ggml", test)))]
 use crate::defaults::TtsCompute;
-use crate::defaults::{BuiltinDefaults, TtsModel};
+use crate::defaults::TtsModel;
 use crate::error::{Error, Result};
 #[cfg(not(coverage))]
 use crate::g2p::{english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
@@ -268,7 +268,7 @@ impl KokoroTts {
 
 impl Tts for KokoroTts {
     fn name(&self) -> &'static str {
-        BuiltinDefaults::v0().tts.as_str()
+        "local"
     }
 
     fn model_id(&self) -> Option<&str> {

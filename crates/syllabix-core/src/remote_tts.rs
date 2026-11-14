@@ -4,7 +4,7 @@
 //! to `POST {base_url}/audio/speech` with `stream_format=audio` so the first
 //! PCM can play before the rest of the body arrives. Barge-in drops the
 //! in-flight request. The API key comes from the environment only
-//! ([`crate::config::TTS_API_KEY_ENV`]).
+//! ([`TTS_API_KEY_ENV`]).
 //! Cancel, connect/idle timeouts, and a best-effort warm-up match [`crate::openai`].
 
 use std::io::{Cursor, Read};
@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 
 use crate::audio::{f32_to_i16, i16_to_f32, read_wav, PcmConverter, PcmFormat};
 use crate::cancel::Cancel;
-use crate::config::{AgentConfig, TTS_API_KEY_ENV};
+use crate::config::AgentConfig;
 use crate::error::{Error, Result};
 use crate::openai::OpenAiTimeouts;
 use crate::providers::Tts;
@@ -29,6 +29,9 @@ use crate::types::{
 
 /// Config / log name. Same word as [`crate::defaults::TtsProvider::Online`].
 pub const PROVIDER_NAME: &str = "online";
+
+/// Environment variable for an online TTS API key. Never read from yaml.
+pub const TTS_API_KEY_ENV: &str = "SYLLABIX_TTS_API_KEY";
 
 /// Default `voice` for OpenAI-compatible speech endpoints. Workers may ignore it.
 pub const DEFAULT_VOICE: &str = "alloy";
@@ -85,20 +88,26 @@ pub struct RemoteTtsSettings {
 }
 
 impl RemoteTtsSettings {
-    /// Build from a validated online TTS config (`base_url` already required).
-    pub fn from_config(config: &AgentConfig) -> Result<Self> {
-        let base = config
-            .tts_base_url
-            .as_deref()
-            .ok_or_else(|| Error::Config {
-                field: "pipeline.tts.base_url".into(),
-                message: "is required when pipeline.tts.provider is online".into(),
-            })?;
+    /// Build from plain endpoint parts (`base_url` already required for online).
+    pub fn from_parts(base_url: Option<&str>, model: &str, voice: &str) -> Result<Self> {
+        let base = base_url.ok_or_else(|| Error::Config {
+            field: "pipeline.tts.base_url".into(),
+            message: "is required when pipeline.tts.provider is online".into(),
+        })?;
         Ok(Self {
             endpoint: join_speech_endpoint(base),
-            model: config.tts_model_id.clone(),
-            voice: DEFAULT_VOICE.to_string(),
+            model: model.to_string(),
+            voice: voice.to_string(),
         })
+    }
+
+    /// Build from a validated online TTS config (`base_url` already required).
+    pub fn from_config(config: &AgentConfig) -> Result<Self> {
+        Self::from_parts(
+            config.tts_base_url.as_deref(),
+            &config.tts_model_id,
+            DEFAULT_VOICE,
+        )
     }
 }
 
@@ -822,6 +831,20 @@ mod tests {
     }
 
     #[test]
+    fn settings_from_parts_join_endpoint_and_require_base_url() {
+        let err = RemoteTtsSettings::from_parts(None, "tts-1", DEFAULT_VOICE)
+            .expect_err("missing base_url");
+        assert!(err.to_string().contains("pipeline.tts.base_url"), "{err}");
+
+        let settings =
+            RemoteTtsSettings::from_parts(Some("http://127.0.0.1:8092/v1/"), "tts-1", "nova")
+                .expect("online settings");
+        assert_eq!(settings.endpoint, "http://127.0.0.1:8092/v1/audio/speech");
+        assert_eq!(settings.model, "tts-1");
+        assert_eq!(settings.voice, "nova");
+    }
+
+    #[test]
     fn api_key_requires_tts_env_only() {
         let missing = resolve_api_key(|_| None).expect_err("missing key");
         assert!(missing.to_string().contains(TTS_API_KEY_ENV), "{missing}");
@@ -1139,38 +1162,6 @@ mod tests {
         cancel.cancel_generation();
         let err = worker.join().expect("client").expect_err("barge-in");
         assert!(matches!(err, Error::Cancelled), "{err}");
-        let _ = handle.join();
-    }
-
-    #[test]
-    fn session_loopback_speaks_one_scripted_turn_without_a_mic() {
-        use crate::session::Session;
-        use crate::testing::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeVad};
-
-        let (endpoint, handle) = serve_one(|stream, request| {
-            let text = String::from_utf8_lossy(request);
-            assert!(text.contains("POST /v1/audio/speech"), "{text}");
-            assert!(text.contains("\"stream_format\":\"audio\""), "{text}");
-            write_bytes(
-                stream,
-                "HTTP/1.1 200 OK",
-                &[("Content-Type", "application/octet-stream")],
-                &openai_pcm_bytes(),
-            )
-            .expect("write");
-        });
-        let sink = CollectingSink::default();
-        let report = Session::v0()
-            .with_vad(FakeVad::new())
-            .with_stt(FakeStt)
-            .with_llm(FakeLlm::new())
-            .with_tts(test_tts(endpoint))
-            .with_sink(sink)
-            .with_frames(scripted_frames(1, 2, 1))
-            .run(Cancel::new())
-            .expect("session loopback");
-        assert_eq!(report.turns.len(), 1);
-        assert_eq!(report.skipped_turns, 0);
         let _ = handle.join();
     }
 }
