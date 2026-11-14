@@ -2357,6 +2357,7 @@ dependencies = [
  "sha2",
  "sonora",
  "syllabix-native",
+ "syllabix-stt",
  "thiserror 2.0.17",
  "tokenizers",
  "tracing",
@@ -2378,6 +2379,17 @@ dependencies = [
  "thiserror 2.0.17",
  "ureq",
  "walkdir",
+]
+
+[[package]]
+name = "syllabix-stt"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "syllabix-native",
+ "tokenizers",
+ "ureq",
+ "zeroize",
 ]
 
 [[package]]

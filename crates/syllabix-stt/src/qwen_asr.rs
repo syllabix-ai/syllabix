@@ -1,24 +1,22 @@
 //! Qwen3-ASR via llama.cpp `mtmd` (qwen3a encoder + Qwen3 decoder GGUF).
 //!
 //! Batch finalize only: one completed VAD [`Utterance`] in, one [`Transcript`]
-//! out — the same contract as [`WhisperStt`](crate::stt::WhisperStt). Partials
+//! out — the same contract as [`WhisperStt`](crate::WhisperStt). Partials
 //! stay off until a later phase measures a streaming recipe.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-#[cfg(all(not(coverage), feature = "ggml"))]
+#[cfg(all(not(coverage), feature = "qwen3-asr"))]
 use syllabix_native::{DecodeError, QwenAsrContext, QwenTtsBackend};
 
-use crate::defaults::SttModel;
-use crate::defaults::TtsCompute;
-use crate::error::{Error, Result};
 use crate::language::{is_supported, language_name, LANGUAGE_AUTO};
-use crate::models::{Fetcher, ModelCache, Progress};
-use crate::providers::Stt;
-use crate::stt::STT_LANGUAGE;
-use crate::types::{Transcript, Utterance};
-use crate::Cancel;
+use crate::{Stt, SttModel, STT_LANGUAGE};
+use syllabix_native::compute::TtsCompute;
+use syllabix_native::error::{Error, Result};
+use syllabix_native::models::{Fetcher, ModelCache, Progress};
+use syllabix_native::types::{Transcript, Utterance};
+use syllabix_native::Cancel;
 
 /// Config / log name for this engine.
 pub const PROVIDER_NAME: &str = "qwen-asr";
@@ -53,13 +51,13 @@ impl Clone for QwenAsrStt {
 
 impl QwenAsrStt {
     /// Load decoder GGUF + mmproj from disk with default Auto placement.
-    #[cfg(all(not(coverage), feature = "ggml"))]
+    #[cfg(all(not(coverage), feature = "qwen3-asr"))]
     pub fn from_paths(model: impl AsRef<Path>, mmproj: impl AsRef<Path>) -> Result<Self> {
         Self::from_paths_with_compute(model, mmproj, TtsCompute::Auto)
     }
 
     /// Load with an explicit [`TtsCompute`] placement (same ids as Qwen TTS).
-    #[cfg(all(not(coverage), feature = "ggml"))]
+    #[cfg(all(not(coverage), feature = "qwen3-asr"))]
     pub fn from_paths_with_compute(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
@@ -75,12 +73,12 @@ impl QwenAsrStt {
     }
 
     /// Coverage never opens GGUF weights; without `ggml` there is no ggml.
-    #[cfg(any(coverage, not(feature = "ggml")))]
+    #[cfg(any(coverage, not(feature = "qwen3-asr")))]
     pub fn from_paths(model: impl AsRef<Path>, mmproj: impl AsRef<Path>) -> Result<Self> {
         Self::from_paths_with_compute(model, mmproj, TtsCompute::Auto)
     }
 
-    #[cfg(any(coverage, not(feature = "ggml")))]
+    #[cfg(any(coverage, not(feature = "qwen3-asr")))]
     pub fn from_paths_with_compute(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
@@ -201,13 +199,13 @@ trait Decoder: Send {
 
 /// Native model loading lives behind `cfg(not(coverage))` so llvm-cov never
 /// counts unhit ggml FFI. Native inference tests still compile this path.
-#[cfg(all(not(coverage), feature = "ggml"))]
+#[cfg(all(not(coverage), feature = "qwen3-asr"))]
 struct NativeDecoder {
     ctx: QwenAsrContext,
     backend: QwenTtsBackend,
 }
 
-#[cfg(all(not(coverage), feature = "ggml"))]
+#[cfg(all(not(coverage), feature = "qwen3-asr"))]
 impl NativeDecoder {
     fn load(model: &Path, mmproj: &Path, compute: TtsCompute) -> Result<Self> {
         let n_threads = std::thread::available_parallelism()
@@ -221,7 +219,7 @@ impl NativeDecoder {
     }
 }
 
-#[cfg(all(not(coverage), feature = "ggml"))]
+#[cfg(all(not(coverage), feature = "qwen3-asr"))]
 fn backend_attempts(compute: TtsCompute) -> Result<&'static [QwenTtsBackend]> {
     const CPU: &[QwenTtsBackend] = &[QwenTtsBackend::Cpu];
     const METAL: &[QwenTtsBackend] = &[QwenTtsBackend::Metal];
@@ -256,7 +254,7 @@ fn backend_attempts(compute: TtsCompute) -> Result<&'static [QwenTtsBackend]> {
     })
 }
 
-#[cfg(all(not(coverage), feature = "ggml"))]
+#[cfg(all(not(coverage), feature = "qwen3-asr"))]
 fn load_first_backend<T, E>(
     attempts: &[QwenTtsBackend],
     mut load: impl FnMut(QwenTtsBackend) -> std::result::Result<T, E>,
@@ -271,7 +269,7 @@ fn load_first_backend<T, E>(
     Err(last_error.expect("Qwen ASR backend attempt list is never empty"))
 }
 
-#[cfg(all(not(coverage), feature = "ggml"))]
+#[cfg(all(not(coverage), feature = "qwen3-asr"))]
 impl Decoder for NativeDecoder {
     fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<String> {
         if cancel.is_shutdown() {
@@ -294,7 +292,7 @@ impl Decoder for NativeDecoder {
     }
 }
 
-#[cfg(all(not(coverage), feature = "ggml"))]
+#[cfg(all(not(coverage), feature = "qwen3-asr"))]
 unsafe extern "C" fn abort_on_shutdown(user_data: *mut std::ffi::c_void) -> bool {
     unsafe { (*(user_data as *const Cancel)).is_shutdown() }
 }
@@ -338,7 +336,7 @@ fn language_code_from_name(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AudioFrame, TurnId};
+    use syllabix_native::types::{AudioFrame, TurnId};
 
     struct ScriptedDecoder {
         replies: Vec<String>,
@@ -548,8 +546,8 @@ mod tests {
         let cache = ModelCache::v0();
         let err = match QwenAsrStt::from_cache(
             &cache,
-            &crate::models::BlockedFetcher::default(),
-            &mut crate::models::NoProgress,
+            &syllabix_native::models::BlockedFetcher::default(),
+            &mut syllabix_native::models::NoProgress,
             &Cancel::new(),
             SttModel::Small,
             TtsCompute::Auto,
@@ -573,15 +571,15 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let cache = ModelCache::new(
             root,
-            crate::models::Manifest {
+            syllabix_native::models::Manifest {
                 version: 1,
                 assets: vec![],
             },
         );
         let err = match QwenAsrStt::from_cache(
             &cache,
-            &crate::models::BlockedFetcher::default(),
-            &mut crate::models::NoProgress,
+            &syllabix_native::models::BlockedFetcher::default(),
+            &mut syllabix_native::models::NoProgress,
             &Cancel::new(),
             SttModel::QwenAsr06,
             TtsCompute::Auto,
@@ -604,21 +602,21 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let backbone = crate::models::Manifest::v0()
+        let backbone = syllabix_native::models::Manifest::v0()
             .asset(ASR_ASSET)
             .cloned()
             .expect("qwen3-asr-0.6 in v0 manifest");
         let cache = ModelCache::new(
             root,
-            crate::models::Manifest {
+            syllabix_native::models::Manifest {
                 version: 1,
                 assets: vec![backbone],
             },
         );
         let err = match QwenAsrStt::from_cache(
             &cache,
-            &crate::models::BlockedFetcher::default(),
-            &mut crate::models::NoProgress,
+            &syllabix_native::models::BlockedFetcher::default(),
+            &mut syllabix_native::models::NoProgress,
             &Cancel::new(),
             SttModel::QwenAsr06,
             TtsCompute::Auto,
@@ -641,11 +639,11 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let cache = ModelCache::new(root, crate::models::Manifest::v0());
+        let cache = ModelCache::new(root, syllabix_native::models::Manifest::v0());
         let err = match QwenAsrStt::from_cache(
             &cache,
-            &crate::models::BlockedFetcher::default(),
-            &mut crate::models::NoProgress,
+            &syllabix_native::models::BlockedFetcher::default(),
+            &mut syllabix_native::models::NoProgress,
             &Cancel::new(),
             SttModel::QwenAsr06,
             TtsCompute::Auto,

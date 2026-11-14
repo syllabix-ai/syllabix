@@ -4,7 +4,7 @@
 //! utterance WAV to `POST {base_url}/audio/transcriptions` and maps the JSON
 //! body to a [`Transcript`]. The API key comes from the environment only
 //! ([`STT_API_KEY_ENV`]).
-//! Cancel, connect/idle timeouts, and a best-effort warm-up match [`crate::openai`].
+//! Cancel, connect/idle timeouts, and a best-effort warm-up match syllabix-core's OpenAI LLM client.
 
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,18 +15,17 @@ use std::time::{Duration, Instant};
 use ureq::Agent;
 use zeroize::Zeroizing;
 
-use crate::audio::{write_wav, PcmFormat, WavPcm};
-use crate::cancel::Cancel;
-use crate::config::AgentConfig;
-use crate::error::{Error, Result};
 use crate::language::LANGUAGE_AUTO;
-use crate::openai::OpenAiTimeouts;
-use crate::providers::Stt;
-use crate::types::{
+use crate::Stt;
+use syllabix_native::audio::{write_wav, PcmFormat, WavPcm};
+use syllabix_native::cancel::Cancel;
+use syllabix_native::error::{Error, Result};
+use syllabix_native::timeouts::OpenAiTimeouts;
+use syllabix_native::types::{
     Transcript, Utterance, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
-/// Config / log name. Same word as [`crate::defaults::SttProvider::Online`].
+/// Config / log name. Same word as yaml `pipeline.stt.provider: online`.
 pub const PROVIDER_NAME: &str = "online";
 
 /// Environment variable for an online STT API key. Never read from yaml.
@@ -68,7 +67,7 @@ pub fn resolve_api_key(getenv: impl Fn(&str) -> Option<String>) -> Result<Zeroiz
     }
 }
 
-/// Endpoint + model resolved from [`AgentConfig`].
+/// Endpoint, model, and language for one online STT run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteSttSettings {
     /// Absolute transcriptions URL (`{base_url}/audio/transcriptions`).
@@ -92,15 +91,6 @@ impl RemoteSttSettings {
             model: model.to_string(),
             language: language.to_string(),
         })
-    }
-
-    /// Build from a validated online STT config (`base_url` already required).
-    pub fn from_config(config: &AgentConfig) -> Result<Self> {
-        Self::from_parts(
-            config.stt_base_url.as_deref(),
-            &config.stt_model_id,
-            &config.language,
-        )
     }
 }
 
@@ -512,8 +502,8 @@ fn push_multipart_field(
 
 fn silent_utterance() -> Utterance {
     Utterance {
-        turn: crate::types::TurnId(0),
-        frames: vec![crate::types::AudioFrame {
+        turn: syllabix_native::types::TurnId(0),
+        frames: vec![syllabix_native::types::AudioFrame {
             seq: 0,
             sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
             channels: DEFAULT_CHANNELS,
@@ -526,14 +516,14 @@ fn silent_utterance() -> Utterance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::TTS_API_KEY_ENV;
-    use crate::defaults::SttProvider;
-    use crate::types::{AudioFrame, TurnId};
     use std::io::Write;
     use std::net::{TcpListener, TcpStream};
     use std::time::Duration;
+    use syllabix_native::types::{AudioFrame, TurnId};
 
     const TEST_KEY: &str = "sk-stt-test";
+    /// The TTS key name, spelled out: it must never satisfy STT.
+    const TTS_API_KEY_ENV: &str = "SYLLABIX_TTS_API_KEY";
 
     fn frame(samples: Vec<i16>) -> AudioFrame {
         AudioFrame {
@@ -664,23 +654,6 @@ mod tests {
             join_transcriptions_endpoint("http://127.0.0.1:8091/v1/"),
             "http://127.0.0.1:8091/v1/audio/transcriptions"
         );
-    }
-
-    #[test]
-    fn settings_require_online_base_url() {
-        let mut config = AgentConfig::v0();
-        config.stt = SttProvider::Online;
-        let err = RemoteSttSettings::from_config(&config).expect_err("missing base_url");
-        assert!(err.to_string().contains("pipeline.stt.base_url"), "{err}");
-
-        config.stt_base_url = Some("http://127.0.0.1:8091/v1".into());
-        config.stt_model_id = "whisper-large-v3".into();
-        let settings = RemoteSttSettings::from_config(&config).expect("online settings");
-        assert_eq!(
-            settings.endpoint,
-            "http://127.0.0.1:8091/v1/audio/transcriptions"
-        );
-        assert_eq!(settings.model, "whisper-large-v3");
     }
 
     #[test]
