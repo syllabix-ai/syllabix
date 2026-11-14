@@ -69,6 +69,8 @@ mod tests {
         let mut tts = LiveTts;
         assert_eq!(tts.name(), "local");
         assert!(tts.model_id().is_none());
+        assert!(tts.backend_id().is_none());
+        assert!(Tts::backend_id(&tts).is_none());
         let token = TokenChunk { turn: crate::TurnId(0), generation: crate::types::GenerationId(0), index: 0, text: String::new(), is_last: true };
         assert!(tts.synthesize_chunk(&token, &cancel).is_err());
         assert!(tts.synthesize_chunk_into(&token, &cancel, &mut |_| Ok(())).is_err());

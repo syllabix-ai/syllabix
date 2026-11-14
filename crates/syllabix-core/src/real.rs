@@ -138,12 +138,7 @@ mod production {
         /// Compute backend selected by Qwen's startup probe. Other TTS engines
         /// do not have an adaptive placement decision to report.
         pub fn backend_id(&self) -> Option<&str> {
-            match self {
-                Self::Qwen(tts) => tts.backend_id(),
-                Self::Kokoro(_) | Self::Pocket(_) => None,
-                #[cfg(feature = "cloud")]
-                Self::Remote(_) => None,
-            }
+            crate::providers::Tts::backend_id(self)
         }
     }
 
@@ -165,6 +160,16 @@ mod production {
                 Self::Pocket(tts) => tts.model_id(),
                 #[cfg(feature = "cloud")]
                 Self::Remote(tts) => tts.model_id(),
+            }
+        }
+
+        fn backend_id(&self) -> Option<&str> {
+            match self {
+                Self::Kokoro(tts) => tts.backend_id(),
+                Self::Qwen(tts) => tts.backend_id(),
+                Self::Pocket(tts) => tts.backend_id(),
+                #[cfg(feature = "cloud")]
+                Self::Remote(tts) => tts.backend_id(),
             }
         }
 
@@ -926,6 +931,7 @@ mod production {
             assert!(matches!(tts, LiveTts::Remote(_)));
             assert_eq!(tts.name(), crate::remote_tts::PROVIDER_NAME);
             assert_eq!(tts.model_id(), Some("pocket-tts"));
+            assert!(tts.backend_id().is_none());
         }
 
         #[cfg(not(feature = "cloud"))]
