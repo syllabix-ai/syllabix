@@ -376,7 +376,7 @@ fn run_call(ctx: &CallSetup, scenario: &Scenario, schema: &str) -> Result<Value,
     };
     let call_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let checks = evaluate(&report, &scenario.expect);
-    let verdict = judge(ctx.judge, scenario, &report);
+    let verdict = judge(ctx.judge, scenario, &report, &checks.failures);
     let _ = check_db.drop_schema();
     Ok(json!({
         "kind": "call",
@@ -650,7 +650,7 @@ mod tests {
         let voice = args(&["--turn-timeout-secs", "5", "--call-timeout-secs", "9"]);
         let live = session_config(&voice, VadChoice::Silero);
         assert!(live.realtime_playback);
-        assert_eq!(live.trailing_silence_frames, 25);
+        assert_eq!(live.trailing_silence_frames, 32);
         assert_eq!(live.turn_timeout, Duration::from_secs(5));
         assert_eq!(live.call_timeout, Duration::from_secs(9));
         assert!(!session_config(&voice, VadChoice::Energy).realtime_playback);
