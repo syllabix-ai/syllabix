@@ -32,7 +32,8 @@ pub mod real;
 pub mod sandbox;
 mod session_env;
 pub mod skills;
-pub mod stt;
+#[rustfmt::skip]
+pub mod stt { pub use syllabix_stt::*; }
 pub mod testing;
 pub mod trajectory;
 pub mod tts;

@@ -146,6 +146,8 @@ jobs:
         run: cargo check -p syllabix-native --no-default-features --all-targets
       - name: cargo check syllabix-native models and onnx without CMake
         run: cargo check -p syllabix-native --no-default-features --features models,onnx --all-targets
+      - name: cargo check syllabix-stt remote only without CMake
+        run: cargo check -p syllabix-stt --no-default-features --features remote --all-targets
       - name: cargo check syllabix-core without default features
         run: cargo check -p syllabix-core --no-default-features --all-targets
       - name: cargo check cloud without CMake / whisper.cpp

@@ -30,7 +30,7 @@ VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 # trailing vX.Y.Z. The rest of the name is only there so GitHub does not
 # create another v* tag.
 RELEASE_NAME_VERSION_RE = re.compile(r"v([0-9]+\.[0-9]+\.[0-9]+)$")
-WORKSPACE_CRATES = {"syllabix", "syllabix-core", "syllabix-native"}
+WORKSPACE_CRATES = {"syllabix", "syllabix-core", "syllabix-native", "syllabix-stt"}
 
 
 def repo_root() -> pathlib.Path:
@@ -109,6 +109,14 @@ def rewrite(root: pathlib.Path, version: str) -> None:
     )
     if n != 1:
         sys.exit("could not find syllabix-native version requirement")
+    text, n = re.subn(
+        r'syllabix-stt = \{ path = "crates/syllabix-stt", version = "[^"]+", default-features = false \}',
+        f'syllabix-stt = {{ path = "crates/syllabix-stt", version = "{version}", default-features = false }}',
+        text,
+        count=1,
+    )
+    if n != 1:
+        sys.exit("could not find syllabix-stt version requirement")
     cargo_toml.write_text(text)
 
     # Keep Cargo.lock in sync so `cargo build --locked` / `cargo publish
@@ -130,8 +138,10 @@ def rewrite(root: pathlib.Path, version: str) -> None:
             continue
         pending = None
         lock_out.append(line)
-    if lock_n != 3:
-        sys.exit(f"expected 3 workspace crate versions in Cargo.lock, got {lock_n}")
+    if lock_n != len(WORKSPACE_CRATES):
+        sys.exit(
+            f"expected {len(WORKSPACE_CRATES)} workspace crate versions in Cargo.lock, got {lock_n}"
+        )
     lock_path.write_text("".join(lock_out))
 
 
