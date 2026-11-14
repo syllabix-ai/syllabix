@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "ggml")]
 use syllabix_native::{DecodeError, WhisperContext};
 
-use crate::defaults::{BuiltinDefaults, SttModel};
+use crate::defaults::SttModel;
 use crate::error::{Error, Result};
 use crate::language::{is_supported as is_supported_language, LANGUAGE_AUTO};
 use crate::models::{Fetcher, ModelCache, Progress};
@@ -118,7 +118,7 @@ impl WhisperStt {
 
 impl Stt for WhisperStt {
     fn name(&self) -> &'static str {
-        BuiltinDefaults::v0().stt.as_str()
+        "local"
     }
 
     fn transcribe(&mut self, utterance: &Utterance, cancel: &Cancel) -> Result<Transcript> {

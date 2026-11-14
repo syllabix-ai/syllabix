@@ -354,7 +354,11 @@ mod production {
                         ),
                     })?;
                     Ok(LiveStt::Remote(RemoteStt::new(
-                        RemoteSttSettings::from_config(config)?,
+                        RemoteSttSettings::from_parts(
+                            config.stt_base_url.as_deref(),
+                            &config.stt_model_id,
+                            &config.language,
+                        )?,
                         key.clone(),
                     )))
                 }
@@ -485,7 +489,11 @@ mod production {
                         ),
                     })?;
                     Ok(LiveTts::Remote(RemoteTts::new(
-                        RemoteTtsSettings::from_config(config)?,
+                        RemoteTtsSettings::from_parts(
+                            config.tts_base_url.as_deref(),
+                            &config.tts_model_id,
+                            crate::remote_tts::DEFAULT_VOICE,
+                        )?,
                         key.clone(),
                     )))
                 }

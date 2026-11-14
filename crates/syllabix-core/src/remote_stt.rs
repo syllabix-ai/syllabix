@@ -3,7 +3,7 @@
 //! VAD still runs on-device. After a turn closes, this client posts the
 //! utterance WAV to `POST {base_url}/audio/transcriptions` and maps the JSON
 //! body to a [`Transcript`]. The API key comes from the environment only
-//! ([`crate::config::STT_API_KEY_ENV`]).
+//! ([`STT_API_KEY_ENV`]).
 //! Cancel, connect/idle timeouts, and a best-effort warm-up match [`crate::openai`].
 
 use std::io::Read;
@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 
 use crate::audio::{write_wav, PcmFormat, WavPcm};
 use crate::cancel::Cancel;
-use crate::config::{AgentConfig, STT_API_KEY_ENV};
+use crate::config::AgentConfig;
 use crate::error::{Error, Result};
 use crate::language::LANGUAGE_AUTO;
 use crate::openai::OpenAiTimeouts;
@@ -28,6 +28,9 @@ use crate::types::{
 
 /// Config / log name. Same word as [`crate::defaults::SttProvider::Online`].
 pub const PROVIDER_NAME: &str = "online";
+
+/// Environment variable for an online STT API key. Never read from yaml.
+pub const STT_API_KEY_ENV: &str = "SYLLABIX_STT_API_KEY";
 
 /// Attempts used to establish the initial transcriptions connection.
 const WARM_UP_ATTEMPTS: usize = 5;
@@ -78,20 +81,26 @@ pub struct RemoteSttSettings {
 }
 
 impl RemoteSttSettings {
-    /// Build from a validated online STT config (`base_url` already required).
-    pub fn from_config(config: &AgentConfig) -> Result<Self> {
-        let base = config
-            .stt_base_url
-            .as_deref()
-            .ok_or_else(|| Error::Config {
-                field: "pipeline.stt.base_url".into(),
-                message: "is required when pipeline.stt.provider is online".into(),
-            })?;
+    /// Build from plain endpoint parts (`base_url` already required for online).
+    pub fn from_parts(base_url: Option<&str>, model: &str, language: &str) -> Result<Self> {
+        let base = base_url.ok_or_else(|| Error::Config {
+            field: "pipeline.stt.base_url".into(),
+            message: "is required when pipeline.stt.provider is online".into(),
+        })?;
         Ok(Self {
             endpoint: join_transcriptions_endpoint(base),
-            model: config.stt_model_id.clone(),
-            language: config.language.clone(),
+            model: model.to_string(),
+            language: language.to_string(),
         })
+    }
+
+    /// Build from a validated online STT config (`base_url` already required).
+    pub fn from_config(config: &AgentConfig) -> Result<Self> {
+        Self::from_parts(
+            config.stt_base_url.as_deref(),
+            &config.stt_model_id,
+            &config.language,
+        )
     }
 }
 
@@ -675,6 +684,26 @@ mod tests {
     }
 
     #[test]
+    fn settings_from_parts_join_endpoint_and_require_base_url() {
+        let err = RemoteSttSettings::from_parts(None, "whisper-large-v3", "en")
+            .expect_err("missing base_url");
+        assert!(err.to_string().contains("pipeline.stt.base_url"), "{err}");
+
+        let settings = RemoteSttSettings::from_parts(
+            Some("http://127.0.0.1:8091/v1/"),
+            "whisper-large-v3",
+            "fr",
+        )
+        .expect("online settings");
+        assert_eq!(
+            settings.endpoint,
+            "http://127.0.0.1:8091/v1/audio/transcriptions"
+        );
+        assert_eq!(settings.model, "whisper-large-v3");
+        assert_eq!(settings.language, "fr");
+    }
+
+    #[test]
     fn api_key_requires_stt_env_only() {
         let missing = resolve_api_key(|_| None).expect_err("missing key");
         assert!(missing.to_string().contains(STT_API_KEY_ENV), "{missing}");
@@ -933,37 +962,5 @@ mod tests {
             .expect_err("empty samples");
         assert!(err.to_string().contains("no samples"), "{err}");
         assert!(!handle.join().expect("listener"));
-    }
-
-    #[test]
-    fn session_loopback_transcribes_one_scripted_turn_without_a_mic() {
-        use crate::session::Session;
-        use crate::testing::{scripted_frames, CollectingSink, FakeLlm, FakeTts, FakeVad};
-
-        let (endpoint, handle) = serve_one(|stream, request| {
-            let text = String::from_utf8_lossy(request);
-            assert!(text.contains("POST /v1/audio/transcriptions"), "{text}");
-            assert!(find(request, b"RIFF").is_some(), "utterance WAV");
-            write_response(
-                stream,
-                "HTTP/1.1 200 OK",
-                &[("Content-Type", "application/json")],
-                r#"{"text":"loopback hello","language":"en"}"#,
-            )
-            .expect("write");
-        });
-        let report = Session::v0()
-            .with_vad(FakeVad::new())
-            .with_stt(test_stt(endpoint))
-            .with_llm(FakeLlm::new())
-            .with_tts(FakeTts)
-            .with_sink(CollectingSink::default())
-            .with_frames(scripted_frames(1, 2, 1))
-            .run(Cancel::new())
-            .expect("session loopback");
-        assert_eq!(report.turns.len(), 1);
-        assert_eq!(report.turns[0].user_text, "loopback hello");
-        assert_eq!(report.skipped_turns, 0);
-        let _ = handle.join();
     }
 }

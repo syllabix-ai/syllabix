@@ -21,8 +21,16 @@ use crate::vad::{VadSettings, END_SILENCE, MIN_SPEECH, SPEECH_THRESHOLD, WHISPER
 pub const CONFIG_FILE_NAME: &str = "syllabix.yaml";
 
 /// Environment variable for an online STT API key. Never read from yaml.
+#[cfg(feature = "cloud")]
+pub use crate::remote_stt::STT_API_KEY_ENV;
+/// Environment variable for an online STT API key. Never read from yaml.
+#[cfg(not(feature = "cloud"))]
 pub const STT_API_KEY_ENV: &str = "SYLLABIX_STT_API_KEY";
 /// Environment variable for an online TTS API key. Never read from yaml.
+#[cfg(feature = "cloud")]
+pub use crate::remote_tts::TTS_API_KEY_ENV;
+/// Environment variable for an online TTS API key. Never read from yaml.
+#[cfg(not(feature = "cloud"))]
 pub const TTS_API_KEY_ENV: &str = "SYLLABIX_TTS_API_KEY";
 
 /// Default idle duration before the mic auto-mutes (`auto-timeout.mic_mute_ms`).
