@@ -8,8 +8,11 @@ homepage.workspace = true
 publish = true
 rust-version.workspace = true
 description = "Text-to-speech for Syllabix: one Tts trait over Pocket TTS, Kokoro, Qwen3-TTS, and an OpenAI-compatible remote client"
+readme = "README.md"
 include = [
     "src/**",
+    "examples/**",
+    "README.md",
     "LICENSE",
     "NOTICE",
 ]
@@ -36,6 +39,16 @@ serde = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+
+[[example]]
+name = "speak-wav"
+required-features = ["remote"]
+
+# docs.rs has no CMake: document everything except the C++ engine.
+# Qwen3-TTS still appears, as the stub that builds without C++.
+[package.metadata.docs.rs]
+no-default-features = true
+features = ["pocket", "kokoro", "remote"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
