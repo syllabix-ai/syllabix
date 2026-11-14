@@ -3,6 +3,7 @@
 //!
 //! Skipped under `cfg(coverage)` because the native stubs do not implement common chat.
 
+#![cfg(feature = "cpp")]
 #![cfg(not(coverage))]
 
 use std::path::PathBuf;

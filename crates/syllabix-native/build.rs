@@ -1,9 +1,20 @@
 //! Build ggml once, then the whisper.cpp and llama.cpp frontends against it.
 
 use std::env;
+#[cfg(feature = "cpp")]
 use std::path::{Path, PathBuf};
 
 fn main() {
+    if env::var_os("CARGO_FEATURE_CPP").is_none() {
+        println!("cargo:rustc-check-cfg=cfg(syllabix_ggml_vulkan)");
+    } else {
+        #[cfg(feature = "cpp")]
+        build_cpp();
+    }
+}
+
+#[cfg(feature = "cpp")]
+fn build_cpp() {
     println!("cargo:rerun-if-changed=CMakeLists.txt");
     println!("cargo:rerun-if-changed=src/shim.c");
     println!("cargo:rerun-if-changed=src/shim_chat.cpp");
@@ -149,6 +160,7 @@ fn main() {
     }
 }
 
+#[cfg(feature = "cpp")]
 fn collect_lib_dirs(root: &Path, out: &mut Vec<PathBuf>) {
     for entry in walkdir::WalkDir::new(root)
         .into_iter()
@@ -164,6 +176,7 @@ fn collect_lib_dirs(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+#[cfg(feature = "cpp")]
 fn collect_static_libs(dirs: &[PathBuf]) -> Vec<String> {
     let mut names = Vec::new();
     for dir in dirs {
@@ -191,6 +204,7 @@ fn collect_static_libs(dirs: &[PathBuf]) -> Vec<String> {
     names
 }
 
+#[cfg(feature = "cpp")]
 fn prefer_first(libs: &mut Vec<String>, first: &[&str]) {
     let mut ordered = Vec::new();
     for name in first {
