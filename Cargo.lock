@@ -2427,6 +2427,8 @@ dependencies = [
  "serde_json",
  "syllabix-native",
  "tokenizers",
+ "unicode-normalization",
+ "unicode_categories",
  "ureq",
  "zeroize",
 ]

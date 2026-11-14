@@ -50,6 +50,10 @@ htmd = "=0.5.5"
 ort-sys = "=2.0.0-rc.9"
 # Real-input rFFT for STT log-mel frontends (hima, later NeMo-style).
 realfft = "=3.5.1"
+# NFC for Hima-ASR `clean_text` (same as Python unicodedata.normalize).
+unicode-normalization = "=0.1.25"
+# Unicode L/M/N classes for Hima-ASR `clean_text`.
+unicode_categories = "=0.1.1"
 # Live `run` UI is crossterm (inline status/transcript), not a widget TUI.
 crossterm = "=0.27.0"
 # Blocking HTTP listen for `syllabix serve`. No async runtime.
