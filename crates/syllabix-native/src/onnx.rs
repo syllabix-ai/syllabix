@@ -21,35 +21,35 @@ use crate::{Error, Result};
 
 /// Owned dense tensor exchanged with an [`OnnxSession`].
 #[derive(Clone, Debug)]
-pub(crate) struct OnnxTensor {
-    pub(crate) shape: Vec<i64>,
-    pub(crate) data: OnnxData,
+pub struct OnnxTensor {
+    pub shape: Vec<i64>,
+    pub data: OnnxData,
 }
 
 /// Element storage for [`OnnxTensor`].
 #[derive(Clone, Debug)]
-pub(crate) enum OnnxData {
+pub enum OnnxData {
     F32(Vec<f32>),
     I64(Vec<i64>),
     Bool(Vec<u8>),
 }
 
 impl OnnxTensor {
-    pub(crate) fn f32(shape: Vec<i64>, data: Vec<f32>) -> Self {
+    pub fn f32(shape: Vec<i64>, data: Vec<f32>) -> Self {
         Self {
             shape,
             data: OnnxData::F32(data),
         }
     }
 
-    pub(crate) fn i64(shape: Vec<i64>, data: Vec<i64>) -> Self {
+    pub fn i64(shape: Vec<i64>, data: Vec<i64>) -> Self {
         Self {
             shape,
             data: OnnxData::I64(data),
         }
     }
 
-    pub(crate) fn bool(shape: Vec<i64>, data: Vec<u8>) -> Self {
+    pub fn bool(shape: Vec<i64>, data: Vec<u8>) -> Self {
         Self {
             shape,
             data: OnnxData::Bool(data),
@@ -57,7 +57,7 @@ impl OnnxTensor {
     }
 
     /// Borrow float elements, or `None` when the tensor holds another type.
-    pub(crate) fn f32_data(&self) -> Option<&[f32]> {
+    pub fn f32_data(&self) -> Option<&[f32]> {
         match &self.data {
             OnnxData::F32(data) => Some(data),
             _ => None,
@@ -69,7 +69,7 @@ impl OnnxTensor {
 ///
 /// Production code uses [`OrtSession`]; coverage tests inject [`MockSession`].
 /// Neither side downloads weights through this trait.
-pub(crate) trait OnnxSession: Send {
+pub trait OnnxSession: Send {
     fn input_names(&self) -> Vec<String>;
     fn output_names(&self) -> Vec<String>;
     fn run(&mut self, inputs: &[(&str, &OnnxTensor)], outputs: &[&str]) -> Result<Vec<OnnxTensor>>;
@@ -80,12 +80,12 @@ pub(crate) trait OnnxSession: Send {
 /// The C-API path handles dynamic-shape tensors (recurrent state, KV cache,
 /// variable-length audio) that the high-level `ort::inputs!` macro cannot
 /// name. Fixed-shape graphs run through the same entry point.
-pub(crate) struct OrtSession {
+pub struct OrtSession {
     session: Session,
 }
 
 impl OrtSession {
-    pub(crate) fn load(path: &Path, provider: &'static str, label: &str) -> Result<Self> {
+    pub fn load(path: &Path, provider: &'static str, label: &str) -> Result<Self> {
         let session = Session::builder()
             .map_err(|err| Error::Provider {
                 provider,
@@ -286,7 +286,7 @@ fn read_value(value: RawValue) -> Result<OnnxTensor> {
     }
 }
 
-pub(crate) fn check(status: ort_sys::OrtStatusPtr) -> Result<()> {
+fn check(status: ort_sys::OrtStatusPtr) -> Result<()> {
     if status.is_null() {
         return Ok(());
     }
@@ -307,28 +307,24 @@ pub(crate) fn check(status: ort_sys::OrtStatusPtr) -> Result<()> {
 /// Either reply from a per-call script ([`MockSession::script`]) or from a
 /// stateful handler ([`MockSession::with_handler`]). Every call records its
 /// input names so tests can assert graph wiring.
-#[cfg(test)]
-pub(crate) struct MockSession {
+pub struct MockSession {
     inputs: Vec<String>,
     outputs: Vec<String>,
     behavior: MockBehavior,
     /// Input names observed on each `run`, in call order.
-    pub(crate) calls: Vec<Vec<String>>,
+    pub calls: Vec<Vec<String>>,
 }
 
-#[cfg(test)]
 type RunHandler = Box<dyn FnMut(&[(&str, &OnnxTensor)], &[&str]) -> Result<Vec<OnnxTensor>> + Send>;
 
-#[cfg(test)]
 enum MockBehavior {
     Script(std::collections::VecDeque<Result<Vec<OnnxTensor>>>),
     Handler(RunHandler),
 }
 
-#[cfg(test)]
 impl MockSession {
     /// Reply with one scripted output vector per `run`, in order.
-    pub(crate) fn script(
+    pub fn script(
         inputs: Vec<String>,
         outputs: Vec<String>,
         steps: Vec<Result<Vec<OnnxTensor>>>,
@@ -342,7 +338,7 @@ impl MockSession {
     }
 
     /// Reply from a stateful closure (loops, EOS-vs-frame logic, cancels).
-    pub(crate) fn with_handler(
+    pub fn with_handler(
         inputs: Vec<String>,
         outputs: Vec<String>,
         handler: impl FnMut(&[(&str, &OnnxTensor)], &[&str]) -> Result<Vec<OnnxTensor>> + Send + 'static,
@@ -356,11 +352,7 @@ impl MockSession {
     }
 
     /// Fail every `run` with a provider error (contract/cancel paths).
-    pub(crate) fn failing(
-        inputs: Vec<String>,
-        outputs: Vec<String>,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn failing(inputs: Vec<String>, outputs: Vec<String>, message: impl Into<String>) -> Self {
         let message = message.into();
         Self::with_handler(inputs, outputs, move |_, _| {
             Err(Error::Provider {
@@ -371,7 +363,6 @@ impl MockSession {
     }
 }
 
-#[cfg(test)]
 impl OnnxSession for MockSession {
     fn input_names(&self) -> Vec<String> {
         self.inputs.clone()

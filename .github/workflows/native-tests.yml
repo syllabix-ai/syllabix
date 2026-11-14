@@ -112,7 +112,7 @@ jobs:
         with:
           path: ${{ github.workspace }}/.syllabix-cache
           # Busts when manifest.rs changes (any pin, not only native-eval).
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts-${{ hashFiles('crates/syllabix-core/src/models/manifest.rs') }}
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts-${{ hashFiles('crates/syllabix-native/src/models/manifest.rs') }}
           restore-keys: |
             syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts-
             syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts
@@ -200,7 +200,7 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         with:
           path: ${{ github.workspace }}/.syllabix-cache
-          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts-${{ hashFiles('crates/syllabix-core/src/models/manifest.rs') }}
+          key: syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts-${{ hashFiles('crates/syllabix-native/src/models/manifest.rs') }}
           restore-keys: |
             syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts-
             syllabix-models-v2-${{ runner.os }}-whisper-small-lfm2.5-230m-pocket-tts

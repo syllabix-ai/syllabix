@@ -7,7 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 publish = true
 rust-version.workspace = true
-description = "Shared ggml plus whisper.cpp and llama.cpp frontends"
+description = "Shared Syllabix types (errors, audio frames, model cache, ONNX helpers) and C++ engines behind the cpp feature"
 readme = "README.md"
 # Ship README, Apache-2.0 LICENSE, NOTICE, and the vendored engine trees
 # (including their MIT LICENSE files). Keep mtmd-debug.h, miniaudio.h,
@@ -43,9 +43,18 @@ path = "src/lib.rs"
 default = ["cpp"]
 # The vendored ggml, whisper.cpp and llama.cpp engines, built with CMake.
 cpp = ["dep:cc", "dep:cmake", "dep:walkdir"]
+# Checksummed HTTPS model cache used by the speech crates.
+models = ["dep:sha2", "dep:ureq"]
+# ONNX Runtime helpers used by Moonshine, Pocket, and Kokoro.
+onnx = ["dep:ort", "dep:ort-sys"]
 
 [dependencies]
+thiserror.workspace = true
 serde_json = { workspace = true }
+sha2 = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+ort = { version = "=2.0.0-rc.9", optional = true }
+ort-sys = { workspace = true, optional = true }
 
 [build-dependencies]
 cc = { version = "=1.2.46", optional = true }

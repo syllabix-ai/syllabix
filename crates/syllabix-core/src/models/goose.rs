@@ -4,10 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::cache::ModelCache;
-use super::download::Fetcher;
-use super::manifest::{ModelAsset, ModelLayer};
-use super::progress::Progress;
+use super::{Fetcher, ModelAsset, ModelCache, ModelLayer, Progress};
 use crate::cancel::Cancel;
 use crate::dist::{
     goose_binary_for_target, goose_exe_name, goose_release_download_url, host_rustc_target,
@@ -214,8 +211,7 @@ fn reject_escaping_paths(root: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::dist::GOOSE_BINARIES;
-    use crate::models::download::BlockedFetcher;
-    use crate::models::progress::NoProgress;
+    use crate::models::{BlockedFetcher, NoProgress};
     use sha2::{Digest, Sha256};
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};

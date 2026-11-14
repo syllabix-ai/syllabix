@@ -2371,7 +2371,12 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "cmake",
+ "ort",
+ "ort-sys",
  "serde_json",
+ "sha2",
+ "thiserror 2.0.17",
+ "ureq",
  "walkdir",
 ]
 
