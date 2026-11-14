@@ -22,8 +22,8 @@ whisper = ["syllabix-native/cpp"]
 qwen3-asr = ["syllabix-native/cpp"]
 # Moonshine streaming ONNX models (ONNX Runtime, no CMake).
 moonshine = ["syllabix-native/onnx", "dep:tokenizers"]
-# Hima-ASR ONNX frontend (same ort/onnx gate as Moonshine). Engine wiring is later.
-hima = ["syllabix-native/onnx", "dep:realfft"]
+# Hima-ASR ONNX frontend + greedy engine (same ort/onnx gate as Moonshine).
+hima = ["syllabix-native/onnx", "dep:realfft", "dep:tokenizers", "dep:serde_json", "dep:unicode-normalization", "dep:unicode_categories"]
 # OpenAI-compatible /audio/transcriptions client. HTTP only.
 remote = ["dep:ureq", "dep:zeroize", "dep:serde_json"]
 
@@ -34,6 +34,8 @@ ureq = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 realfft = { workspace = true, optional = true }
+unicode-normalization = { workspace = true, optional = true }
+unicode_categories = { workspace = true, optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

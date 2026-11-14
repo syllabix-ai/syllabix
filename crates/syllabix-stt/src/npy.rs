@@ -85,6 +85,40 @@ pub fn read_f16_as_f32(bytes: &[u8]) -> Result<NpyF32> {
     }
 }
 
+/// Packed little-endian f16 bits (`embed.npy` stays f16 in memory).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpyF16Packed {
+    /// C-order shape.
+    pub shape: Vec<usize>,
+    /// Length is the product of `shape`.
+    pub data: Vec<u16>,
+}
+
+/// Read `<f2` C-order data without promoting to f32.
+pub fn read_f16_packed(bytes: &[u8]) -> Result<NpyF16Packed> {
+    let (descr, shape, payload) = parse_header(bytes)?;
+    if descr != "<f2" {
+        return Err(npy_err(format!(
+            "expected little-endian f16 npy, got {descr}"
+        )));
+    }
+    let n = element_count(&shape)?;
+    let need = n
+        .checked_mul(2)
+        .ok_or_else(|| npy_err("npy f16 payload overflow"))?;
+    if payload.len() != need {
+        return Err(npy_err(format!(
+            "npy f16 payload is {} bytes, expected {need}",
+            payload.len()
+        )));
+    }
+    let mut data = Vec::with_capacity(n);
+    for chunk in payload.chunks_exact(2) {
+        data.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+    Ok(NpyF16Packed { shape, data })
+}
+
 /// Read `<i8` C-order data.
 pub fn read_i64(bytes: &[u8]) -> Result<NpyI64> {
     match read(bytes)? {
@@ -361,6 +395,13 @@ mod tests {
         assert_eq!(arr.shape, [2]);
         assert_eq!(arr.data[0], 1.0);
         assert_eq!(arr.data[1], -2.0);
+        let packed = read_f16_packed(&bytes).expect("packed");
+        assert_eq!(packed.data, [0x3c00, 0xc000]);
+        let f32_bytes = encode_header(1, "<f4", false, "(1,)", &1f32.to_le_bytes());
+        assert!(read_f16_packed(&f32_bytes).is_err());
+        assert_eq!(f16_to_f32(0x8000).to_bits(), (-0.0f32).to_bits());
+        assert!(f16_to_f32(0xfc00).is_infinite() && f16_to_f32(0xfc00) < 0.0);
+        assert!(f16_to_f32(0x7e00).is_nan());
     }
 
     #[test]
