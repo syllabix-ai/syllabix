@@ -2585,6 +2585,9 @@ fn repo_orientation_fixture_loads_the_configured_skill() {
     assert!(context.contains("path:"));
     assert!(context.contains("repository-guide/SKILL.md"));
     assert!(!context.contains("two foreground steps"));
+    assert!(context.contains("run `cat <path>` with the shell tool"));
+    assert!(context.contains("`cat skills/repository-guide/SKILL.md`"));
+    assert!(!context.contains("read the file"));
 }
 
 #[test]

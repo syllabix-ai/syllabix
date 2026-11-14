@@ -24,7 +24,7 @@ use crate::config::AgentConfig;
 use crate::defaults::LlmProvider;
 use crate::error::{Error, Result};
 use crate::executor::{self, MAX_OUTPUT_BYTES};
-use crate::llm::render_system_prompt;
+use crate::llm::render_system_prompt_with_skills;
 use crate::mcp;
 use crate::models::{Fetcher, ModelCache, Progress};
 use crate::openai::API_KEY_ENV;
@@ -1092,12 +1092,7 @@ fn handshake(
 }
 
 fn goose_system_prompt_text(system_prompt: &str, language: &str, skill_list: &str) -> String {
-    let mut text = render_system_prompt(system_prompt, language);
-    if !skill_list.is_empty() {
-        text.push('\n');
-        text.push_str(skill_list);
-    }
-    text
+    render_system_prompt_with_skills(system_prompt, language, skill_list)
 }
 
 fn set_system_prompt(
@@ -2223,6 +2218,10 @@ mod tests {
         let prompt = goose_system_prompt_text("You are helpful.", "en", &skill_list);
         assert!(prompt.contains("demo-skill"), "{prompt}");
         assert!(prompt.ends_with(&skill_list), "{prompt}");
+        assert_eq!(
+            prompt,
+            crate::llm::render_system_prompt_with_skills("You are helpful.", "en", &skill_list)
+        );
         let _ = std::fs::remove_dir_all(&workspace);
     }
 
