@@ -24,17 +24,13 @@ pub mod llm;
 pub mod mcp;
 pub mod memory;
 pub mod models;
-pub mod moonshine;
 pub mod openai;
 pub mod pipeline;
 pub mod pocket_tts;
 pub mod policy;
 pub mod queue;
-pub mod qwen_asr;
 #[cfg(any(coverage, feature = "ggml"))]
 pub mod real;
-#[cfg(feature = "cloud")]
-pub mod remote_stt;
 #[cfg(feature = "cloud")]
 pub mod remote_tts;
 pub mod sandbox;
@@ -53,12 +49,20 @@ mod cancel;
 mod error;
 mod fake;
 mod harness_trace;
-mod language;
 #[cfg(all(feature = "ggml", feature = "device-audio"))]
 mod live;
 mod onnx;
 mod providers;
 mod session;
+
+#[rustfmt::skip]
+pub mod moonshine { pub use crate::stt::moonshine::*; }
+#[rustfmt::skip]
+pub mod qwen_asr { pub use crate::stt::qwen_asr::*; }
+#[cfg(feature = "cloud")]
+#[rustfmt::skip]
+pub mod remote_stt { pub use crate::stt::remote::*; }
+pub(crate) use stt::language;
 
 // Unit tests in this crate still write `crate::LlmProvider`. That name is
 // not a crate-root `pub use`, so it stays off the freeze list.
