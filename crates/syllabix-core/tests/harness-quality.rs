@@ -1277,7 +1277,7 @@ fn fixture_skill_context(workspace: &std::path::Path) -> String {
         "fixture skill diagnostics: {discovery:#?}"
     );
     assert_eq!(discovery.skills.len(), 1, "fixture skill must load");
-    discovery.model_context()
+    discovery.model_context(workspace)
 }
 
 fn live_config() -> (String, String) {
@@ -1434,6 +1434,67 @@ fn mock_harness_sandbox_turn(
     }
 }
 
+/// A global `SKILL.md` outside the workspace must stay readable under read-only
+/// sessions with no network on Linux (same policy as the other sandbox
+/// admission checks). Runs as part of [`harness_sandbox_admission`]. Fails
+/// closed if `bwrap` or the sandbox is unavailable so CI cannot pass without the
+/// check.
+#[cfg(all(target_os = "linux", not(coverage)))]
+fn assert_global_skill_md_readable_outside_workspace() {
+    use std::fs;
+
+    syllabix_core::executor::set_inherit_current_session(false);
+
+    let root = unique_temp_root("harness-global-skill-read");
+    let workspace = root.join("workspace");
+    let temp = root.join("temp");
+    let global_skill = root.join("global-skill");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::create_dir_all(&temp).expect("temp");
+    fs::create_dir_all(&global_skill).expect("global skill dir");
+    let skill_md = global_skill.join("SKILL.md");
+    fs::write(&skill_md, "skill file content\n").expect("skill");
+
+    let workspace = workspace.canonicalize().expect("workspace canon");
+    let temp = temp.canonicalize().expect("temp canon");
+    let skill_md = skill_md.canonicalize().expect("skill canon");
+
+    let request = SandboxRequest::new(
+        &workspace,
+        &temp,
+        FilesystemMode::ReadOnly,
+        NetworkMode::None,
+    );
+    let probe = current_provider().probe(&request);
+    assert!(
+        probe.is_ok(),
+        "global skill readability: sandbox probe failed: {:?}",
+        probe.err()
+    );
+
+    let session = DeveloperPermissions {
+        filesystem: FilesystemMode::ReadOnly,
+        network: NetworkMode::None,
+        secrets: SecretPolicy::None,
+    };
+    let skill_path = skill_md.to_string_lossy();
+    let cmd = format!("grep -F 'skill file content' '{skill_path}'");
+    let call = scripted_call("read-skill", &cmd, None);
+    let cancel = syllabix_core::Cancel::new();
+    let result = execute_with_permissions(&call, &workspace, &session, &cancel);
+    assert!(
+        result.ok,
+        "expected global SKILL.md read to succeed: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("skill file content"),
+        "{}",
+        result.content
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 fn run_sandbox_admission() -> (usize, f64, SecurityCounters, u128) {
     let workspace = fixture_workspace();
     let start = Instant::now();
@@ -1474,6 +1535,8 @@ fn run_sandbox_admission() -> (usize, f64, SecurityCounters, u128) {
         evidence.iter().all(|item| item.completion),
         "sandbox fixture failures: {evidence:?}"
     );
+    #[cfg(all(target_os = "linux", not(coverage)))]
+    assert_global_skill_md_readable_outside_workspace();
     (completed, ratio, counters, elapsed)
 }
 
@@ -2519,8 +2582,12 @@ fn repo_orientation_fixture_loads_the_configured_skill() {
     let workspace = fixture_workspace();
     let context = fixture_skill_context(&workspace.path);
     assert!(context.contains("--- skill repository-guide | source: custom ---"));
-    assert!(context.contains("two foreground steps"));
-    assert!(context.contains("bounded recent slice of Git history"));
+    assert!(context.contains("path:"));
+    assert!(context.contains("repository-guide/SKILL.md"));
+    assert!(!context.contains("two foreground steps"));
+    assert!(context.contains("run `cat <path>` with the shell tool"));
+    assert!(context.contains("`cat skills/repository-guide/SKILL.md`"));
+    assert!(!context.contains("read the file"));
 }
 
 #[test]
