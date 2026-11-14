@@ -64,7 +64,7 @@ pub const WHISPER_PREROLL: Duration = Duration::from_millis(200);
 pub const PREROLL_SAMPLES: usize =
     (DEFAULT_SAMPLE_RATE_HZ as usize) * (WHISPER_PREROLL.as_millis() as usize) / 1000;
 
-/// Silero turn policy. Frame size and 8 kHz pair-average stay fixed.
+/// Silero turn policy. Frame size and 16 kHz context window stay fixed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VadSettings {
     /// Silero probability at or above which a frame is speech.
@@ -105,9 +105,9 @@ impl VadSettings {
 /// In-process Silero VAD backed by ONNX Runtime.
 ///
 /// The detector accepts fixed-size frames: 512 samples of
-/// 16 kHz mono PCM. It pair-averages each frame to Silero's 8 kHz / 256-sample
-/// window (the ONNX 512 / `sr=16000` branch scores ~0.003). It retains
-/// Silero's recurrent state between frames.
+/// 16 kHz mono PCM. Each frame is scored at `sr=16000` with the previous
+/// frame's last 64 samples prepended, as Silero v5+ expects. It retains
+/// Silero's recurrent state and that context between frames.
 pub struct SileroVad {
     scorer: Box<dyn ProbabilityScorer>,
     settings: VadSettings,
@@ -361,9 +361,15 @@ trait ProbabilityScorer: Send {
     fn reset(&mut self);
 }
 
+/// Samples of the previous window that Silero (v5+) expects in front of
+/// each 16 kHz 512-sample window. Without them every window scores ~0.
+const CONTEXT_SAMPLES: usize = 64;
+
 struct OrtScorer {
     session: Session,
     state: Vec<f32>,
+    /// Tail of the previous frame, prepended to the next window.
+    context: Vec<f32>,
 }
 
 impl OrtScorer {
@@ -397,28 +403,32 @@ impl OrtScorer {
         Ok(Self {
             session,
             state: vec![0.0; 2 * 128],
+            context: vec![0.0; CONTEXT_SAMPLES],
         })
     }
 }
 
 impl ProbabilityScorer for OrtScorer {
     fn score(&mut self, frame: &AudioFrame) -> Result<f32> {
-        // silero_vad.onnx (v6.2.1): 512 samples at sr=16000 scores ~0.003.
-        // Two 256-sample 16 kHz windows hear speech but split speech.wav
-        // across a pause longer than the hangover. Pair-average to 8 kHz.
+        // silero_vad.onnx (v6.2.1) at sr=16000 wants the previous window's
+        // last 64 samples in front of each 512-sample window (576 in total).
         debug_assert_eq!(frame.sample_rate_hz, DEFAULT_SAMPLE_RATE_HZ);
-        let audio: Vec<f32> = frame
-            .samples
-            .chunks_exact(2)
-            .map(|pair| (f32::from(pair[0]) + f32::from(pair[1])) / (2.0 * 32_768.0))
-            .collect();
+        let mut audio = std::mem::take(&mut self.context);
+        audio.extend(
+            frame
+                .samples
+                .iter()
+                .map(|&sample| f32::from(sample) / 32_768.0),
+        );
+        self.context = audio[audio.len() - CONTEXT_SAMPLES..].to_vec();
+        let window = audio.len();
         let outputs = self
             .session
             .run(
                 ort::inputs![
-                    "input" => ([1_usize, 256], audio),
+                    "input" => ([1_usize, window], audio),
                     "state" => ([2_usize, 1, 128], self.state.clone()),
-                    "sr" => ((), vec![8_000_i64]),
+                    "sr" => ((), vec![16_000_i64]),
                 ]
                 .map_err(ort_error)?,
             )
@@ -443,6 +453,7 @@ impl ProbabilityScorer for OrtScorer {
 
     fn reset(&mut self) {
         self.state = vec![0.0; 2 * 128];
+        self.context = vec![0.0; CONTEXT_SAMPLES];
     }
 }
 
