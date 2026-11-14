@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 use misaki_rs::{Language, G2P};
 
-use crate::error::{Error, Result};
+use syllabix_native::error::{Error, Result};
 
 const APOSTROPHES: &[char] = &[
     '\u{2018}', '\u{2019}', '\u{02BC}', '\u{02B9}', '\u{00B4}', '`',

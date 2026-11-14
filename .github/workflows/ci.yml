@@ -155,6 +155,8 @@ jobs:
             echo "syllabix-stt with only remote must not depend on cmake or ort-sys" >&2
             exit 1
           fi
+      - name: cargo check syllabix-tts remote only without CMake
+        run: cargo check -p syllabix-tts --no-default-features --features remote --all-targets
       - name: cargo check syllabix-core without default features
         run: cargo check -p syllabix-core --no-default-features --all-targets
       - name: cargo check cloud without CMake / whisper.cpp

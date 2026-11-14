@@ -36,7 +36,8 @@ pub mod skills;
 pub mod stt { pub use syllabix_stt::*; }
 pub mod testing;
 pub mod trajectory;
-pub mod tts;
+#[rustfmt::skip]
+pub mod tts { pub use syllabix_tts::*; }
 pub mod turn_debug;
 #[rustfmt::skip]
 pub mod types { pub use syllabix_native::types::*; }
@@ -50,8 +51,6 @@ mod fake;
 mod harness_trace;
 #[cfg(all(feature = "ggml", feature = "device-audio"))]
 mod live;
-#[rustfmt::skip]
-mod onnx { pub use syllabix_native::onnx::*; }
 mod providers;
 mod session;
 
