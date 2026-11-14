@@ -20,6 +20,7 @@ pub trait Vad: Send {
 }
 
 pub use crate::stt::Stt;
+pub use crate::tts::Tts;
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
@@ -212,49 +213,6 @@ pub trait Llm: Send {
         cancel: &Cancel,
         on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
     ) -> Result<()>;
-}
-
-/// Streaming text-to-speech.
-pub trait Tts: Send {
-    /// Config name (`kokoro`).
-    fn name(&self) -> &'static str;
-
-    /// Weight id for diagnostics sidecars. `None` means the fake and test
-    /// providers; live engines report the loaded asset id.
-    fn model_id(&self) -> Option<&str> {
-        None
-    }
-
-    /// Compute backend confirmed at load (`cpu` / `metal` / `vulkan`).
-    /// `None` for engines that have no adaptive placement decision.
-    fn backend_id(&self) -> Option<&str> {
-        None
-    }
-
-    /// Synthesize buffered tokens. May return no chunks until a sentence ends.
-    ///
-    /// Pipeline calls this per streamed token. The last chunk of a generation
-    /// must set `is_last = true` so the loop can complete the turn.
-    fn synthesize_chunk(
-        &mut self,
-        token: &TokenChunk,
-        cancel: &Cancel,
-    ) -> Result<Vec<SynthesizedAudio>>;
-
-    /// Streaming form of [`Self::synthesize_chunk`]. Existing providers keep
-    /// their buffered implementation; native Qwen overrides this to release
-    /// vocoder windows while generation is still running.
-    fn synthesize_chunk_into(
-        &mut self,
-        token: &TokenChunk,
-        cancel: &Cancel,
-        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
-    ) -> Result<()> {
-        for audio in self.synthesize_chunk(token, cancel)? {
-            on_audio(audio)?;
-        }
-        Ok(())
-    }
 }
 
 /// Playback destination implemented by native speakers or an in-memory collector.
