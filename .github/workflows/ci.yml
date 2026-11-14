@@ -142,6 +142,8 @@ jobs:
             exit 1
           fi
           echo "cmake is not on PATH"
+      - name: cargo check syllabix-native without CMake
+        run: cargo check -p syllabix-native --no-default-features --all-targets
       - name: cargo check syllabix-core without default features
         run: cargo check -p syllabix-core --no-default-features --all-targets
       - name: cargo check cloud without CMake / whisper.cpp
