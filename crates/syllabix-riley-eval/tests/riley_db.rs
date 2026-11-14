@@ -335,3 +335,29 @@ fn reset_restores_the_seed_and_schemas_are_isolated() {
     a.drop_schema().unwrap();
     b.drop_schema().unwrap();
 }
+
+#[test]
+fn overlay_applies_in_one_transaction() {
+    let Some(mut db) = seeded("overlay") else {
+        return;
+    };
+    db.apply_overlay(&[
+        "UPDATE users SET phone = '+1-212-555-0177' WHERE id = 'u_bob_smith'".into(),
+    ])
+    .unwrap();
+    let info = db.user_info("u_bob_smith").unwrap().unwrap();
+    assert_eq!(info["phone"], "+1-212-555-0177");
+    let err = db
+        .apply_overlay(&[
+            "UPDATE users SET phone = '+1-000' WHERE id = 'u_bob_smith'".into(),
+            "UPDATE no_such_table SET x = 1".into(),
+        ])
+        .unwrap_err();
+    assert!(err.starts_with("database error"), "{err}");
+    let info = db.user_info("u_bob_smith").unwrap().unwrap();
+    assert_eq!(
+        info["phone"], "+1-212-555-0177",
+        "failed overlay rolled back"
+    );
+    db.drop_schema().unwrap();
+}

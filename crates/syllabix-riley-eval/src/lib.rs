@@ -2,7 +2,9 @@
 //! <https://github.com/syllabix-ai/syllabix/issues/329>. Phase A1: five card
 //! tools, the Postgres seed, and the agent prompt. Phase A2: voice sessions
 //! through the production cascade with injected audio, a tool trace, and
-//! deterministic DB checks.
+//! deterministic DB checks. Phase A3: a scenario pack, an LLM caller voiced
+//! by TTS, an LLM judge, and a runner that writes per-call JSONL plus a
+//! pass-rate summary.
 //!
 //! Our own approximation of Veris's Riley agent. Scores are for regression
 //! tracking and demos only and are not comparable with the VAmoS leaderboard.
@@ -13,11 +15,16 @@
 //! <https://github.com/veris-ai/riley-agent> (MIT, Copyright (c) 2026 Veris
 //! Technologies Inc.); see `vendor/riley-agent/LICENSE`.
 
+pub mod caller;
+pub mod chat;
 pub mod checks;
 pub mod db;
 pub mod fixtures;
+pub mod judge;
 pub mod llm;
 pub mod mcp;
+pub mod runner;
+pub mod scenario;
 pub mod session;
 pub mod tools;
 pub mod voice;

@@ -4,18 +4,29 @@
 //! expectation holds. Missing data fails the call ("fails closed"). A3 adds
 //! the LLM judge on top; these checks cover the tool trace and final DB.
 
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::session::{SessionReport, Speaker};
 
-/// One binary assertion.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One binary assertion. Scenario files spell these in snake case
+/// (`{"card_status": {...}}`, `"no_mutation"`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Expectation {
     /// Final DB: `card_id` has `status`.
     CardStatus {
         /// Card id from the seed.
         card_id: String,
         /// `active`, `frozen`, or `cancelled`.
+        status: String,
+    },
+    /// Final DB: the latest replacement of `card_id` (by `created_at`, then
+    /// id) has `status`.
+    ReplacementStatus {
+        /// Old card id from the seed.
+        card_id: String,
+        /// `requested`, `shipped`, `delivered`, ...
         status: String,
     },
     /// No successful mutating tool call, and cards and replacements are
@@ -150,6 +161,36 @@ pub fn evaluate(report: &SessionReport, expectations: &[Expectation]) -> Verdict
                     ));
                 }
             }
+            Expectation::ReplacementStatus { card_id, status } => {
+                let key = |row: &&Value| {
+                    let text = |field: &str| {
+                        row.get(field)
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    (text("created_at"), text("id"))
+                };
+                let actual = report
+                    .final_db
+                    .get("replacements")
+                    .and_then(Value::as_array)
+                    .and_then(|rows| {
+                        rows.iter()
+                            .filter(|row| {
+                                row.get("card_id").and_then(Value::as_str) == Some(card_id)
+                            })
+                            .max_by_key(key)
+                    })
+                    .and_then(|row| row.get("status"))
+                    .and_then(Value::as_str);
+                if actual != Some(status.as_str()) {
+                    failures.push(format!(
+                        "replacement for {card_id} should be {status}, found {}",
+                        actual.unwrap_or("nothing")
+                    ));
+                }
+            }
             Expectation::NoMutation => {
                 if let Some(event) = report.tool_trace.iter().find(|event| event.is_mutation()) {
                     failures.push(format!(
@@ -228,6 +269,7 @@ mod tests {
             interruptions: 0,
             agent_samples: 1,
             errors: vec![],
+            turn_latency_ms: vec![],
         }
     }
 
@@ -305,5 +347,32 @@ mod tests {
                 "card c_a should be active, found nothing",
             ]
         );
+    }
+
+    #[test]
+    fn replacement_status_reads_the_latest_row_and_parses_from_json() {
+        let mut call = report(vec![caller(0, "hi")], vec![], "cancelled");
+        call.final_db["replacements"] = json!([
+            {"id": "r9", "card_id": "c_a", "status": "delivered", "created_at": "2026-01-01T00:00:00+00:00"},
+            {"id": "r2", "card_id": "c_a", "status": "requested", "created_at": "2026-02-01T00:00:00+00:00"}
+        ]);
+        let expectations: Vec<Expectation> = serde_json::from_value(json!([
+            {"replacement_status": {"card_id": "c_a", "status": "requested"}},
+            {"replacement_status": {"card_id": "c_b", "status": "requested"}},
+            "no_mutation"
+        ]))
+        .unwrap();
+        let verdict = evaluate(&call, &expectations);
+        assert_eq!(
+            verdict.failures,
+            [
+                "replacement for c_b should be requested, found nothing",
+                "cards or replacements changed during the call",
+            ]
+        );
+        let unknown = serde_json::from_value::<Expectation>(
+            json!({"card_status": {"card_id": "c", "status": "x", "extra": 1}}),
+        );
+        assert!(unknown.is_err());
     }
 }

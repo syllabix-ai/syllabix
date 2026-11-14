@@ -62,6 +62,16 @@ impl CardDb {
         self.client.batch_execute(INIT_SQL).map_err(db_err)
     }
 
+    /// Run a scenario's `db_overlay` statements in one transaction, after
+    /// [`CardDb::reset`].
+    pub fn apply_overlay(&mut self, statements: &[String]) -> Result<(), String> {
+        let mut tx = self.client.transaction().map_err(db_err)?;
+        for statement in statements {
+            tx.batch_execute(statement).map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)
+    }
+
     /// Remove the schema (test and scenario cleanup).
     pub fn drop_schema(mut self) -> Result<(), String> {
         let schema = &self.schema;

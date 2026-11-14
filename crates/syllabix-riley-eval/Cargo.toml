@@ -10,7 +10,9 @@ publish = false
 description = "Offline Riley-style card-ops eval: tools, Postgres seed, prompt, and voice sessions (our own approximation)"
 
 [dependencies]
+clap.workspace = true
 postgres.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 # `cloud` adds RemoteStt / RemoteTts only (no native build, no extra crates).
 syllabix-core = { path = "../syllabix-core", default-features = false, features = ["cloud"] }

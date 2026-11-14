@@ -3,14 +3,16 @@
 //! CI never calls a paid API: the real `RemoteStt`, `RileyLlm`, and
 //! `RemoteTts` clients talk to this server over loopback HTTP.
 //!
-//! STT: caller turn `i` is injected as constant samples `1000 + i`; the
-//! server reads the first non-zero sample of the uploaded WAV and returns
-//! that caller line. LLM: replies are popped from a script (HTTP 500 when
-//! the script is empty). TTS: every request returns a 16 kHz mono WAV.
+//! STT: caller turn `i` is injected as constant samples `1000 + i`, and
+//! speech request `j` returns constant samples `2000 + j`; the server maps
+//! each distinct non-zero level in the uploaded WAV back to its caller line
+//! or speech input and returns them joined. LLM: replies are popped from
+//! the request model's script if it has one, else from the shared script
+//! (HTTP 500 when the script is empty). TTS: 16 kHz mono WAV.
 
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -26,12 +28,16 @@ pub fn caller_level(index: usize) -> i16 {
 pub struct MockState {
     pub caller_lines: Vec<String>,
     pub llm_script: VecDeque<Value>,
+    /// Per-model scripts (caller, judge, agent in A3 runs).
+    pub model_scripts: HashMap<String, VecDeque<Value>>,
     /// Parsed chat-completions request bodies, in order.
     pub llm_requests: Vec<Value>,
     /// `(path, Authorization header)` for every request.
     pub auth: Vec<(String, String)>,
     /// `input` of every speech request.
     pub tts_inputs: Vec<String>,
+    /// `voice` of every speech request.
+    pub tts_voices: Vec<String>,
     /// Samples per speech response.
     pub tts_samples: usize,
 }
@@ -93,14 +99,34 @@ fn wav(samples: usize, level: i16) -> Vec<u8> {
     out
 }
 
-/// First non-zero sample in the `data` chunk of the first WAV in `body`.
-fn first_level(body: &[u8]) -> Option<i16> {
-    let riff = body.windows(4).position(|w| w == b"RIFF")?;
-    let data = riff + body[riff..].windows(4).position(|w| w == b"data")? + 8;
-    body[data..]
+/// Distinct non-zero sample levels, in order, in the `data` chunk of the
+/// first WAV in `body`.
+fn levels(body: &[u8]) -> Vec<i16> {
+    let Some(riff) = body.windows(4).position(|w| w == b"RIFF") else {
+        return Vec::new();
+    };
+    let Some(data) = body[riff..].windows(4).position(|w| w == b"data") else {
+        return Vec::new();
+    };
+    let mut out: Vec<i16> = Vec::new();
+    for sample in body[riff + data + 8..]
         .chunks_exact(2)
         .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
-        .find(|sample| *sample != 0)
+    {
+        if sample != 0 && out.last() != Some(&sample) {
+            out.push(sample);
+        }
+    }
+    out
+}
+
+fn line_for(state: &MockState, level: i16) -> Option<String> {
+    let index = usize::try_from(level).ok()?;
+    if index >= 2000 {
+        state.tts_inputs.get(index - 2000).cloned()
+    } else {
+        state.caller_lines.get(index.checked_sub(1000)?).cloned()
+    }
 }
 
 fn handle(state: &Mutex<MockState>, mut request: tiny_http::Request) {
@@ -117,16 +143,22 @@ fn handle(state: &Mutex<MockState>, mut request: tiny_http::Request) {
     state.auth.push((path.clone(), auth));
     let json_header = Header::from_bytes("Content-Type", "application/json").expect("header");
     let response = if path.ends_with("/audio/transcriptions") {
-        let text = first_level(&body)
-            .and_then(|level| usize::try_from(level - 1000).ok())
-            .and_then(|index| state.caller_lines.get(index).cloned())
-            .unwrap_or_default();
+        let text = levels(&body)
+            .into_iter()
+            .filter_map(|level| line_for(&state, level))
+            .collect::<Vec<_>>()
+            .join(" ");
         Response::from_data(json!({ "text": text }).to_string().into_bytes())
             .with_header(json_header)
     } else if path.ends_with("/chat/completions") {
         let parsed: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        let model = parsed["model"].as_str().unwrap_or_default().to_string();
         state.llm_requests.push(parsed);
-        match state.llm_script.pop_front() {
+        let next = match state.model_scripts.get_mut(&model) {
+            Some(script) => script.pop_front(),
+            None => state.llm_script.pop_front(),
+        };
+        match next {
             Some(message) => Response::from_data(
                 json!({"id": "mock", "choices": [{"index": 0, "message": message}]})
                     .to_string()
@@ -141,7 +173,11 @@ fn handle(state: &Mutex<MockState>, mut request: tiny_http::Request) {
         let parsed: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
         let input = parsed["input"].as_str().unwrap_or_default().to_string();
         state.tts_inputs.push(input);
-        Response::from_data(wav(state.tts_samples, 500))
+        state
+            .tts_voices
+            .push(parsed["voice"].as_str().unwrap_or_default().to_string());
+        let level = 2000 + i16::try_from(state.tts_inputs.len() - 1).expect("few speech requests");
+        Response::from_data(wav(state.tts_samples, level))
             .with_header(Header::from_bytes("Content-Type", "audio/wav").expect("header"))
     } else {
         Response::from_data(Vec::new()).with_status_code(404)
@@ -151,6 +187,27 @@ fn handle(state: &Mutex<MockState>, mut request: tiny_http::Request) {
 }
 
 impl MockApi {
+    /// Script for requests whose `model` is `model`.
+    pub fn script_model(&self, model: &str, replies: Vec<Value>) {
+        self.state
+            .lock()
+            .expect("mock state")
+            .model_scripts
+            .insert(model.to_string(), replies.into());
+    }
+
+    /// Chat requests sent with `model`.
+    pub fn requests_for(&self, model: &str) -> Vec<Value> {
+        self.state
+            .lock()
+            .expect("mock state")
+            .llm_requests
+            .iter()
+            .filter(|request| request["model"] == model)
+            .cloned()
+            .collect()
+    }
+
     pub fn start(caller_lines: &[&str], llm_script: Vec<Value>, tts_samples: usize) -> Self {
         let server = Arc::new(Server::http("127.0.0.1:0").expect("bind mock api"));
         let port = server.server_addr().to_ip().expect("ip addr").port();

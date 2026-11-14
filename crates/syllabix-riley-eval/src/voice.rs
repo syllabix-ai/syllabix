@@ -7,6 +7,10 @@
 //! listening again; a barge-in turn starts as soon as the reply begins
 //! playing. [`RecordingSink`] collects agent audio, optionally paced in real
 //! time so barge-in can cut a reply short.
+//!
+//! Turns come from a [`CallerScript`]: a fixed list ([`FixedCaller`]) or,
+//! in phase A3, the simulated caller in [`crate::caller`], which decides
+//! each line after hearing the agent.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
@@ -18,6 +22,8 @@ use syllabix_core::{
     TurnId,
 };
 
+use crate::session::{Line, LiveLog};
+
 /// One caller utterance: 16 kHz mono PCM16.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallerTurn {
@@ -25,6 +31,41 @@ pub struct CallerTurn {
     pub audio: Vec<i16>,
     /// Start while the agent's previous reply is still playing.
     pub barge_in: bool,
+}
+
+/// Source of caller turns for [`InjectedCapture`].
+pub trait CallerScript: Send {
+    /// `None` when the caller has nothing more to say; otherwise whether the
+    /// next turn barges in.
+    fn peek(&self) -> Option<bool>;
+
+    /// Next turn, given the call so far. `Ok(None)` hangs up; `Err` ends the
+    /// call and is reported as a session error.
+    fn next_turn(&mut self, transcript: &[Line])
+        -> std::result::Result<Option<CallerTurn>, String>;
+}
+
+/// A fixed list of turns (A2 fixtures and tests).
+pub struct FixedCaller(VecDeque<CallerTurn>);
+
+impl FixedCaller {
+    /// Play `turns` in order.
+    pub fn new(turns: Vec<CallerTurn>) -> Self {
+        Self(turns.into())
+    }
+}
+
+impl CallerScript for FixedCaller {
+    fn peek(&self) -> Option<bool> {
+        self.0.front().map(|turn| turn.barge_in)
+    }
+
+    fn next_turn(
+        &mut self,
+        _transcript: &[Line],
+    ) -> std::result::Result<Option<CallerTurn>, String> {
+        Ok(self.0.pop_front())
+    }
 }
 
 /// Playback facts shared by the sink and the capture.
@@ -40,6 +81,8 @@ pub struct RenderState {
     pub samples: usize,
     /// Set when a caller turn gave up waiting for the agent.
     pub wait_timed_out: bool,
+    /// Set when the caller script failed.
+    pub caller_error: Option<String>,
     current: Option<TurnId>,
 }
 
@@ -63,6 +106,11 @@ impl Render {
             state.samples,
             state.wait_timed_out,
         )
+    }
+
+    /// Why the caller script ended the call, if it failed.
+    pub fn caller_error(&self) -> Option<String> {
+        self.0 .0.lock().expect("render state").caller_error.clone()
     }
 
     fn update(&self, change: impl FnOnce(&mut RenderState)) {
@@ -97,7 +145,8 @@ impl Render {
 
 /// Fixture microphone for one session.
 pub struct InjectedCapture {
-    turns: VecDeque<CallerTurn>,
+    script: Box<dyn CallerScript>,
+    live: Option<LiveLog>,
     frames: VecDeque<AudioFrame>,
     controls: RuntimeControls,
     render: Render,
@@ -120,8 +169,31 @@ impl InjectedCapture {
         trailing_silence_frames: usize,
         wait_timeout: Duration,
     ) -> Self {
+        Self::with_script(
+            Box::new(FixedCaller::new(turns)),
+            None,
+            controls,
+            render,
+            frame_pause,
+            trailing_silence_frames,
+            wait_timeout,
+        )
+    }
+
+    /// Like [`InjectedCapture::new`], but turns come from `script`, which
+    /// sees the call so far through `live`.
+    pub fn with_script(
+        script: Box<dyn CallerScript>,
+        live: Option<LiveLog>,
+        controls: RuntimeControls,
+        render: Render,
+        frame_pause: Duration,
+        trailing_silence_frames: usize,
+        wait_timeout: Duration,
+    ) -> Self {
         Self {
-            turns: turns.into(),
+            script,
+            live,
             frames: VecDeque::new(),
             controls,
             render,
@@ -142,7 +214,7 @@ impl InjectedCapture {
 
     /// Wait for the agent, then queue the next turn's frames. `false` ends input.
     fn queue_next(&mut self, cancel: &Cancel) -> Result<bool> {
-        let Some(turn) = self.turns.pop_front() else {
+        let Some(barge_in) = self.script.peek() else {
             return Ok(false);
         };
         let (started, finished) = self.mark;
@@ -150,7 +222,7 @@ impl InjectedCapture {
         let controls = self.controls.clone();
         let ready = self.render.wait(self.wait_timeout, cancel, |state| {
             let agent_ready = first
-                || if turn.barge_in {
+                || if barge_in {
                     state.started > started
                 } else {
                     state.finished > finished
@@ -164,6 +236,16 @@ impl InjectedCapture {
             self.render.update(|state| state.wait_timed_out = true);
             return Ok(false);
         }
+        let transcript = self.live.as_ref().map(LiveLog::lines).unwrap_or_default();
+        let turn = match self.script.next_turn(&transcript) {
+            Ok(Some(turn)) => turn,
+            Ok(None) => return Ok(false),
+            Err(message) => {
+                self.render
+                    .update(|state| state.caller_error = Some(message));
+                return Ok(false);
+            }
+        };
         let mut audio = turn.audio;
         if audio.is_empty() {
             audio.push(0);
