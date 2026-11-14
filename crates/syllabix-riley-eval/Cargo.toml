@@ -7,12 +7,16 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Offline Riley-style card-ops eval: tools, Postgres seed, and prompt (our own approximation)"
+description = "Offline Riley-style card-ops eval: tools, Postgres seed, prompt, and voice sessions (our own approximation)"
 
 [dependencies]
 postgres.workspace = true
 serde_json.workspace = true
-syllabix-core = { path = "../syllabix-core", default-features = false }
+# `cloud` adds RemoteStt / RemoteTts only (no native build, no extra crates).
+syllabix-core = { path = "../syllabix-core", default-features = false, features = ["cloud"] }
+ureq.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 sha2.workspace = true
+tiny_http.workspace = true

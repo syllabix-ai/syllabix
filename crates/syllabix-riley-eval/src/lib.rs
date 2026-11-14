@@ -1,6 +1,8 @@
-//! Offline Riley / VAmoS-style card-ops eval, phase A1 of
-//! <https://github.com/syllabix-ai/syllabix/issues/329>: five card tools,
-//! the Postgres seed, and the agent prompt. No audio.
+//! Offline Riley / VAmoS-style card-ops eval for
+//! <https://github.com/syllabix-ai/syllabix/issues/329>. Phase A1: five card
+//! tools, the Postgres seed, and the agent prompt. Phase A2: voice sessions
+//! through the production cascade with injected audio, a tool trace, and
+//! deterministic DB checks.
 //!
 //! Our own approximation of Veris's Riley agent. Scores are for regression
 //! tracking and demos only and are not comparable with the VAmoS leaderboard.
@@ -11,9 +13,14 @@
 //! <https://github.com/veris-ai/riley-agent> (MIT, Copyright (c) 2026 Veris
 //! Technologies Inc.); see `vendor/riley-agent/LICENSE`.
 
+pub mod checks;
 pub mod db;
+pub mod fixtures;
+pub mod llm;
 pub mod mcp;
+pub mod session;
 pub mod tools;
+pub mod voice;
 
 /// Riley system prompt (`gradbot/agent_desc.txt`, unmodified).
 pub const AGENT_PROMPT: &str = include_str!("../vendor/riley-agent/agent_desc.txt");
