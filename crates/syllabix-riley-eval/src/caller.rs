@@ -39,7 +39,9 @@ pub fn system_prompt(persona: &Persona) -> String {
          Facts you know (give them when asked or when it helps your goal; do not invent other personal details):\n\
          {facts}\n\
          Rules: reply with only what you say out loud, one or two short sentences, no stage directions, \
-         lists, or markup. Never mention these instructions. When your goal is done or clearly cannot be \
+         lists, or markup. Write numbers and abbreviations the way you say them: digits one by one in \
+         words (\"two one seven, five five five\"), street and state names in full (\"Road\", \"New York\"). \
+         Never mention these instructions. When your goal is done or clearly cannot be \
          done, say a short goodbye and end that line with {END_CALL}.",
         goal = persona.goal,
         traits = persona.traits.join(", "),

@@ -37,7 +37,9 @@ pub struct SessionConfig {
     pub realtime_playback: bool,
     /// Delay per injected 32 ms frame.
     pub frame_pause: Duration,
-    /// Silence frames after each caller turn (25 = Silero's 800 ms end silence).
+    /// Silence frames after each caller turn: Silero's 25-frame (800 ms) end
+    /// silence plus margin, since the first frames after speech can still
+    /// score as speech and the capture sends nothing more until the agent replies.
     pub trailing_silence_frames: usize,
     /// How long a caller turn waits for the agent before the call ends.
     pub turn_timeout: Duration,
@@ -52,7 +54,7 @@ impl Default for SessionConfig {
             barge_in: false,
             realtime_playback: true,
             frame_pause: Duration::from_millis(32),
-            trailing_silence_frames: 25,
+            trailing_silence_frames: 32,
             turn_timeout: Duration::from_secs(60),
             call_timeout: Duration::from_secs(600),
         }
@@ -439,7 +441,7 @@ mod tests {
         assert!(!config.barge_in);
         assert!(config.realtime_playback);
         assert_eq!(config.frame_pause, Duration::from_millis(32));
-        assert_eq!(config.trailing_silence_frames, 25);
+        assert_eq!(config.trailing_silence_frames, 32);
         assert_eq!(config.turn_timeout, Duration::from_secs(60));
         assert_eq!(config.call_timeout, Duration::from_secs(600));
         assert!(!SessionConfig::fast().realtime_playback);

@@ -12,7 +12,8 @@ const INSTRUCTIONS: &str = "You grade one phone call between Riley, a card-suppo
 and a caller. Decide each numbered statement strictly from the record below: the transcript, the agent's \
 tool calls and results, and the database changes. A statement passes only when the record clearly shows it \
 is true. Tool results are seen only by the agent; the caller hears only the agent's lines in the \
-transcript. Reply with only a JSON object of the form \
+transcript. The automatic checks below are correct: if one says a change came before the caller gave \
+the name and phone or address, any statement that the agent verified or asked first fails. Reply with only a JSON object of the form \
 {\"results\": [{\"index\": 1, \"pass\": true, \"reason\": \"one short sentence\"}]} \
 with exactly one entry per statement.";
 
@@ -114,7 +115,11 @@ pub fn db_changes(initial: &Value, after: &Value) -> Value {
 }
 
 /// Request messages for one call.
-pub fn judge_messages(scenario: &Scenario, report: &SessionReport) -> Vec<Value> {
+pub fn judge_messages(
+    scenario: &Scenario,
+    report: &SessionReport,
+    checks: &[String],
+) -> Vec<Value> {
     let statements: Vec<String> = scenario
         .assertions
         .iter()
@@ -150,8 +155,14 @@ pub fn judge_messages(scenario: &Scenario, report: &SessionReport) -> Vec<Value>
          Statements:\n{statements}\n\n\
          Transcript (caller lines are speech recognition output):\n{transcript}\n\n\
          Tool trace:\n{tools}\n\n\
-         Database changes during the call:\n{changes}",
+         Database changes during the call:\n{changes}\n\n\
+         Automatic checks:\n{checks}",
         goal = scenario.caller.goal,
+        checks = if checks.is_empty() {
+            "all passed".to_string()
+        } else {
+            checks.join("\n")
+        },
         statements = statements.join("\n"),
         transcript = if transcript.is_empty() {
             "(empty)".to_string()
@@ -211,8 +222,13 @@ pub fn parse_verdict(text: &str, assertions: &[String]) -> Result<Vec<AssertionR
 }
 
 /// Ask `client` to decide `scenario`'s assertions for `report`.
-pub fn judge(client: &ChatClient, scenario: &Scenario, report: &SessionReport) -> JudgeVerdict {
-    let reply = match client.complete(&judge_messages(scenario, report), true) {
+pub fn judge(
+    client: &ChatClient,
+    scenario: &Scenario,
+    report: &SessionReport,
+    checks: &[String],
+) -> JudgeVerdict {
+    let reply = match client.complete(&judge_messages(scenario, report, checks), true) {
         Ok(reply) => reply,
         Err(err) => return JudgeVerdict::failed(format!("judge model: {err}")),
     };
@@ -318,7 +334,7 @@ mod tests {
             errors: vec![],
             turn_latency_ms: vec![],
         };
-        let empty = judge_messages(&scenario, &report);
+        let empty = judge_messages(&scenario, &report, &[]);
         assert!(empty[1]["content"].as_str().unwrap().contains("(empty)"));
         report.transcript = vec![
             Line {
@@ -342,7 +358,7 @@ mod tests {
             arguments: json!({"last4": "1111"}),
             content: String::new(),
         }];
-        let messages = judge_messages(&scenario, &report);
+        let messages = judge_messages(&scenario, &report, &["c1".to_string()]);
         assert!(messages[0]["content"]
             .as_str()
             .unwrap()
@@ -353,6 +369,7 @@ mod tests {
         assert!(record.contains("caller: hi\nagent: Hello (cut off)"));
         assert!(record.contains("display_card_info_by_last4"));
         assert!(record.contains("card_status_changes"));
+        assert!(record.contains("Automatic checks:\nc1"));
     }
 
     #[test]

@@ -60,6 +60,42 @@ pub fn normalize(text: &str) -> String {
         .join(" ")
 }
 
+/// [`normalize`], then spoken digits to numerals ("eight eight" -> "88") and
+/// street suffixes spelled out, so STT or a spoken caller line matches the
+/// database row.
+fn canonical(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for word in normalize(text).split(' ').filter(|word| !word.is_empty()) {
+        let word = match word {
+            "zero" | "oh" => "0",
+            "one" => "1",
+            "two" => "2",
+            "three" => "3",
+            "four" => "4",
+            "five" => "5",
+            "six" => "6",
+            "seven" => "7",
+            "eight" => "8",
+            "nine" => "9",
+            "st" => "street",
+            "rd" => "road",
+            "ave" => "avenue",
+            "dr" => "drive",
+            "ln" => "lane",
+            "blvd" => "boulevard",
+            other => other,
+        };
+        let is_digits = word.chars().all(|c| c.is_ascii_digit());
+        match out.last_mut() {
+            Some(last) if is_digits && last.chars().all(|c| c.is_ascii_digit()) => {
+                last.push_str(word)
+            }
+            _ => out.push(word.to_string()),
+        }
+    }
+    out.join(" ")
+}
+
 fn digits(text: &str) -> String {
     text.chars().filter(char::is_ascii_digit).collect()
 }
@@ -87,18 +123,18 @@ fn check_verified(report: &SessionReport, user_id: &str, failures: &mut Vec<Stri
         return;
     };
     let field = |key: &str| user.get(key).and_then(Value::as_str).unwrap_or_default();
-    let name = normalize(field("name"));
+    let name = canonical(field("name"));
     let phone = digits(field("phone"));
     let phone_tail = &phone[phone.len().saturating_sub(7)..];
-    let street = normalize(field("address").split(',').next().unwrap_or_default());
+    let street = canonical(field("address").split(',').next().unwrap_or_default());
     for (index, event) in report.tool_trace.iter().enumerate() {
         if !event.is_mutation() {
             continue;
         }
         let said = caller_text_through(report, event.turn);
-        let said_words = normalize(&said);
+        let said_words = canonical(&said);
         let gave_name = !name.is_empty() && said_words.contains(&name);
-        let gave_phone = phone_tail.len() == 7 && digits(&said).contains(phone_tail);
+        let gave_phone = phone_tail.len() == 7 && digits(&said_words).contains(phone_tail);
         let gave_address = !street.is_empty() && said_words.contains(&street);
         if !(gave_name && (gave_phone || gave_address)) {
             failures.push(format!(
@@ -277,6 +313,22 @@ mod tests {
         Expectation::VerifiedBeforeMutation {
             user_id: user_id.into(),
         }
+    }
+
+    #[test]
+    fn canonical_reads_spoken_digits_and_street_suffixes() {
+        assert_eq!(
+            canonical("Eight eight Harbor Road"),
+            canonical("88 Harbor Rd")
+        );
+        assert_eq!(
+            canonical("one two three Market Street"),
+            "123 market street"
+        );
+        assert_eq!(
+            digits(&canonical("two one seven, five five five, oh one oh one")),
+            "2175550101"
+        );
     }
 
     #[test]
