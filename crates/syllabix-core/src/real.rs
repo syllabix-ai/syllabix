@@ -299,6 +299,25 @@ mod production {
                 Self::Remote(stt) => Ok(Self::Remote(stt.with_language(language))),
             }
         }
+
+        /// Set whisper.cpp `n_threads` when this is a Whisper engine. Moonshine
+        /// (`OrtSession::load`) and Qwen ASR have no post-load intra-op setter.
+        pub fn with_threads(self, n: i32) -> Self {
+            match self {
+                Self::Whisper(stt) => Self::Whisper(stt.with_threads(n)),
+                other => other,
+            }
+        }
+
+        /// Effective intra-op thread count when the engine exposes one.
+        pub fn intra_op_threads(&self) -> Option<i32> {
+            match self {
+                Self::Whisper(stt) => stt.intra_op_threads(),
+                Self::Moonshine(_) | Self::Qwen(_) => None,
+                #[cfg(feature = "cloud")]
+                Self::Remote(_) => None,
+            }
+        }
     }
 
     /// Build just the STT slot from config. Only the selected engine's weights

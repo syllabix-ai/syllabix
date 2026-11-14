@@ -22,7 +22,7 @@ use syllabix_core::{
     Tts, TurnId, Utterance,
 };
 
-const SCHEMA_VERSION: u8 = 4;
+const SCHEMA_VERSION: u8 = 5;
 const SCENARIOS_JSONL: &str = include_str!("../../../docs/eval/scenarios.jsonl");
 const NUMBER_FIXTURES: [&str; 5] = ["100", "$5", "3:45 pm", "USD", "API"];
 /// Safety rail for contributor LLM evidence. Product `run` still has no
@@ -118,6 +118,28 @@ struct Record {
     memory_after_load_bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     memory_peak_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wer: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ref_words: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    errors: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    noise: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snr_db: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    threads: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    load_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    first_call_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audio_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dataset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    n_utt: Option<usize>,
     passed: bool,
 }
 
@@ -165,7 +187,18 @@ pub(crate) fn run(out: PathBuf) -> Result<()> {
 
 /// Private `bench-asr-worker` entry point. A distinct process gives the ASR
 /// memory snapshot one model lifetime with no LLM or TTS residency.
-pub(crate) fn run_asr_worker(out: PathBuf, model: String) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_asr_worker(
+    out: PathBuf,
+    model: String,
+    manifest: Option<PathBuf>,
+    noise: String,
+    snr: f32,
+    seed: u64,
+    warmup: usize,
+    threads: Option<usize>,
+    dataset: String,
+) -> Result<()> {
     if out.exists() {
         return Err(Error::Config {
             field: "bench.worker.out".into(),
@@ -183,23 +216,45 @@ pub(crate) fn run_asr_worker(out: PathBuf, model: String) -> Result<()> {
     if stt_model.is_moonshine() {
         config.language = "en".into();
     }
-    let scenarios = scenarios()?;
     let cancel = Cancel::new();
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
     let memory_before_load = required_rss("before ASR model load")?;
+    let load_started = Instant::now();
     let mut stt = build_stt(&cache, &HttpFetcher, &mut progress, &cancel, &config, None)?
         .with_language(&config.language)?;
+    if let Some(n) = threads {
+        stt = stt.with_threads(i32::try_from(n).unwrap_or(i32::MAX).max(1));
+    }
+    let load_ms = load_started.elapsed().as_millis();
     let memory_after_load = required_rss("after ASR model load")?;
-    let records = benchmark_stt(
-        &mut stt,
-        &config,
-        &cancel,
-        &fingerprint(),
-        &scenarios,
-        memory_before_load,
-        memory_after_load,
-    )?;
+    let records = if let Some(manifest) = manifest {
+        benchmark_stt_manifest(
+            &mut stt,
+            &config,
+            &cancel,
+            &fingerprint(),
+            &manifest,
+            &noise,
+            snr,
+            seed,
+            warmup,
+            load_ms,
+            dataset,
+            memory_before_load,
+            memory_after_load,
+        )?
+    } else {
+        benchmark_stt(
+            &mut stt,
+            &config,
+            &cancel,
+            &fingerprint(),
+            &scenarios()?,
+            memory_before_load,
+            memory_after_load,
+        )?
+    };
     write_jsonl(&out, &records)
 }
 
@@ -389,7 +444,269 @@ fn benchmark_stt(
             memory_before_load_bytes: Some(memory_before_load),
             memory_after_load_bytes: Some(memory_after_load),
             memory_peak_bytes: None,
+            wer: None,
+            ref_words: None,
+            errors: None,
+            noise: None,
+            snr_db: None,
+            threads: None,
+            load_ms: None,
+            first_call_ms: None,
+            audio_ms: None,
+            dataset: None,
+            n_utt: None,
             passed: ratio >= scenario.min_word_match,
+        });
+    }
+    for record in &mut records {
+        record.memory_peak_bytes = Some(memory_peak);
+    }
+    Ok(records)
+}
+
+const NOISE_KINDS: [&str; 5] = ["clean", "white", "pink", "brown", "ambient"];
+
+struct ManifestItem {
+    path: PathBuf,
+    reference: String,
+    dataset: String,
+}
+
+fn parse_stt_manifest(text: &str, base: &Path, default_dataset: &str) -> Result<Vec<ManifestItem>> {
+    let mut items = Vec::new();
+    for (index, raw) in text.lines().enumerate() {
+        let line = raw.trim_end_matches('\r').trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((path, rest)) = line.split_once('\t') else {
+            return Err(Error::Config {
+                field: "bench.manifest".into(),
+                message: format!("line {} is not wav_path<TAB>reference text", index + 1),
+            });
+        };
+        let (reference, dataset) = match rest.split_once('\t') {
+            Some((reference, dataset)) => (reference, dataset.trim()),
+            None => (rest, default_dataset),
+        };
+        let dataset = if dataset.is_empty() {
+            default_dataset
+        } else {
+            dataset
+        };
+        let wav = PathBuf::from(path.trim());
+        let wav = if wav.is_absolute() {
+            wav
+        } else {
+            base.join(wav)
+        };
+        items.push(ManifestItem {
+            path: wav,
+            reference: reference.trim().to_owned(),
+            dataset: dataset.to_owned(),
+        });
+    }
+    Ok(items)
+}
+
+fn is_unicode_apostrophe(ch: char) -> bool {
+    matches!(
+        ch,
+        '\'' | '\u{2018}' | '\u{2019}' | '\u{201B}' | '\u{2032}' | '\u{FF07}' | '\u{02BC}'
+    )
+}
+
+fn is_hyphen_joiner(ch: char) -> bool {
+    matches!(
+        ch,
+        '-' | '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2212}'
+    )
+}
+
+fn normalize_wer_text(text: &str) -> Vec<String> {
+    let mut words = String::new();
+    for ch in text.chars() {
+        if is_hyphen_joiner(ch) {
+            continue;
+        }
+        if is_unicode_apostrophe(ch) {
+            words.push('\'');
+        } else if ch.is_alphanumeric() {
+            words.extend(ch.to_lowercase());
+        } else {
+            words.push(' ');
+        }
+    }
+    words.split_whitespace().map(str::to_owned).collect()
+}
+
+fn word_edit_distance(hypothesis: &[String], reference: &[String]) -> usize {
+    let (n, m) = (hypothesis.len(), reference.len());
+    let mut prev: Vec<usize> = (0..=m).collect();
+    for i in 1..=n {
+        let mut cur = vec![i; m + 1];
+        for j in 1..=m {
+            let cost = usize::from(hypothesis[i - 1] != reference[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        prev = cur;
+    }
+    prev[m]
+}
+
+fn word_error_rate(hypothesis: &str, reference: &str) -> (f64, usize, usize) {
+    let hyp = normalize_wer_text(hypothesis);
+    let reference = normalize_wer_text(reference);
+    let errors = word_edit_distance(&hyp, &reference);
+    let ref_words = reference.len();
+    let wer = if ref_words == 0 {
+        0.0
+    } else {
+        errors as f64 / ref_words as f64
+    };
+    (wer, ref_words, errors)
+}
+
+fn read_manifest_wav(path: &Path) -> Result<WavPcm> {
+    let file = fs::File::open(path)?;
+    let wav = read_wav(file)?;
+    if wav.format.sample_rate_hz != DEFAULT_SAMPLE_RATE_HZ || wav.format.channels != 1 {
+        return Err(Error::Config {
+            field: "bench.manifest.wav".into(),
+            message: format!(
+                "{} is not {DEFAULT_SAMPLE_RATE_HZ} Hz mono (got {} Hz, {} ch)",
+                path.display(),
+                wav.format.sample_rate_hz,
+                wav.format.channels
+            ),
+        });
+    }
+    Ok(wav)
+}
+
+fn mix_manifest_pcm(
+    samples: &[i16],
+    noise: &str,
+    snr: f32,
+    rng: &mut crate::vad_lab::Rng,
+) -> Result<Vec<i16>> {
+    if noise == "clean" {
+        return Ok(samples.to_vec());
+    }
+    if samples.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mixed = crate::vad_lab::noise_sequence(noise, samples.len(), rng)?;
+    Ok(crate::vad_lab::mix(samples, &mixed, snr))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn benchmark_stt_manifest(
+    stt: &mut LiveStt,
+    config: &AgentConfig,
+    cancel: &Cancel,
+    fingerprint: &Fingerprint,
+    manifest: &Path,
+    noise: &str,
+    snr: f32,
+    seed: u64,
+    warmup: usize,
+    load_ms: u128,
+    default_dataset: String,
+    memory_before_load: usize,
+    memory_after_load: usize,
+) -> Result<Vec<Record>> {
+    if !NOISE_KINDS.contains(&noise) {
+        return Err(Error::Config {
+            field: "bench.noise".into(),
+            message: format!("unsupported noise {noise:?}"),
+        });
+    }
+    let text = fs::read_to_string(manifest)?;
+    let base = manifest.parent().unwrap_or_else(|| Path::new("."));
+    let items = parse_stt_manifest(&text, base, &default_dataset)?;
+    if items.is_empty() {
+        return Err(Error::Config {
+            field: "bench.manifest".into(),
+            message: "manifest has no utterances".into(),
+        });
+    }
+    let n_utt = items.len();
+    let snr_db = (noise != "clean").then_some(snr);
+    let load_clip = |item: &ManifestItem, index: usize| -> Result<(String, Utterance, u128)> {
+        let mut rng = crate::vad_lab::Rng(seed.wrapping_add(index as u64));
+        let wav = read_manifest_wav(&item.path)?;
+        let samples = mix_manifest_pcm(&wav.samples, noise, snr, &mut rng)?;
+        let input_audio_ms = pcm_duration_ms(samples.len());
+        let utterance = pcm_to_utterance(&samples)?;
+        let case = item
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("utterance")
+            .to_owned();
+        Ok((case, utterance, input_audio_ms))
+    };
+    let (_, utterance, _) = load_clip(&items[0], 0)?;
+    let first_started = Instant::now();
+    let _ = stt.transcribe(&utterance, cancel)?;
+    let first_call_ms = first_started.elapsed().as_millis();
+    drop(utterance);
+    for _ in 0..warmup.saturating_sub(1) {
+        let (_, utterance, _) = load_clip(&items[0], 0)?;
+        let _ = stt.transcribe(&utterance, cancel)?;
+    }
+    let threads = stt.intra_op_threads().and_then(|n| usize::try_from(n).ok());
+    let mut records = Vec::with_capacity(n_utt);
+    let mut memory_peak = memory_after_load.max(required_rss("after ASR first call")?);
+    for (index, item) in items.iter().enumerate() {
+        let (case, utterance, input_audio_ms) = load_clip(item, index)?;
+        let started = Instant::now();
+        let transcript = stt.transcribe(&utterance, cancel)?;
+        let elapsed_ms = started.elapsed().as_millis();
+        let (wer, ref_words, errors) = word_error_rate(&transcript.text, &item.reference);
+        memory_peak = memory_peak.max(required_rss("during ASR benchmark")?);
+        drop(utterance);
+        records.push(Record {
+            schema_version: SCHEMA_VERSION,
+            fingerprint: fingerprint.clone(),
+            component: "stt".into(),
+            model: config.stt_model.as_str().into(),
+            backend: Some(
+                stt.backend_id()
+                    .unwrap_or(fingerprint.ggml_backend.as_str())
+                    .to_string(),
+            ),
+            case,
+            elapsed_ms,
+            first_output_ms: Some(elapsed_ms),
+            output_units: Some(transcript.text.len()),
+            prompt_tokens: None,
+            generated_tokens: None,
+            prompt_tokens_per_second: None,
+            generated_tokens_per_second: None,
+            word_match: None,
+            word_match_threshold: None,
+            input_audio_ms: Some(input_audio_ms),
+            generated_audio_ms: None,
+            real_time_factor: Some(real_time_factor(elapsed_ms, input_audio_ms)),
+            transcript: Some(transcript.text),
+            response: None,
+            memory_before_load_bytes: Some(memory_before_load),
+            memory_after_load_bytes: Some(memory_after_load),
+            memory_peak_bytes: None,
+            wer: Some(wer),
+            ref_words: Some(ref_words),
+            errors: Some(errors),
+            noise: Some(noise.to_owned()),
+            snr_db,
+            threads,
+            load_ms: Some(load_ms),
+            first_call_ms: Some(first_call_ms),
+            audio_ms: Some(input_audio_ms),
+            dataset: Some(item.dataset.clone()),
+            n_utt: Some(n_utt),
+            passed: true,
         });
     }
     for record in &mut records {
@@ -489,6 +806,17 @@ fn benchmark_llm(
             memory_before_load_bytes: None,
             memory_after_load_bytes: None,
             memory_peak_bytes: None,
+            wer: None,
+            ref_words: None,
+            errors: None,
+            noise: None,
+            snr_db: None,
+            threads: None,
+            load_ms: None,
+            first_call_ms: None,
+            audio_ms: None,
+            dataset: None,
+            n_utt: None,
             passed,
         });
     }
@@ -582,6 +910,17 @@ fn benchmark_tts(
             memory_before_load_bytes: Some(memory_before_load),
             memory_after_load_bytes: Some(memory_after_load),
             memory_peak_bytes: None,
+            wer: None,
+            ref_words: None,
+            errors: None,
+            noise: None,
+            snr_db: None,
+            threads: None,
+            load_ms: None,
+            first_call_ms: None,
+            audio_ms: None,
+            dataset: None,
+            n_utt: None,
             passed: !samples.is_empty(),
         });
         pcm_by_case.push(samples);
@@ -875,6 +1214,17 @@ mod tests {
             memory_before_load_bytes: None,
             memory_after_load_bytes: None,
             memory_peak_bytes: None,
+            wer: None,
+            ref_words: None,
+            errors: None,
+            noise: None,
+            snr_db: None,
+            threads: None,
+            load_ms: None,
+            first_call_ms: None,
+            audio_ms: None,
+            dataset: None,
+            n_utt: None,
             passed: true,
         }
     }
@@ -935,6 +1285,17 @@ mod tests {
             memory_before_load_bytes: None,
             memory_after_load_bytes: None,
             memory_peak_bytes: None,
+            wer: None,
+            ref_words: None,
+            errors: None,
+            noise: None,
+            snr_db: None,
+            threads: None,
+            load_ms: None,
+            first_call_ms: None,
+            audio_ms: None,
+            dataset: None,
+            n_utt: None,
             passed: true,
         };
         let llm = Record {
@@ -1155,5 +1516,47 @@ mod tests {
                 + TtsModel::ALL.len() * tts_cases,
             SttModel::ALL.len() * 4 + V0_LLM_MODELS.len() * 5 + TtsModel::ALL.len() * 3
         );
+    }
+
+    #[test]
+    fn bench_wer_counts_insert_delete_substitute_and_empty() {
+        let sub = word_error_rate("a x c", "a b c");
+        assert_eq!(sub, (1.0 / 3.0, 3, 1));
+        let del = word_error_rate("a c", "a b c");
+        assert_eq!(del, (1.0 / 3.0, 3, 1));
+        let ins = word_error_rate("a b c", "a b");
+        assert_eq!(ins, (0.5, 2, 1));
+        assert_eq!(word_error_rate("", ""), (0.0, 0, 0));
+        assert_eq!(word_error_rate("Hello, world!", "hello world"), (0.0, 2, 0));
+        assert_eq!(word_error_rate("don't", "don't"), (0.0, 1, 0));
+    }
+
+    #[test]
+    fn bench_wer_normalizer_is_shared_across_models() {
+        assert_eq!(
+            normalize_wer_text("It's well-known, isn\u{2019}t it?"),
+            ["it's", "wellknown", "isn't", "it"]
+        );
+        assert_eq!(
+            normalize_wer_text("co\u{2011}op  A\u{2013}B   HELLO"),
+            ["coop", "ab", "hello"]
+        );
+        assert_eq!(normalize_wer_text("  Foo,\nBAR.  "), ["foo", "bar"]);
+    }
+
+    #[test]
+    fn bench_parses_manifest_tsv_and_skips_blank_lines() {
+        let dir = std::env::temp_dir();
+        let text = "\nrel/a.wav\thello world\n\n/abs/b.wav\tsecond\r\n";
+        let items = parse_stt_manifest(text, &dir, "librispeech-test-clean").expect("parse");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].path, dir.join("rel/a.wav"));
+        assert_eq!(items[0].reference, "hello world");
+        assert_eq!(items[0].dataset, "librispeech-test-clean");
+        assert_eq!(items[1].path, PathBuf::from("/abs/b.wav"));
+        assert_eq!(items[1].reference, "second");
+        let tagged = parse_stt_manifest("a.wav\thi\tcustom-set\n", &dir, "default").expect("tag");
+        assert_eq!(tagged[0].dataset, "custom-set");
+        assert!(parse_stt_manifest("no-tab-here", &dir, "default").is_err());
     }
 }
