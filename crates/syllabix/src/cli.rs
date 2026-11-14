@@ -64,6 +64,27 @@ pub enum Commands {
         /// Yaml STT model id measured in this child process.
         #[arg(long, value_name = "ID")]
         model: String,
+        /// TSV corpus (`wav_path<TAB>reference text`). Measures real WER when set.
+        #[arg(long, value_name = "TSV")]
+        manifest: Option<PathBuf>,
+        /// Noise mixed into each utterance (`clean` skips mixing).
+        #[arg(long, value_name = "KIND", default_value = "clean")]
+        noise: String,
+        /// Target signal-to-noise ratio in dB when mixing.
+        #[arg(long, value_name = "DB", default_value_t = 10.0)]
+        snr: f32,
+        /// RNG seed for synthetic noise.
+        #[arg(long, default_value_t = 7)]
+        seed: u64,
+        /// Unrecorded transcriptions of the first utterance after load.
+        #[arg(long, default_value_t = 1)]
+        warmup: usize,
+        /// Intra-op threads for engines that already expose a setter.
+        #[arg(long, value_name = "N")]
+        threads: Option<usize>,
+        /// Dataset id stored on each JSONL row when the TSV has no third column.
+        #[arg(long, value_name = "ID", default_value = "librispeech-test-clean")]
+        dataset: String,
     },
     /// Private worker used to isolate one TTS model's host-memory measurement.
     #[command(hide = true)]
@@ -139,7 +160,19 @@ pub fn execute(cli: Cli) -> Result<()> {
         #[cfg(not(coverage))]
         Commands::Bench { out } => crate::bench::run(out),
         #[cfg(not(coverage))]
-        Commands::BenchAsrWorker { out, model } => crate::bench::run_asr_worker(out, model),
+        Commands::BenchAsrWorker {
+            out,
+            model,
+            manifest,
+            noise,
+            snr,
+            seed,
+            warmup,
+            threads,
+            dataset,
+        } => crate::bench::run_asr_worker(
+            out, model, manifest, noise, snr, seed, warmup, threads, dataset,
+        ),
         #[cfg(not(coverage))]
         Commands::BenchTtsWorker { out, model } => crate::bench::run_tts_worker(out, model),
         #[cfg(not(coverage))]
@@ -314,9 +347,70 @@ mod tests {
         ])
         .expect("parse worker");
         match cli.command {
-            Commands::BenchAsrWorker { out, model } => {
+            Commands::BenchAsrWorker {
+                out,
+                model,
+                manifest,
+                noise,
+                snr,
+                seed,
+                warmup,
+                threads,
+                dataset,
+            } => {
                 assert_eq!(out, PathBuf::from("worker.jsonl"));
                 assert_eq!(model, "whisper-small");
+                assert_eq!(manifest, None);
+                assert_eq!(noise, "clean");
+                assert_eq!(snr, 10.0);
+                assert_eq!(seed, 7);
+                assert_eq!(warmup, 1);
+                assert_eq!(threads, None);
+                assert_eq!(dataset, "librispeech-test-clean");
+            }
+            _ => panic!("expected ASR worker"),
+        }
+    }
+
+    #[test]
+    fn parses_asr_worker_manifest_and_noise_flags() {
+        let cli = Cli::try_parse_from([
+            "syllabix",
+            "bench-asr-worker",
+            "--out",
+            "worker.jsonl",
+            "--model",
+            "whisper-small",
+            "--manifest",
+            "corpus/manifest.tsv",
+            "--noise",
+            "white",
+            "--snr",
+            "5",
+            "--seed",
+            "3",
+            "--warmup",
+            "0",
+            "--threads",
+            "4",
+        ])
+        .expect("parse worker flags");
+        match cli.command {
+            Commands::BenchAsrWorker {
+                manifest,
+                noise,
+                snr,
+                seed,
+                warmup,
+                threads,
+                ..
+            } => {
+                assert_eq!(manifest, Some(PathBuf::from("corpus/manifest.tsv")));
+                assert_eq!(noise, "white");
+                assert_eq!(snr, 5.0);
+                assert_eq!(seed, 3);
+                assert_eq!(warmup, 0);
+                assert_eq!(threads, Some(4));
             }
             _ => panic!("expected ASR worker"),
         }
@@ -479,6 +573,13 @@ mod tests {
                 command: Commands::BenchAsrWorker {
                     out: PathBuf::from("worker.jsonl"),
                     model: String::from("whisper-small"),
+                    manifest: None,
+                    noise: String::from("clean"),
+                    snr: 10.0,
+                    seed: 7,
+                    warmup: 1,
+                    threads: None,
+                    dataset: String::from("librispeech-test-clean"),
                 },
             },
             Cli {

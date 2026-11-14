@@ -45,6 +45,8 @@ impl Stt for LiveStt {
 impl LiveStt {
     pub fn backend_id(&self) -> Option<&str> { None }
     pub fn with_language(self, _: &str) -> Result<Self> { Ok(self) }
+    pub fn with_threads(self, _: i32) -> Self { self }
+    pub fn intra_op_threads(&self) -> Option<i32> { None }
 }
 pub fn build_stt(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>) -> Result<LiveStt> { Err(unavailable("stt")) }
 pub fn build_tts(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>) -> Result<LiveTts> { Err(unavailable("tts")) }
@@ -83,6 +85,9 @@ mod tests {
         let frame = crate::AudioFrame { seq: 0, sample_rate_hz: 16_000, channels: 1, samples: vec![0], capture_pcm: None };
         assert!(stt.push_frame(&frame, &cancel).is_err());
         stt.cancel_turn(crate::TurnId(0));
+        assert!(stt.intra_op_threads().is_none());
+        let stt = stt.with_threads(4);
+        assert!(stt.intra_op_threads().is_none());
         assert!(stt.with_language("en").is_ok());
         let cache = ModelCache::new(
             std::env::temp_dir().join(format!("syllabix-real-coverage-{}", std::process::id())),
