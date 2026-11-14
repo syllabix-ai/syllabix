@@ -45,6 +45,8 @@ impl Stt for LiveStt {
 impl LiveStt {
     pub fn backend_id(&self) -> Option<&str> { None }
     pub fn with_language(self, _: &str) -> Result<Self> { Ok(self) }
+    pub fn with_threads(self, _: i32) -> Self { self }
+    pub fn intra_op_threads(&self) -> Option<i32> { None }
 }
 pub fn build_stt(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>) -> Result<LiveStt> { Err(unavailable("stt")) }
 pub fn build_tts(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>) -> Result<LiveTts> { Err(unavailable("tts")) }

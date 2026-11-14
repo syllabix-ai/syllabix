@@ -96,6 +96,24 @@ impl WhisperStt {
         Ok(self)
     }
 
+    /// whisper.cpp `n_threads` for this adapter. Other STT engines ignore this.
+    pub fn with_threads(self, n: i32) -> Self {
+        let n = n.max(1);
+        self.decoder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_n_threads(n);
+        self
+    }
+
+    /// Effective whisper.cpp thread count after [`Self::with_threads`].
+    pub fn intra_op_threads(&self) -> Option<i32> {
+        self.decoder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .n_threads()
+    }
+
     /// True when decode detects the language per utterance instead of pinning one.
     pub fn auto_detects(&self) -> bool {
         self.language == LANGUAGE_AUTO
@@ -158,11 +176,16 @@ impl Stt for WhisperStt {
 trait Decoder: Send {
     /// Decode one utterance. Returns `(text, effective_language)`.
     fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<(String, String)>;
+    fn set_n_threads(&mut self, _n: i32) {}
+    fn n_threads(&self) -> Option<i32> {
+        None
+    }
 }
 
 #[cfg(feature = "ggml")]
 struct WhisperDecoder {
     ctx: WhisperContext,
+    n_threads: i32,
 }
 
 #[cfg(feature = "ggml")]
@@ -172,7 +195,10 @@ impl WhisperDecoder {
             provider: "whisper.cpp",
             message,
         })?;
-        Ok(Self { ctx })
+        Ok(Self {
+            ctx,
+            n_threads: thread_count(),
+        })
     }
 }
 
@@ -186,7 +212,7 @@ impl Decoder for WhisperDecoder {
         match unsafe {
             self.ctx.decode(
                 pcm,
-                thread_count(),
+                self.n_threads,
                 language,
                 Some(abort_on_shutdown),
                 abort_user,
@@ -206,6 +232,14 @@ impl Decoder for WhisperDecoder {
                 message,
             }),
         }
+    }
+
+    fn set_n_threads(&mut self, n: i32) {
+        self.n_threads = n.max(1);
+    }
+
+    fn n_threads(&self) -> Option<i32> {
+        Some(self.n_threads)
     }
 }
 
