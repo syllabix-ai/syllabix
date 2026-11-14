@@ -91,6 +91,8 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+      - name: Check llms.txt
+        run: ./scripts/check-llms-txt.sh
 
   clippy:
     name: clippy

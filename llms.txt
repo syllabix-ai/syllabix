@@ -1,0 +1,54 @@
+# Syllabix
+
+> A local-first voice agent shipped as the `syllabix` binary from GitHub Releases and the `syllabix-core` Rust library.
+
+## Start here
+
+- [Install](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/install.md): How do I download and run the binary?
+- [CLI](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/cli.md): Which commands and flags does the binary expose?
+- [Embed](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/embed.md): How do I use Syllabix from another app?
+- [syllabix.yaml](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/syllabix-yaml.md): How do I change models and other settings?
+- [Troubleshooting](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/troubleshooting.md): What do I do when `run` fails?
+
+## Don't assume
+
+- The `syllabix` CLI binary comes from GitHub Releases, not crates.io.
+- The library crate is `syllabix-core`.
+- The default setup is fully local; online stages are optional.
+- Barge-in is opt-in on `run`.
+- `syllabix serve` serves speech stages only.
+- Do not invent APIs, flags, or config keys, or use versions remembered from training; read the linked page.
+- Docs on `main` track `main`; use the docs at a release tag to match an installed binary.
+
+## Use
+
+- [Docs index](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/README.md): Where is the user and config map?
+- [Install](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/install.md): How do I install the CLI?
+- [CLI](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/cli.md): What can I pass to `run`, `init`, and `serve`?
+- [syllabix.yaml](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/syllabix-yaml.md): Which keys belong in the optional project file?
+- [Configuration](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/configuration.md): Which pages cover yaml, engines, and diagnostics?
+- [Engines](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/engines.md): Which STT, LLM, and TTS ids can I select?
+- [Troubleshooting](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/troubleshooting.md): How do I fix mic, echo, key, and first-run problems?
+- [FAQ](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/faq.md): What are the usual first-run and barge-in questions?
+
+## Embed
+
+- [Embed](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/embed.md): How do I embed Syllabix in another Rust app?
+- [Architecture](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/architecture.md): How does the pipeline work, and what data leaves the machine?
+- [syllabix-core on docs.rs](https://docs.rs/syllabix-core): What is the published library API?
+
+## Contribute
+
+- [AGENTS.md](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/AGENTS.md): What rules apply when changing this repository?
+- [Contributing](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/contributing.md): How do I build, test, and package?
+- [Issues](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/issues.md): How do I report a bug, feature, or security issue?
+
+## Optional
+
+- [Compare](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/compare.md): How does Syllabix differ from other voice stacks?
+- [Diagnostics](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/diagnostics.md): How do I capture turn timelines and audio dumps?
+- [Reference profiles](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/reference-profiles.md): How is conversation quality measured?
+- [Eval](https://github.com/syllabix-ai/syllabix/tree/main/docs/eval): Where are component-eval scenarios and submitted runs?
+- [Workload benchmark](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/docs/workload_benchmark/workload_benchmark.md): Where are per-model STT, LLM, and TTS timings?
+- [Fully local demo yaml](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/examples/demo-fully-self-hosted-voice-agents.yaml): What does a fully local yaml look like?
+- [OpenAI LLM demo yaml](https://raw.githubusercontent.com/syllabix-ai/syllabix/main/examples/demo-open-ai-llm-voice-agent.yaml): What does an OpenAI-LLM yaml look like?

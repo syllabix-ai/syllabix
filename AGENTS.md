@@ -1,5 +1,7 @@
 # AGENTS.md
 
+Using Syllabix rather than changing it? Start with [llms.txt](llms.txt).
+
 ## AI Attribution — MANDATORY
 
 No in-file tags. Git trailers are the audit trail.

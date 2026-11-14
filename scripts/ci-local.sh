@@ -10,6 +10,10 @@ export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
 echo "== rustfmt =="
 cargo fmt --all -- --check
 
+echo "== llms.txt =="
+chmod +x scripts/check-llms-txt.sh
+scripts/check-llms-txt.sh
+
 echo "== clippy =="
 cargo clippy --workspace --all-targets -- -D warnings
 
