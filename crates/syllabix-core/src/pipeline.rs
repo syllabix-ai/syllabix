@@ -24,24 +24,6 @@ pub fn is_blank_stt(text: &str) -> bool {
     text.trim().is_empty()
 }
 
-fn tts_backend_id<T: 'static>(tts: &T) -> Option<&str> {
-    let provider = tts as &dyn std::any::Any;
-    if let Some(qwen) = provider.downcast_ref::<crate::tts::QwenTts>() {
-        return qwen.backend_id();
-    }
-    #[cfg(any(coverage, feature = "ggml"))]
-    {
-        provider
-            .downcast_ref::<crate::real::LiveTts>()
-            .and_then(crate::real::LiveTts::backend_id)
-    }
-    #[cfg(not(any(coverage, feature = "ggml")))]
-    {
-        let _ = provider;
-        None
-    }
-}
-
 /// How the loop should finish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopMode {
@@ -884,7 +866,7 @@ where
     } = stages;
     let tts_provider = tts.name();
     let tts_model = tts.model_id().map(str::to_string);
-    let tts_backend = tts_backend_id(&tts).map(str::to_string);
+    let tts_backend = tts.backend_id().map(str::to_string);
     let caps: QueueCaps = config.defaults.queues;
     let (frame_tx, frame_rx, frame_stats) = bounded("frames", caps.frames);
     // Turn control stays blocking and ordered so VAD remains the single

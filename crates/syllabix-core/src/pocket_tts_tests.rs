@@ -274,6 +274,7 @@ fn mock_engine_reports_provider_identity() {
     let tts = engine(MockTokenizer::ids(vec![1, 2, 3]), 99, 3);
     assert_eq!(tts.name(), "local");
     assert_eq!(tts.model_id(), Some("pocket-tts"));
+    assert!(tts.backend_id().is_none());
 }
 
 #[test]

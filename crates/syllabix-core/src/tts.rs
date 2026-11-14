@@ -450,6 +450,10 @@ impl Tts for QwenTts {
         Some(self.model.model_id())
     }
 
+    fn backend_id(&self) -> Option<&str> {
+        self.backend
+    }
+
     fn synthesize_chunk(
         &mut self,
         token: &TokenChunk,
@@ -1178,6 +1182,30 @@ mod tests {
         let engine = ScriptedEngine::new();
         let tts = QwenTts::with_engine(Box::new(engine), TtsModel::Qwen17);
         assert_eq!(tts.model_id(), Some("qwen3-tts-1.7b-base"));
+    }
+
+    #[test]
+    fn backend_id_is_qwen_specific_and_none_for_kokoro() {
+        let mut qwen = QwenTts::with_engine(Box::new(ScriptedEngine::new()), TtsModel::Qwen06);
+        assert_eq!(Tts::backend_id(&qwen), None);
+        qwen.backend = Some("cpu");
+        assert_eq!(Tts::backend_id(&qwen), Some("cpu"));
+        assert_eq!(qwen.backend_id(), Some("cpu"));
+        let kokoro = KokoroTts::with_engine(Box::new(ScriptedEngine::new()));
+        assert_eq!(Tts::backend_id(&kokoro), None);
+    }
+
+    #[cfg(all(not(coverage), feature = "ggml"))]
+    #[test]
+    fn live_tts_delegates_backend_id_to_the_inner_engine() {
+        let mut qwen = QwenTts::with_engine(Box::new(ScriptedEngine::new()), TtsModel::Qwen06);
+        qwen.backend = Some("metal");
+        let live = crate::real::LiveTts::Qwen(qwen);
+        assert_eq!(Tts::backend_id(&live), Some("metal"));
+        assert_eq!(live.backend_id(), Some("metal"));
+        let kokoro =
+            crate::real::LiveTts::Kokoro(KokoroTts::with_engine(Box::new(ScriptedEngine::new())));
+        assert_eq!(Tts::backend_id(&kokoro), None);
     }
 
     #[cfg(all(not(coverage), feature = "ggml"))]

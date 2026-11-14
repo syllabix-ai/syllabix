@@ -504,7 +504,7 @@ pub fn scripted_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{AudioSink, Stt, Vad};
+    use crate::providers::{AudioSink, Stt, Tts, Vad};
 
     #[test]
     fn vad_emits_start_and_end_per_turn() {
@@ -540,6 +540,7 @@ mod tests {
         assert_eq!(FakeStt.name(), d.stt.as_str());
         assert_eq!(FakeLlm::new().name(), d.llm.as_str());
         assert_eq!(FakeTts.name(), d.tts.as_str());
+        assert!(FakeTts.backend_id().is_none());
     }
 
     #[test]

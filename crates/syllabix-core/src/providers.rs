@@ -175,6 +175,7 @@ mod tests {
         let tts = StubTts;
         assert_eq!(tts.name(), "stub-tts");
         assert!(tts.model_id().is_none());
+        assert!(tts.backend_id().is_none());
     }
 
     #[test]
@@ -249,6 +250,12 @@ pub trait Tts: Send {
     /// Weight id for diagnostics sidecars. `None` means the fake and test
     /// providers; live engines report the loaded asset id.
     fn model_id(&self) -> Option<&str> {
+        None
+    }
+
+    /// Compute backend confirmed at load (`cpu` / `metal` / `vulkan`).
+    /// `None` for engines that have no adaptive placement decision.
+    fn backend_id(&self) -> Option<&str> {
         None
     }
 
