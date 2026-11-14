@@ -3,7 +3,6 @@
 //! Pipeline frames stay 16 kHz mono PCM16. Devices may run at another rate or
 //! channel count; conversion is always on.
 
-mod convert;
 mod devices;
 #[cfg(feature = "device-audio")]
 mod echo;
@@ -11,12 +10,7 @@ mod fixture;
 #[cfg(feature = "device-audio")]
 mod native;
 mod ring;
-mod wav;
 
-pub use convert::{
-    f32_to_i16, i16_to_f32, live_buffer_ceiling_bytes, sine_i16, FrameSplitter, PcmConverter,
-    PcmFormat, AUDIO_LIVE_BYTES_CEILING, FRAME_SPLITTER_MAX,
-};
 pub use devices::{
     input_privacy_hint, select_input, select_output, DeviceChoice, DeviceInfo, DeviceInventory,
 };
@@ -31,7 +25,12 @@ pub use native::{
     backend_name, probe_device_names, NativeCapture, NativePlayback, SelectedCpalDevice,
 };
 pub use ring::{device_ring_capacity_samples, SampleRing, DEVICE_RING_MS};
-pub use wav::{read_wav, write_wav, WavPcm};
+pub(crate) use syllabix_native::audio::{convert, wav};
+pub use syllabix_native::audio::{
+    f32_to_i16, i16_to_f32, live_buffer_ceiling_bytes, sine_i16, FrameSplitter, PcmConverter,
+    PcmFormat, AUDIO_LIVE_BYTES_CEILING, FRAME_SPLITTER_MAX,
+};
+pub use syllabix_native::audio::{read_wav, write_wav, WavPcm};
 
 use crate::error::Result;
 

@@ -26,7 +26,7 @@ default = ["full"]
 # Session defaults, run_live, and load_real_providers (engines + devices + cloud).
 full = ["ggml", "device-audio", "cloud"]
 # Optional CMake build of whisper.cpp / llama.cpp via syllabix-native.
-ggml = ["dep:syllabix-native", "syllabix-native/cpp"]
+ggml = ["syllabix-native/cpp"]
 # Optional microphone/speaker I/O plus echo cancellation (ALSA headers on Linux).
 device-audio = ["dep:cpal", "dep:sonora"]
 # Cloud (online) adapters in load_real_providers. OpenAiLlm always compiles; RemoteStt / RemoteTts need this feature.
@@ -53,7 +53,7 @@ serde_json.workspace = true
 tokenizers.workspace = true
 htmd.workspace = true
 tracing.workspace = true
-syllabix-native = { workspace = true, optional = true }
+syllabix-native = { workspace = true, features = ["models", "onnx"] }
 sonora = { workspace = true, optional = true }
 # Kokoro G2P: Misaki US lexicon in-process. default-features includes
 # espeak-ng (GPL + extra dylib) — keep that off.

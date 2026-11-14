@@ -37,16 +37,20 @@ pub mod testing;
 pub mod trajectory;
 pub mod tts;
 pub mod turn_debug;
-pub mod types;
+#[rustfmt::skip]
+pub mod types { pub use syllabix_native::types::*; }
 pub mod vad;
 
-mod cancel;
-mod error;
+#[rustfmt::skip]
+mod cancel { pub use syllabix_native::cancel::*; }
+#[rustfmt::skip]
+mod error { pub use syllabix_native::error::*; }
 mod fake;
 mod harness_trace;
 #[cfg(all(feature = "ggml", feature = "device-audio"))]
 mod live;
-mod onnx;
+#[rustfmt::skip]
+mod onnx { pub use syllabix_native::onnx::*; }
 mod providers;
 mod session;
 
