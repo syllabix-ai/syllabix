@@ -156,6 +156,6 @@ fn speech_fixture_has_speech_frames() {
     }
     assert!(
         above >= MIN_SPEECH_FRAMES as u32,
-        "8 kHz Silero scored {above} speech frames on speech.wav (need >={MIN_SPEECH_FRAMES})"
+        "Silero scored {above} speech frames on speech.wav (need >={MIN_SPEECH_FRAMES})"
     );
 }

@@ -3,8 +3,8 @@
 //! The speaker callback records the samples actually submitted to the audio
 //! device. [`EchoController`] converts that render reference and microphone
 //! capture to 16 kHz mono, processes synchronized 10 ms blocks through WebRTC
-//! AEC3, and returns cleaned 16 kHz capture samples for ASR. Silero performs
-//! its own separate 8 kHz conversion in the VAD adapter.
+//! AEC3, and returns cleaned 16 kHz capture samples for ASR. Silero scores
+//! the same 16 kHz frames in the VAD adapter.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
