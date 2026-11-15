@@ -6,6 +6,8 @@ Depend on the library from [crates.io](https://crates.io/crates/syllabix-core). 
 
 Only need speech-to-text? Depend on [`syllabix-stt`](../crates/syllabix-stt/README.md) instead. Its features pick the engines, and `remote` alone builds without C++.
 
+Only need text-to-speech? Depend on [`syllabix-tts`](../crates/syllabix-tts/README.md) instead. Its features pick the engines, and `remote` alone builds without C++.
+
 Most apps use the defaults (same as `syllabix run`). The first build compiles the bundled whisper.cpp / llama.cpp with CMake and a C++ compiler ([Host compile](#host-compile)). Nothing is downloaded at build time. Models still download on first run ([Cache](#cache)).
 
 ```bash
