@@ -13,6 +13,7 @@ struct whisper_context;
 struct syllabix_llama;
 struct syllabix_qwen_tts;
 struct syllabix_qwen_asr;
+struct syllabix_mio;
 
 void syllabix_native_hush_logs(void);
 
@@ -242,6 +243,31 @@ int syllabix_parakeet_model_loaded(const struct syllabix_parakeet *pk);
 /* 0 = ok, -1 = error (message in out). pcm: 16 kHz mono f32. */
 int syllabix_parakeet_transcribe(struct syllabix_parakeet *pk, const float *pcm, int n_samples,
                                  char *out, int out_cap);
+
+/* Indic-Mio Qwen3 GGUF. Samples speech-token codes (ids 151669–164468
+ * minus 151669). Prompt, stop ids, and top-p/temp 0.9 match the model
+ * card. `n_gpu_layers` is 0 on CPU and -1 to offload (Metal/Vulkan). */
+struct syllabix_mio *syllabix_mio_load(
+    const char *path,
+    int n_threads,
+    int n_gpu_layers);
+void syllabix_mio_free(struct syllabix_mio *mio);
+
+/*
+ * 0 = ok, 1 = cancelled, -1 = error.
+ * Tokenize with parse_special and no BOS. `code_cb` receives each speech
+ * code. Stop ids 151645 / 151643 are suppressed until the first speech
+ * token. `max_tokens` caps the generation loop (about 750 ≈ 30 s).
+ */
+int syllabix_mio_generate(
+    struct syllabix_mio *mio,
+    const char *text,
+    unsigned int seed,
+    int max_tokens,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    void (*code_cb)(int32_t code, void *user),
+    void *code_user);
 
 #ifdef __cplusplus
 }

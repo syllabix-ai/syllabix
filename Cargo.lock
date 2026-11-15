@@ -2359,6 +2359,7 @@ dependencies = [
  "cmake",
  "ort",
  "ort-sys",
+ "realfft",
  "serde_json",
  "sha2",
  "thiserror 2.0.17",
@@ -2370,7 +2371,6 @@ dependencies = [
 name = "syllabix-stt"
 version = "0.1.0"
 dependencies = [
- "realfft",
  "serde_json",
  "syllabix-native",
  "tokenizers",

@@ -116,6 +116,9 @@ pub struct AgentConfig {
     /// TTS language code (`en`). Qwen3-TTS speaks this language; Kokoro
     /// ignores it (the ONNX voice is fixed).
     pub tts_language: String,
+    /// Indic-Mio speaker id (`hi-female`, `hi-male`, `ta-female`). Empty for
+    /// other engines.
+    pub tts_voice: String,
     /// Diagnostics: write per-turn sidecars with the monotonic turn timeline
     /// (`diagnostics.timestamps`). `diagnostics.audio` implies this.
     pub diagnostics_timestamps: bool,
@@ -173,6 +176,7 @@ impl AgentConfig {
             tts_base_url: None,
             tts_compute: TtsCompute::Auto,
             tts_language: "en".to_string(),
+            tts_voice: String::new(),
             diagnostics_timestamps: false,
             diagnostics_audio: false,
             diagnostics_trajectory: false,
@@ -651,11 +655,10 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
 
     let tts = mapping(required(pipeline, "pipeline.tts", "tts")?, "pipeline.tts")?;
     deny_yaml_api_key(tts, "pipeline.tts", TTS_API_KEY_ENV)?;
-    deny_unknown(
-        tts,
-        "pipeline.tts",
-        &["provider", "model", "language", "compute", "base_url"],
-    )?;
+    const TTS_YAML_KEYS: &[&str] = &[
+        "provider", "model", "language", "voice", "compute", "base_url",
+    ];
+    deny_unknown(tts, "pipeline.tts", TTS_YAML_KEYS)?;
     let tts_provider = parse_tts(required_string(tts, "pipeline.tts.provider", "provider")?)?;
     let tts_model_raw = required_string(tts, "pipeline.tts.model", "model")?;
     let (tts_model, tts_model_id) = match tts_provider {
@@ -668,11 +671,31 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
             parse_online_model_id("pipeline.tts.model", tts_model_raw)?,
         ),
     };
-    // Qwen3-TTS speaks this language; Kokoro ignores it. `auto` is an
-    // STT concept and stays rejected here.
+    // Qwen3-TTS speaks this language; Kokoro and indic-mio ignore it
+    // (the script picks the language). `auto` is an STT concept and stays
+    // rejected here unless the model is indic-mio.
     let tts_language = match optional_string(tts, "pipeline.tts", "language")? {
-        Some(value) => parse_tts_language(&value)?,
         None => "en".to_string(),
+        Some(value) if tts_model == TtsModel::IndicMio => value,
+        Some(value) => parse_tts_language(&value)?,
+    };
+    let tts_voice = match optional_string(tts, "pipeline.tts", "voice")? {
+        Some(value) => {
+            if tts_model != TtsModel::IndicMio {
+                return Err(Error::Config {
+                    field: "pipeline.tts.voice".into(),
+                    message: "is only valid with local indic-mio".into(),
+                });
+            }
+            parse_indic_mio_voice(&value)?
+        }
+        None => {
+            if tts_model == TtsModel::IndicMio {
+                "hi-female".to_string()
+            } else {
+                String::new()
+            }
+        }
     };
     let tts_compute = match optional_string(tts, "pipeline.tts", "compute")? {
         Some(value) => TtsCompute::parse(&value).ok_or_else(|| {
@@ -680,17 +703,21 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         })?,
         None => TtsCompute::Auto,
     };
+    const TTS_COMPUTE_LOCAL: &str = "qwen3-0.6, qwen3-1.7, or indic-mio";
     if tts_provider == TtsProvider::Online && tts_compute != TtsCompute::Auto {
         return Err(Error::Config {
             field: "pipeline.tts.compute".into(),
-            message: "is only valid with local qwen3-0.6 or qwen3-1.7".into(),
+            message: format!("is only valid with local {TTS_COMPUTE_LOCAL}"),
         });
     }
-    if tts_compute != TtsCompute::Auto && !matches!(tts_model, TtsModel::Qwen06 | TtsModel::Qwen17)
-    {
+    let compute_ok = matches!(
+        tts_model,
+        TtsModel::Qwen06 | TtsModel::Qwen17 | TtsModel::IndicMio
+    );
+    if tts_compute != TtsCompute::Auto && !compute_ok {
         return Err(Error::Config {
             field: "pipeline.tts.compute".into(),
-            message: "is only valid with qwen3-0.6 or qwen3-1.7".into(),
+            message: format!("is only valid with {TTS_COMPUTE_LOCAL}"),
         });
     }
     let tts_base_url = resolve_online_base_url(
@@ -744,6 +771,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         tts_base_url,
         tts_compute,
         tts_language,
+        tts_voice,
         diagnostics_timestamps,
         diagnostics_audio,
         diagnostics_trajectory,
@@ -1387,9 +1415,20 @@ fn parse_tts_model(value: &str) -> Result<TtsModel> {
         unsupported(
             "pipeline.tts.model",
             value,
-            "kokoro, qwen3-0.6, qwen3-1.7, pocket-tts",
+            "kokoro, qwen3-0.6, qwen3-1.7, pocket-tts, indic-mio",
         )
     })
+}
+
+fn parse_indic_mio_voice(value: &str) -> Result<String> {
+    match value {
+        "hi-female" | "hi-male" | "ta-female" => Ok(value.to_string()),
+        other => Err(unsupported(
+            "pipeline.tts.voice",
+            other,
+            "hi-female, hi-male, ta-female",
+        )),
+    }
 }
 
 /// `pipeline.tts.language`: same supported-code vocabulary as STT, but `auto`
@@ -2857,6 +2896,29 @@ pipeline:
             let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
             assert_eq!(cfg.tts_model, model);
         }
+        let indic = AgentConfig::v0().to_yaml().replace(
+            "model: pocket-tts\n    language",
+            "model: indic-mio\n    language",
+        );
+        let cfg = AgentConfig::parse_yaml(&indic).unwrap();
+        assert_eq!(cfg.tts_model, TtsModel::IndicMio);
+        assert_eq!(cfg.tts_voice, "hi-female");
+        let male = indic.replace(
+            "model: indic-mio\n    language: en",
+            "model: indic-mio\n    language: en\n    voice: hi-male",
+        );
+        assert_eq!(AgentConfig::parse_yaml(&male).unwrap().tts_voice, "hi-male");
+        let voiced = AgentConfig::v0().to_yaml().replace(
+            "    model: pocket-tts\n    language: en\n",
+            "    model: pocket-tts\n    language: en\n    voice: hi-female\n",
+        );
+        let err = AgentConfig::parse_yaml(&voiced).unwrap_err();
+        assert!(err.to_string().contains("pipeline.tts.voice"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("is only valid with local indic-mio"),
+            "{err}"
+        );
         for bad in ["qwen", "neutts", "large"] {
             let yaml = AgentConfig::v0()
                 .to_yaml()
@@ -2920,7 +2982,26 @@ pipeline:
             "    model: pocket-tts\n    language: en\n    compute: cpu\n",
         );
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
-        assert!(err.to_string().contains("only valid with qwen3"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("only valid with qwen3-0.6, qwen3-1.7, or indic-mio"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn indic_mio_accepts_compute_and_ignores_language_validation() {
+        let base = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: pocket-tts", "model: indic-mio");
+        let cfg = AgentConfig::parse_yaml(&base.replace(
+            "  tts:\n    provider: local\n    model: indic-mio\n    language: en\n",
+            "  tts:\n    provider: local\n    model: indic-mio\n    language: auto\n    compute: cpu\n",
+        ))
+        .unwrap();
+        assert_eq!(cfg.tts_model, TtsModel::IndicMio);
+        assert_eq!(cfg.tts_language, "auto");
+        assert_eq!(cfg.tts_compute, TtsCompute::Cpu);
     }
 
     fn online_tts_yaml(base_url: &str) -> String {

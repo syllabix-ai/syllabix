@@ -9,11 +9,12 @@
 //! | `pocket` | Pocket TTS ONNX (`pocket`) | No (ONNX Runtime) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
 //! | `kokoro` | Kokoro-82M ONNX ([`KokoroTts`]) | No (ONNX Runtime) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
 //! | `qwen3` | Qwen3-TTS ([`QwenTts`]) | Yes (CMake) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
+//! | (with `qwen3`) | Indic-Mio ([`IndicMioTts`]) | Yes (CMake + ONNX) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
 //! | `remote` | OpenAI-compatible `/audio/speech` (`remote`) | No (HTTP only) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
 //!
-//! Without `kokoro` or `qwen3` their types still exist and return an error
-//! when loaded. The remote engine reads its key from `SYLLABIX_TTS_API_KEY`
-//! only. Example: `examples/speak-wav.rs`.
+//! Without `kokoro` or `qwen3` their types still exist and
+//! return an error when loaded. The remote engine reads its key from
+//! `SYLLABIX_TTS_API_KEY` only. Example: `examples/speak-wav.rs`.
 
 // The types in the `Tts` signatures, so callers need no other crate.
 pub use syllabix_native::audio;
@@ -21,6 +22,10 @@ pub use syllabix_native::types::{GenerationId, SynthesizedAudio, TokenChunk, Tur
 pub use syllabix_native::{Cancel, Error, Result};
 
 mod engines;
+#[cfg(all(feature = "qwen3", any(feature = "kokoro", feature = "pocket")))]
+mod indic_mio;
+#[cfg(all(feature = "qwen3", any(feature = "kokoro", feature = "pocket")))]
+pub use indic_mio::{MioDecoder, INDIC_MIO_TEST_SEED};
 #[cfg(feature = "kokoro")]
 pub mod g2p;
 #[cfg(feature = "pocket")]
@@ -86,15 +91,18 @@ pub enum TtsModel {
     Qwen17,
     /// Pocket TTS English ONNX graph set.
     PocketTts,
+    /// Indic-Mio Qwen3 GGUF + MioCodec 24 kHz decoder.
+    IndicMio,
 }
 
 impl TtsModel {
     /// Every menu id, in documentation order.
-    pub const ALL: [TtsModel; 4] = [
+    pub const ALL: [TtsModel; 5] = [
         TtsModel::Kokoro,
         TtsModel::Qwen06,
         TtsModel::Qwen17,
         TtsModel::PocketTts,
+        TtsModel::IndicMio,
     ];
 
     /// Config / log name.
@@ -104,6 +112,7 @@ impl TtsModel {
             Self::Qwen06 => "qwen3-0.6",
             Self::Qwen17 => "qwen3-1.7",
             Self::PocketTts => "pocket-tts",
+            Self::IndicMio => "indic-mio",
         }
     }
 
@@ -121,6 +130,7 @@ impl TtsModel {
             // Same id as `pocket::POCKET_TTS_TEXT_CONDITIONER_ASSET` (checked in
             // pocket's tests); spelled out so this builds without `pocket`.
             Self::PocketTts => "pocket-tts-text-conditioner",
+            Self::IndicMio => INDIC_MIO_ASSET,
         }
     }
 
@@ -132,6 +142,7 @@ impl TtsModel {
             Self::Qwen06 => Some(QWEN_TTS_06B_MMPROJ_ASSET),
             Self::Qwen17 => Some(QWEN_TTS_MMPROJ_ASSET),
             Self::PocketTts => None,
+            Self::IndicMio => None,
         }
     }
 
@@ -142,6 +153,7 @@ impl TtsModel {
             Self::Qwen06 => "qwen3-tts-0.6b-base",
             Self::Qwen17 => "qwen3-tts-1.7b-base",
             Self::PocketTts => "pocket-tts",
+            Self::IndicMio => "indic-mio-q8",
         }
     }
 }
@@ -152,8 +164,15 @@ mod tests {
 
     #[test]
     fn tts_menu_ids_round_trip() {
-        let ids = ["kokoro", "qwen3-0.6", "qwen3-1.7", "pocket-tts"];
-        for (model, id) in TtsModel::ALL.into_iter().zip(ids) {
+        let ids: &[&str] = &[
+            "kokoro",
+            "qwen3-0.6",
+            "qwen3-1.7",
+            "pocket-tts",
+            "indic-mio",
+        ];
+        assert_eq!(TtsModel::ALL.len(), ids.len());
+        for (model, id) in TtsModel::ALL.into_iter().zip(ids.iter().copied()) {
             assert_eq!(model.as_str(), id);
             assert_eq!(TtsModel::parse(id), Some(model));
             assert!(TtsModel::parse(&format!("{id}-nope")).is_none());
@@ -179,5 +198,11 @@ mod tests {
         assert_eq!(TtsModel::Qwen06.model_id(), "qwen3-tts-0.6b-base");
         assert_eq!(TtsModel::Qwen17.model_id(), "qwen3-tts-1.7b-base");
         assert_eq!(TtsModel::PocketTts.model_id(), "pocket-tts");
+        assert_eq!(TtsModel::parse("indic-mio"), Some(TtsModel::IndicMio));
+        assert_eq!(TtsModel::IndicMio.as_str(), "indic-mio");
+        assert_eq!(TtsModel::IndicMio.asset_id(), INDIC_MIO_ASSET);
+        assert_eq!(TtsModel::IndicMio.mmproj_asset_id(), None);
+        assert_eq!(TtsModel::IndicMio.model_id(), "indic-mio-q8");
+        assert!(TtsModel::ALL.contains(&TtsModel::IndicMio));
     }
 }

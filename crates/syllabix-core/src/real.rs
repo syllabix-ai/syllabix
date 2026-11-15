@@ -35,7 +35,7 @@ mod production {
     #[cfg(feature = "cloud")]
     use crate::remote_tts::{RemoteTts, RemoteTtsSettings};
     use crate::stt::WhisperStt;
-    use crate::tts::{KokoroTts, QwenTts};
+    use crate::tts::{IndicMioTts, KokoroTts, QwenTts};
     use crate::types::{HistoryTurn, LlmDebugMeta, TokenChunk, Transcript, Utterance};
     use crate::vad::SileroVad;
 
@@ -132,6 +132,8 @@ mod production {
         Qwen(QwenTts),
         /// Pocket TTS through ONNX Runtime, used by default.
         Pocket(Box<PocketTts>),
+        /// Indic-Mio Qwen3 GGUF + MioCodec ONNX.
+        IndicMio(IndicMioTts),
         /// OpenAI-compatible speech endpoint. No local TTS weights.
         #[cfg(feature = "cloud")]
         Remote(RemoteTts),
@@ -155,6 +157,7 @@ mod production {
                 Self::Kokoro(tts) => tts.name(),
                 Self::Qwen(tts) => tts.name(),
                 Self::Pocket(tts) => tts.name(),
+                Self::IndicMio(tts) => tts.name(),
                 #[cfg(feature = "cloud")]
                 Self::Remote(tts) => tts.name(),
                 #[cfg(test)]
@@ -167,6 +170,7 @@ mod production {
                 Self::Kokoro(tts) => tts.model_id(),
                 Self::Qwen(tts) => tts.model_id(),
                 Self::Pocket(tts) => tts.model_id(),
+                Self::IndicMio(tts) => tts.model_id(),
                 #[cfg(feature = "cloud")]
                 Self::Remote(tts) => tts.model_id(),
                 #[cfg(test)]
@@ -179,6 +183,7 @@ mod production {
                 Self::Kokoro(tts) => tts.backend_id(),
                 Self::Qwen(tts) => tts.backend_id(),
                 Self::Pocket(tts) => tts.backend_id(),
+                Self::IndicMio(tts) => tts.backend_id(),
                 #[cfg(feature = "cloud")]
                 Self::Remote(tts) => tts.backend_id(),
                 #[cfg(test)]
@@ -195,6 +200,7 @@ mod production {
                 Self::Kokoro(tts) => tts.synthesize_chunk(token, cancel),
                 Self::Qwen(tts) => tts.synthesize_chunk(token, cancel),
                 Self::Pocket(tts) => tts.synthesize_chunk(token, cancel),
+                Self::IndicMio(tts) => tts.synthesize_chunk(token, cancel),
                 #[cfg(feature = "cloud")]
                 Self::Remote(tts) => tts.synthesize_chunk(token, cancel),
                 #[cfg(test)]
@@ -212,6 +218,7 @@ mod production {
                 Self::Kokoro(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
                 Self::Qwen(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
                 Self::Pocket(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
+                Self::IndicMio(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
                 #[cfg(feature = "cloud")]
                 Self::Remote(tts) => tts.synthesize_chunk_into(token, cancel, on_audio),
                 #[cfg(test)]
@@ -558,6 +565,20 @@ mod production {
                 crate::defaults::TtsModel::PocketTts => Ok(LiveTts::Pocket(Box::new(
                     PocketTts::from_cache(cache, fetcher, progress, cancel)?,
                 ))),
+                crate::defaults::TtsModel::IndicMio => {
+                    Ok(LiveTts::IndicMio(IndicMioTts::from_cache(
+                        cache,
+                        fetcher,
+                        progress,
+                        cancel,
+                        config.tts_compute,
+                        if config.tts_voice.is_empty() {
+                            "hi-female"
+                        } else {
+                            config.tts_voice.as_str()
+                        },
+                    )?))
+                }
                 qwen => Ok(LiveTts::Qwen(QwenTts::from_cache(
                     cache,
                     fetcher,

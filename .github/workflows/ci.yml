@@ -119,6 +119,12 @@ jobs:
         run: cargo test -p syllabix-native --test chat_template_golden
       - name: cargo check ggml without cloud
         run: cargo check -p syllabix-core --no-default-features --features ggml --all-targets
+      - name: Indic-Mio unit tests (no weight download)
+        run: |
+          cargo test -p syllabix-native --lib golden_istft
+          cargo test -p syllabix-tts indic_mio
+          cargo test -p syllabix-core --lib tts_model_menu_parses
+          cargo test -p syllabix-core launch_default_does_not_select_indic_mio_assets
 
   # Lane 3 hosts that set default-features = false must compile without the
   # CMake / whisper.cpp toolchain. This job does not run setup-linux.sh and hides cmake.

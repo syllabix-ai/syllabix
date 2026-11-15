@@ -34,6 +34,10 @@ fn default_features_keep_every_tts_engine() {
     );
     let ggml = entry("[features]", "ggml");
     assert!(ggml.contains(r#""syllabix-tts/qwen3""#), "{ggml}");
+    assert_eq!(
+        syllabix_core::AgentConfig::v0().tts_model,
+        syllabix_core::defaults::TtsModel::PocketTts
+    );
     let cloud = entry("[features]", "cloud");
     assert!(cloud.contains(r#""syllabix-tts/remote""#), "{cloud}");
     let dep = entry("[dependencies]", "syllabix-tts");
@@ -51,6 +55,7 @@ fn tts_paths_still_compile() {
     let _ = syllabix_core::tts::KOKORO_ASSET;
     let _ = syllabix_core::tts::QwenTts::voice_anchor_engaged;
     let _ = syllabix_core::tts::KokoroTts::from_cache;
+    let _ = syllabix_core::tts::IndicMioTts::from_cache;
     let _ = syllabix_core::pocket_tts::POCKET_TTS_TEXT_CONDITIONER_ASSET;
     let _ = syllabix_core::g2p::KOKORO_MAX_PHONEME_TOKENS;
     let _ = syllabix_core::speech_text::speak_text_for_tts;

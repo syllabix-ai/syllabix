@@ -22,6 +22,7 @@ fn build_cpp() {
     println!("cargo:rerun-if-changed=src/shim_vulkan.cpp");
     println!("cargo:rerun-if-changed=src/shim_asr.c");
     println!("cargo:rerun-if-changed=src/shim_parakeet.cpp");
+    println!("cargo:rerun-if-changed=src/shim_mio.c");
     println!("cargo:rerun-if-changed=include/syllabix_native.h");
     println!("cargo:rerun-if-changed=vendor/llama.cpp");
     println!("cargo:rerun-if-changed=vendor/whisper.cpp");

@@ -30,7 +30,14 @@ parakeet = ["syllabix-native/cpp", "syllabix-native/parakeet"]
 # Moonshine streaming ONNX models (ONNX Runtime, no CMake).
 moonshine = ["syllabix-native/onnx", "dep:tokenizers"]
 # Hima-ASR ONNX frontend + greedy engine (same ort/onnx gate as Moonshine).
-hima = ["syllabix-native/onnx", "dep:realfft", "dep:tokenizers", "dep:serde_json", "dep:unicode-normalization", "dep:unicode_categories"]
+hima = [
+    "syllabix-native/onnx",
+    "syllabix-native/dsp",
+    "dep:tokenizers",
+    "dep:serde_json",
+    "dep:unicode-normalization",
+    "dep:unicode_categories",
+]
 # OpenAI-compatible /audio/transcriptions client. HTTP only.
 remote = ["dep:ureq", "dep:zeroize", "dep:serde_json"]
 
@@ -40,7 +47,6 @@ tokenizers = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-realfft = { workspace = true, optional = true }
 unicode-normalization = { workspace = true, optional = true }
 unicode_categories = { workspace = true, optional = true }
 
