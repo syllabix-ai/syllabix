@@ -18,6 +18,7 @@ mod production {
     use crate::cancel::Cancel;
     use crate::config::AgentConfig;
     use crate::error::{Error, Result};
+    use crate::fluid_gguf::FluidGgufStt;
     #[cfg(feature = "cloud")]
     use crate::goose::{skill_file_list, GooseAgent, GooseStart};
     use crate::hima::{HimaConfig, HimaLanguage, HimaStt};
@@ -229,6 +230,8 @@ mod production {
         Qwen(Box<crate::qwen_asr::QwenAsrStt>),
         /// Hima-ASR int8 ONNX (finalize only).
         Hima(Box<HimaStt>),
+        /// Fluid Speech Pro Q8_0 GGUF through parakeet.cpp (finalize only).
+        FluidGguf(Box<FluidGgufStt>),
         /// OpenAI-compatible transcriptions endpoint. No local STT weights.
         #[cfg(feature = "cloud")]
         Remote(RemoteStt),
@@ -241,6 +244,7 @@ mod production {
                 Self::Moonshine(stt) => stt.name(),
                 Self::Qwen(stt) => stt.name(),
                 Self::Hima(stt) => stt.name(),
+                Self::FluidGguf(stt) => stt.name(),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => stt.name(),
             }
@@ -252,6 +256,7 @@ mod production {
                 Self::Moonshine(stt) => stt.transcribe(utterance, cancel),
                 Self::Qwen(stt) => stt.transcribe(utterance, cancel),
                 Self::Hima(stt) => stt.transcribe(utterance, cancel),
+                Self::FluidGguf(stt) => stt.transcribe(utterance, cancel),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => stt.transcribe(utterance, cancel),
             }
@@ -267,6 +272,7 @@ mod production {
                 Self::Moonshine(stt) => stt.start_turn(turn, cancel),
                 Self::Qwen(stt) => stt.start_turn(turn, cancel),
                 Self::Hima(stt) => stt.start_turn(turn, cancel),
+                Self::FluidGguf(stt) => stt.start_turn(turn, cancel),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => stt.start_turn(turn, cancel),
             }
@@ -282,6 +288,7 @@ mod production {
                 Self::Moonshine(stt) => stt.push_frame(frame, cancel),
                 Self::Qwen(stt) => stt.push_frame(frame, cancel),
                 Self::Hima(stt) => stt.push_frame(frame, cancel),
+                Self::FluidGguf(stt) => stt.push_frame(frame, cancel),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => stt.push_frame(frame, cancel),
             }
@@ -293,6 +300,7 @@ mod production {
                 Self::Moonshine(stt) => stt.cancel_turn(turn),
                 Self::Qwen(stt) => stt.cancel_turn(turn),
                 Self::Hima(stt) => stt.cancel_turn(turn),
+                Self::FluidGguf(stt) => stt.cancel_turn(turn),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => stt.cancel_turn(turn),
             }
@@ -306,7 +314,7 @@ mod production {
         pub fn backend_id(&self) -> Option<&str> {
             match self {
                 Self::Qwen(stt) => stt.backend_id(),
-                Self::Whisper(_) | Self::Moonshine(_) | Self::Hima(_) => None,
+                Self::Whisper(_) | Self::Moonshine(_) | Self::Hima(_) | Self::FluidGguf(_) => None,
                 #[cfg(feature = "cloud")]
                 Self::Remote(_) => None,
             }
@@ -319,6 +327,7 @@ mod production {
                 Self::Moonshine(stt) => Ok(Self::Moonshine(stt)),
                 Self::Qwen(stt) => Ok(Self::Qwen(Box::new(stt.with_language(language)?))),
                 Self::Hima(stt) => Ok(Self::Hima(Box::new(stt.with_language(language)?))),
+                Self::FluidGguf(stt) => Ok(Self::FluidGguf(Box::new(stt.with_language(language)?))),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => Ok(Self::Remote(stt.with_language(language))),
             }
@@ -330,6 +339,7 @@ mod production {
         pub fn with_threads(self, n: i32) -> Self {
             match self {
                 Self::Whisper(stt) => Self::Whisper(stt.with_threads(n)),
+                Self::FluidGguf(stt) => Self::FluidGguf(Box::new(stt.with_threads(n))),
                 other => other,
             }
         }
@@ -338,6 +348,7 @@ mod production {
         pub fn intra_op_threads(&self) -> Option<i32> {
             match self {
                 Self::Whisper(stt) => stt.intra_op_threads(),
+                Self::FluidGguf(stt) => stt.intra_op_threads(),
                 Self::Moonshine(_) | Self::Qwen(_) | Self::Hima(_) => None,
                 #[cfg(feature = "cloud")]
                 Self::Remote(_) => None,
@@ -410,6 +421,15 @@ mod production {
                             language,
                             style: config.stt_style,
                         },
+                    )?)))
+                }
+                crate::defaults::SttModel::FluidSpeechProGgufQ8 => {
+                    Ok(LiveStt::FluidGguf(Box::new(FluidGgufStt::from_cache(
+                        cache,
+                        fetcher,
+                        progress,
+                        cancel,
+                        config.stt_model,
                     )?)))
                 }
             },

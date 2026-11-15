@@ -12,6 +12,8 @@
 //! TTS→ASR scorer when a TTS id is selected.
 
 #[cfg(not(coverage))]
+mod fluid_gguf;
+#[cfg(not(coverage))]
 mod kokoro;
 #[cfg(not(coverage))]
 mod lfm;
@@ -55,13 +57,14 @@ use syllabix_core::{AgentConfig, Cancel, ModelCache};
 const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM3_1_7B_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
-const SUITED_NATIVE_IDS: [&str; 12] = [
+const SUITED_NATIVE_IDS: [&str; 13] = [
     "whisper-small",
     LLAMA_32_1B_ASSET,
     "kokoro",
     "qwen3-0.6",
     "qwen3-1.7",
     "qwen3-asr-0.6",
+    "fluid-speech-pro-gguf-q8_0",
     QWEN35_08B_ASSET,
     "pocket-tts",
     LFM3_1_7B_ASSET,

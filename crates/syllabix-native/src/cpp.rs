@@ -34,6 +34,12 @@ mod ffi {
         _private: [u8; 0],
     }
 
+    #[cfg(feature = "parakeet")]
+    #[repr(C)]
+    pub struct ParakeetHandle {
+        _private: [u8; 0],
+    }
+
     #[repr(C)]
     pub struct ChatSessionHandle {
         _private: [u8; 0],
@@ -184,6 +190,22 @@ mod ffi {
             language: *const c_char,
             abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
             abort_user: *mut c_void,
+            out: *mut c_char,
+            out_cap: c_int,
+        ) -> c_int;
+    }
+
+    #[cfg(all(not(coverage), feature = "parakeet"))]
+    extern "C" {
+        pub fn syllabix_parakeet_load(path: *const c_char, n_threads: c_int)
+            -> *mut ParakeetHandle;
+        pub fn syllabix_parakeet_free(pk: *mut ParakeetHandle);
+        pub fn syllabix_parakeet_set_threads(n_threads: c_int);
+        pub fn syllabix_parakeet_model_loaded(pk: *const ParakeetHandle) -> c_int;
+        pub fn syllabix_parakeet_transcribe(
+            pk: *mut ParakeetHandle,
+            pcm: *const f32,
+            n_samples: c_int,
             out: *mut c_char,
             out_cap: c_int,
         ) -> c_int;
@@ -685,6 +707,52 @@ mod ffi {
         } else {
             "hello from fake qwen asr"
         };
+        let bytes = reply.as_bytes();
+        let n = bytes.len().min(out_cap as usize - 1);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), n);
+        *out.add(n) = 0;
+        0
+    }
+
+    #[cfg(all(coverage, feature = "parakeet"))]
+    pub unsafe fn syllabix_parakeet_load(
+        model_path: *const c_char,
+        _n_threads: c_int,
+    ) -> *mut ParakeetHandle {
+        if fail(&text(model_path), "fail") {
+            std::ptr::null_mut()
+        } else {
+            std::ptr::dangling_mut::<ParakeetHandle>()
+        }
+    }
+
+    #[cfg(all(coverage, feature = "parakeet"))]
+    pub unsafe fn syllabix_parakeet_free(_pk: *mut ParakeetHandle) {}
+
+    #[cfg(all(coverage, feature = "parakeet"))]
+    pub unsafe fn syllabix_parakeet_set_threads(_n_threads: c_int) {}
+
+    #[cfg(all(coverage, feature = "parakeet"))]
+    pub unsafe fn syllabix_parakeet_model_loaded(pk: *const ParakeetHandle) -> c_int {
+        if pk.is_null() {
+            0
+        } else {
+            1
+        }
+    }
+
+    #[cfg(all(coverage, feature = "parakeet"))]
+    pub unsafe fn syllabix_parakeet_transcribe(
+        _pk: *mut ParakeetHandle,
+        pcm: *const f32,
+        n_samples: c_int,
+        out: *mut c_char,
+        out_cap: c_int,
+    ) -> c_int {
+        if pcm.is_null() || n_samples < 1 || out.is_null() || out_cap < 2 {
+            return -1;
+        }
+        let reply = "hello from fake parakeet";
         let bytes = reply.as_bytes();
         let n = bytes.len().min(out_cap as usize - 1);
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), n);
@@ -1744,6 +1812,105 @@ impl Drop for QwenAsrContext {
     }
 }
 
+/// Fluid Speech Pro / Parakeet GGUF through vendored parakeet.cpp.
+#[cfg(feature = "parakeet")]
+pub struct ParakeetContext {
+    raw: *mut ffi::ParakeetHandle,
+}
+
+#[cfg(feature = "parakeet")]
+unsafe impl Send for ParakeetContext {}
+
+#[cfg(feature = "parakeet")]
+impl ParakeetContext {
+    pub fn load(path: impl AsRef<Path>, n_threads: i32) -> Result<Self, String> {
+        hush_logs();
+        unsafe { ffi::syllabix_llama_backend_init() };
+        let c_path = path
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| format!("path is not valid UTF-8: {}", path.as_ref().display()))?;
+        let c_path =
+            CString::new(c_path).map_err(|_| "path contains an interior NUL".to_string())?;
+        let _ggml = ggml_lock();
+        let raw = unsafe { ffi::syllabix_parakeet_load(c_path.as_ptr(), n_threads) };
+        if raw.is_null() {
+            return Err(format!(
+                "failed to load Parakeet GGUF at {}",
+                path.as_ref().display()
+            ));
+        }
+        if unsafe { ffi::syllabix_parakeet_model_loaded(raw) } == 0 {
+            let mut out = vec![0u8; 8192];
+            let _ = unsafe {
+                ffi::syllabix_parakeet_transcribe(
+                    raw,
+                    [0.0f32].as_ptr(),
+                    1,
+                    out.as_mut_ptr().cast::<c_char>(),
+                    out.len() as c_int,
+                )
+            };
+            let end = out.iter().position(|&b| b == 0).unwrap_or(out.len());
+            let detail = String::from_utf8_lossy(&out[..end]).into_owned();
+            unsafe { ffi::syllabix_parakeet_free(raw) };
+            return Err(if detail.is_empty() {
+                format!(
+                    "failed to load Parakeet GGUF at {}",
+                    path.as_ref().display()
+                )
+            } else {
+                format!(
+                    "failed to load Parakeet GGUF at {} ({detail})",
+                    path.as_ref().display()
+                )
+            });
+        }
+        Ok(Self { raw })
+    }
+
+    pub fn set_threads(&self, n_threads: i32) {
+        let _ggml = ggml_lock();
+        unsafe { ffi::syllabix_parakeet_set_threads(n_threads) };
+    }
+
+    pub fn transcribe(&mut self, pcm: &[f32]) -> Result<String, String> {
+        let mut out = vec![0u8; 8192];
+        let _ggml = ggml_lock();
+        let rc = unsafe {
+            ffi::syllabix_parakeet_transcribe(
+                self.raw,
+                pcm.as_ptr(),
+                pcm.len() as c_int,
+                out.as_mut_ptr().cast::<c_char>(),
+                out.len() as c_int,
+            )
+        };
+        let end = out.iter().position(|&b| b == 0).unwrap_or(out.len());
+        let message = String::from_utf8_lossy(&out[..end]).into_owned();
+        if rc == 0 {
+            Ok(message)
+        } else {
+            Err(if message.is_empty() {
+                "Parakeet transcribe failed".into()
+            } else {
+                message
+            })
+        }
+    }
+}
+
+#[cfg(feature = "parakeet")]
+impl Drop for ParakeetContext {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _ggml = ggml_lock();
+            unsafe { ffi::syllabix_parakeet_free(self.raw) };
+            self.raw = std::ptr::null_mut();
+        }
+    }
+}
+
 struct TokenSink<'a> {
     on_piece: &'a mut dyn FnMut(&str, bool) -> Result<(), LlamaError>,
 }
@@ -1917,6 +2084,16 @@ mod tests {
             Ok(_) => panic!("missing Qwen3-ASR weights should fail"),
         };
         assert!(err.contains("failed to load Qwen3-ASR"));
+    }
+
+    #[test]
+    #[cfg(all(not(coverage), feature = "parakeet"))]
+    fn missing_parakeet_weights_do_not_load() {
+        let err = match ParakeetContext::load("/no/such/fluid-speech-pro.gguf", 1) {
+            Err(err) => err,
+            Ok(_) => panic!("missing Parakeet weights should fail"),
+        };
+        assert!(err.contains("failed to load Parakeet GGUF"));
     }
 
     #[test]
@@ -2138,6 +2315,16 @@ mod tests {
             unsafe { ctx.decode(&[0.0], "error", None, std::ptr::null_mut()) },
             Err(DecodeError::Failed("Qwen3-ASR decode failed".into()))
         );
+    }
+
+    #[cfg(all(coverage, feature = "parakeet"))]
+    #[test]
+    fn coverage_exercises_parakeet_wrapper_without_weights() {
+        assert!(ParakeetContext::load("fail-parakeet", 1).is_err());
+        let mut ctx = ParakeetContext::load("fake-parakeet", 1).expect("fake context");
+        ctx.set_threads(4);
+        assert!(ctx.transcribe(&[]).is_err());
+        assert_eq!(ctx.transcribe(&[0.0]).unwrap(), "hello from fake parakeet");
     }
 
     #[cfg(coverage)]

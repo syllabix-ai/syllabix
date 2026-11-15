@@ -21,9 +21,11 @@ fn build_cpp() {
     println!("cargo:rerun-if-changed=src/shim_tts.c");
     println!("cargo:rerun-if-changed=src/shim_vulkan.cpp");
     println!("cargo:rerun-if-changed=src/shim_asr.c");
+    println!("cargo:rerun-if-changed=src/shim_parakeet.cpp");
     println!("cargo:rerun-if-changed=include/syllabix_native.h");
     println!("cargo:rerun-if-changed=vendor/llama.cpp");
     println!("cargo:rerun-if-changed=vendor/whisper.cpp");
+    println!("cargo:rerun-if-changed=vendor/parakeet.cpp");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
     println!("cargo:rerun-if-env-changed=SYLLABIX_GGML_VULKAN");
 
@@ -35,6 +37,15 @@ fn build_cpp() {
         assert!(
             path.is_dir(),
             "{} is missing; syllabix-native must ship engine source in vendor/",
+            path.display()
+        );
+    }
+    let parakeet = env::var_os("CARGO_FEATURE_PARAKEET").is_some();
+    if parakeet {
+        let path = manifest_dir.join("vendor/parakeet.cpp");
+        assert!(
+            path.is_dir(),
+            "{} is missing; syllabix-native must ship parakeet.cpp when feature parakeet is on",
             path.display()
         );
     }
@@ -94,6 +105,10 @@ fn build_cpp() {
             .define("GGML_OPENMP", "OFF")
             .define("GGML_CPU_KLEIDIAI", "OFF")
             .define("GGML_VULKAN", if vulkan { "ON" } else { "OFF" });
+        if parakeet {
+            config.define("SYLLABIX_PARAKEET", "ON");
+            config.define("GGML_LLAMAFILE", "ON");
+        }
         if linux {
             let mut c_cfg = cc::Build::new();
             c_cfg
@@ -124,10 +139,12 @@ fn build_cpp() {
 
     let mut libs = collect_static_libs(&search);
     // Link order: shim, frontends, then ggml pieces.
-    prefer_first(
-        &mut libs,
-        &["syllabix_native", "whisper", "llama-common", "llama"],
-    );
+    let mut prefer = vec!["syllabix_native"];
+    if libs.iter().any(|lib| lib == "parakeet") {
+        prefer.push("parakeet");
+    }
+    prefer.extend(["whisper", "llama-common", "llama"]);
+    prefer_first(&mut libs, &prefer);
     // Release `--gc-sections` otherwise drops unused ggml/whisper objects
     // because the CLI does not transcribe yet. Keep both frontends in the binary.
     for lib in &libs {

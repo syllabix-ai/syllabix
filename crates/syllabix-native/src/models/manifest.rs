@@ -200,6 +200,16 @@ impl Manifest {
                     "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
                     214_392_480,
                 ),
+                // Fluid Speech Pro Q8_0 GGUF (parakeet.cpp). Fetched only when
+                // yaml selects fluid-speech-pro-gguf-q8_0.
+                asset(
+                    "fluid-speech-pro-gguf-q8_0",
+                    ModelLayer::Stt,
+                    "fluid-speech-pro-q8_0.gguf",
+                    "https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-gguf/resolve/fee970d9ac83f6d236632d39b67cbec12f5a9020/fluid-speech-pro-q8_0.gguf",
+                    "1b9c613fe3b058895885105e696c203a1a0b47c37eace80d18b51e20dcdc5ffd",
+                    940_663_968,
+                ),
                 // Hima-ASR int8 ONNX (Prahaladha/hima-asr-ONNX revision
                 // 18fa854f8ecaf2f48fe7416035643f86da3834d8). Fetched only when
                 // yaml selects hima-asr. Nested cache paths keep the original

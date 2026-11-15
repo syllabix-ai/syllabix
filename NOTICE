@@ -107,6 +107,13 @@ Hima-ASR weights are not distributed under the Apache-2.0 license that covers th
 rest of Syllabix.
 This is a reading of the terms, not legal advice.
 
+### Fluid Speech Pro GGUF Q8_0 (optional yaml STT)
+
+CC BY 4.0. Fluid Speech Pro by FluidVoice. Built on NVIDIA Parakeet TDT 0.6B v3 and Moondream Parakeet Ultra.
+Pinned GGUF: https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-gguf at revision
+`fee970d9ac83f6d236632d39b67cbec12f5a9020`.
+Fetched only when `pipeline.stt.model: fluid-speech-pro-gguf-q8_0` is selected.
+
 ### LFM3-1.7B Q8_0 (`LFM3-1.7B-Q8_0.gguf`, default)
 
 LiquidAI LFM 1.0 license. Copyright LiquidAI.

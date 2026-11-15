@@ -234,6 +234,15 @@ int syllabix_qwen_asr_decode(
     char *out,
     int out_cap);
 
+struct syllabix_parakeet;
+struct syllabix_parakeet *syllabix_parakeet_load(const char *gguf_path, int n_threads);
+void syllabix_parakeet_free(struct syllabix_parakeet *pk);
+void syllabix_parakeet_set_threads(int n_threads); /* process-wide ggml compute threads */
+int syllabix_parakeet_model_loaded(const struct syllabix_parakeet *pk);
+/* 0 = ok, -1 = error (message in out). pcm: 16 kHz mono f32. */
+int syllabix_parakeet_transcribe(struct syllabix_parakeet *pk, const float *pcm, int n_samples,
+                                 char *out, int out_cap);
+
 #ifdef __cplusplus
 }
 #endif

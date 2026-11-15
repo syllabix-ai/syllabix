@@ -577,6 +577,16 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
                 ),
             });
         }
+    } else if stt_model.is_fluid_gguf() {
+        if !crate::fluid_gguf::is_fluid_language(&language) {
+            return Err(Error::Config {
+                field: "pipeline.stt.language".into(),
+                message: format!(
+                    "unsupported value {language:?} (allowed: auto or {})",
+                    crate::fluid_gguf::FLUID_LANGUAGE_CODES.join(", ")
+                ),
+            });
+        }
     } else if language == "or" {
         return Err(Error::Config {
             field: "pipeline.stt.language".into(),
@@ -1187,7 +1197,7 @@ fn parse_stt_model(value: &str) -> Result<SttModel> {
         unsupported(
             "pipeline.stt.model",
             value,
-            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small, moonshine-streaming-medium, qwen3-asr-0.6, hima-asr",
+            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small, moonshine-streaming-medium, qwen3-asr-0.6, hima-asr, fluid-speech-pro-gguf-q8_0",
         )
     })
 }
@@ -2781,6 +2791,21 @@ pipeline:
         .unwrap_err();
         assert!(err.to_string().contains("pipeline.stt.style"), "{err}");
         assert!(err.to_string().contains("hima-asr"), "{err}");
+    }
+
+    #[test]
+    fn fluid_gguf_language_parse() {
+        let stt_line = "  stt:\n    provider: local\n    model: whisper-small\n    language: en";
+        let fluid_line =
+            "  stt:\n    provider: local\n    model: fluid-speech-pro-gguf-q8_0\n    language: de";
+        let base = AgentConfig::v0().to_yaml().replace(stt_line, fluid_line);
+        let cfg = AgentConfig::parse_yaml(&base).unwrap();
+        assert_eq!(cfg.stt_model, SttModel::FluidSpeechProGgufQ8);
+        assert_eq!(cfg.language, "de");
+        let err =
+            AgentConfig::parse_yaml(&base.replace("language: de", "language: ja")).unwrap_err();
+        assert!(err.to_string().contains("pipeline.stt.language"), "{err}");
+        assert!(err.to_string().contains("ja"), "{err}");
     }
 
     #[test]
