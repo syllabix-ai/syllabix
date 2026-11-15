@@ -1,17 +1,25 @@
 //! Speech-to-text engines and the [`Stt`] trait they share.
 //!
-//! Turn engines on with Cargo features. All four are on by default; with
+//! Turn engines on with Cargo features. Defaults are `moonshine` and `remote`
+//! (ONNX plus HTTP). `whisper`, `qwen3-asr`, `parakeet`, and `hima` are opt-in. With
 //! `default-features = false` and only `remote`, this crate builds without
 //! CMake, a C++ compiler, or ONNX Runtime.
 //!
+//! Default ONNX engines use the `ort` crate, which may download a prebuilt ONNX
+//! Runtime at build time; some targets have no binary. For HTTP only, use
+//! `default-features = false` with the `remote` feature.
+//!
 //! | Feature | Engine | Needs C++? | Model ids |
 //! | --- | --- | --- | --- |
+//! | `moonshine` | Moonshine streaming ONNX (`moonshine`) | No (ONNX Runtime) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
+//! | `remote` | OpenAI-compatible `/audio/transcriptions` (`remote`) | No (HTTP only) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
 //! | `whisper` | whisper.cpp ([`WhisperStt`]) | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
 //! | `qwen3-asr` | Qwen3-ASR 0.6B ([`qwen_asr`]) | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
 //! | `parakeet` | Fluid Speech Pro GGUF ([`fluid_gguf`]) | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
-//! | `moonshine` | Moonshine streaming ONNX (`moonshine`) | No (ONNX Runtime) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
-//! | `remote` | OpenAI-compatible `/audio/transcriptions` (`remote`) | No (HTTP only) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
+//! | `hima` | Hima-ASR ([`HimaStt`]) | No (ONNX Runtime) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
 //!
+//! C++ engines need the host toolchain in
+//! [embed — Host compile](https://github.com/syllabix-ai/syllabix/blob/main/docs/embed.md#host-compile).
 //! Without `whisper` or `qwen3-asr` their types still exist and return an
 //! error when loaded. The remote engine reads its key from
 //! `SYLLABIX_STT_API_KEY` only. Example: `examples/transcribe-wav.rs`.

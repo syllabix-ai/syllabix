@@ -170,6 +170,24 @@ jobs:
             echo "syllabix-tts with only remote must not depend on cmake or ort-sys" >&2
             exit 1
           fi
+      - name: syllabix-stt defaults have no cmake dependency
+        run: |
+          tree="$(cargo tree -p syllabix-stt -e normal,build --prefix none)"
+          if echo "$tree" | grep -E '^(cmake) '; then
+            echo "syllabix-stt with default features must not depend on cmake" >&2
+            exit 1
+          fi
+      - name: syllabix-tts defaults have no cmake dependency
+        run: |
+          tree="$(cargo tree -p syllabix-tts -e normal,build --prefix none)"
+          if echo "$tree" | grep -E '^(cmake) '; then
+            echo "syllabix-tts with default features must not depend on cmake" >&2
+            exit 1
+          fi
+      - name: cargo check syllabix-stt default features without CMake
+        run: cargo check -p syllabix-stt
+      - name: cargo check syllabix-tts default features without CMake
+        run: cargo check -p syllabix-tts
       - name: cargo check syllabix-core without default features
         run: cargo check -p syllabix-core --no-default-features --all-targets
       - name: cargo check cloud without CMake / whisper.cpp

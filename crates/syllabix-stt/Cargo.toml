@@ -20,7 +20,7 @@ keywords = ["speech-to-text", "asr", "whisper", "speech", "voice"]
 categories = ["multimedia::audio"]
 
 [features]
-default = ["whisper", "qwen3-asr", "moonshine", "hima", "remote"]
+default = ["moonshine", "remote"]
 # whisper.cpp through syllabix-native (CMake + C++).
 whisper = ["syllabix-native/cpp"]
 # Qwen3-ASR 0.6B through llama.cpp mtmd in syllabix-native (CMake + C++).
@@ -58,7 +58,7 @@ required-features = ["remote"]
 # Whisper and Qwen3-ASR still appear, as the stubs that build without C++.
 [package.metadata.docs.rs]
 no-default-features = true
-features = ["moonshine", "remote"]
+features = ["moonshine", "hima", "remote"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

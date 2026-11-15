@@ -1,20 +1,26 @@
 //! Text-to-speech engines and the [`Tts`] trait they share.
 //!
-//! Turn engines on with Cargo features. All four are on by default; with
-//! `default-features = false` and only `remote`, this crate builds without
-//! CMake, a C++ compiler, or ONNX Runtime.
+//! Turn engines on with Cargo features. Defaults are `pocket`, `kokoro`, and
+//! `remote` (ONNX plus HTTP). `qwen3` is opt-in. With `default-features = false`
+//! and only `remote`, this crate builds without CMake, a C++ compiler, or ONNX
+//! Runtime.
+//!
+//! Default ONNX engines use the `ort` crate, which may download a prebuilt ONNX
+//! Runtime at build time; some targets have no binary. For HTTP only, use
+//! `default-features = false` with the `remote` feature.
 //!
 //! | Feature | Engine | Needs C++? | Model ids |
 //! | --- | --- | --- | --- |
 //! | `pocket` | Pocket TTS ONNX (`pocket`) | No (ONNX Runtime) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
 //! | `kokoro` | Kokoro-82M ONNX ([`KokoroTts`]) | No (ONNX Runtime) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
-//! | `qwen3` | Qwen3-TTS ([`QwenTts`]) | Yes (CMake) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
-//! | (with `qwen3`) | Indic-Mio ([`IndicMioTts`]) | Yes (CMake + ONNX) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
 //! | `remote` | OpenAI-compatible `/audio/speech` (`remote`) | No (HTTP only) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
+//! | `qwen3` | Qwen3-TTS ([`QwenTts`]); Indic-Mio ([`IndicMioTts`]) needs `qwen3` + `kokoro` | Yes (CMake) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
 //!
-//! Without `kokoro` or `qwen3` their types still exist and
-//! return an error when loaded. The remote engine reads its key from
-//! `SYLLABIX_TTS_API_KEY` only. Example: `examples/speak-wav.rs`.
+//! C++ engines need the host toolchain in
+//! [embed — Host compile](https://github.com/syllabix-ai/syllabix/blob/main/docs/embed.md#host-compile).
+//! Without `qwen3` its type still exists and returns an error when loaded. The
+//! remote engine reads its key from `SYLLABIX_TTS_API_KEY` only. Example:
+//! `examples/speak-wav.rs`.
 
 // The types in the `Tts` signatures, so callers need no other crate.
 pub use syllabix_native::audio;
