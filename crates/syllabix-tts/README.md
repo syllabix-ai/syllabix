@@ -12,7 +12,7 @@ without CMake, a C++ compiler, or ONNX Runtime.
 | --- | --- | --- | --- |
 | `pocket` | Pocket TTS (ONNX) | No (ONNX Runtime) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
 | `kokoro` | Kokoro-82M (ONNX) | No (ONNX Runtime) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
-| `qwen3` | Qwen3-TTS | Yes (CMake) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
+| `qwen3` | Qwen3-TTS, Indic-Mio (with `kokoro` or `pocket`) | Yes (CMake) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
 | `remote` | OpenAI-compatible `/audio/speech` | No (HTTP only) | [engines — TTS](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#tts) |
 
 C++ engines need the host packages in
