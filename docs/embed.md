@@ -4,6 +4,8 @@ Other repos can use Syllabix without forking `pipeline.rs`. The default product 
 
 Depend on the library from [crates.io](https://crates.io/crates/syllabix-core). API docs: [docs.rs/syllabix-core](https://docs.rs/syllabix-core).
 
+Only need speech-to-text? Depend on [`syllabix-stt`](../crates/syllabix-stt/README.md) instead. Its features pick the engines, and `remote` alone builds without C++.
+
 Most apps use the defaults (same as `syllabix run`). The first build compiles the bundled whisper.cpp / llama.cpp with CMake and a C++ compiler ([Host compile](#host-compile)). Nothing is downloaded at build time. Models still download on first run ([Cache](#cache)).
 
 ```bash

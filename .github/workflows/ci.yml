@@ -146,8 +146,15 @@ jobs:
         run: cargo check -p syllabix-native --no-default-features --all-targets
       - name: cargo check syllabix-native models and onnx without CMake
         run: cargo check -p syllabix-native --no-default-features --features models,onnx --all-targets
-      - name: cargo check syllabix-stt remote only without CMake
-        run: cargo check -p syllabix-stt --no-default-features --features remote --all-targets
+      - name: cargo test syllabix-stt remote only without CMake
+        run: cargo test -p syllabix-stt --no-default-features --features remote --all-targets
+      - name: syllabix-stt remote only has no cmake or ort-sys dependency
+        run: |
+          tree="$(cargo tree -p syllabix-stt --no-default-features --features remote -e normal,build --prefix none)"
+          if echo "$tree" | grep -E '^(cmake|ort-sys) '; then
+            echo "syllabix-stt with only remote must not depend on cmake or ort-sys" >&2
+            exit 1
+          fi
       - name: cargo check syllabix-core without default features
         run: cargo check -p syllabix-core --no-default-features --all-targets
       - name: cargo check cloud without CMake / whisper.cpp

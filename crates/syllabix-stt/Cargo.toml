@@ -8,8 +8,11 @@ homepage.workspace = true
 publish = true
 rust-version.workspace = true
 description = "Speech-to-text for Syllabix: one Stt trait over Whisper, Qwen3-ASR, Moonshine, and an OpenAI-compatible remote client"
+readme = "README.md"
 include = [
     "src/**",
+    "examples/**",
+    "README.md",
     "LICENSE",
     "NOTICE",
 ]
@@ -31,6 +34,16 @@ tokenizers = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+
+[[example]]
+name = "transcribe-wav"
+required-features = ["remote"]
+
+# docs.rs has no CMake: document everything except the C++ engines.
+# Whisper and Qwen3-ASR still appear, as the stubs that build without C++.
+[package.metadata.docs.rs]
+no-default-features = true
+features = ["moonshine", "remote"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

@@ -1,8 +1,24 @@
 //! Speech-to-text engines and the [`Stt`] trait they share.
+//!
+//! Turn engines on with Cargo features. All four are on by default; with
+//! `default-features = false` and only `remote`, this crate builds without
+//! CMake, a C++ compiler, or ONNX Runtime.
+//!
+//! | Feature | Engine | Needs C++? | Model ids |
+//! | --- | --- | --- | --- |
+//! | `whisper` | whisper.cpp ([`WhisperStt`]) | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
+//! | `qwen3-asr` | Qwen3-ASR 0.6B ([`qwen_asr`]) | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
+//! | `moonshine` | Moonshine streaming ONNX (`moonshine`) | No (ONNX Runtime) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
+//! | `remote` | OpenAI-compatible `/audio/transcriptions` (`remote`) | No (HTTP only) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
+//!
+//! Without `whisper` or `qwen3-asr` their types still exist and return an
+//! error when loaded. The remote engine reads its key from
+//! `SYLLABIX_STT_API_KEY` only. Example: `examples/transcribe-wav.rs`.
 
-use syllabix_native::cancel::Cancel;
-use syllabix_native::error::Result;
-use syllabix_native::types::{AudioFrame, Transcript, TurnId, Utterance};
+// The types in the `Stt` signatures, so callers need no other crate.
+pub use syllabix_native::audio;
+pub use syllabix_native::types::{AudioFrame, Transcript, TurnId, Utterance};
+pub use syllabix_native::{Cancel, Error, Result};
 
 #[doc(hidden)]
 pub mod language;
