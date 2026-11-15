@@ -1,13 +1,15 @@
 //! Speech-to-text engines and the [`Stt`] trait they share.
 
-use crate::cancel::Cancel;
-use crate::error::Result;
-use crate::types::{AudioFrame, Transcript, TurnId, Utterance};
+use syllabix_native::cancel::Cancel;
+use syllabix_native::error::Result;
+use syllabix_native::types::{AudioFrame, Transcript, TurnId, Utterance};
 
-pub(crate) mod language;
+#[doc(hidden)]
+pub mod language;
+#[cfg(feature = "moonshine")]
 pub mod moonshine;
 pub mod qwen_asr;
-#[cfg(feature = "cloud")]
+#[cfg(feature = "remote")]
 pub mod remote;
 mod whisper;
 
@@ -18,7 +20,7 @@ pub trait Stt: Send {
     /// Config name (`whisper.cpp`).
     fn name(&self) -> &'static str;
 
-    /// Transcribe one utterance. Must check `cancel` and return [`crate::Error::Cancelled`].
+    /// Transcribe one utterance. Must check `cancel` and return [`syllabix_native::Error::Cancelled`].
     fn transcribe(&mut self, utterance: &Utterance, cancel: &Cancel) -> Result<Transcript>;
 
     /// Whether this engine can produce live text while VAD owns an active
@@ -103,8 +105,11 @@ impl SttModel {
             Self::LargeV3Turbo => "whisper-large-v3-turbo",
             Self::MediumQ5_0 => "whisper-medium-q5_0",
             Self::LargeV3TurboQ5_0 => "whisper-large-v3-turbo-q5_0",
-            Self::MoonshineStreamingSmall => moonshine::ENCODER_ASSET,
-            Self::MoonshineStreamingMedium => moonshine::MEDIUM_ENCODER_ASSET,
+            // Same ids as `moonshine::ENCODER_ASSET` / `MEDIUM_ENCODER_ASSET`
+            // (checked in moonshine's tests); spelled out so this builds
+            // without the `moonshine` feature.
+            Self::MoonshineStreamingSmall => "moonshine-encoder",
+            Self::MoonshineStreamingMedium => "moonshine-medium-encoder",
             Self::QwenAsr06 => qwen_asr::ASR_ASSET,
         }
     }
@@ -131,7 +136,6 @@ impl SttModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::defaults::BuiltinDefaults;
 
     #[test]
     fn stt_menu_ids_round_trip() {
@@ -152,11 +156,6 @@ mod tests {
         }
         assert!(SttModel::parse("tiny").is_none());
         assert!(SttModel::parse("base").is_none());
-        assert_eq!(
-            BuiltinDefaults::v0().stt_model,
-            SttModel::Small,
-            "`whisper-small` stays the launch default"
-        );
         assert!(SttModel::QwenAsr06.is_qwen_asr());
         assert!(!SttModel::Small.is_qwen_asr());
         assert!(!SttModel::MoonshineStreamingSmall.is_qwen_asr());

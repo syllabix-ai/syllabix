@@ -1,0 +1,36 @@
+[package]
+name = "syllabix-stt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = true
+rust-version.workspace = true
+description = "Speech-to-text for Syllabix: one Stt trait over Whisper, Qwen3-ASR, Moonshine, and an OpenAI-compatible remote client"
+include = [
+    "src/**",
+    "LICENSE",
+    "NOTICE",
+]
+
+[features]
+default = ["whisper", "qwen3-asr", "moonshine", "remote"]
+# whisper.cpp through syllabix-native (CMake + C++).
+whisper = ["syllabix-native/cpp"]
+# Qwen3-ASR 0.6B through llama.cpp mtmd in syllabix-native (CMake + C++).
+qwen3-asr = ["syllabix-native/cpp"]
+# Moonshine streaming ONNX models (ONNX Runtime, no CMake).
+moonshine = ["syllabix-native/onnx", "dep:tokenizers"]
+# OpenAI-compatible /audio/transcriptions client. HTTP only.
+remote = ["dep:ureq", "dep:zeroize", "dep:serde_json"]
+
+[dependencies]
+syllabix-native = { workspace = true, features = ["models"] }
+tokenizers = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

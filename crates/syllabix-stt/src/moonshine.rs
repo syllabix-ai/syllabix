@@ -1,7 +1,7 @@
 //! Moonshine streaming STT via ONNX Runtime (small and medium).
 //!
 //! Batch finalize only: one completed VAD [`Utterance`] in, one [`Transcript`]
-//! out — the same contract as [`WhisperStt`](crate::stt::WhisperStt). The VAD
+//! out — the same contract as [`WhisperStt`](crate::WhisperStt). The VAD
 //! turn policy is untouched (`threshold` + `min_speech_ms` open the turn,
 //! shared `end_silence_ms` closes it). Live partials arrive in the follow-up
 //! step; this module proves weights, decode loop, and the SentencePiece-style
@@ -16,12 +16,12 @@ use std::path::{Path, PathBuf};
 
 use tokenizers::Tokenizer;
 
-use crate::error::{Error, Result};
-use crate::models::{Fetcher, ModelCache, Progress};
-use crate::onnx::{OnnxData, OnnxSession, OnnxTensor, OrtSession};
-use crate::providers::Stt;
-use crate::types::{AudioFrame, Transcript, TurnId, Utterance};
-use crate::Cancel;
+use crate::Stt;
+use syllabix_native::error::{Error, Result};
+use syllabix_native::models::{Fetcher, ModelCache, Progress};
+use syllabix_native::onnx::{OnnxData, OnnxSession, OnnxTensor, OrtSession};
+use syllabix_native::types::{AudioFrame, Transcript, TurnId, Utterance};
+use syllabix_native::Cancel;
 
 /// Config / log name for this engine.
 pub const PROVIDER_NAME: &str = "moonshine";
@@ -131,16 +131,16 @@ impl MoonshineStt {
         fetcher: &dyn Fetcher,
         progress: &mut dyn Progress,
         cancel: &Cancel,
-        model: crate::defaults::SttModel,
+        model: crate::SttModel,
     ) -> Result<Self> {
         let ids = match model {
-            crate::defaults::SttModel::MoonshineStreamingSmall => [
+            crate::SttModel::MoonshineStreamingSmall => [
                 ENCODER_ASSET,
                 DECODER_ASSET,
                 DECODER_PAST_ASSET,
                 TOKENIZER_ASSET,
             ],
-            crate::defaults::SttModel::MoonshineStreamingMedium => [
+            crate::SttModel::MoonshineStreamingMedium => [
                 MEDIUM_ENCODER_ASSET,
                 MEDIUM_DECODER_ASSET,
                 MEDIUM_DECODER_PAST_ASSET,
@@ -590,7 +590,7 @@ mod tests {
     fn provider_name_is_moonshine() {
         assert_eq!(PROVIDER_NAME, "moonshine");
         assert_eq!(LANGUAGE, "en");
-        assert_eq!(crate::defaults::SttModel::Small.as_str(), "whisper-small");
+        assert_eq!(crate::SttModel::Small.as_str(), "whisper-small");
     }
 }
 

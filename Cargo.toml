@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/syllabix", "crates/syllabix-core", "crates/syllabix-native"]
+members = ["crates/syllabix", "crates/syllabix-core", "crates/syllabix-native", "crates/syllabix-stt"]
 
 [workspace.package]
 version = "0.1.0"
@@ -58,6 +58,7 @@ tiny_http = "=0.12.0"
 # The crates.io publish job sets this and [workspace.package] version from
 # the git tag. Do not bump by hand.
 syllabix-native = { path = "crates/syllabix-native", version = "0.1.0", default-features = false }
+syllabix-stt = { path = "crates/syllabix-stt", version = "0.1.0", default-features = false }
 
 # Installable artifacts (V0_LAUNCH sequence 22). Default `release` stays the
 # CI / `ci-local.sh` profile so everyday checks do not pay thin LTO.

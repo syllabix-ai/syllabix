@@ -1,16 +1,17 @@
 //! Mock-session coverage for the real Moonshine adapter. No weights, no devices.
 //!
 //! The production ONNX graphs are replaced with scripted [`MockSession`]s
-//! behind the shared [`OnnxSession`](crate::onnx::OnnxSession) seam; the
+//! behind the shared [`OnnxSession`](syllabix_native::onnx::OnnxSession) seam; the
 //! tokenizer parses a tiny synthetic vocabulary.
 
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::defaults::SttModel;
-use crate::onnx::{MockSession, OnnxSession, OnnxTensor};
-use crate::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES};
-use crate::{AudioFrame, Cancel, Error, Stt, TurnId, Utterance};
+use crate::{Stt, SttModel};
+use syllabix_native::onnx::{MockSession, OnnxSession, OnnxTensor};
+use syllabix_native::types::{AudioFrame, TurnId, Utterance};
+use syllabix_native::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES};
+use syllabix_native::{Cancel, Error};
 
 const SYNTHETIC_VOCAB: &str = r#"{
     "model": {"type": "BPE", "vocab": {
@@ -505,17 +506,17 @@ fn from_cache_rejects_non_moonshine_models_before_any_fetch() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&root).unwrap();
-    let cache = crate::models::ModelCache::new(
+    let cache = syllabix_native::models::ModelCache::new(
         root,
-        crate::models::Manifest {
+        syllabix_native::models::Manifest {
             version: 1,
             assets: vec![],
         },
     );
     let err = match MoonshineStt::from_cache(
         &cache,
-        &crate::models::BlockedFetcher::default(),
-        &mut crate::models::NoProgress,
+        &syllabix_native::models::BlockedFetcher::default(),
+        &mut syllabix_native::models::NoProgress,
         &Cancel::new(),
         SttModel::Small,
     ) {
@@ -594,24 +595,23 @@ fn native_recorded_fixtures_meet_word_match_gate() {
     for (index, (file, expected, minimum)) in fixtures.iter().enumerate() {
         let wav = std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/stt")
+                .join("../syllabix-core/tests/fixtures/stt")
                 .join(file),
         )
         .unwrap_or_else(|err| panic!("{file} fixture: {err}"));
-        let pcm = crate::audio::read_wav(std::io::Cursor::new(wav))
+        let pcm = syllabix_native::audio::read_wav(std::io::Cursor::new(wav))
             .unwrap_or_else(|err| panic!("{file} parses: {err}"));
-        let frames = crate::audio::record_fixture_to_frames(&pcm)
-            .unwrap_or_else(|err| panic!("{file} frames: {err}"));
+        let frames = fixture_frames(&pcm).unwrap_or_else(|err| panic!("{file} frames: {err}"));
         let transcript = stt
             .transcribe(
                 &Utterance {
-                    turn: crate::types::TurnId(index as u64),
+                    turn: syllabix_native::types::TurnId(index as u64),
                     frames,
                 },
                 &Cancel::new(),
             )
             .unwrap_or_else(|err| panic!("{file} transcribes: {err}"));
-        let ratio = crate::stt::word_match_ratio(&transcript.text, expected);
+        let ratio = crate::word_match_ratio(&transcript.text, expected);
         eprintln!(
             "Moonshine {file}: {:.1}% word match ({:?})",
             ratio * 100.0,
@@ -630,7 +630,8 @@ fn native_recorded_fixtures_meet_word_match_gate() {
 }
 
 fn relu_fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/onnx/relu-tiny.onnx")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../syllabix-native/tests/fixtures/onnx/relu-tiny.onnx")
 }
 
 fn missing() -> PathBuf {
@@ -655,17 +656,17 @@ fn from_cache_reports_a_missing_manifest_asset() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&root).unwrap();
-    let cache = crate::models::ModelCache::new(
+    let cache = syllabix_native::models::ModelCache::new(
         root,
-        crate::models::Manifest {
+        syllabix_native::models::Manifest {
             version: 1,
             assets: vec![],
         },
     );
     let err = match MoonshineStt::from_cache(
         &cache,
-        &crate::models::BlockedFetcher::default(),
-        &mut crate::models::NoProgress,
+        &syllabix_native::models::BlockedFetcher::default(),
+        &mut syllabix_native::models::NoProgress,
         &Cancel::new(),
         SttModel::MoonshineStreamingSmall,
     ) {
@@ -677,7 +678,7 @@ fn from_cache_reports_a_missing_manifest_asset() {
 
 #[test]
 fn from_cache_surfaces_unresolvable_assets() {
-    use crate::models::{Manifest, ModelAsset, ModelCache, ModelLayer};
+    use syllabix_native::models::{Manifest, ModelAsset, ModelCache, ModelLayer};
     let root = std::env::temp_dir().join(format!(
         "syllabix-moonshine-blocked-{}-{}",
         std::process::id(),
@@ -706,8 +707,8 @@ fn from_cache_surfaces_unresolvable_assets() {
     let cache = ModelCache::new(root, Manifest { version: 1, assets });
     let err = match MoonshineStt::from_cache(
         &cache,
-        &crate::models::BlockedFetcher::default(),
-        &mut crate::models::NoProgress,
+        &syllabix_native::models::BlockedFetcher::default(),
+        &mut syllabix_native::models::NoProgress,
         &Cancel::new(),
         SttModel::MoonshineStreamingMedium,
     ) {
@@ -745,4 +746,28 @@ fn from_paths_validates_the_loaded_contract() {
     // All four files load; the Relu graph is not a Moonshine encoder.
     let err = paths_error(&[relu.clone(), relu.clone(), relu, tokenizer_path]);
     assert!(err.contains("unexpected encoder inputs"));
+}
+
+/// WAV at any rate/channels to 16 kHz mono pipeline frames (same steps as
+/// syllabix-core's `audio::record_fixture_to_frames`).
+fn fixture_frames(
+    wav: &syllabix_native::audio::WavPcm,
+) -> syllabix_native::Result<Vec<AudioFrame>> {
+    use syllabix_native::audio::{f32_to_i16, i16_to_f32, FrameSplitter, PcmConverter, PcmFormat};
+    let mut conv = PcmConverter::new(wav.format, PcmFormat::v0())?;
+    let mut split = FrameSplitter::new();
+    let mut mono = conv.push(&i16_to_f32(&wav.samples));
+    mono.extend(conv.flush());
+    let mut frames = split.push(&f32_to_i16(&mono))?;
+    frames.extend(split.flush()?);
+    Ok(frames)
+}
+
+#[test]
+fn stt_model_asset_ids_match_moonshine_constants() {
+    assert_eq!(SttModel::MoonshineStreamingSmall.asset_id(), ENCODER_ASSET);
+    assert_eq!(
+        SttModel::MoonshineStreamingMedium.asset_id(),
+        MEDIUM_ENCODER_ASSET
+    );
 }

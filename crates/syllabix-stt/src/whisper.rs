@@ -1,20 +1,19 @@
 //! In-process whisper.cpp speech-to-text for completed VAD utterances.
 
-#[cfg(feature = "ggml")]
+#[cfg(feature = "whisper")]
 use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "ggml")]
+#[cfg(feature = "whisper")]
 use syllabix_native::{DecodeError, WhisperContext};
 
-use crate::defaults::SttModel;
-use crate::error::{Error, Result};
 use crate::language::{is_supported as is_supported_language, LANGUAGE_AUTO};
-use crate::models::{Fetcher, ModelCache, Progress};
-use crate::providers::Stt;
-use crate::types::{Transcript, Utterance};
-use crate::Cancel;
+use crate::{Stt, SttModel};
+use syllabix_native::error::{Error, Result};
+use syllabix_native::models::{Fetcher, ModelCache, Progress};
+use syllabix_native::types::{Transcript, Utterance};
+use syllabix_native::Cancel;
 
 /// Default STT language. YAML may select any whisper-supported ISO code.
 pub const STT_LANGUAGE: &str = "en";
@@ -38,7 +37,7 @@ impl Clone for WhisperStt {
 
 impl WhisperStt {
     /// Load a ggml model from disk.
-    #[cfg(feature = "ggml")]
+    #[cfg(feature = "whisper")]
     pub fn from_model_path(path: impl AsRef<Path>, model: SttModel) -> Result<Self> {
         let decoder = WhisperDecoder::load(path.as_ref())?;
         Ok(Self {
@@ -49,7 +48,7 @@ impl WhisperStt {
     }
 
     /// Without `ggml` there is no whisper.cpp frontend.
-    #[cfg(not(feature = "ggml"))]
+    #[cfg(not(feature = "whisper"))]
     pub fn from_model_path(path: impl AsRef<Path>, model: SttModel) -> Result<Self> {
         let _ = (path, model);
         Err(Error::Provider {
@@ -160,12 +159,12 @@ trait Decoder: Send {
     fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<(String, String)>;
 }
 
-#[cfg(feature = "ggml")]
+#[cfg(feature = "whisper")]
 struct WhisperDecoder {
     ctx: WhisperContext,
 }
 
-#[cfg(feature = "ggml")]
+#[cfg(feature = "whisper")]
 impl WhisperDecoder {
     fn load(path: &Path) -> Result<Self> {
         let ctx = WhisperContext::load(path).map_err(|message| Error::Provider {
@@ -176,7 +175,7 @@ impl WhisperDecoder {
     }
 }
 
-#[cfg(feature = "ggml")]
+#[cfg(feature = "whisper")]
 impl Decoder for WhisperDecoder {
     fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<(String, String)> {
         if cancel.is_shutdown() {
@@ -209,7 +208,7 @@ impl Decoder for WhisperDecoder {
     }
 }
 
-#[cfg(feature = "ggml")]
+#[cfg(feature = "whisper")]
 unsafe extern "C" fn abort_on_shutdown(user_data: *mut c_void) -> bool {
     if user_data.is_null() {
         return false;
@@ -218,7 +217,7 @@ unsafe extern "C" fn abort_on_shutdown(user_data: *mut c_void) -> bool {
     unsafe { (*(user_data as *const Cancel)).is_shutdown() }
 }
 
-#[cfg(feature = "ggml")]
+#[cfg(feature = "whisper")]
 fn thread_count() -> i32 {
     std::thread::available_parallelism()
         .map(|n| n.get().min(4) as i32)
@@ -265,13 +264,13 @@ pub const LIBRISPEECH_MIN_WORD_MATCH: f64 = 0.8;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::Stt;
-    use crate::types::{
-        AudioFrame, TurnId, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
-    };
+    use crate::Stt;
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
+    use syllabix_native::types::{
+        AudioFrame, TurnId, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    };
 
     struct ScriptedDecoder {
         replies: Vec<String>,
@@ -502,15 +501,15 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let cache = ModelCache::new(
             root,
-            crate::models::Manifest {
+            syllabix_native::models::Manifest {
                 version: 1,
                 assets: vec![],
             },
         );
         let err = match WhisperStt::from_cache(
             &cache,
-            &crate::models::BlockedFetcher::default(),
-            &mut crate::models::NoProgress,
+            &syllabix_native::models::BlockedFetcher::default(),
+            &mut syllabix_native::models::NoProgress,
             &Cancel::new(),
             SttModel::Small,
         ) {
@@ -534,14 +533,14 @@ mod tests {
         }
     }
 
-    impl crate::models::Fetcher for RecordingFetcher {
+    impl syllabix_native::models::Fetcher for RecordingFetcher {
         fn fetch(
             &self,
             url: &str,
             _writer: &mut dyn std::io::Write,
             _on_chunk: &mut dyn FnMut(u64),
             _cancel: &Cancel,
-        ) -> crate::error::Result<()> {
+        ) -> syllabix_native::error::Result<()> {
             self.urls
                 .lock()
                 .expect("recording fetcher")
@@ -563,14 +562,14 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let cache = ModelCache::new(root, crate::models::Manifest::v0());
+        let cache = ModelCache::new(root, syllabix_native::models::Manifest::v0());
         let fetcher = RecordingFetcher::default();
         // Native load fails on absent bytes, but the fetch log is the point:
         // exactly one URL, the selected id, even though the manifest lists five.
         let result = WhisperStt::from_cache(
             &cache,
             &fetcher,
-            &mut crate::models::NoProgress,
+            &mut syllabix_native::models::NoProgress,
             &Cancel::new(),
             SttModel::MediumQ5_0,
         );
