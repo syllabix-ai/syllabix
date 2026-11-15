@@ -95,6 +95,13 @@ mod tests {
             default_filter_for(&cli::Commands::BenchAsrWorker {
                 out: PathBuf::from("worker.jsonl"),
                 model: String::from("whisper-small"),
+                manifest: None,
+                noise: String::from("clean"),
+                snr: 10.0,
+                seed: 7,
+                warmup: 1,
+                threads: None,
+                dataset: String::from("librispeech-test-clean"),
             }),
             "info"
         );

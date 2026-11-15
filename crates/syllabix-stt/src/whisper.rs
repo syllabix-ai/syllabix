@@ -95,6 +95,24 @@ impl WhisperStt {
         Ok(self)
     }
 
+    /// whisper.cpp `n_threads` for this adapter. Other STT engines ignore this.
+    pub fn with_threads(self, n: i32) -> Self {
+        let n = n.max(1);
+        self.decoder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_n_threads(n);
+        self
+    }
+
+    /// Effective whisper.cpp thread count after [`Self::with_threads`].
+    pub fn intra_op_threads(&self) -> Option<i32> {
+        self.decoder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .n_threads()
+    }
+
     /// True when decode detects the language per utterance instead of pinning one.
     pub fn auto_detects(&self) -> bool {
         self.language == LANGUAGE_AUTO
@@ -157,11 +175,16 @@ impl Stt for WhisperStt {
 trait Decoder: Send {
     /// Decode one utterance. Returns `(text, effective_language)`.
     fn decode(&mut self, pcm: &[f32], language: &str, cancel: &Cancel) -> Result<(String, String)>;
+    fn set_n_threads(&mut self, _n: i32) {}
+    fn n_threads(&self) -> Option<i32> {
+        None
+    }
 }
 
 #[cfg(feature = "whisper")]
 struct WhisperDecoder {
     ctx: WhisperContext,
+    n_threads: i32,
 }
 
 #[cfg(feature = "whisper")]
@@ -171,7 +194,10 @@ impl WhisperDecoder {
             provider: "whisper.cpp",
             message,
         })?;
-        Ok(Self { ctx })
+        Ok(Self {
+            ctx,
+            n_threads: thread_count(),
+        })
     }
 }
 
@@ -185,7 +211,7 @@ impl Decoder for WhisperDecoder {
         match unsafe {
             self.ctx.decode(
                 pcm,
-                thread_count(),
+                self.n_threads,
                 language,
                 Some(abort_on_shutdown),
                 abort_user,
@@ -205,6 +231,14 @@ impl Decoder for WhisperDecoder {
                 message,
             }),
         }
+    }
+
+    fn set_n_threads(&mut self, n: i32) {
+        self.n_threads = n.max(1);
+    }
+
+    fn n_threads(&self) -> Option<i32> {
+        Some(self.n_threads)
     }
 }
 
@@ -277,6 +311,7 @@ mod tests {
         detected: String,
         delay: Duration,
         calls: Arc<Mutex<usize>>,
+        n_threads: Option<i32>,
     }
 
     impl ScriptedDecoder {
@@ -286,6 +321,7 @@ mod tests {
                 detected: STT_LANGUAGE.to_string(),
                 delay: Duration::ZERO,
                 calls: Arc::new(Mutex::new(0)),
+                n_threads: None,
             }
         }
 
@@ -329,6 +365,14 @@ mod tests {
                 language.to_string()
             };
             Ok((text, detected))
+        }
+
+        fn set_n_threads(&mut self, n: i32) {
+            self.n_threads = Some(n.max(1));
+        }
+
+        fn n_threads(&self) -> Option<i32> {
+            self.n_threads
         }
     }
 
@@ -416,6 +460,7 @@ mod tests {
                 detected: STT_LANGUAGE.into(),
                 delay: Duration::ZERO,
                 calls: Arc::clone(&calls),
+                n_threads: None,
             }),
             SttModel::Small,
         );
@@ -439,6 +484,17 @@ mod tests {
     }
 
     #[test]
+    fn with_threads_clamps_and_round_trips_without_weights() {
+        let stt =
+            WhisperStt::with_decoder(Box::new(ScriptedDecoder::new(&["hi"])), SttModel::Small);
+        assert_eq!(stt.intra_op_threads(), None);
+        let stt = stt.with_threads(4);
+        assert_eq!(stt.intra_op_threads(), Some(4));
+        let stt = stt.with_threads(0);
+        assert_eq!(stt.intra_op_threads(), Some(1));
+    }
+
+    #[test]
     fn shutdown_before_transcribe_is_cancelled() {
         let mut stt =
             WhisperStt::with_decoder(Box::new(ScriptedDecoder::new(&["nope"])), SttModel::Small);
@@ -458,6 +514,7 @@ mod tests {
                 detected: STT_LANGUAGE.into(),
                 delay: Duration::from_secs(2),
                 calls: Arc::new(Mutex::new(0)),
+                n_threads: None,
             }),
             SttModel::Small,
         );
@@ -636,6 +693,7 @@ mod tests {
                 detected: STT_LANGUAGE.into(),
                 delay: Duration::ZERO,
                 calls: Arc::clone(&calls),
+                n_threads: None,
             }),
             SttModel::Small,
         );
@@ -670,6 +728,7 @@ mod tests {
                 detected: STT_LANGUAGE.into(),
                 delay: Duration::ZERO,
                 calls: Arc::clone(&calls),
+                n_threads: None,
             }),
             SttModel::Small,
         );

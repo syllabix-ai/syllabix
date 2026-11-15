@@ -93,7 +93,7 @@ fn fixture(bytes: &[u8]) -> Result<Vec<i16>> {
 }
 
 /// xorshift64* — small, deterministic, no dependency.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
     fn next(&mut self) -> f32 {
@@ -106,7 +106,7 @@ impl Rng {
     }
 }
 
-fn noise_sequence(kind: &str, len: usize, rng: &mut Rng) -> Result<Vec<f32>> {
+pub(crate) fn noise_sequence(kind: &str, len: usize, rng: &mut Rng) -> Result<Vec<f32>> {
     Ok(match kind {
         "white" => (0..len).map(|_| 0.3 * rng.next()).collect(),
         "pink" => {
@@ -156,7 +156,7 @@ fn rms(samples: &[f32]) -> f32 {
 }
 
 /// Mix `noise` into `clean` at `snr_db`, referenced to the clean signal RMS.
-fn mix(clean: &[i16], noise: &[f32], snr_db: f32) -> Vec<i16> {
+pub(crate) fn mix(clean: &[i16], noise: &[f32], snr_db: f32) -> Vec<i16> {
     let clean_f: Vec<f32> = clean
         .iter()
         .map(|sample| f32::from(*sample) / 32768.0)

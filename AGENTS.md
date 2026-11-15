@@ -62,3 +62,9 @@ Example: `[claude-sonnet-4-6 via cursor]`. Never post as an unattributed human.
 When working on PR comments: reply to every review thread and resolve it
 once addressed. No thread left unreplied. GitHub branch protection
 enforces resolved conversations.
+
+## STT / ASR models
+
+When adding an ASR model or changing the default, run the Linux CPU STT
+benchmark in [docs/contributing.md](docs/contributing.md) and put the WER /
+RTF / peak RSS table in the PR description, not under `docs/`.
