@@ -6,8 +6,11 @@ PR 10 compiles **one** `ggml` and links both speech frontends to it.
 |---|---|---|
 | `llama.cpp` | `ece963f41b0b02d7a0d61436ae365762c073a4c8` | `ggml` engine + llama.cpp frontend + vendored `common/` (Jinja chat + tool-call parse) |
 | `whisper.cpp` | `1fe009caeda75f69bc864d6370b10674e45a92bd` | Whisper STT frontend only |
+| `parakeet.cpp` | `2eac2e77d9c7ef8899f7a86a46e693ac5ac1a5cd` | Fluid Speech Pro / Parakeet TDT STT frontend only; built against the llama.cpp `ggml` |
 
 `ggml/include/ggml.h` is byte-identical at these two commits. Syllabix **does not compile** whisper.cpp's `ggml/` (that directory is not vendored).
+
+Only `src/`, `include/`, `third_party/dr_wav.h`, and `LICENSE` from parakeet.cpp are vendored — not its bundled `third_party/ggml`, examples, tests, or upstream `CMakeLists.txt`. The upstream `ggml-patches/0001-ggml-cpu-fold-broadcast-iterations-in-llamafile_sgem.patch` CPU speed tweak is intentionally **not** applied on Syllabix's single shared ggml (it may cost a little CPU time).
 
 Sequence 26 vendors `ggml/src/ggml-metal` and `ggml/src/ggml-blas` from the same llama.cpp pin. Sequence 34 also vendors `ggml/src/ggml-vulkan` from that pin (shaders + shader-gen included). CMake only compiles a backend when `GGML_<NAME>` is ON:
 

@@ -88,7 +88,87 @@ set(LLAMA_VERSION_MAJOR 0)
 set(MTMD_VIDEO OFF CACHE BOOL "mtmd video support" FORCE)
 add_subdirectory("${LLAMA_DIR}/tools/mtmd" "${CMAKE_BINARY_DIR}/mtmd")
 
-add_library(syllabix_native STATIC src/shim.c src/shim_chat.cpp src/shim_tts.c src/shim_asr.c src/shim_vulkan.cpp)
+option(SYLLABIX_PARAKEET "Fluid Speech Pro via parakeet.cpp" OFF)
+set(SYLLABIX_NATIVE_SRC src/shim.c src/shim_chat.cpp src/shim_tts.c src/shim_asr.c src/shim_vulkan.cpp)
+if (SYLLABIX_PARAKEET)
+    set(PARAKEET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/parakeet.cpp")
+    set(PARAKEET_SRC
+        ${PARAKEET_DIR}/src/parakeet.cpp
+        ${PARAKEET_DIR}/src/model.cpp
+        ${PARAKEET_DIR}/src/vad_head.cpp
+        ${PARAKEET_DIR}/src/vad_segmenter.cpp
+        ${PARAKEET_DIR}/src/vad_json.cpp
+        ${PARAKEET_DIR}/src/bundle.cpp
+        ${PARAKEET_DIR}/src/bundle_map.cpp
+        ${PARAKEET_DIR}/src/parakeet_capi.cpp
+        ${PARAKEET_DIR}/src/common.cpp
+        ${PARAKEET_DIR}/src/audio_io.cpp
+        ${PARAKEET_DIR}/src/transcription_json.cpp
+        ${PARAKEET_DIR}/src/model_loader.cpp
+        ${PARAKEET_DIR}/src/backend.cpp
+        ${PARAKEET_DIR}/src/ggml_graph.cpp
+        ${PARAKEET_DIR}/src/backend_pool.cpp
+        ${PARAKEET_DIR}/src/fft.cpp
+        ${PARAKEET_DIR}/src/mel.cpp
+        ${PARAKEET_DIR}/src/mel_gpu.cpp
+        ${PARAKEET_DIR}/src/subsampling.cpp
+        ${PARAKEET_DIR}/src/relpos_attention.cpp
+        ${PARAKEET_DIR}/src/conformer.cpp
+        ${PARAKEET_DIR}/src/pos_enc.cpp
+        ${PARAKEET_DIR}/src/encoder.cpp
+        ${PARAKEET_DIR}/src/streaming_encoder.cpp
+        ${PARAKEET_DIR}/src/streaming.cpp
+        ${PARAKEET_DIR}/src/buffered_streaming.cpp
+        ${PARAKEET_DIR}/src/ctc_decoder.cpp
+        ${PARAKEET_DIR}/src/prediction.cpp
+        ${PARAKEET_DIR}/src/joint.cpp
+        ${PARAKEET_DIR}/src/prompt_kernel.cpp
+        ${PARAKEET_DIR}/src/ternary.cpp
+        ${PARAKEET_DIR}/src/exact_matvec.cpp
+        ${PARAKEET_DIR}/src/ternary_kernels_x86.cpp
+        ${PARAKEET_DIR}/src/ternary_kernels_neon.cpp
+        ${PARAKEET_DIR}/src/tdt.cpp
+        ${PARAKEET_DIR}/src/rnnt.cpp
+        ${PARAKEET_DIR}/src/transducer_batch.cpp
+        ${PARAKEET_DIR}/src/tokenizer.cpp
+        ${PARAKEET_DIR}/src/search.cpp
+        ${PARAKEET_DIR}/src/transcription.cpp
+        ${PARAKEET_DIR}/src/diarization.cpp
+        ${PARAKEET_DIR}/src/diarization_encoder.cpp
+        ${PARAKEET_DIR}/src/diarization_head.cpp
+        ${PARAKEET_DIR}/src/sas_merge.cpp
+        ${PARAKEET_DIR}/src/asr_committer.cpp
+        ${PARAKEET_DIR}/src/diar_pcm_stream.cpp
+        ${PARAKEET_DIR}/src/scene_stream.cpp
+        ${PARAKEET_DIR}/src/diarization_streaming.cpp
+        ${PARAKEET_DIR}/src/ced_tagger.cpp
+        ${PARAKEET_DIR}/src/sound_stream.cpp
+        ${PARAKEET_DIR}/src/speaker_registry.cpp
+        ${PARAKEET_DIR}/src/speaker_identifier.cpp
+        ${PARAKEET_DIR}/src/speaker_encoder.cpp
+        ${PARAKEET_DIR}/src/scene_render.cpp
+        ${PARAKEET_DIR}/src/silero_vad.cpp
+        ${PARAKEET_DIR}/src/dr_wav_impl.cpp)
+    add_library(parakeet STATIC ${PARAKEET_SRC})
+    target_include_directories(parakeet PUBLIC
+        "${PARAKEET_DIR}/include"
+        PRIVATE
+        "${PARAKEET_DIR}/src"
+        "${PARAKEET_DIR}/third_party")
+    target_compile_definitions(parakeet PRIVATE PARAKEET_VERSION="2eac2e7")
+    if (NOT MSVC)
+        set_source_files_properties(
+            ${PARAKEET_DIR}/src/ternary.cpp
+            ${PARAKEET_DIR}/src/ternary_kernels_x86.cpp
+            ${PARAKEET_DIR}/src/ternary_kernels_neon.cpp
+            PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+    endif()
+    target_link_libraries(parakeet PUBLIC ggml)
+    target_compile_features(parakeet PUBLIC cxx_std_17)
+    list(APPEND SYLLABIX_NATIVE_SRC src/shim_parakeet.cpp)
+endif()
+
+add_library(syllabix_native STATIC ${SYLLABIX_NATIVE_SRC})
 # shim_vulkan.cpp catches ggml C++ exceptions raised under shim_tts.c / shim_asr.c frames;
 # GCC/Clang only unwind C frames compiled with -fexceptions.
 if(NOT MSVC)
@@ -101,10 +181,20 @@ target_include_directories(syllabix_native PUBLIC
     "${LLAMA_DIR}/tools/mtmd"
 )
 target_link_libraries(syllabix_native PUBLIC whisper llama llama-common mtmd)
+if (SYLLABIX_PARAKEET)
+    target_link_libraries(syllabix_native PUBLIC parakeet)
+    target_include_directories(syllabix_native PRIVATE
+        "${PARAKEET_DIR}/include"
+        "${PARAKEET_DIR}/src")
+endif()
 target_compile_features(syllabix_native PUBLIC cxx_std_17)
 
 include(GNUInstallDirs)
-install(TARGETS syllabix_native whisper llama mtmd
+set(SYLLABIX_INSTALL_TARGETS syllabix_native whisper llama mtmd)
+if (SYLLABIX_PARAKEET)
+    list(APPEND SYLLABIX_INSTALL_TARGETS parakeet)
+endif()
+install(TARGETS ${SYLLABIX_INSTALL_TARGETS}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )

@@ -25,6 +25,7 @@ include = [
     "vendor/README.md",
     "vendor/llama.cpp/**",
     "vendor/whisper.cpp/**",
+    "vendor/parakeet.cpp/**",
     "!vendor/**/tests/**",
     "!vendor/**/examples/**",
     "!vendor/**/pocs/**",
@@ -43,6 +44,8 @@ path = "src/lib.rs"
 default = ["cpp"]
 # The vendored ggml, whisper.cpp and llama.cpp engines, built with CMake.
 cpp = ["dep:cc", "dep:cmake", "dep:walkdir"]
+# Fluid Speech Pro GGUF via vendored parakeet.cpp (same ggml as llama/whisper).
+parakeet = ["cpp"]
 # Checksummed HTTPS model cache used by the speech crates.
 models = ["dep:sha2", "dep:ureq"]
 # ONNX Runtime helpers used by Moonshine, Pocket, and Kokoro.

@@ -8,6 +8,7 @@
 //! | --- | --- | --- | --- |
 //! | `whisper` | whisper.cpp ([`WhisperStt`]) | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
 //! | `qwen3-asr` | Qwen3-ASR 0.6B ([`qwen_asr`]) | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
+//! | `parakeet` | Fluid Speech Pro GGUF ([`fluid_gguf`]) | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
 //! | `moonshine` | Moonshine streaming ONNX (`moonshine`) | No (ONNX Runtime) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
 //! | `remote` | OpenAI-compatible `/audio/transcriptions` (`remote`) | No (HTTP only) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
 //!
@@ -20,6 +21,7 @@ pub use syllabix_native::audio;
 pub use syllabix_native::types::{AudioFrame, Transcript, TurnId, Utterance};
 pub use syllabix_native::{Cancel, Error, Result};
 
+pub mod fluid_gguf;
 #[cfg(feature = "hima")]
 pub mod hima;
 #[doc(hidden)]
@@ -93,11 +95,13 @@ pub enum SttModel {
     QwenAsr06,
     /// Hima-ASR int8 ONNX (Indic / code-switched, finalize only).
     HimaAsr,
+    /// Fluid Speech Pro Q8_0 GGUF via parakeet.cpp (finalize only).
+    FluidSpeechProGgufQ8,
 }
 
 impl SttModel {
     /// Every yaml-selectable id, manifest order.
-    pub const ALL: [SttModel; 9] = [
+    pub const ALL: [SttModel; 10] = [
         SttModel::Small,
         SttModel::Medium,
         SttModel::LargeV3Turbo,
@@ -107,6 +111,7 @@ impl SttModel {
         SttModel::MoonshineStreamingMedium,
         SttModel::QwenAsr06,
         SttModel::HimaAsr,
+        SttModel::FluidSpeechProGgufQ8,
     ];
 
     /// Config / log name.
@@ -121,6 +126,7 @@ impl SttModel {
             Self::MoonshineStreamingMedium => "moonshine-streaming-medium",
             Self::QwenAsr06 => "qwen3-asr-0.6",
             Self::HimaAsr => "hima-asr",
+            Self::FluidSpeechProGgufQ8 => "fluid-speech-pro-gguf-q8_0",
         }
     }
 
@@ -141,6 +147,9 @@ impl SttModel {
             // Same id as `hima::ENCODER_ASSET`; spelled out so this builds
             // without the `hima` feature.
             Self::HimaAsr => "hima-encoder",
+            // Same id as `fluid_gguf::ASSET`; spelled out so this builds
+            // without the `parakeet` feature.
+            Self::FluidSpeechProGgufQ8 => "fluid-speech-pro-gguf-q8_0",
         }
     }
 
@@ -160,6 +169,11 @@ impl SttModel {
     /// True for the Hima-ASR int8 ONNX engine.
     pub fn is_hima(self) -> bool {
         matches!(self, Self::HimaAsr)
+    }
+
+    /// True for Fluid Speech Pro GGUF through parakeet.cpp.
+    pub fn is_fluid_gguf(self) -> bool {
+        matches!(self, Self::FluidSpeechProGgufQ8)
     }
 
     /// Parse a yaml `pipeline.stt.model` id.
@@ -184,6 +198,7 @@ mod tests {
             "moonshine-streaming-medium",
             "qwen3-asr-0.6",
             "hima-asr",
+            "fluid-speech-pro-gguf-q8_0",
         ];
         for (model, id) in SttModel::ALL.into_iter().zip(ids) {
             assert_eq!(model.as_str(), id);

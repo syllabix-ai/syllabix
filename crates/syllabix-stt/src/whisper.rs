@@ -252,7 +252,7 @@ unsafe extern "C" fn abort_on_shutdown(user_data: *mut c_void) -> bool {
 }
 
 #[cfg(feature = "whisper")]
-fn thread_count() -> i32 {
+pub(crate) fn thread_count() -> i32 {
     std::thread::available_parallelism()
         .map(|n| n.get().min(4) as i32)
         .unwrap_or(1)

@@ -25,6 +25,8 @@ default = ["whisper", "qwen3-asr", "moonshine", "hima", "remote"]
 whisper = ["syllabix-native/cpp"]
 # Qwen3-ASR 0.6B through llama.cpp mtmd in syllabix-native (CMake + C++).
 qwen3-asr = ["syllabix-native/cpp"]
+# Fluid Speech Pro Q8_0 GGUF through parakeet.cpp in syllabix-native (CMake + C++).
+parakeet = ["syllabix-native/cpp", "syllabix-native/parakeet"]
 # Moonshine streaming ONNX models (ONNX Runtime, no CMake).
 moonshine = ["syllabix-native/onnx", "dep:tokenizers"]
 # Hima-ASR ONNX frontend + greedy engine (same ort/onnx gate as Moonshine).

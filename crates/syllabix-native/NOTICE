@@ -51,7 +51,12 @@ contributors. Full text: `crates/syllabix-native/vendor/llama.cpp/LICENSE`.
 MIT License. Copyright (c) 2023-2026 The ggml authors, Georgi Gerganov, and
 contributors. Full text: `crates/syllabix-native/vendor/whisper.cpp/LICENSE`.
 
-Whisper and llama.cpp share one ggml build; see
+### parakeet.cpp (`crates/syllabix-native/vendor/parakeet.cpp`)
+
+MIT License. Copyright (c) 2026 the parakeet.cpp authors.
+Full text: `crates/syllabix-native/vendor/parakeet.cpp/LICENSE`.
+
+Whisper, llama.cpp, and parakeet.cpp share one ggml build; see
 `crates/syllabix-native/vendor/README.md` for pins.
 
 Inside the published syllabix-native package the license files are at
