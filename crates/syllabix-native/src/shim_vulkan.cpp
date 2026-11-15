@@ -26,6 +26,11 @@ extern "C" struct syllabix_qwen_asr *syllabix_qwen_asr_load_unguarded(
     int n_threads,
     int backend);
 
+extern "C" struct syllabix_mio *syllabix_mio_load_unguarded(
+    const char *path,
+    int n_threads,
+    int n_gpu_layers);
+
 extern "C" int syllabix_vk_device_count_or_zero(void) {
 #if defined(GGML_USE_VULKAN)
     try {
@@ -108,6 +113,17 @@ extern "C" struct syllabix_qwen_asr *syllabix_qwen_asr_load(
     int backend) {
     try {
         return syllabix_qwen_asr_load_unguarded(model_path, mmproj_path, n_threads, backend);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" struct syllabix_mio *syllabix_mio_load(
+    const char *path,
+    int n_threads,
+    int n_gpu_layers) {
+    try {
+        return syllabix_mio_load_unguarded(path, n_threads, n_gpu_layers);
     } catch (...) {
         return nullptr;
     }

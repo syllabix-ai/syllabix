@@ -40,6 +40,12 @@ mod ffi {
         _private: [u8; 0],
     }
 
+    #[cfg(feature = "cpp")]
+    #[repr(C)]
+    pub struct MioHandle {
+        _private: [u8; 0],
+    }
+
     #[repr(C)]
     pub struct ChatSessionHandle {
         _private: [u8; 0],
@@ -208,6 +214,26 @@ mod ffi {
             n_samples: c_int,
             out: *mut c_char,
             out_cap: c_int,
+        ) -> c_int;
+    }
+
+    #[cfg(all(not(coverage), feature = "cpp"))]
+    extern "C" {
+        pub fn syllabix_mio_load(
+            path: *const c_char,
+            n_threads: c_int,
+            n_gpu_layers: c_int,
+        ) -> *mut MioHandle;
+        pub fn syllabix_mio_free(mio: *mut MioHandle);
+        pub fn syllabix_mio_generate(
+            mio: *mut MioHandle,
+            text: *const c_char,
+            seed: u32,
+            max_tokens: c_int,
+            abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+            abort_user: *mut c_void,
+            code_cb: Option<unsafe extern "C" fn(i32, *mut c_void)>,
+            code_user: *mut c_void,
         ) -> c_int;
     }
 
@@ -757,6 +783,48 @@ mod ffi {
         let n = bytes.len().min(out_cap as usize - 1);
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), n);
         *out.add(n) = 0;
+        0
+    }
+
+    #[cfg(all(coverage, feature = "cpp"))]
+    pub unsafe fn syllabix_mio_load(
+        path: *const c_char,
+        _n_threads: c_int,
+        _n_gpu_layers: c_int,
+    ) -> *mut MioHandle {
+        if fail(&text(path), "fail") {
+            std::ptr::null_mut()
+        } else {
+            std::ptr::dangling_mut::<MioHandle>()
+        }
+    }
+
+    #[cfg(all(coverage, feature = "cpp"))]
+    pub unsafe fn syllabix_mio_free(_mio: *mut MioHandle) {}
+
+    #[cfg(all(coverage, feature = "cpp"))]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn syllabix_mio_generate(
+        _mio: *mut MioHandle,
+        text_ptr: *const c_char,
+        _seed: u32,
+        _max_tokens: c_int,
+        _abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        _abort_user: *mut c_void,
+        code_cb: Option<unsafe extern "C" fn(i32, *mut c_void)>,
+        code_user: *mut c_void,
+    ) -> c_int {
+        let value = text(text_ptr);
+        if value.contains("cancel") {
+            return 1;
+        }
+        if value.contains("error") {
+            return -1;
+        }
+        if let Some(cb) = code_cb {
+            cb(0, code_user);
+            cb(1, code_user);
+        }
         0
     }
 }
@@ -1911,6 +1979,122 @@ impl Drop for ParakeetContext {
     }
 }
 
+#[cfg(feature = "cpp")]
+#[derive(Debug, PartialEq, Eq)]
+pub enum MioError {
+    Cancelled,
+    Failed(String),
+}
+
+#[cfg(feature = "cpp")]
+struct MioCodeSink {
+    codes: Vec<i32>,
+}
+
+#[cfg(feature = "cpp")]
+unsafe extern "C" fn mio_code_callback(code: i32, user: *mut c_void) {
+    if user.is_null() {
+        return;
+    }
+    // Safety: `generate` keeps this stack value alive for the C call.
+    let sink = unsafe { &mut *(user as *mut MioCodeSink) };
+    sink.codes.push(code);
+}
+
+/// Indic-Mio Qwen3 GGUF context. Each `generate` call clears the KV cache
+/// and samples speech-token codes; the codec lives in `syllabix-tts`.
+#[cfg(feature = "cpp")]
+pub struct MioLmContext {
+    raw: *mut ffi::MioHandle,
+    backend: QwenTtsBackend,
+}
+
+#[cfg(feature = "cpp")]
+unsafe impl Send for MioLmContext {}
+
+#[cfg(feature = "cpp")]
+impl MioLmContext {
+    /// Load the Indic-Mio GGUF. `backend` follows [`QwenTtsBackend`]: CPU
+    /// keeps `n_gpu_layers = 0`; Metal/Vulkan pass `-1`.
+    pub fn load(
+        model_path: impl AsRef<Path>,
+        n_threads: i32,
+        backend: QwenTtsBackend,
+    ) -> Result<Self, String> {
+        hush_logs();
+        unsafe { ffi::syllabix_llama_backend_init() };
+        let path = model_path.as_ref();
+        let s = path
+            .to_str()
+            .ok_or_else(|| format!("path is not valid UTF-8: {}", path.display()))?;
+        let c_path = CString::new(s).map_err(|_| "path contains an interior NUL".to_string())?;
+        let n_gpu_layers = if backend == QwenTtsBackend::Cpu {
+            0
+        } else {
+            -1
+        };
+        let _ggml = ggml_lock();
+        let raw = unsafe { ffi::syllabix_mio_load(c_path.as_ptr(), n_threads, n_gpu_layers) };
+        if raw.is_null() {
+            return Err(format!("failed to load Indic-Mio at {}", path.display()));
+        }
+        Ok(Self { raw, backend })
+    }
+
+    pub fn backend(&self) -> QwenTtsBackend {
+        self.backend
+    }
+
+    /// Sample speech codes for one sentence.
+    ///
+    /// # Safety
+    /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
+    pub unsafe fn generate(
+        &mut self,
+        text: &str,
+        seed: u32,
+        max_tokens: i32,
+        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        abort_user: *mut c_void,
+    ) -> Result<Vec<i32>, MioError> {
+        if text.is_empty() {
+            return Err(MioError::Failed("empty speak text".into()));
+        }
+        let c_text =
+            CString::new(text).map_err(|_| MioError::Failed("text contains NUL".into()))?;
+        let mut sink = MioCodeSink { codes: Vec::new() };
+        let _ggml = ggml_lock();
+        let rc = unsafe {
+            ffi::syllabix_mio_generate(
+                self.raw,
+                c_text.as_ptr(),
+                seed,
+                max_tokens,
+                abort,
+                abort_user,
+                Some(mio_code_callback),
+                (&mut sink as *mut MioCodeSink).cast(),
+            )
+        };
+        match rc {
+            0 => Ok(sink.codes),
+            1 => Err(MioError::Cancelled),
+            _ => Err(MioError::Failed("Indic-Mio generation failed".into())),
+        }
+    }
+}
+
+#[cfg(feature = "cpp")]
+impl Drop for MioLmContext {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _ggml = ggml_lock();
+            unsafe { ffi::syllabix_mio_free(self.raw) };
+            self.raw = std::ptr::null_mut();
+        }
+    }
+}
+
 struct TokenSink<'a> {
     on_piece: &'a mut dyn FnMut(&str, bool) -> Result<(), LlamaError>,
 }
@@ -2069,6 +2253,16 @@ mod tests {
             Ok(_) => panic!("missing Qwen3-TTS weights should fail"),
         };
         assert!(err.contains("failed to load Qwen3-TTS"));
+    }
+
+    #[test]
+    #[cfg(all(not(coverage), feature = "cpp"))]
+    fn missing_mio_weights_do_not_load() {
+        let err = match MioLmContext::load("/no/such/indic-mio.gguf", 1, QwenTtsBackend::Cpu) {
+            Err(err) => err,
+            Ok(_) => panic!("missing Indic-Mio weights should fail"),
+        };
+        assert!(err.contains("failed to load Indic-Mio"));
     }
 
     #[test]
@@ -2406,6 +2600,28 @@ mod tests {
         assert_eq!(
             unsafe { qwen_pcm_callback(1, std::ptr::null(), 1, 0, std::ptr::null_mut()) },
             -1
+        );
+    }
+
+    #[cfg(all(coverage, feature = "cpp"))]
+    #[test]
+    fn coverage_exercises_mio_wrapper_without_weights() {
+        assert!(MioLmContext::load("fail-mio", 1, QwenTtsBackend::Cpu).is_err());
+        let mut ctx = MioLmContext::load("fake-mio", 1, QwenTtsBackend::Cpu).expect("fake context");
+        assert_eq!(ctx.backend(), QwenTtsBackend::Cpu);
+        assert!(unsafe { ctx.generate("", 1, 8, None, std::ptr::null_mut()) }.is_err());
+        assert!(unsafe { ctx.generate("bad\0text", 1, 8, None, std::ptr::null_mut()) }.is_err());
+        assert_eq!(
+            unsafe { ctx.generate("hello", 1, 8, None, std::ptr::null_mut()) }.unwrap(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            unsafe { ctx.generate("cancel", 1, 8, None, std::ptr::null_mut()) },
+            Err(MioError::Cancelled)
+        );
+        assert_eq!(
+            unsafe { ctx.generate("error", 1, 8, None, std::ptr::null_mut()) },
+            Err(MioError::Failed("Indic-Mio generation failed".into()))
         );
     }
 }

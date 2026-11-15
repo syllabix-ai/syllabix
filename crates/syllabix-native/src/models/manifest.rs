@@ -430,6 +430,27 @@ impl Manifest {
                     "202c1fbf3a0f00b7586ca45b8328d696cc6cd980c3798979eaa4fefe8efd8320",
                     401_129_632,
                 ),
+                // Indic-Mio Qwen3 GGUF (Apache-2.0, SPRINGLab/Indic-Mio
+                // @ 25feace00ca76c71c40b1e8d921fd3c2943c545e) and MioCodec
+                // 24 kHz decoder (MIT, Aratako/MioCodec-25Hz-24kHz
+                // @ 3a737f0de2c6324cb2fe40c1fbd1056c7add423d). Community
+                // GGUF and ONNX exports, commit-pinned. Not re-hosted.
+                asset(
+                    "indic-mio",
+                    ModelLayer::Tts,
+                    "indic-mio-q8.gguf",
+                    "https://huggingface.co/bytepass0/indic-mio-q8-gguf/resolve/1cd565b6e7935ae089ae6dbb09686114b67e217b/indic-mio-q8.gguf",
+                    "cf3e527610ed8e8b65ed941e716ea1a1cd8e62b23e534194dc9abd7a02109b35",
+                    653_369_280,
+                ),
+                asset(
+                    "miocodec-decoder",
+                    ModelLayer::Tts,
+                    "miocodec-24k-decoder-body.onnx",
+                    "https://huggingface.co/eugenehp/miocodec/resolve/e9df303c82213bc79c46b219bdd1efb96d43dff3/decoder_body.onnx",
+                    "0daa1b1461333c22894495a46f1abd23c0dd4d136da724f1b6c15939209b3674",
+                    365_312_305,
+                ),
                 // LiquidAI LFM3-1.7B Q8_0 GGUF (default local LLM). Pinned HF
                 // commit; SHA-256 is the LFS object id; lfm1.0 license.
                 asset(

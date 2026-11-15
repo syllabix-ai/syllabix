@@ -1498,7 +1498,7 @@ mod tests {
         assert_eq!(V0_LLM_MODELS[0], "lfm3-1.7b");
         assert_eq!(V0_LLM_MODELS.len(), 8);
         assert!(TtsModel::ALL.contains(&TtsModel::PocketTts));
-        assert_eq!(TtsModel::ALL.len(), 4);
+        assert_eq!(TtsModel::ALL.len(), 5);
         let stt_cases = scenarios()
             .unwrap()
             .iter()

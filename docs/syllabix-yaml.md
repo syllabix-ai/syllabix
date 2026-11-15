@@ -306,11 +306,15 @@ Measured latency and memory for each TTS id: [workload benchmark](workload_bench
 
 ### `language`
 
-Optional. Qwen engines use it as the voice language (`en`, `zh`, `de`, `it`, `pt`, `es`, `fr`, `ja`, `ko`, `ru`). Kokoro ignores it (fixed ONNX voice).
+Optional. Qwen engines use it as the voice language (`en`, `zh`, `de`, `it`, `pt`, `es`, `fr`, `ja`, `ko`, `ru`). Kokoro and `indic-mio` ignore it (the script picks the language).
+
+### `voice`
+
+Optional and valid only for `indic-mio`. Speaker id: `hi-female` (default), `hi-male`, or `ta-female` ([FLEURS](https://huggingface.co/datasets/google/fleurs) CC-BY-4.0 embeddings).
 
 ### `compute`
 
-Optional and valid only for Qwen. Values: `auto` (default), `cpu`, `metal`, or `vulkan`.
+Optional and valid only for Qwen and `indic-mio`. Values: `auto` (default), `cpu`, `metal`, or `vulkan`.
 On Apple Silicon, `auto` runs after STT and LLM are resident: it attempts a
 complete Metal voice-anchor/audio warm-up, destroys that context if reservation
 or inference fails, then reloads Qwen on CPU. On a Linux build compiled with

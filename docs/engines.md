@@ -74,6 +74,7 @@ Local menu (unknown ids fail at load):
 | `kokoro` | Kokoro ONNX + default voice (~310 MB) | https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX |
 | `qwen3-0.6` | Qwen3-TTS 0.6B + speech tokenizer | https://huggingface.co/mradermacher/Qwen3-TTS-12Hz-0.6B-Base-GGUF |
 | `qwen3-1.7` | Qwen3-TTS 1.7B + speech tokenizer | https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF |
+| `indic-mio` | Language coverage per the [Indic-Mio model card](https://huggingface.co/SPRINGLab/Indic-Mio) ([MioCodec](https://huggingface.co/Aratako/MioCodec-25Hz-24kHz) MIT). Select with `pipeline.tts.model: indic-mio`; only `hi-female`, `hi-male`, and `ta-female` speaker embeddings ship in-tree. Weights download on first use. See [NOTICE](../crates/syllabix-tts/NOTICE). | https://huggingface.co/bytepass0/indic-mio-q8-gguf |
 
 `pipeline.tts.provider: online` posts each finished sentence to OpenAI-compatible `POST /v1/audio/speech` (`stream_format=audio`). No TTS weights are fetched. Key: `SYLLABIX_TTS_API_KEY`. A self-hosted worker: [`syllabix serve tts`](cli.md#serve). Yaml: [local vs online](syllabix-yaml.md#local-vs-online).
 

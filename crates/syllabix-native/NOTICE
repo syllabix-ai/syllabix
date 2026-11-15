@@ -181,6 +181,26 @@ export to `KevinAHM/pocket-tts-onnx`, and the fixed `alba` speaker state to
 `kyutai/pocket-tts-without-voice-cloning`. Syllabix does not expose voice
 cloning or user voice registration.
 
+### Indic-Mio (`indic-mio-q8.gguf` + MioCodec decoder ONNX)
+
+Apache-2.0 ([SPRINGLab/Indic-Mio](https://huggingface.co/SPRINGLab/Indic-Mio))
+and MIT ([Aratako/MioCodec-25Hz-24kHz](https://huggingface.co/Aratako/MioCodec-25Hz-24kHz)).
+Syllabix downloads the pinned community Q8 GGUF and ONNX decoder from
+Hugging Face the first time you select `pipeline.tts.model: indic-mio`.
+Syllabix does not redistribute those weights. The
+[Indic-Mio model card](https://huggingface.co/SPRINGLab/Indic-Mio) describes
+LM training data ([IndicTTS (IIT Madras)](https://www.iitm.ac.in/donlab/IndicTTS/),
+among others; Rasa, Syspin, English sources on the card). Indic-Mio is
+fine-tuned from [Aratako/MioTTS-0.6B](https://huggingface.co/Aratako/MioTTS-0.6B);
+that base model card lists
+[amphion/Emilia-Dataset](https://huggingface.co/datasets/amphion/Emilia-Dataset).
+Commercial use of IndicTTS data requires an agreement with IIT Madras — check
+the [IndicTTS license](https://www.iitm.ac.in/donlab/IndicTTS/license.php)
+before commercial deployment. The MioCodec decoder ONNX downloaded with
+indic-mio is described on
+[Aratako/MioCodec-25Hz-24kHz](https://huggingface.co/Aratako/MioCodec-25Hz-24kHz);
+its model card lists Emilia-YODAS (CC BY 4.0).
+
 ## Data
 
 ### Misaki English lexicons (compiled into the Kokoro grapheme-to-phoneme table)
@@ -189,6 +209,15 @@ Apache License 2.0. Copyright hexgrad.
 Source: https://github.com/hexgrad/misaki
 The in-process engine is `misaki-rs` (MIT), with the espeak-ng feature
 disabled so the binary does not link GPL code or an extra dylib.
+
+### FLEURS reference clips (Indic-Mio speaker embeddings)
+
+Creative Commons Attribution 4.0 International (CC BY 4.0).
+https://huggingface.co/datasets/google/fleurs at revision
+`70bb2e84b976b7e960aa89f1c648e09c59f894dd`. Precomputed 128-d MioCodec
+`global_embedding` vectors from Hindi (`hi_in` ids 93 female, 695 male)
+and Tamil (`ta_in` id 878 female) train clips; see
+`crates/syllabix-tts/src/indic_mio/voices/SOURCE.md`.
 
 ## Rust dependencies
 

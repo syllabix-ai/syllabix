@@ -51,7 +51,7 @@ tokenizers = { version = "=0.22.1", default-features = false, features = ["progr
 htmd = "=0.5.5"
 ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls", "copy-dylibs"] }
 ort-sys = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "download-binaries", "tls-rustls", "copy-dylibs"] }
-# Real-input rFFT for STT log-mel frontends (hima, later NeMo-style).
+# Real-input rFFT (MioCodec iSTFT, Hima log-mel, later STT frontends).
 realfft = "=3.5.1"
 # NFC for Hima-ASR `clean_text` (same as Python unicodedata.normalize).
 unicode-normalization = "=0.1.25"

@@ -1,0 +1,8 @@
+MioCodec ISTFT golden fixture
+codec: Aratako/MioCodec-25Hz-24kHz @ 3a737f0de2c6324cb2fe40c1fbd1056c7add423d
+tokens: 101 202 303 404 505 606 707 808 909 1010 1111 1212
+command: python3 scripts/make-miocodec-istft-fixture.py
+layout: spec_mag.f32 / spec_phase.f32 are little-endian f32, row-major [n_freq=961, n_frames]
+spec_* and expected_pcm.f32: ISTFTHead forward-hook capture (mag/phase in, waveform out), truncated to T×960.
+decoder_pcm.f32: pinned eugenehp decoder_body.onnx + numpy iSTFT, last-token pad to 100, trim T×960.
+voice.f32: FLEURS hi_in utterance 93 (hi-female) MioCodec global_embedding.

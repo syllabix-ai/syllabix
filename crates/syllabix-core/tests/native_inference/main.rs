@@ -14,6 +14,8 @@
 #[cfg(not(coverage))]
 mod fluid_gguf;
 #[cfg(not(coverage))]
+mod indic_mio;
+#[cfg(not(coverage))]
 mod kokoro;
 #[cfg(not(coverage))]
 mod lfm;
@@ -57,7 +59,7 @@ use syllabix_core::{AgentConfig, Cancel, ModelCache};
 const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM3_1_7B_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
-const SUITED_NATIVE_IDS: [&str; 13] = [
+const SUITED_NATIVE_IDS: [&str; 14] = [
     "whisper-small",
     LLAMA_32_1B_ASSET,
     "kokoro",
@@ -71,6 +73,7 @@ const SUITED_NATIVE_IDS: [&str; 13] = [
     LFM25_2_6B_ASSET,
     LFM25_350M_ASSET,
     LFM25_230M_ASSET,
+    "indic-mio",
 ];
 
 /// Every selectable local TTS model uses this fixed latency corpus.
@@ -162,10 +165,11 @@ fn latency_requires_tts(selected: &BTreeSet<String>, latency: bool) -> Result<()
         && !(selected.contains("kokoro")
             || selected.contains("pocket-tts")
             || selected.contains("qwen3-0.6")
-            || selected.contains("qwen3-1.7"))
+            || selected.contains("qwen3-1.7")
+            || selected.contains("indic-mio"))
     {
         return Err(
-            "SYLLABIX_NATIVE_LATENCY=1 requires a local TTS id (kokoro, pocket-tts, qwen3-0.6, or qwen3-1.7) in SYLLABIX_NATIVE_MODELS"
+            "SYLLABIX_NATIVE_LATENCY=1 requires a local TTS id (kokoro, pocket-tts, qwen3-0.6, qwen3-1.7, or indic-mio) in SYLLABIX_NATIVE_MODELS"
                 .into(),
         );
     }

@@ -186,7 +186,7 @@ fn resolving_one_llm_id_does_not_fetch_the_other() {
 #[test]
 fn v0_manifest_is_complete() {
     let m = Manifest::v0();
-    assert_eq!(m.assets.len(), 48);
+    assert_eq!(m.assets.len(), 50);
     assert!(m.asset("silero").is_some());
     assert!(m.asset("whisper-small").is_some());
     assert!(m.asset("whisper-medium").is_some());
@@ -230,6 +230,19 @@ fn v0_manifest_is_complete() {
     assert!(m.asset("qwen3-tts-mmproj").is_some());
     assert!(m.asset("qwen3-tts-06b").is_some());
     assert!(m.asset("qwen3-tts-06b-mmproj").is_some());
+    assert!(m.asset("indic-mio").is_some());
+    assert!(m.asset("miocodec-decoder").is_some());
+}
+
+#[test]
+fn launch_default_does_not_select_indic_mio_assets() {
+    let cfg = syllabix_core::AgentConfig::v0();
+    assert_eq!(cfg.tts_model, TtsModel::PocketTts);
+    assert_eq!(cfg.tts_model.asset_id(), "pocket-tts-text-conditioner");
+    assert_ne!(cfg.tts_model.asset_id(), "indic-mio");
+    let manifest = Manifest::v0();
+    assert!(manifest.asset("indic-mio").is_some());
+    assert!(manifest.asset("miocodec-decoder").is_some());
 }
 
 #[test]

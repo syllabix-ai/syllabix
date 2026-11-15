@@ -17,7 +17,15 @@ use ort::session::Session;
 #[cfg(all(not(coverage), feature = "kokoro"))]
 use ort::value::Tensor;
 #[cfg(all(not(coverage), feature = "qwen3"))]
-use syllabix_native::{QwenTtsBackend, QwenTtsContext, QwenTtsError};
+use syllabix_native::QwenTtsBackend;
+#[cfg(all(
+    not(coverage),
+    feature = "qwen3",
+    any(feature = "kokoro", feature = "pocket")
+))]
+use syllabix_native::{MioError, MioLmContext};
+#[cfg(all(not(coverage), feature = "qwen3"))]
+use syllabix_native::{QwenTtsContext, QwenTtsError};
 
 #[cfg(all(not(coverage), feature = "kokoro"))]
 use crate::g2p::{english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
@@ -27,7 +35,6 @@ use crate::TtsModel;
 #[cfg(all(not(coverage), any(feature = "kokoro", feature = "qwen3", test)))]
 use syllabix_native::audio::{f32_to_i16, PcmConverter, PcmFormat};
 use syllabix_native::cancel::Cancel;
-#[cfg(all(not(coverage), any(feature = "qwen3", test)))]
 use syllabix_native::compute::TtsCompute;
 use syllabix_native::error::{Error, Result};
 use syllabix_native::models::{Fetcher, ModelCache, Progress};
@@ -59,6 +66,12 @@ pub const QWEN_TTS_06B_MMPROJ_ASSET: &str = "qwen3-tts-06b-mmproj";
 
 /// Manifest id for the Qwen3-TTS speech-tokenizer projector (1.7B pairing).
 pub const QWEN_TTS_MMPROJ_ASSET: &str = "qwen3-tts-mmproj";
+
+/// Manifest id for the Indic-Mio Q8 GGUF.
+pub const INDIC_MIO_ASSET: &str = "indic-mio";
+
+/// Manifest id for the MioCodec 24 kHz decoder ONNX graph.
+pub const MIOCODEC_DECODER_ASSET: &str = "miocodec-decoder";
 
 /// Text → TTS → Whisper round-trip: at least 80% of reference words, in order.
 pub const TTS_ASR_MIN_WORD_MATCH: f64 = 0.8;
@@ -487,6 +500,214 @@ impl Tts for QwenTts {
     }
 }
 
+/// Indic-Mio adapter: Qwen3 GGUF speech tokens plus the MioCodec ONNX decoder.
+#[cfg(all(
+    not(coverage),
+    feature = "qwen3",
+    any(feature = "kokoro", feature = "pocket")
+))]
+pub struct IndicMioTts {
+    core: ChunkState,
+    engine: Arc<Mutex<Box<dyn WaveformEngine>>>,
+    backend: Option<&'static str>,
+}
+
+#[cfg(any(
+    coverage,
+    not(all(feature = "qwen3", any(feature = "kokoro", feature = "pocket")))
+))]
+pub struct IndicMioTts {
+    _private: (),
+}
+
+#[cfg(all(
+    not(coverage),
+    feature = "qwen3",
+    any(feature = "kokoro", feature = "pocket")
+))]
+impl Clone for IndicMioTts {
+    fn clone(&self) -> Self {
+        Self {
+            core: ChunkState::default(),
+            engine: Arc::clone(&self.engine),
+            backend: self.backend,
+        }
+    }
+}
+
+impl IndicMioTts {
+    /// Load the GGUF and decoder ONNX from disk.
+    #[cfg(all(
+        not(coverage),
+        feature = "qwen3",
+        any(feature = "kokoro", feature = "pocket")
+    ))]
+    pub fn from_paths(
+        model: impl AsRef<Path>,
+        decoder: impl AsRef<Path>,
+        compute: TtsCompute,
+    ) -> Result<Self> {
+        Self::from_paths_with_seed(
+            model,
+            decoder,
+            u32::MAX,
+            compute,
+            crate::indic_mio::DEFAULT_VOICE_ID,
+        )
+    }
+
+    /// [`Self::from_paths`] with a pinned sampler seed for round-trip tests.
+    #[cfg(all(
+        not(coverage),
+        feature = "qwen3",
+        any(feature = "kokoro", feature = "pocket")
+    ))]
+    pub fn from_paths_with_seed(
+        model: impl AsRef<Path>,
+        decoder: impl AsRef<Path>,
+        seed: u32,
+        compute: TtsCompute,
+        voice_id: &str,
+    ) -> Result<Self> {
+        let engine = NativeIndicMio::load_with_seed(
+            model.as_ref(),
+            decoder.as_ref(),
+            seed,
+            compute,
+            voice_id,
+        )?;
+        let backend = Some(engine.backend.as_str());
+        Ok(Self {
+            core: ChunkState::default(),
+            engine: Arc::new(Mutex::new(Box::new(engine))),
+            backend,
+        })
+    }
+
+    /// Resolve Indic-Mio assets from the manifest cache, then load them.
+    #[cfg(all(
+        not(coverage),
+        feature = "qwen3",
+        any(feature = "kokoro", feature = "pocket")
+    ))]
+    pub fn from_cache(
+        cache: &ModelCache,
+        fetcher: &dyn Fetcher,
+        progress: &mut dyn Progress,
+        cancel: &Cancel,
+        compute: TtsCompute,
+        voice_id: &str,
+    ) -> Result<Self> {
+        let backbone =
+            cache
+                .manifest()
+                .asset(INDIC_MIO_ASSET)
+                .ok_or_else(|| Error::ModelCache {
+                    message: "manifest does not contain the indic-mio asset".into(),
+                })?;
+        let decoder = cache
+            .manifest()
+            .asset(MIOCODEC_DECODER_ASSET)
+            .ok_or_else(|| Error::ModelCache {
+                message: "manifest does not contain the miocodec-decoder asset".into(),
+            })?;
+        let model_path = cache.resolve(backbone, fetcher, progress, cancel)?;
+        let decoder_path = cache.resolve(decoder, fetcher, progress, cancel)?;
+        Self::from_paths_with_seed(model_path, decoder_path, u32::MAX, compute, voice_id)
+    }
+}
+
+#[cfg(any(
+    coverage,
+    not(all(feature = "qwen3", any(feature = "kokoro", feature = "pocket")))
+))]
+impl IndicMioTts {
+    pub fn from_cache(
+        _cache: &ModelCache,
+        _fetcher: &dyn Fetcher,
+        _progress: &mut dyn Progress,
+        _cancel: &Cancel,
+        _compute: TtsCompute,
+        _voice_id: &str,
+    ) -> Result<Self> {
+        #[cfg(coverage)]
+        crate::indic_mio::coverage_exercise_codec_helpers();
+        Err(Error::Provider {
+            provider: "indic-mio",
+            message: if cfg!(coverage) {
+                "Indic-Mio inference is not loaded in coverage tests.".into()
+            } else {
+                "Indic-Mio requires qwen3 plus kokoro or pocket".into()
+            },
+        })
+    }
+}
+
+#[cfg(all(
+    not(coverage),
+    feature = "qwen3",
+    any(feature = "kokoro", feature = "pocket")
+))]
+impl Tts for IndicMioTts {
+    fn name(&self) -> &'static str {
+        "local"
+    }
+
+    fn model_id(&self) -> Option<&str> {
+        Some(TtsModel::IndicMio.model_id())
+    }
+
+    fn backend_id(&self) -> Option<&str> {
+        self.backend
+    }
+
+    fn synthesize_chunk(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+    ) -> Result<Vec<SynthesizedAudio>> {
+        synthesize_chunk_shared(
+            &self.engine,
+            &mut self.core,
+            token,
+            cancel,
+            SynthesisMode::Buffered,
+        )
+    }
+}
+
+#[cfg(any(
+    coverage,
+    not(all(feature = "qwen3", any(feature = "kokoro", feature = "pocket")))
+))]
+#[cfg(test)]
+mod indic_mio_stub_tests {
+    use super::*;
+    use syllabix_native::models::{BlockedFetcher, ModelCache, NoProgress};
+
+    #[test]
+    fn from_cache_errors_without_loading_weights() {
+        let cache = ModelCache::v0();
+        let err = match IndicMioTts::from_cache(
+            &cache,
+            &BlockedFetcher::default(),
+            &mut NoProgress,
+            &Cancel::new(),
+            TtsCompute::Auto,
+            "hi-female",
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("stub from_cache must not load"),
+        };
+        let text = err.to_string();
+        assert!(
+            text.contains("indic-mio")
+                && (text.contains("coverage") || text.contains("requires qwen3")),
+            "{text}"
+        );
+    }
+}
+
 trait WaveformEngine: Send {
     fn synthesize(
         &mut self,
@@ -513,6 +734,12 @@ trait WaveformEngine: Send {
     }
 }
 
+#[cfg(all(
+    not(coverage),
+    feature = "qwen3",
+    any(feature = "kokoro", feature = "pocket")
+))]
+use native::NativeIndicMio;
 #[cfg(all(not(coverage), feature = "qwen3"))]
 use native::NativeQwen;
 #[cfg(all(not(coverage), feature = "kokoro"))]
@@ -841,6 +1068,111 @@ mod native {
                     message,
                 }),
             }
+        }
+    }
+
+    #[cfg(all(feature = "qwen3", any(feature = "kokoro", feature = "pocket")))]
+    pub(super) struct NativeIndicMio {
+        lm: MioLmContext,
+        decoder: crate::indic_mio::MioDecoder,
+        voice: [f32; crate::indic_mio::VOICE_DIM],
+        seed: u32,
+        pub(super) backend: QwenTtsBackend,
+    }
+
+    #[cfg(all(feature = "qwen3", any(feature = "kokoro", feature = "pocket")))]
+    impl NativeIndicMio {
+        pub(super) fn load_with_seed(
+            model: &Path,
+            decoder: &Path,
+            seed: u32,
+            compute: TtsCompute,
+            voice_id: &str,
+        ) -> Result<Self> {
+            let n_threads = std::thread::available_parallelism()
+                .map(|n| n.get().min(4) as i32)
+                .unwrap_or(1);
+            let load = |backend| {
+                MioLmContext::load(model, n_threads, backend).map_err(|message| Error::Provider {
+                    provider: "indic-mio",
+                    message,
+                })
+            };
+            let (lm, _) = load_first_backend(backend_attempts(compute)?, load)?;
+            let backend = lm.backend();
+            Ok(Self {
+                lm,
+                decoder: crate::indic_mio::MioDecoder::load(decoder)?,
+                voice: crate::indic_mio::voice_by_id(voice_id)?,
+                seed,
+                backend,
+            })
+        }
+    }
+
+    #[cfg(all(feature = "qwen3", any(feature = "kokoro", feature = "pocket")))]
+    impl WaveformEngine for NativeIndicMio {
+        fn synthesize(
+            &mut self,
+            sentence: &str,
+            cancel: &Cancel,
+            generation: GenerationId,
+        ) -> Result<Vec<i16>> {
+            if cancel.is_shutdown() || cancel.is_stale(generation) {
+                return Err(Error::Cancelled);
+            }
+            let abort_user = cancel as *const Cancel as *mut std::ffi::c_void;
+            let lm_started = std::time::Instant::now();
+            let codes = match unsafe {
+                self.lm.generate(
+                    sentence,
+                    self.seed,
+                    crate::indic_mio::FRAME_CAP_TOKENS,
+                    Some(abort_on_shutdown),
+                    abort_user,
+                )
+            } {
+                Ok(codes) => codes,
+                Err(MioError::Cancelled) => return Err(Error::Cancelled),
+                Err(MioError::Failed(_)) if cancel.is_shutdown() => return Err(Error::Cancelled),
+                Err(MioError::Failed(message)) => {
+                    return Err(Error::Provider {
+                        provider: "indic-mio",
+                        message,
+                    })
+                }
+            };
+            if cancel.is_stale(generation) || cancel.is_shutdown() {
+                return Err(Error::Cancelled);
+            }
+            let lm_ms = lm_started.elapsed();
+            let decoder_started = std::time::Instant::now();
+            let mut pcm = self.decoder.decode(&codes, &self.voice)?;
+            let decoder_ms = decoder_started.elapsed();
+            if std::env::var_os("SYLLABIX_INDIC_MIO_TIMING").is_some() {
+                if codes.len() as i32 >= crate::indic_mio::FRAME_CAP_TOKENS {
+                    eprintln!(
+                        "syllabix-tts indic-mio: hit {}-token frame cap",
+                        crate::indic_mio::FRAME_CAP_TOKENS
+                    );
+                }
+                eprintln!(
+                    "syllabix-tts indic-mio: lm {:.3}s decoder {:.3}s tokens {}",
+                    lm_ms.as_secs_f64(),
+                    decoder_ms.as_secs_f64(),
+                    codes.len()
+                );
+                if crate::indic_mio::limit_peak(&mut pcm) {
+                    eprintln!("syllabix-tts indic-mio: peak limiter engaged");
+                }
+            } else {
+                let _ = crate::indic_mio::limit_peak(&mut pcm);
+            }
+            let mut out = resample_to_v0(&pcm);
+            if out.is_empty() {
+                out.push(0);
+            }
+            Ok(out)
         }
     }
 
