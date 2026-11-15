@@ -20,13 +20,19 @@ pub use syllabix_native::audio;
 pub use syllabix_native::types::{AudioFrame, Transcript, TurnId, Utterance};
 pub use syllabix_native::{Cancel, Error, Result};
 
+#[cfg(feature = "hima")]
+pub mod hima;
 #[doc(hidden)]
 pub mod language;
 #[cfg(feature = "moonshine")]
 pub mod moonshine;
+#[cfg(feature = "hima")]
+pub mod npy;
 pub mod qwen_asr;
 #[cfg(feature = "remote")]
 pub mod remote;
+#[cfg(feature = "hima")]
+pub mod stft;
 mod whisper;
 
 pub use whisper::*;

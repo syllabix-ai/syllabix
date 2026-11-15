@@ -51,6 +51,8 @@ tokenizers = { version = "=0.22.1", default-features = false, features = ["progr
 htmd = "=0.5.5"
 ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls", "copy-dylibs"] }
 ort-sys = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "download-binaries", "tls-rustls", "copy-dylibs"] }
+# Real-input rFFT for STT log-mel frontends (hima, later NeMo-style).
+realfft = "=3.5.1"
 # Live `run` UI is crossterm (inline status/transcript), not a widget TUI.
 crossterm = "=0.27.0"
 # Blocking HTTP listen for `syllabix serve`. No async runtime.
