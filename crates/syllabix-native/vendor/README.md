@@ -4,11 +4,11 @@ PR 10 compiles **one** `ggml` and links both speech frontends to it.
 
 | Tree | Pin | Role |
 |---|---|---|
-| `llama.cpp` | `ece963f41b0b02d7a0d61436ae365762c073a4c8` | `ggml` engine + llama.cpp frontend + vendored `common/` (Jinja chat + tool-call parse) |
+| `llama.cpp` | `c4261a74a59c5a719e8f73038e28633b08f2bea4` (tag v0.9.0) | `ggml` engine + llama.cpp frontend + vendored `common/` (Jinja chat + tool-call parse) |
 | `whisper.cpp` | `1fe009caeda75f69bc864d6370b10674e45a92bd` | Whisper STT frontend only |
 | `parakeet.cpp` | `2eac2e77d9c7ef8899f7a86a46e693ac5ac1a5cd` | Fluid Speech Pro / Parakeet TDT STT frontend only; built against the llama.cpp `ggml` |
 
-`ggml/include/ggml.h` is byte-identical at these two commits. Syllabix **does not compile** whisper.cpp's `ggml/` (that directory is not vendored).
+`ggml/include/ggml.h` is **not** byte-identical between the llama.cpp and whisper.cpp pins; whisper still links the llama vendored `ggml`. Syllabix **does not compile** whisper.cpp's `ggml/` (that directory is not vendored).
 
 Only `src/`, `include/`, `third_party/dr_wav.h`, and `LICENSE` from parakeet.cpp are vendored — not its bundled `third_party/ggml`, examples, tests, or upstream `CMakeLists.txt`. The upstream `ggml-patches/0001-ggml-cpu-fold-broadcast-iterations-in-llamafile_sgem.patch` CPU speed tweak is intentionally **not** applied on Syllabix's single shared ggml (it may cost a little CPU time).
 
@@ -20,30 +20,18 @@ Sequence 26 vendors `ggml/src/ggml-metal` and `ggml/src/ggml-blas` from the same
 
 Do not add a second `ggml` copy. Do not use `--allow-multiple-definition` or post-build `objcopy` symbol renaming.
 
-**Local patch (sequence 27), Darwin only:** `ggml/src/ggml-metal/ggml-metal-device.cpp` and `ggml-metal.cpp` leak their process-global Metal device caches on purpose (`static ... = new ...`, destructor never runs). Freeing them from C++ static destructors during `__cxa_finalize` aborted every ggml-Metal process at exit — `native_inference` passed all 16 tests, then SIGABRT in `ggml_metal_rsets_free`. No runtime behavior change; keep the patch when bumping the pin.
+**Local patch (sequence 27), Darwin only:** `ggml/src/ggml-metal/ggml-metal-device.cpp` and `ggml-metal.cpp` leak their process-global Metal device caches on purpose (`static ... = new ...`, destructor never runs). Freeing them from C++ static destructors during `__cxa_finalize` aborted every ggml-Metal process at exit — `native_inference` passed all tests, then SIGABRT in `ggml_metal_rsets_free`. No runtime behavior change; keep the patch when bumping the pin.
 
-**Local patch (sequence 32), `tools/mtmd/clip.cpp`:** `PROJECTOR_TYPE_QWEN3TTS_GEN` loads `a.gen.code.proj_in.{weight,bias}` as optional (`get_tensor(..., /*required=*/false)`). The gen graph already null-guards both tensors (`code_gen::project_in` passes through untouched when absent); the row-32 0.6B backbone conversion omits them (talker hidden size == predictor hidden size there), and the required lookup rejected every 0.6B mmproj at load. No effect on the 1.7B files, which carry both tensors; keep the patch when bumping the pin, drop once upstream makes these optional.
-
-**Local patch (sequence 33), `tools/mtmd/mtmd-helper-gen.{h,cpp}`:** expose `mtmd_helper_gen_audio_take_output`, which returns only PCM newly produced by an already-completed vocoder window without flushing an incomplete window. The Qwen shim forwards those windows to Rust as generation continues, rather than waiting for `get_output()` to flush and return the entire utterance. Decoder state and the existing window sizes remain upstream-owned. Contribute this narrow helper API upstream; retain the patch only until it merges.
-
-**Local patch (adaptive Qwen placement), `tools/mtmd/clip.cpp`:** propagate
-compute-buffer reservation and graph-allocation failures through
-`clip_encode`. Qwen's Apple Silicon auto mode relies on this recoverable error
-to destroy a failed Metal context and reload on CPU before the first turn.
-Keep the patch until upstream checks both scheduler return values.
+**Local patch (adaptive Qwen placement), `tools/mtmd/clip.cpp`:** propagate compute-buffer reservation failures through `reserve_compute_meta`. Qwen's Apple Silicon auto mode relies on this recoverable error to destroy a failed Metal context and reload on CPU before the first turn. Keep the patch until upstream checks the scheduler return value.
 
 **Local patch (Vulkan Qwen placement), `tools/mtmd/models/qwen3tts-gen.cpp`:**
 the code predictor and code2wav `GET_ROWS` index views into `out_code_cache`
 and `inp_codes` are wrapped in `ggml_cont`. Those views sit at 4-byte element
-offsets, below the device `minStorageBufferOffsetAlignment` (16 on NVIDIA L4),
-and ggml-Vulkan aborts on
-`GGML_ASSERT(dst->op != GGML_OP_GET_ROWS || (a_offset == 0 && b_offset == 0 && d_offset == 0))`
-during the first Qwen step. The copy is one I32 row per lookup; CPU and Metal
+offsets, below the device `minStorageBufferOffsetAlignment`, and ggml-Vulkan can
+fail on misaligned `GET_ROWS` indices during the first Qwen step. CPU and Metal
 results are unchanged. Keep the patch until upstream ggml-Vulkan accepts
 misaligned `GET_ROWS` indices.
 
-**Local patch (common chat-only), `common/CMakeLists.txt` and `CMakeLists.txt`:** Syllabix links `llama-common` for Jinja chat and tool parsing only. Trim `common/CMakeLists.txt` (no CLI/download sources or `http.h`; delete those files from `common/`), compile generated `build-info.cpp` into `llama-common` (not a separate `llama-common-base` static lib — `build.rs` only links installed archives), drop `add_subdirectory(vendor/cpp-httplib)` from root `CMakeLists.txt`, and remove the vendored `vendor/cpp-httplib` tree; keep `nlohmann`. No runtime behavior change; re-apply both CMake edits on pin bump until upstream splits a library-only common target.
-
-**Backport (LFM3), upstream `19cce6919` (#31252):** `src/llama-arch.{h,cpp}`, `llama-model.cpp`, `llama-quant.cpp`, `src/models/models.h`, plus new `src/models/lfm-base.cpp` and `src/models/lfm3.cpp`. Not taken: LFM3-VL (`tools/mtmd`), `models/templates/LFM3.jinja`, `tests/test-chat.cpp`. One deviation from upstream: `lfm3.cpp` ends with `ggml_build_forward_expand(gf, cur)` because the vendored pin (`ece963f41`) expects graphs to expand their own result tensor.
+**Local patch (common chat-only), `common/CMakeLists.txt`, `vendor/CMakeLists.txt`:** Syllabix links `llama-common` for Jinja chat and tool parsing only. Single `llama-common` static lib (no `llama-common-base`); no CLI/download sources or `http.h`; `vendor/cpp-httplib` not vendored; keep `hash`, `miniaudio`, `nlohmann`, `sheredom`, `stb`. No runtime behavior change.
 
 CPU vs Metal tok/s for the three v0 GGUFs: [`llama-bench.md`](llama-bench.md).

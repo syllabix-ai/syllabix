@@ -317,8 +317,7 @@ static int qwen_generate(
     llama_memory_clear(llama_get_memory(tts->ctx), true);
     mtmd_helper_gen_audio_reset(tts->gen);
 
-    struct mtmd_helper_gen_audio_inp inp;
-    memset(&inp, 0, sizeof(inp));
+    struct mtmd_helper_gen_audio_inp inp = mtmd_helper_gen_audio_inp_default();
     inp.seq_id = 0;
     inp.prompt = text;
     inp.prompt_len = strlen(text);
@@ -326,8 +325,10 @@ static int qwen_generate(
     inp.lang = (lang != NULL && lang[0] != '\0') ? lang : "en";
     inp.top_k = SYLLABIX_QWEN_TOP_K;
     inp.top_p = SYLLABIX_QWEN_TOP_P;
-    inp.seed = 0; /* unused by set_input; sampling seed lives in the chain */
     inp.out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_PCM;
+    if (pcm_cb != NULL) {
+        inp.stream = true;
+    }
 
     if (mtmd_helper_gen_audio_set_input(tts->gen, &inp) != 0) {
         QWEN_LOG("set_input failed\n");
@@ -368,15 +369,19 @@ static int qwen_generate(
         }
         if (pcm_cb != NULL) {
             int32_t partial_rate = 0;
-            const float *partial_pcm = NULL;
+            const char *partial_data = NULL;
+            size_t partial_data_len = 0;
             int64_t partial_samples = 0;
-            if (mtmd_helper_gen_audio_take_output(tts->gen, &partial_rate, &partial_pcm,
-                                                  &partial_samples) != 0) {
+            if (mtmd_helper_gen_audio_get_output(tts->gen, &partial_rate, &partial_data,
+                                                 &partial_data_len, &partial_samples) != 0) {
                 return -4;
             }
-            if (partial_samples > 0 && pcm_cb(partial_rate, partial_pcm, partial_samples,
-                                               0, pcm_user) != 0) {
-                return 1;
+            if (partial_samples > 0 && partial_data != NULL
+                && partial_data_len >= (size_t)partial_samples * sizeof(float)) {
+                const float *partial_pcm = (const float *)partial_data;
+                if (pcm_cb(partial_rate, partial_pcm, partial_samples, 0, pcm_user) != 0) {
+                    return 1;
+                }
             }
         }
         if (h_next == NULL) {
@@ -390,6 +395,26 @@ static int qwen_generate(
         sampled = llama_sampler_sample(tts->smpl, tts->ctx, -1);
     }
 
+    if (pcm_cb != NULL) {
+        if (mtmd_helper_gen_audio_flush(tts->gen) != 0) {
+            return -4;
+        }
+        int32_t rate = 0;
+        const char *data = NULL;
+        size_t data_len = 0;
+        int64_t n_samples = 0;
+        if (mtmd_helper_gen_audio_get_output(tts->gen, &rate, &data, &data_len, &n_samples) != 0) {
+            QWEN_LOG("get_output failed after %d frames\n", n_frames);
+            return -4;
+        }
+        if (n_samples > 0 && data != NULL
+            && data_len >= (size_t)n_samples * sizeof(float)) {
+            const float *partial_pcm = (const float *)data;
+            return pcm_cb(rate, partial_pcm, n_samples, 1, pcm_user) == 0 ? 0 : 1;
+        }
+        return pcm_cb(rate, NULL, 0, 1, pcm_user) == 0 ? 0 : 1;
+    }
+
     int32_t rate = 0;
     const char *data = NULL;
     size_t data_len = 0;
@@ -397,15 +422,6 @@ static int qwen_generate(
     if (mtmd_helper_gen_audio_get_output(tts->gen, &rate, &data, &data_len, &n_samples) != 0) {
         QWEN_LOG("get_output failed after %d frames\n", n_frames);
         return -4;
-    }
-    if (pcm_cb != NULL) {
-        const float *partial_pcm = NULL;
-        int64_t partial_samples = 0;
-        if (mtmd_helper_gen_audio_take_output(tts->gen, &rate, &partial_pcm,
-                                              &partial_samples) != 0) {
-            return -4;
-        }
-        return pcm_cb(rate, partial_pcm, partial_samples, 1, pcm_user) == 0 ? 0 : 1;
     }
     if (rate <= 0 || data == NULL || n_samples <= 0 || data_len < (size_t)n_samples * sizeof(float)) {
         QWEN_LOG("bad output rate=%d samples=%lld len=%zu\n", rate, (long long)n_samples, data_len);

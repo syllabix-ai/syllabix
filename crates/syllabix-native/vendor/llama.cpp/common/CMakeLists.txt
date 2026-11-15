@@ -2,16 +2,9 @@ find_package(Threads REQUIRED)
 
 llama_add_compile_flags()
 
-#
-# llama-common-base
-#
-
-# Build info header
-
 if(EXISTS "${PROJECT_SOURCE_DIR}/.git")
     set(GIT_DIR "${PROJECT_SOURCE_DIR}/.git")
 
-    # Is git submodule
     if(NOT IS_DIRECTORY "${GIT_DIR}")
         file(READ ${GIT_DIR} REAL_GIT_DIR_LINK)
         string(REGEX REPLACE "gitdir: (.*)\n$" "\\1" REAL_GIT_DIR ${REAL_GIT_DIR_LINK})
@@ -24,7 +17,6 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/.git")
     endif()
 
     if(EXISTS "${GIT_DIR}/index")
-        # For build-info.cpp below
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GIT_DIR}/index")
     else()
         message(WARNING "Git index not found in git repository.")
@@ -38,14 +30,13 @@ set(OUTPUT_FILE   "${CMAKE_CURRENT_BINARY_DIR}/build-info.cpp")
 
 configure_file(${TEMPLATE_FILE} ${OUTPUT_FILE})
 
-#
-# llama-common
-#
-
 set(TARGET llama-common)
+
+include(parsers/sources.cmake)
 
 add_library(${TARGET}
     ${OUTPUT_FILE}
+    ${LLAMA_CHAT_PARSERS_SOURCES}
     base64.hpp
     chat-auto-parser-generator.cpp
     chat-auto-parser-helpers.cpp
@@ -61,11 +52,17 @@ add_library(${TARGET}
     console.h
     debug.cpp
     debug.h
+    file-lock.cpp
+    file-lock.h
     fit.cpp
     fit.h
     imatrix-loader.cpp
     imatrix-loader.h
     json-schema-to-grammar.cpp
+    json-schema.cpp
+    json-schema.h
+    json.cpp
+    json.h
     llguidance.cpp
     log.cpp
     log.h
@@ -106,10 +103,11 @@ add_library(${TARGET}
 set_target_properties(${TARGET} PROPERTIES
     VERSION ${LLAMA_VERSION_BASE}
     SOVERSION ${LLAMA_VERSION_MAJOR}
-    MACHO_CURRENT_VERSION 0 # keep macOS linker from seeing oversized version number
+    MACHO_CURRENT_VERSION 0
 )
 
-target_include_directories(${TARGET} PUBLIC . ../vendor)
+target_include_directories(${TARGET} PUBLIC .)
+target_link_libraries     (${TARGET} PUBLIC vendor::nlohmann vendor::sheredom)
 target_compile_features   (${TARGET} PUBLIC cxx_std_17)
 
 if (LLAMA_SUBPROCESS)
@@ -118,8 +116,6 @@ endif()
 
 if (BUILD_SHARED_LIBS)
     set_target_properties(${TARGET} PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-    # TODO: make fine-grained exports in the future
     set_target_properties(${TARGET} PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 
@@ -131,7 +127,6 @@ if (LLAMA_LLGUIDANCE)
 
     ExternalProject_Add(llguidance_ext
         GIT_REPOSITORY https://github.com/guidance-ai/llguidance
-        # v1.0.1:
         GIT_TAG d795912fedc7d393de740177ea9ea761e7905774
         PREFIX ${CMAKE_BINARY_DIR}/llguidance
         SOURCE_DIR ${LLGUIDANCE_SRC}
@@ -156,3 +151,7 @@ if (LLAMA_LLGUIDANCE)
 endif()
 
 target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)
+
+if (CMAKE_SYSTEM_NAME MATCHES "AIX")
+    target_link_libraries(${TARGET} PRIVATE -lbsd)
+endif()
