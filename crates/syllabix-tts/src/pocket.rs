@@ -15,7 +15,7 @@ use sentencepiece_rs::SentencePieceProcessor;
 use crate::speech_text::{speak_text_for_tts, take_sentences, ThinkFilter};
 use crate::Tts;
 use syllabix_native::audio::{f32_to_i16, PcmConverter, PcmFormat};
-use syllabix_native::models::{Fetcher, ModelCache, Progress};
+use syllabix_native::models::{Fetcher, HttpFetcher, ModelCache, NoProgress, Progress};
 use syllabix_native::onnx::{OnnxData, OnnxSession, OnnxTensor, OrtSession};
 use syllabix_native::types::GenerationId;
 use syllabix_native::types::{SynthesizedAudio, TokenChunk, TurnId};
@@ -117,6 +117,16 @@ impl PocketTts {
             .map(|id| resolve(cache, id, fetcher, progress, cancel))
             .collect::<Result<Vec<_>>>()?;
         Self::from_paths(&paths)
+    }
+
+    /// Download (on first use) and load Pocket TTS from the shared cache.
+    pub fn load() -> Result<Self> {
+        Self::from_cache(
+            &ModelCache::v0(),
+            &HttpFetcher::new(),
+            &mut NoProgress,
+            &Cancel::new(),
+        )
     }
 
     fn from_paths(paths: &[PathBuf]) -> Result<Self> {

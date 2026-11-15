@@ -76,6 +76,19 @@ pub struct RemoteSttSettings {
 }
 
 impl RemoteSttSettings {
+    /// Required base URL (no `Option`). Joins `{base}/audio/transcriptions`.
+    pub fn new(
+        base_url: impl AsRef<str>,
+        model: impl Into<String>,
+        language: impl Into<String>,
+    ) -> Self {
+        Self {
+            endpoint: join_transcriptions_endpoint(base_url.as_ref()),
+            model: model.into(),
+            language: language.into(),
+        }
+    }
+
     /// Build from plain endpoint parts (`base_url` already required for online).
     pub fn from_parts(base_url: Option<&str>, model: &str, language: &str) -> Result<Self> {
         let base = base_url.ok_or_else(|| Error::Config {
@@ -100,6 +113,9 @@ pub struct RemoteStt {
 
 impl RemoteStt {
     /// Create an adapter with the built-in connect and idle timeouts.
+    ///
+    /// Pass the API key from code (or from [`resolve_api_key`] when using
+    /// `SYLLABIX_STT_API_KEY`).
     pub fn new(settings: RemoteSttSettings, api_key: Zeroizing<String>) -> Self {
         Self::with_timeouts(settings, api_key, OpenAiTimeouts::default())
     }
@@ -650,6 +666,18 @@ mod tests {
             join_transcriptions_endpoint("http://127.0.0.1:8091/v1/"),
             "http://127.0.0.1:8091/v1/audio/transcriptions"
         );
+    }
+
+    #[test]
+    fn settings_new_joins_endpoint() {
+        let settings =
+            RemoteSttSettings::new("http://127.0.0.1:8091/v1/", "whisper-large-v3", "en");
+        assert_eq!(
+            settings.endpoint,
+            "http://127.0.0.1:8091/v1/audio/transcriptions"
+        );
+        assert_eq!(settings.model, "whisper-large-v3");
+        assert_eq!(settings.language, "en");
     }
 
     #[test]

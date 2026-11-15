@@ -17,7 +17,7 @@ use crate::npy;
 use crate::stft::power_spectrogram;
 use crate::{Stt, SttModel};
 use syllabix_native::error::{Error, Result};
-use syllabix_native::models::{Fetcher, ModelCache, Progress};
+use syllabix_native::models::{Fetcher, HttpFetcher, ModelCache, NoProgress, Progress};
 use syllabix_native::onnx::{OnnxData, OnnxSession, OnnxTensor, OrtSession};
 use syllabix_native::types::{Transcript, Utterance};
 use syllabix_native::Cancel;
@@ -592,6 +592,18 @@ impl HimaStt {
             .and_then(Path::parent)
             .ok_or_else(|| provider("hima encoder path has no hima-asr directory"))?;
         Self::from_dir(dir, config)
+    }
+
+    /// Download (on first use) and load Hima-ASR with default config.
+    pub fn load(model: SttModel) -> Result<Self> {
+        Self::from_cache(
+            &ModelCache::v0(),
+            &HttpFetcher::new(),
+            &mut NoProgress,
+            &Cancel::new(),
+            model,
+            HimaConfig::default(),
+        )
     }
 
     /// Load int8 encoder/decoder plus shared npy/json from `dir`.

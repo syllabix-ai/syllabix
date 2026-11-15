@@ -37,7 +37,7 @@ use syllabix_native::audio::{f32_to_i16, PcmConverter, PcmFormat};
 use syllabix_native::cancel::Cancel;
 use syllabix_native::compute::TtsCompute;
 use syllabix_native::error::{Error, Result};
-use syllabix_native::models::{Fetcher, ModelCache, Progress};
+use syllabix_native::models::{Fetcher, HttpFetcher, ModelCache, NoProgress, Progress};
 #[cfg(all(not(coverage), any(feature = "kokoro", feature = "qwen3", test)))]
 use syllabix_native::types::DEFAULT_SAMPLE_RATE_HZ;
 use syllabix_native::types::{GenerationId, SynthesizedAudio, TokenChunk, TurnId};
@@ -255,6 +255,17 @@ impl KokoroTts {
         Self::from_paths(model_path, voice_path)
     }
 
+    /// Download (on first use) and load Kokoro from the shared cache.
+    #[cfg(all(not(coverage), feature = "kokoro"))]
+    pub fn load() -> Result<Self> {
+        Self::from_cache(
+            &ModelCache::v0(),
+            &HttpFetcher::new(),
+            &mut NoProgress,
+            &Cancel::new(),
+        )
+    }
+
     #[cfg(test)]
     fn with_engine(engine: Box<dyn WaveformEngine>) -> Self {
         Self {
@@ -279,6 +290,16 @@ impl KokoroTts {
             provider: "kokoro",
             message: "Kokoro inference is not loaded in coverage tests.".into(),
         })
+    }
+
+    /// Download (on first use) and load Kokoro from the shared cache.
+    pub fn load() -> Result<Self> {
+        Self::from_cache(
+            &ModelCache::v0(),
+            &HttpFetcher::new(),
+            &mut NoProgress,
+            &Cancel::new(),
+        )
     }
 }
 
@@ -434,6 +455,20 @@ impl QwenTts {
         )
     }
 
+    /// Download (on first use) and load the selected Qwen3-TTS model.
+    #[cfg(all(not(coverage), feature = "qwen3"))]
+    pub fn load(model: TtsModel) -> Result<Self> {
+        Self::from_cache(
+            &ModelCache::v0(),
+            &HttpFetcher::new(),
+            &mut NoProgress,
+            &Cancel::new(),
+            "en",
+            model,
+            TtsCompute::Auto,
+        )
+    }
+
     #[cfg(test)]
     fn with_engine(engine: Box<dyn WaveformEngine>, model: TtsModel) -> Self {
         Self {
@@ -453,6 +488,39 @@ impl QwenTts {
     /// Compute backend confirmed by the complete native placement warm-up.
     pub fn backend_id(&self) -> Option<&str> {
         self.backend
+    }
+}
+
+#[cfg(any(coverage, not(feature = "qwen3")))]
+impl QwenTts {
+    /// Coverage (and builds without `qwen3`) keep the cache-facing API
+    /// available, but never resolve or open the native GGUF assets.
+    pub fn from_cache(
+        _cache: &ModelCache,
+        _fetcher: &dyn Fetcher,
+        _progress: &mut dyn Progress,
+        _cancel: &Cancel,
+        _language: &str,
+        _selected: TtsModel,
+        _compute: TtsCompute,
+    ) -> Result<Self> {
+        Err(Error::Provider {
+            provider: "qwen3-tts",
+            message: if cfg!(coverage) {
+                "Qwen3-TTS inference is not loaded in coverage tests.".into()
+            } else {
+                "Qwen3-TTS inference requires the `qwen3` feature".into()
+            },
+        })
+    }
+
+    /// Download (on first use) and load the selected Qwen3-TTS model.
+    pub fn load(model: TtsModel) -> Result<Self> {
+        let _ = model;
+        Err(Error::Provider {
+            provider: "qwen3-tts",
+            message: "Qwen3-TTS inference requires the `qwen3` feature".into(),
+        })
     }
 }
 
@@ -615,6 +683,23 @@ impl IndicMioTts {
         let decoder_path = cache.resolve(decoder, fetcher, progress, cancel)?;
         Self::from_paths_with_seed(model_path, decoder_path, u32::MAX, compute, voice_id)
     }
+
+    /// Download (on first use) and load Indic-Mio from the shared cache.
+    #[cfg(all(
+        not(coverage),
+        feature = "qwen3",
+        any(feature = "kokoro", feature = "pocket")
+    ))]
+    pub fn load() -> Result<Self> {
+        Self::from_cache(
+            &ModelCache::v0(),
+            &HttpFetcher::new(),
+            &mut NoProgress,
+            &Cancel::new(),
+            TtsCompute::Auto,
+            crate::indic_mio::DEFAULT_VOICE_ID,
+        )
+    }
 }
 
 #[cfg(any(
@@ -640,6 +725,18 @@ impl IndicMioTts {
                 "Indic-Mio requires qwen3 plus kokoro or pocket".into()
             },
         })
+    }
+
+    /// Download (on first use) and load Indic-Mio from the shared cache.
+    pub fn load() -> Result<Self> {
+        Self::from_cache(
+            &ModelCache::v0(),
+            &HttpFetcher::new(),
+            &mut NoProgress,
+            &Cancel::new(),
+            TtsCompute::Auto,
+            "hi-female",
+        )
     }
 }
 
@@ -698,6 +795,20 @@ mod indic_mio_stub_tests {
         ) {
             Err(err) => err,
             Ok(_) => panic!("stub from_cache must not load"),
+        };
+        let text = err.to_string();
+        assert!(
+            text.contains("indic-mio")
+                && (text.contains("coverage") || text.contains("requires qwen3")),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn load_delegates_to_stub_from_cache() {
+        let err = match IndicMioTts::load() {
+            Err(err) => err,
+            Ok(_) => panic!("stub load must not open weights"),
         };
         let text = err.to_string();
         assert!(

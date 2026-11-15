@@ -14,7 +14,7 @@ use crate::language::{is_whisper_language as is_supported, language_name, LANGUA
 use crate::{Stt, SttModel, STT_LANGUAGE};
 use syllabix_native::compute::TtsCompute;
 use syllabix_native::error::{Error, Result};
-use syllabix_native::models::{Fetcher, ModelCache, Progress};
+use syllabix_native::models::{Fetcher, HttpFetcher, ModelCache, NoProgress, Progress};
 use syllabix_native::types::{Transcript, Utterance};
 use syllabix_native::Cancel;
 
@@ -123,6 +123,18 @@ impl QwenAsrStt {
         let model_path = cache.resolve(backbone, fetcher, progress, cancel)?;
         let mmproj_path = cache.resolve(mmproj, fetcher, progress, cancel)?;
         Self::from_paths_with_compute(model_path, mmproj_path, compute)
+    }
+
+    /// Download (on first use) and load Qwen3-ASR with automatic compute placement.
+    pub fn load(model: SttModel) -> Result<Self> {
+        Self::from_cache(
+            &ModelCache::v0(),
+            &HttpFetcher::new(),
+            &mut NoProgress,
+            &Cancel::new(),
+            model,
+            TtsCompute::Auto,
+        )
     }
 
     /// Compute backend confirmed after load (`cpu` / `metal` / `vulkan`).

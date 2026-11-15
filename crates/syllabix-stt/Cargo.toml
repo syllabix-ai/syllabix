@@ -54,6 +54,10 @@ unicode_categories = { workspace = true, optional = true }
 name = "transcribe-wav"
 required-features = ["remote"]
 
+[[example]]
+name = "transcribe-wav-local"
+required-features = ["moonshine"]
+
 # docs.rs has no CMake: document everything except the C++ engines.
 # Whisper and Qwen3-ASR still appear, as the stubs that build without C++.
 [package.metadata.docs.rs]

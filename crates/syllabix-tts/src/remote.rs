@@ -83,6 +83,19 @@ pub struct RemoteTtsSettings {
 }
 
 impl RemoteTtsSettings {
+    /// Required base URL (no `Option`). Joins `{base}/audio/speech`.
+    pub fn new(
+        base_url: impl AsRef<str>,
+        model: impl Into<String>,
+        voice: impl Into<String>,
+    ) -> Self {
+        Self {
+            endpoint: join_speech_endpoint(base_url.as_ref()),
+            model: model.into(),
+            voice: voice.into(),
+        }
+    }
+
     /// Build from plain endpoint parts (`base_url` already required for online).
     pub fn from_parts(base_url: Option<&str>, model: &str, voice: &str) -> Result<Self> {
         let base = base_url.ok_or_else(|| Error::Config {
@@ -140,6 +153,9 @@ pub struct RemoteTts {
 
 impl RemoteTts {
     /// Create an adapter with the built-in connect and idle timeouts.
+    ///
+    /// Pass the API key from code (or from [`resolve_api_key`] when using
+    /// `SYLLABIX_TTS_API_KEY`).
     pub fn new(settings: RemoteTtsSettings, api_key: Zeroizing<String>) -> Self {
         Self::with_timeouts(settings, api_key, OpenAiTimeouts::default())
     }
@@ -800,6 +816,14 @@ mod tests {
             join_speech_endpoint("http://127.0.0.1:8092/v1/"),
             "http://127.0.0.1:8092/v1/audio/speech"
         );
+    }
+
+    #[test]
+    fn settings_new_joins_endpoint() {
+        let settings = RemoteTtsSettings::new("http://127.0.0.1:8092/v1/", "tts-1", "nova");
+        assert_eq!(settings.endpoint, "http://127.0.0.1:8092/v1/audio/speech");
+        assert_eq!(settings.model, "tts-1");
+        assert_eq!(settings.voice, "nova");
     }
 
     #[test]

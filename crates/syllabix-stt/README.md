@@ -31,13 +31,14 @@ By default, weights land under `models/v1` at `$SYLLABIX_CACHE_DIR`, else
 `%LOCALAPPDATA%\syllabix\cache` when those are unset). The first use of a
 model id downloads only that asset over HTTPS, checks SHA-256, then reuses the
 file; sharing the same root with the Syllabix CLI is fine. Point a custom root
-at `ModelCache::new` in `syllabix-native`. Model ids and licenses:
+with `ModelCache::new` and `Manifest` on this crate. Model ids and licenses:
 [engines](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md).
 This crate is Apache-2.0; third-party notices are in [NOTICE](NOTICE).
 
 The remote engine reads its key from `SYLLABIX_STT_API_KEY` only.
 
-Example: [transcribe a WAV file](https://github.com/syllabix-ai/syllabix/blob/main/crates/syllabix-stt/examples/transcribe-wav.rs)
-with the remote engine. API docs: [docs.rs/syllabix-stt](https://docs.rs/syllabix-stt).
+Examples: [Moonshine local WAV](https://github.com/syllabix-ai/syllabix/blob/main/crates/syllabix-stt/examples/transcribe-wav-local.rs)
+and [remote HTTP](https://github.com/syllabix-ai/syllabix/blob/main/crates/syllabix-stt/examples/transcribe-wav.rs).
+API docs: [docs.rs/syllabix-stt](https://docs.rs/syllabix-stt).
 For the full voice agent, use
 [syllabix-core](https://github.com/syllabix-ai/syllabix/blob/main/docs/embed.md).
