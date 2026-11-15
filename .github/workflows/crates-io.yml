@@ -1,6 +1,7 @@
 name: crates.io
 
-# Publish syllabix-native then syllabix-core when a version tag is pushed.
+# Publish syllabix-native, then syllabix-stt and syllabix-tts, then
+# syllabix-core when a version tag is pushed.
 # GitHub Release binaries stay in release.yml; this workflow only talks to
 # crates.io. Pull requests never publish. A manual run from the Actions tab
 # is always a dry run: it never uploads and never uses a token.
@@ -48,21 +49,17 @@ jobs:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: python3 scripts/set-crate-versions.py --from-tag "${RELEASE_TAG}"
 
-      - name: Dry-run publish syllabix-native
+      - name: Dry-run publish all four crates
         if: github.event_name == 'workflow_dispatch'
         run: |
           # --allow-dirty: this job writes the tag version into Cargo.toml
           # (and matching Cargo.lock workspace crate versions). That edit is
-          # not committed. --dry-run builds from the packaged tarball and
-          # does not upload.
-          cargo publish -p syllabix-native --dry-run --locked --allow-dirty
-
-      - name: List syllabix-core package
-        if: github.event_name == 'workflow_dispatch'
-        # cargo publish --dry-run for core would try to download this version
-        # of syllabix-native from crates.io. Core cannot be fully dry-run
-        # until that version is on crates.io, so this only lists the tarball.
-        run: cargo package -p syllabix-core --allow-dirty --no-verify --list
+          # not committed. --dry-run builds each crate from its packaged
+          # tarball and does not upload. One call for all four: cargo builds
+          # stt, tts and core against the native/stt/tts tarballs from this
+          # run, not crates.io.
+          cargo publish --dry-run --locked --allow-dirty \
+            -p syllabix-native -p syllabix-stt -p syllabix-tts -p syllabix-core
 
       # Tag push only. A manual dry run never uploads and must not request
       # a crates.io token.
@@ -71,7 +68,7 @@ jobs:
         if: github.event_name == 'push'
         uses: rust-lang/crates-io-auth-action@v1
 
-      # Native first: core's crates.io Cargo.toml depends on it by version.
+      # Native first: stt, tts and core depend on it by version.
       - name: Publish syllabix-native
         if: github.event_name == 'push'
         env:
@@ -103,8 +100,8 @@ jobs:
           cargo publish -p syllabix-native --locked --allow-dirty
 
       # The index can lag the upload. Wait until this version is visible
-      # before publishing core, otherwise cargo publish -p syllabix-core
-      # fails to resolve syllabix-native.
+      # before publishing stt, tts and core, otherwise cargo publish fails
+      # to resolve syllabix-native.
       - name: Wait until syllabix-native is on crates.io
         if: github.event_name == 'push'
         env:
@@ -122,6 +119,52 @@ jobs:
             fi
             echo "waiting for syllabix-native ${VERSION}..."
             sleep 15
+          done
+
+      # stt and tts depend only on syllabix-native, so their order does not matter.
+      - name: Publish syllabix-stt and syllabix-tts
+        if: github.event_name == 'push'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          VERSION: ${{ env.VERSION }}
+        run: |
+          for crate in syllabix-stt syllabix-tts; do
+            # Same skip as native: a re-run must not fail after a successful upload.
+            url="https://crates.io/api/v1/crates/${crate}/${VERSION}"
+            code=$(curl -sS -o /tmp/crates-io.json -w "%{http_code}" \
+              -A "syllabix-ai/syllabix (https://github.com/syllabix-ai/syllabix)" \
+              "${url}")
+            if [ "${code}" = "200" ]; then
+              echo "${crate} ${VERSION} is already on crates.io; skipping publish"
+              continue
+            fi
+            if [ "${code}" != "404" ]; then
+              echo "could not check crates.io for ${crate} ${VERSION}: HTTP ${code}" >&2
+              cat /tmp/crates-io.json >&2 || true
+              exit 1
+            fi
+            # --no-verify: same reason as core below. PR CI already built
+            # this crate from its tarball (cargo package in ci.yml).
+            cargo publish -p "${crate}" --locked --no-verify --allow-dirty
+          done
+
+      # Same wait as native: core's publish must resolve stt and tts.
+      - name: Wait until syllabix-stt and syllabix-tts are on crates.io
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          deadline=$((SECONDS + 600))
+          for crate in syllabix-stt syllabix-tts; do
+            while ! cargo info -q "${crate}@${VERSION}" --registry crates-io >/dev/null 2>&1; do
+              if [ "${SECONDS}" -ge "${deadline}" ]; then
+                echo "timed out waiting for ${crate} ${VERSION} on crates.io" >&2
+                exit 1
+              fi
+              echo "waiting for ${crate} ${VERSION}..."
+              sleep 15
+            done
+            echo "${crate} ${VERSION} is on crates.io"
           done
 
       - name: Publish syllabix-core
@@ -144,8 +187,9 @@ jobs:
             cat /tmp/crates-io.json >&2 || true
             exit 1
           fi
-          # --no-verify: the packaged core crate depends on syllabix-native
-          # by version only. Verify would rebuild from crates.io; the native
-          # publish step already built this workspace, and PR CI already
-          # verified the native tarball.
+          # --no-verify: the packaged core crate depends on syllabix-native,
+          # syllabix-stt and syllabix-tts by version only. Verify would
+          # rebuild them from crates.io; the native publish step already
+          # built this workspace, and PR CI already verified all four
+          # tarballs.
           cargo publish -p syllabix-core --locked --no-verify --allow-dirty

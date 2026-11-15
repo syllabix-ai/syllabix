@@ -1,9 +1,9 @@
 # syllabix-native
 
 Shared Syllabix types (errors, audio frames, model cache, ONNX helpers) used by
-`syllabix-core` and the upcoming speech crates. The C++ engines (ggml,
+`syllabix-stt`, `syllabix-tts` and `syllabix-core`. The C++ engines (ggml,
 whisper.cpp, llama.cpp) sit behind the `cpp` feature. This crate is not a
-public API: depend on `syllabix-core`.
+public API: depend on `syllabix-stt`, `syllabix-tts` or `syllabix-core`.
 
 Engine source lives in `vendor/` so a crates.io package can build without
 downloading code. KleidiAI stays off because it fetches extra sources at
