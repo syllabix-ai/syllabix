@@ -2358,6 +2358,7 @@ dependencies = [
  "sonora",
  "syllabix-native",
  "syllabix-stt",
+ "syllabix-tts",
  "thiserror 2.0.17",
  "tokenizers",
  "tracing",
@@ -2388,6 +2389,21 @@ dependencies = [
  "serde_json",
  "syllabix-native",
  "tokenizers",
+ "ureq",
+ "zeroize",
+]
+
+[[package]]
+name = "syllabix-tts"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.2.17",
+ "misaki-rs",
+ "ort",
+ "sentencepiece-rs",
+ "serde",
+ "serde_json",
+ "syllabix-native",
  "ureq",
  "zeroize",
 ]

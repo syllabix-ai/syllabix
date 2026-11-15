@@ -4,34 +4,34 @@
 //! sentence boundary, the think filter runs first, and each completed
 //! sentence becomes one [`SynthesizedAudio`] through a [`WaveformEngine`].
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "kokoro"))]
 use std::fs;
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), any(feature = "kokoro", feature = "qwen3")))]
 use std::path::Path;
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "kokoro"))]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "kokoro"))]
 use ort::session::Session;
-#[cfg(all(not(coverage), feature = "ggml"))]
+#[cfg(all(not(coverage), feature = "qwen3"))]
 use syllabix_native::{QwenTtsBackend, QwenTtsContext, QwenTtsError};
 
-#[cfg(not(coverage))]
-use crate::audio::{f32_to_i16, PcmConverter, PcmFormat};
-use crate::cancel::Cancel;
-#[cfg(all(not(coverage), any(feature = "ggml", test)))]
-use crate::defaults::TtsCompute;
-use crate::defaults::TtsModel;
-use crate::error::{Error, Result};
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "kokoro"))]
 use crate::g2p::{english_to_kokoro_ids, KOKORO_MAX_PHONEME_TOKENS};
-use crate::models::{Fetcher, ModelCache, Progress};
-use crate::providers::Tts;
 use crate::speech_text::{speak_text_for_tts, take_sentences, ThinkFilter};
-#[cfg(not(coverage))]
-use crate::types::DEFAULT_SAMPLE_RATE_HZ;
-use crate::types::{GenerationId, SynthesizedAudio, TokenChunk, TurnId};
+use crate::Tts;
+use crate::TtsModel;
+#[cfg(all(not(coverage), any(feature = "kokoro", feature = "qwen3", test)))]
+use syllabix_native::audio::{f32_to_i16, PcmConverter, PcmFormat};
+use syllabix_native::cancel::Cancel;
+#[cfg(all(not(coverage), any(feature = "qwen3", test)))]
+use syllabix_native::compute::TtsCompute;
+use syllabix_native::error::{Error, Result};
+use syllabix_native::models::{Fetcher, ModelCache, Progress};
+#[cfg(all(not(coverage), any(feature = "kokoro", feature = "qwen3", test)))]
+use syllabix_native::types::DEFAULT_SAMPLE_RATE_HZ;
+use syllabix_native::types::{GenerationId, SynthesizedAudio, TokenChunk, TurnId};
 
 /// Manifest id for the Kokoro ONNX graph.
 pub const KOKORO_ASSET: &str = "kokoro";
@@ -205,7 +205,7 @@ impl Clone for KokoroTts {
 
 impl KokoroTts {
     /// Load ONNX weights and the `af_heart` style table from disk.
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "kokoro"))]
     pub fn from_paths(model: impl AsRef<Path>, voice: impl AsRef<Path>) -> Result<Self> {
         let engine = OrtKokoro::load(model.as_ref(), voice.as_ref())?;
         Ok(Self {
@@ -215,7 +215,7 @@ impl KokoroTts {
     }
 
     /// Resolve Kokoro assets from the manifest cache, then load them.
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "kokoro"))]
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -249,10 +249,11 @@ impl KokoroTts {
     }
 }
 
-#[cfg(coverage)]
+#[cfg(any(coverage, not(feature = "kokoro")))]
 impl KokoroTts {
-    /// Coverage keeps the cache-facing API available to integration tests, but
-    /// never resolves or opens the native ONNX assets.
+    /// Coverage (and builds without the `kokoro` feature) keep the cache-facing
+    /// API available to integration tests, but never resolve or open the
+    /// native ONNX assets.
     pub fn from_cache(
         _cache: &ModelCache,
         _fetcher: &dyn Fetcher,
@@ -314,7 +315,7 @@ impl Clone for QwenTts {
 impl QwenTts {
     /// Load the backbone GGUF + mmproj from disk and speak `language`.
     /// `selected` picks the loaded weight for logs and the diagnostics sidecar.
-    #[cfg(all(not(coverage), feature = "ggml"))]
+    #[cfg(all(not(coverage), feature = "qwen3"))]
     pub fn from_paths(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
@@ -336,7 +337,7 @@ impl QwenTts {
     /// [`QwenTts::from_paths`] with a pinned sampler seed. The native
     /// round-trip test uses this so fixtures reproduce; runtime callers use
     /// the random-seed path above.
-    #[cfg(all(not(coverage), feature = "ggml"))]
+    #[cfg(all(not(coverage), feature = "qwen3"))]
     pub fn from_paths_with_seed(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
@@ -357,7 +358,7 @@ impl QwenTts {
     /// Load with explicit compute placement. `Auto` attempts the complete
     /// Metal warm-up on Apple Silicon and reconstructs the engine on CPU if
     /// that attempt fails.
-    #[cfg(all(not(coverage), feature = "ggml"))]
+    #[cfg(all(not(coverage), feature = "qwen3"))]
     pub fn from_paths_with_seed_and_compute(
         model: impl AsRef<Path>,
         mmproj: impl AsRef<Path>,
@@ -379,7 +380,7 @@ impl QwenTts {
 
     /// Resolve the selected Qwen3-TTS backbone plus its matching mmproj from
     /// the manifest cache, then load. Only the selected pair is fetched.
-    #[cfg(all(not(coverage), feature = "ggml"))]
+    #[cfg(all(not(coverage), feature = "qwen3"))]
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -510,19 +511,19 @@ trait WaveformEngine: Send {
     }
 }
 
-#[cfg(all(not(coverage), feature = "ggml"))]
+#[cfg(all(not(coverage), feature = "qwen3"))]
 use native::NativeQwen;
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "kokoro"))]
 use native::OrtKokoro;
 
 /// Native model loading and inference live in a whole-module boundary. The
 /// coverage build still compiles the sentence/chunking logic above, but never
 /// needs FFI, ONNX Runtime, or model weights.
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), any(feature = "kokoro", feature = "qwen3", test)))]
 mod native {
     use super::*;
 
-    #[cfg(feature = "ggml")]
+    #[cfg(feature = "qwen3")]
     pub(super) fn backend_attempts(compute: TtsCompute) -> Result<&'static [QwenTtsBackend]> {
         const CPU: &[QwenTtsBackend] = &[QwenTtsBackend::Cpu];
         const METAL: &[QwenTtsBackend] = &[QwenTtsBackend::Metal];
@@ -543,12 +544,12 @@ mod native {
         })
     }
 
-    #[cfg(feature = "ggml")]
+    #[cfg(feature = "qwen3")]
     fn vulkan_device_present() -> bool {
         syllabix_native::vulkan_device_count() > 0
     }
 
-    #[cfg(any(feature = "ggml", test))]
+    #[cfg(any(feature = "qwen3", test))]
     #[derive(Debug, PartialEq, Eq)]
     pub(super) enum Attempts {
         Cpu,
@@ -561,7 +562,7 @@ mod native {
     /// Same device rule as STT/LLM offload: Vulkan is attempted only when the
     /// build has it and the exception-safe probe finds a device. The probe is
     /// lazy so CPU and Metal selections never touch the Vulkan loader.
-    #[cfg(any(feature = "ggml", test))]
+    #[cfg(any(feature = "qwen3", test))]
     pub(super) fn attempts_for(
         compute: TtsCompute,
         vulkan_compiled: bool,
@@ -591,7 +592,7 @@ mod native {
         }
     }
 
-    #[cfg(feature = "ggml")]
+    #[cfg(feature = "qwen3")]
     pub(super) fn load_first_backend<T, E>(
         attempts: &[QwenTtsBackend],
         mut load: impl FnMut(QwenTtsBackend) -> std::result::Result<T, E>,
@@ -606,12 +607,14 @@ mod native {
         Err(last_error.expect("Qwen backend attempt list is never empty"))
     }
 
+    #[cfg(feature = "kokoro")]
     pub(super) struct OrtKokoro {
         session: Session,
         voice: Vec<Vec<f32>>,
         model_path: PathBuf,
     }
 
+    #[cfg(feature = "kokoro")]
     impl OrtKokoro {
         pub(super) fn load(model: &Path, voice: &Path) -> Result<Self> {
             let session = Session::builder()
@@ -671,6 +674,7 @@ mod native {
         }
     }
 
+    #[cfg(feature = "kokoro")]
     impl WaveformEngine for OrtKokoro {
         fn synthesize(
             &mut self,
@@ -704,7 +708,7 @@ mod native {
 
     /// Qwen3-TTS waveform engine over the shared ggml native path. One sentence
     /// per call; the underlying context keeps no cross-sentence state.
-    #[cfg(feature = "ggml")]
+    #[cfg(feature = "qwen3")]
     pub(super) struct NativeQwen {
         ctx: QwenTtsContext,
         lang: String,
@@ -712,7 +716,7 @@ mod native {
         pub(super) backend: QwenTtsBackend,
     }
 
-    #[cfg(feature = "ggml")]
+    #[cfg(feature = "qwen3")]
     impl NativeQwen {
         pub(super) fn load_with_seed(
             model: &Path,
@@ -744,7 +748,7 @@ mod native {
         }
     }
 
-    #[cfg(feature = "ggml")]
+    #[cfg(feature = "qwen3")]
     impl WaveformEngine for NativeQwen {
         fn has_voice_anchor(&self) -> bool {
             self.voice_active
@@ -848,7 +852,7 @@ mod native {
         }
     }
 
-    #[cfg(feature = "ggml")]
+    #[cfg(feature = "qwen3")]
     unsafe extern "C" fn abort_on_shutdown(user_data: *mut std::ffi::c_void) -> bool {
         if user_data.is_null() {
             return false;
@@ -857,12 +861,17 @@ mod native {
         unsafe { (*(user_data as *const Cancel)).is_shutdown() }
     }
 
+    #[cfg(feature = "kokoro")]
     pub(super) const VOICE_ROWS: usize = 510;
+    #[cfg(feature = "kokoro")]
     pub(super) const STYLE_DIM: usize = 256;
+    #[cfg(feature = "kokoro")]
     pub(super) const VOICE_BYTES: usize = VOICE_ROWS * STYLE_DIM * 4;
 
+    #[cfg(feature = "kokoro")]
     const KOKORO_PAD_ID: i64 = 0;
 
+    #[cfg(feature = "kokoro")]
     fn pad_input_ids(ids: &[i64]) -> Vec<i64> {
         let mut out = Vec::with_capacity(ids.len() + 2);
         out.push(KOKORO_PAD_ID);
@@ -872,7 +881,7 @@ mod native {
     }
 
     /// Convert an engine's native-rate mono PCM to the 16 kHz pipeline format.
-    #[cfg(any(feature = "ggml", test))]
+    #[cfg(any(feature = "qwen3", test))]
     pub(super) fn resample_i16_to_v0(samples: &[i16], rate_hz: i32) -> Vec<i16> {
         let f32_pcm: Vec<f32> = samples.iter().map(|s| f32::from(*s) / 32_767.0).collect();
         let mut conv = PcmConverter::new(
@@ -895,6 +904,7 @@ mod native {
         pcm
     }
 
+    #[cfg(feature = "kokoro")]
     pub(super) fn phoneme_windows(sentence: &str) -> Result<Vec<Vec<i64>>> {
         match english_to_kokoro_ids(sentence) {
             Ok(ids) => Ok(vec![ids]),
@@ -935,6 +945,7 @@ mod native {
         }
     }
 
+    #[cfg(feature = "kokoro")]
     pub(super) fn resample_to_v0(native: &[f32]) -> Vec<i16> {
         let mut conv = PcmConverter::new(
             PcmFormat {
@@ -952,6 +963,7 @@ mod native {
         f32_to_i16(&f32_pcm)
     }
 
+    #[cfg(feature = "kokoro")]
     pub(super) fn load_voice(path: &Path) -> Result<Vec<Vec<f32>>> {
         let bytes = fs::read(path)?;
         if bytes.len() != VOICE_BYTES {
@@ -975,7 +987,7 @@ mod native {
     }
 }
 
-#[cfg(not(coverage))]
+#[cfg(all(not(coverage), feature = "kokoro"))]
 fn ort_error(error: ort::Error) -> Error {
     Error::Provider {
         provider: "kokoro",
@@ -986,13 +998,14 @@ fn ort_error(error: ort::Error) -> Error {
 #[cfg(test)]
 mod tests {
     #[cfg(not(coverage))]
+    use super::native::resample_i16_to_v0;
+    #[cfg(all(not(coverage), feature = "kokoro"))]
     use super::native::{
-        load_voice, phoneme_windows, resample_i16_to_v0, resample_to_v0, STYLE_DIM, VOICE_BYTES,
-        VOICE_ROWS,
+        load_voice, phoneme_windows, resample_to_v0, STYLE_DIM, VOICE_BYTES, VOICE_ROWS,
     };
     use super::*;
-    use crate::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ};
     use std::sync::{Arc, Mutex};
+    use syllabix_native::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ};
 
     struct ScriptedEngine {
         calls: Arc<Mutex<Vec<String>>>,
@@ -1021,7 +1034,7 @@ mod tests {
                 return Err(Error::Cancelled);
             }
             self.calls.lock().expect("calls").push(sentence.to_string());
-            Ok(crate::audio::sine_i16(
+            Ok(syllabix_native::audio::sine_i16(
                 DEFAULT_SAMPLE_RATE_HZ,
                 DEFAULT_CHANNELS,
                 self.hz,
@@ -1195,20 +1208,7 @@ mod tests {
         assert_eq!(Tts::backend_id(&kokoro), None);
     }
 
-    #[cfg(all(not(coverage), feature = "ggml"))]
-    #[test]
-    fn live_tts_delegates_backend_id_to_the_inner_engine() {
-        let mut qwen = QwenTts::with_engine(Box::new(ScriptedEngine::new()), TtsModel::Qwen06);
-        qwen.backend = Some("metal");
-        let live = crate::real::LiveTts::Qwen(qwen);
-        assert_eq!(Tts::backend_id(&live), Some("metal"));
-        assert_eq!(live.backend_id(), Some("metal"));
-        let kokoro =
-            crate::real::LiveTts::Kokoro(KokoroTts::with_engine(Box::new(ScriptedEngine::new())));
-        assert_eq!(Tts::backend_id(&kokoro), None);
-    }
-
-    #[cfg(all(not(coverage), feature = "ggml"))]
+    #[cfg(all(not(coverage), feature = "qwen3"))]
     #[test]
     fn qwen_auto_backend_order_and_retry_are_deterministic() {
         let attempts = native::backend_attempts(TtsCompute::Auto).unwrap();
@@ -1240,7 +1240,7 @@ mod tests {
         assert_eq!(seen, [QwenTtsBackend::Metal, QwenTtsBackend::Cpu]);
     }
 
-    #[cfg(all(not(coverage), feature = "ggml"))]
+    #[cfg(all(not(coverage), feature = "qwen3"))]
     #[test]
     fn qwen_forced_backend_is_a_single_attempt() {
         assert_eq!(
@@ -1359,7 +1359,7 @@ mod tests {
         assert!(chunks[0].is_last);
     }
 
-    #[cfg(all(not(coverage), feature = "ggml"))]
+    #[cfg(all(not(coverage), feature = "qwen3"))]
     #[test]
     fn qwen_from_cache_requires_both_assets() {
         let root = std::env::temp_dir().join(format!(
@@ -1371,17 +1371,17 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let cache = crate::models::ModelCache::new(
+        let cache = syllabix_native::models::ModelCache::new(
             root,
-            crate::models::Manifest {
+            syllabix_native::models::Manifest {
                 version: 1,
                 assets: vec![],
             },
         );
         let err = match QwenTts::from_cache(
             &cache,
-            &crate::models::BlockedFetcher::default(),
-            &mut crate::models::NoProgress,
+            &syllabix_native::models::BlockedFetcher::default(),
+            &mut syllabix_native::models::NoProgress,
             &Cancel::new(),
             "en",
             TtsModel::Qwen06,
@@ -1406,7 +1406,7 @@ mod tests {
         assert!(pcm.iter().any(|s| *s != 0));
     }
 
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "kokoro"))]
     #[test]
     fn missing_onnx_path_is_a_provider_error() {
         let err = match KokoroTts::from_paths("/no/such/kokoro.onnx", "/no/such/af_heart.bin") {
@@ -1422,7 +1422,7 @@ mod tests {
         ));
     }
 
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "kokoro"))]
     #[test]
     fn load_voice_rejects_wrong_size() {
         let dir = std::env::temp_dir().join(format!(
@@ -1448,7 +1448,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "kokoro"))]
     #[test]
     fn load_voice_reads_fixed_style_table() {
         let dir = std::env::temp_dir().join(format!(
@@ -1468,7 +1468,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "kokoro"))]
     #[test]
     fn phoneme_windows_split_overlong_sentences() {
         let windows = phoneme_windows(&"hello ".repeat(400)).unwrap();
@@ -1479,7 +1479,7 @@ mod tests {
         assert!(windows.iter().all(|w| !w.is_empty()));
     }
 
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "kokoro"))]
     #[test]
     fn resample_24k_to_16k_keeps_energy() {
         let native: Vec<f32> = (0..240).map(|i| (i as f32 / 24.0).sin()).collect();
@@ -1488,7 +1488,7 @@ mod tests {
         assert!(pcm.iter().any(|s| *s != 0));
     }
 
-    #[cfg(not(coverage))]
+    #[cfg(all(not(coverage), feature = "kokoro"))]
     #[test]
     fn from_cache_requires_kokoro_assets() {
         let root = std::env::temp_dir().join(format!(
@@ -1500,17 +1500,17 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let cache = crate::models::ModelCache::new(
+        let cache = syllabix_native::models::ModelCache::new(
             root,
-            crate::models::Manifest {
+            syllabix_native::models::Manifest {
                 version: 1,
                 assets: vec![],
             },
         );
         let err = match KokoroTts::from_cache(
             &cache,
-            &crate::models::BlockedFetcher::default(),
-            &mut crate::models::NoProgress,
+            &syllabix_native::models::BlockedFetcher::default(),
+            &mut syllabix_native::models::NoProgress,
             &Cancel::new(),
         ) {
             Err(err) => err,

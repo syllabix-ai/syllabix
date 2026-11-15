@@ -7,9 +7,11 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::onnx::{MockSession, OnnxSession, OnnxTensor};
-use crate::types::GenerationId;
-use crate::{Cancel, Error, TokenChunk, Tts, TurnId};
+use crate::Tts;
+use syllabix_native::onnx::{MockSession, OnnxSession, OnnxTensor};
+use syllabix_native::types::GenerationId;
+use syllabix_native::types::{TokenChunk, TurnId};
+use syllabix_native::{Cancel, Error};
 
 fn names(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| (*word).to_string()).collect()
@@ -712,7 +714,9 @@ fn voice_state_rejects_an_unreadable_tensor() {
 
 #[test]
 fn from_cache_reports_unresolvable_assets() {
-    use crate::models::{BlockedFetcher, Manifest, ModelAsset, ModelCache, ModelLayer, NoProgress};
+    use syllabix_native::models::{
+        BlockedFetcher, Manifest, ModelAsset, ModelCache, ModelLayer, NoProgress,
+    };
     let root = std::env::temp_dir().join(format!(
         "syllabix-pocket-cache-{}-{}",
         std::process::id(),
@@ -744,4 +748,12 @@ fn from_cache_reports_unresolvable_assets() {
         Ok(_) => panic!("blocked fetcher should fail"),
     };
     assert!(!err.to_string().is_empty());
+}
+
+#[test]
+fn tts_model_asset_id_matches_pocket_constant() {
+    assert_eq!(
+        crate::TtsModel::PocketTts.asset_id(),
+        POCKET_TTS_TEXT_CONDITIONER_ASSET
+    );
 }

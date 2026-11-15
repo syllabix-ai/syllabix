@@ -1,6 +1,6 @@
 //! Native Kyutai Pocket TTS model loading and deterministic text conditioning.
 //!
-//! This module is not a [`crate::providers::Tts`] implementation and does not
+//! This module is not a [`crate::Tts`] implementation and does not
 //! provide playback streaming, cancellation, or barge-in. It loads the pinned
 //! multi-graph ONNX package in-process and produces deterministic text-conditioning
 //! output. The fixed `alba` state is only inspected here;
@@ -12,13 +12,14 @@ use serde::Deserialize;
 
 use sentencepiece_rs::SentencePieceProcessor;
 
-use crate::audio::{f32_to_i16, PcmConverter, PcmFormat};
-use crate::models::{Fetcher, ModelCache, Progress};
-use crate::onnx::{OnnxData, OnnxSession, OnnxTensor, OrtSession};
-use crate::providers::Tts;
 use crate::speech_text::{speak_text_for_tts, take_sentences, ThinkFilter};
-use crate::types::GenerationId;
-use crate::{Cancel, Error, Result, SynthesizedAudio, TokenChunk, TurnId};
+use crate::Tts;
+use syllabix_native::audio::{f32_to_i16, PcmConverter, PcmFormat};
+use syllabix_native::models::{Fetcher, ModelCache, Progress};
+use syllabix_native::onnx::{OnnxData, OnnxSession, OnnxTensor, OrtSession};
+use syllabix_native::types::GenerationId;
+use syllabix_native::types::{SynthesizedAudio, TokenChunk, TurnId};
+use syllabix_native::{Cancel, Error, Result};
 
 pub const POCKET_TTS_BUNDLE_ASSET: &str = "pocket-tts-bundle";
 pub const POCKET_TTS_BOS_ASSET: &str = "pocket-tts-bos";

@@ -1,0 +1,41 @@
+[package]
+name = "syllabix-tts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = true
+rust-version.workspace = true
+description = "Text-to-speech for Syllabix: one Tts trait over Pocket TTS, Kokoro, Qwen3-TTS, and an OpenAI-compatible remote client"
+include = [
+    "src/**",
+    "LICENSE",
+    "NOTICE",
+]
+
+[features]
+default = ["pocket", "kokoro", "qwen3", "remote"]
+# Pocket TTS ONNX graphs (ONNX Runtime, no CMake).
+pocket = ["syllabix-native/onnx", "dep:sentencepiece-rs", "dep:getrandom", "dep:serde", "dep:serde_json"]
+# Kokoro-82M ONNX with the in-process Misaki G2P (ONNX Runtime, no CMake).
+kokoro = ["syllabix-native/onnx", "dep:ort", "dep:misaki-rs"]
+# Qwen3-TTS through llama.cpp/ggml in syllabix-native (CMake + C++).
+qwen3 = ["syllabix-native/cpp"]
+# OpenAI-compatible /audio/speech client. HTTP only.
+remote = ["dep:ureq", "dep:zeroize", "dep:serde_json"]
+
+[dependencies]
+syllabix-native = { workspace = true, features = ["models"] }
+ort = { version = "=2.0.0-rc.9", optional = true }
+# Keep espeak-ng (GPL + extra dylib) off.
+misaki-rs = { version = "=0.3.0", default-features = false, optional = true }
+sentencepiece-rs = { version = "=0.2.2", optional = true }
+getrandom = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

@@ -30,7 +30,7 @@ VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 # trailing vX.Y.Z. The rest of the name is only there so GitHub does not
 # create another v* tag.
 RELEASE_NAME_VERSION_RE = re.compile(r"v([0-9]+\.[0-9]+\.[0-9]+)$")
-WORKSPACE_CRATES = {"syllabix", "syllabix-core", "syllabix-native", "syllabix-stt"}
+WORKSPACE_CRATES = {"syllabix", "syllabix-core", "syllabix-native", "syllabix-stt", "syllabix-tts"}
 
 
 def repo_root() -> pathlib.Path:
@@ -117,6 +117,14 @@ def rewrite(root: pathlib.Path, version: str) -> None:
     )
     if n != 1:
         sys.exit("could not find syllabix-stt version requirement")
+    text, n = re.subn(
+        r'syllabix-tts = \{ path = "crates/syllabix-tts", version = "[^"]+", default-features = false \}',
+        f'syllabix-tts = {{ path = "crates/syllabix-tts", version = "{version}", default-features = false }}',
+        text,
+        count=1,
+    )
+    if n != 1:
+        sys.exit("could not find syllabix-tts version requirement")
     cargo_toml.write_text(text)
 
     # Keep Cargo.lock in sync so `cargo build --locked` / `cargo publish
