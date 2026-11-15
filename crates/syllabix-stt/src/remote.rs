@@ -509,6 +509,7 @@ fn silent_utterance() -> Utterance {
             channels: DEFAULT_CHANNELS,
             samples: vec![0; FRAME_SAMPLES],
             capture_pcm: None,
+            flush_pad_samples: 0,
         }],
     }
 }
@@ -532,6 +533,7 @@ mod tests {
             channels: DEFAULT_CHANNELS,
             samples,
             capture_pcm: None,
+            flush_pad_samples: 0,
         }
     }
 

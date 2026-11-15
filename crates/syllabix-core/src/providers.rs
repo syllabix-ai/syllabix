@@ -86,13 +86,7 @@ mod tests {
     }
 
     fn frame() -> AudioFrame {
-        AudioFrame {
-            seq: 0,
-            sample_rate_hz: 16_000,
-            channels: 1,
-            samples: vec![0; 256],
-            capture_pcm: None,
-        }
+        AudioFrame::new(0, 16_000, 1, vec![0; 256]).expect("test frame")
     }
 
     fn token() -> TokenChunk {

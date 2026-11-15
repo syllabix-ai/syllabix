@@ -715,6 +715,7 @@ mod tests {
                 channels: DEFAULT_CHANNELS,
                 samples: vec![],
                 capture_pcm: None,
+                flush_pad_samples: 0,
             }],
         };
         let err = stt.transcribe(&utterance, &Cancel::new()).unwrap_err();

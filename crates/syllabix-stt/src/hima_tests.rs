@@ -156,6 +156,7 @@ fn frame_with_samples(seq: u64, samples: Vec<i16>) -> AudioFrame {
         channels: DEFAULT_CHANNELS,
         samples,
         capture_pcm: None,
+        flush_pad_samples: 0,
     }
 }
 
@@ -870,6 +871,7 @@ fn transcribe_rejects_empty_samples_and_sets_language() {
             channels: DEFAULT_CHANNELS,
             samples: vec![],
             capture_pcm: None,
+            flush_pad_samples: 0,
         }],
     };
     let err = stt.transcribe(&silent, &Cancel::new()).unwrap_err();

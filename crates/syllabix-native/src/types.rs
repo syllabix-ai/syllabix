@@ -33,6 +33,8 @@ pub struct AudioFrame {
     pub samples: Vec<i16>,
     /// Pre-AEC PCM for the diagnostics WAVs, same length as `samples` when present.
     pub capture_pcm: Option<Vec<i16>>,
+    /// Trailing silence samples in this frame from [`FrameSplitter::flush`](crate::audio::FrameSplitter::flush); zero otherwise.
+    pub flush_pad_samples: u16,
 }
 
 impl AudioFrame {
@@ -44,6 +46,7 @@ impl AudioFrame {
             channels,
             samples,
             capture_pcm: None,
+            flush_pad_samples: 0,
         };
         frame.validate()?;
         Ok(frame)
@@ -95,6 +98,16 @@ impl Utterance {
             .iter()
             .flat_map(|frame| frame.samples.iter().copied())
             .collect()
+    }
+
+    /// PCM with [`FrameSplitter::flush`](crate::audio::FrameSplitter::flush) zero suffix removed.
+    pub fn pcm_without_splitter_flush_pad(&self) -> Vec<i16> {
+        let pcm = self.pcm();
+        let pad = usize::from(self.frames.last().map(|f| f.flush_pad_samples).unwrap_or(0));
+        if pad == 0 || pcm.len() <= pad {
+            return pcm;
+        }
+        pcm[..pcm.len() - pad].to_vec()
     }
 }
 

@@ -577,6 +577,14 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
                 ),
             });
         }
+    } else if stt_model.is_fluid_onnx() {
+        crate::fluid_onnx::validate_stt_language(&language).map_err(|err| match err {
+            Error::Config { field, message } => Error::Config { field, message },
+            other => Error::Config {
+                field: "pipeline.stt.language".into(),
+                message: other.to_string(),
+            },
+        })?;
     } else if language == "or" {
         return Err(Error::Config {
             field: "pipeline.stt.language".into(),
@@ -1187,7 +1195,7 @@ fn parse_stt_model(value: &str) -> Result<SttModel> {
         unsupported(
             "pipeline.stt.model",
             value,
-            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small, moonshine-streaming-medium, qwen3-asr-0.6, hima-asr",
+            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small, moonshine-streaming-medium, qwen3-asr-0.6, hima-asr, fluid-speech-pro-onnx-int8",
         )
     })
 }
@@ -2729,6 +2737,27 @@ pipeline:
             assert_eq!(cfg.stt_model, expected);
             assert_eq!(cfg.language, "en");
         }
+    }
+
+    #[test]
+    fn fluid_onnx_language_accepts_european_codes() {
+        let stt_line = "  stt:\n    provider: local\n    model: whisper-small\n    language: en";
+        let fluid_line =
+            "  stt:\n    provider: local\n    model: fluid-speech-pro-onnx-int8\n    language: en";
+        let base = AgentConfig::v0().to_yaml().replace(stt_line, fluid_line);
+        for code in ["en", "auto", "uk", "de"] {
+            let swapped = fluid_line.replace("language: en", &format!("language: {code}"));
+            let yaml = base.replace(fluid_line, &swapped);
+            let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+            assert_eq!(cfg.stt_model, SttModel::FluidSpeechProOnnxInt8);
+            assert_eq!(cfg.language, code);
+        }
+        let err = AgentConfig::parse_yaml(&base.replace(
+            fluid_line,
+            &fluid_line.replace("language: en", "language: fr-CA"),
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("pipeline.stt.language"), "{err}");
     }
 
     #[test]

@@ -92,6 +92,7 @@ fn frame(seq: u64) -> AudioFrame {
         channels: DEFAULT_CHANNELS,
         samples: vec![1000; FRAME_SAMPLES],
         capture_pcm: None,
+        flush_pad_samples: 0,
     }
 }
 
@@ -144,6 +145,7 @@ fn transcribe_rejects_empty_utterances() {
             channels: DEFAULT_CHANNELS,
             samples: vec![],
             capture_pcm: None,
+            flush_pad_samples: 0,
         }],
     };
     let err = stt.transcribe(&silent, &Cancel::new()).unwrap_err();

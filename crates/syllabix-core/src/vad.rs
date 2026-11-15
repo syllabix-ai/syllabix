@@ -352,6 +352,7 @@ fn preroll_frames(history: &VecDeque<AudioFrame>, preroll_samples: usize) -> Vec
             channels: frame.channels,
             samples,
             capture_pcm,
+            flush_pad_samples: frame.flush_pad_samples,
         });
     }
     out

@@ -31,6 +31,7 @@ pub struct OnnxTensor {
 pub enum OnnxData {
     F32(Vec<f32>),
     I64(Vec<i64>),
+    I32(Vec<i32>),
     Bool(Vec<u8>),
 }
 
@@ -46,6 +47,13 @@ impl OnnxTensor {
         Self {
             shape,
             data: OnnxData::I64(data),
+        }
+    }
+
+    pub fn i32(shape: Vec<i64>, data: Vec<i32>) -> Self {
+        Self {
+            shape,
+            data: OnnxData::I32(data),
         }
     }
 
@@ -87,6 +95,36 @@ pub struct OrtSession {
 impl OrtSession {
     pub fn load(path: &Path, provider: &'static str, label: &str) -> Result<Self> {
         let session = Session::builder()
+            .map_err(|err| Error::Provider {
+                provider,
+                message: format!("ONNX Runtime: {err}"),
+            })?
+            .commit_from_file(path)
+            .map_err(|err| Error::Provider {
+                provider,
+                message: format!("could not load {label} {}: {err}", path.display()),
+            })?;
+        Ok(Self { session })
+    }
+
+    /// Same as [`load`], with a fixed intra-op thread count (inter-op stays 1).
+    pub fn load_with_threads(
+        path: &Path,
+        provider: &'static str,
+        label: &str,
+        intra_threads: usize,
+    ) -> Result<Self> {
+        let session = Session::builder()
+            .map_err(|err| Error::Provider {
+                provider,
+                message: format!("ONNX Runtime: {err}"),
+            })?
+            .with_intra_threads(intra_threads)
+            .map_err(|err| Error::Provider {
+                provider,
+                message: format!("ONNX Runtime: {err}"),
+            })?
+            .with_inter_threads(1)
             .map_err(|err| Error::Provider {
                 provider,
                 message: format!("ONNX Runtime: {err}"),
@@ -197,6 +235,11 @@ fn create_value(allocator: *mut ort_sys::OrtAllocator, tensor: &OnnxTensor) -> R
             data.len() * size_of::<i64>(),
             data.as_ptr().cast(),
         ),
+        OnnxData::I32(data) => (
+            ElementType::ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32,
+            data.len() * size_of::<i32>(),
+            data.as_ptr().cast(),
+        ),
         OnnxData::Bool(data) => (
             ElementType::ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL,
             data.len(),
@@ -269,6 +312,15 @@ fn read_value(value: RawValue) -> Result<OnnxTensor> {
                 }
             }
             Ok(OnnxTensor::i64(shape, out))
+        }
+        ElementType::ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32 => {
+            let mut out = vec![0_i32; len];
+            if len != 0 {
+                unsafe {
+                    ptr::copy_nonoverlapping(data.cast::<i32>(), out.as_mut_ptr(), len);
+                }
+            }
+            Ok(OnnxTensor::i32(shape, out))
         }
         ElementType::ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL => {
             let mut out = vec![0_u8; len];

@@ -59,6 +59,8 @@ pub mod moonshine { pub use crate::stt::moonshine::*; }
 #[rustfmt::skip]
 pub mod hima { pub use crate::stt::hima::*; }
 #[rustfmt::skip]
+pub mod fluid_onnx { pub use crate::stt::fluid_onnx::*; }
+#[rustfmt::skip]
 pub mod qwen_asr { pub use crate::stt::qwen_asr::*; }
 #[cfg(feature = "cloud")]
 #[rustfmt::skip]

@@ -82,7 +82,8 @@ mod tests {
         let utterance = Utterance { turn: crate::TurnId(0), frames: Vec::new() };
         assert!(stt.transcribe(&utterance, &cancel).is_err());
         assert!(stt.start_turn(crate::TurnId(0), &cancel).is_err());
-        let frame = crate::AudioFrame { seq: 0, sample_rate_hz: 16_000, channels: 1, samples: vec![0], capture_pcm: None };
+        let frame =
+            crate::AudioFrame::new(0, 16_000, 1, vec![0]).expect("coverage frame");
         assert!(stt.push_frame(&frame, &cancel).is_err());
         stt.cancel_turn(crate::TurnId(0));
         assert!(stt.intra_op_threads().is_none());

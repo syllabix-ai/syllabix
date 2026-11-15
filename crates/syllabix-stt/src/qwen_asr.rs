@@ -383,6 +383,7 @@ mod tests {
                 channels: 1,
                 samples: vec![100, -100],
                 capture_pcm: None,
+                flush_pad_samples: 0,
             }],
         }
     }
@@ -517,6 +518,7 @@ mod tests {
                         channels: 1,
                         samples: vec![],
                         capture_pcm: None,
+                        flush_pad_samples: 0,
                     }],
                 },
                 &Cancel::new(),

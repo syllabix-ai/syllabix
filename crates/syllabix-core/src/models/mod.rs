@@ -23,8 +23,9 @@ mod tests {
         // Silero + five whisper ids + eight moonshine assets (small+medium) +
         // Qwen3-ASR 0.6B decoder/mmproj + nine Hima-ASR files + three GGUFs +
         // Kokoro weights + voice + eight internal-only Pocket TTS assets + two
-        // Qwen3-TTS backbones, each with its own projector, plus five LFM assets.
-        assert_eq!(m.assets.len(), 47);
+        // Qwen3-TTS backbones, each with its own projector, plus five LFM assets
+        // + five Fluid Speech Pro ONNX files.
+        assert_eq!(m.assets.len(), 52);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -50,6 +51,10 @@ mod tests {
             }
             if model == SttModel::HimaAsr {
                 assert_eq!(asset.file_name, "hima-asr/onnx/encoder_model_int8.onnx");
+                continue;
+            }
+            if model == SttModel::FluidSpeechProOnnxInt8 {
+                assert_eq!(asset.file_name, "encoder-model.int8.onnx");
                 continue;
             }
             assert!(asset.file_name.starts_with("ggml-"), "{}", asset.id);

@@ -276,6 +276,48 @@ impl Manifest {
                     "daab2354f8a74e70d70b4d1f804939b68a8c9624dd06cb7858e52dd8970e9726",
                     33_384_567,
                 ),
+                // Fluid Speech Pro int8 ONNX (revision fa588e9f). Flat cache
+                // names match the graphs' external weight filenames.
+                asset(
+                    "fluid-speech-pro-onnx-encoder",
+                    ModelLayer::Stt,
+                    "encoder-model.int8.onnx",
+                    "https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-onnx/resolve/fa588e9f87f1b9ad0ca2e2d8f7eaf84dc3803581/encoder-model.int8.onnx",
+                    "07ad77459bd3bb165c2c53e978ed1dfd64c6e129b18af2ec5ee38343be1d4451",
+                    955_592,
+                ),
+                asset(
+                    "fluid-speech-pro-onnx-encoder-data",
+                    ModelLayer::Stt,
+                    "encoder-model.int8.onnx.data",
+                    "https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-onnx/resolve/fa588e9f87f1b9ad0ca2e2d8f7eaf84dc3803581/encoder-model.int8.onnx.data",
+                    "d2f8bfbb1fa399f207cde85aa3fabee0d67f6730cb31cbf31832c10de69f9c3c",
+                    745_971_712,
+                ),
+                asset(
+                    "fluid-speech-pro-onnx-decoder-joint",
+                    ModelLayer::Stt,
+                    "decoder_joint-model.int8.onnx",
+                    "https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-onnx/resolve/fa588e9f87f1b9ad0ca2e2d8f7eaf84dc3803581/decoder_joint-model.int8.onnx",
+                    "59e3ff4b22b6629bc5a23e627daff7697ec232d2d4e6de50597c907f4038bd29",
+                    8_586,
+                ),
+                asset(
+                    "fluid-speech-pro-onnx-decoder-joint-data",
+                    ModelLayer::Stt,
+                    "decoder_joint-model.int8.onnx.data",
+                    "https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-onnx/resolve/fa588e9f87f1b9ad0ca2e2d8f7eaf84dc3803581/decoder_joint-model.int8.onnx.data",
+                    "3c7a1e90be06acc16d858b989700cdb51f761c6129a45b0bdc0378f2b40a28a4",
+                    53_817_344,
+                ),
+                asset(
+                    "fluid-speech-pro-onnx-vocab",
+                    ModelLayer::Stt,
+                    "vocab.txt",
+                    "https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-onnx/resolve/fa588e9f87f1b9ad0ca2e2d8f7eaf84dc3803581/vocab.txt",
+                    "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+                    93_939,
+                ),
                 asset(
                     "qwen3.5-0.8b",
                     ModelLayer::Llm,

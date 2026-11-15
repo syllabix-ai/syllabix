@@ -15,6 +15,8 @@ fn tensor_constructors_round_trip_shapes_and_data() {
     let i64_tensor = OnnxTensor::i64(vec![1], vec![7]);
     assert!(i64_tensor.f32_data().is_none());
     assert!(matches!(i64_tensor.data, OnnxData::I64(_)));
+    let i32_tensor = OnnxTensor::i32(vec![2], vec![3, 4]);
+    assert!(matches!(i32_tensor.data, OnnxData::I32(_)));
     let bool_tensor = OnnxTensor::bool(vec![2], vec![1, 0]);
     assert!(bool_tensor.f32_data().is_none());
     assert!(matches!(bool_tensor.data, OnnxData::Bool(_)));
@@ -112,6 +114,16 @@ fn ort_session_reports_fixture_contract() {
 }
 
 #[test]
+fn load_with_threads_runs_the_fixture_end_to_end() {
+    let mut session =
+        OrtSession::load_with_threads(&relu_fixture(), "mock-provider", "relu fixture", 2)
+            .expect("checked-in fixture loads with threads");
+    let input = OnnxTensor::f32(vec![1, 2], vec![-1.0, 2.0]);
+    let outputs = session.run(&[("x", &input)], &["y"]).unwrap();
+    assert_eq!(outputs[0].f32_data(), Some(&[0.0, 2.0][..]));
+}
+
+#[test]
 fn ort_session_runs_the_fixture_end_to_end() {
     let mut session = load_relu();
     let input = OnnxTensor::f32(vec![1, 2], vec![-1.0, 2.0]);
@@ -137,6 +149,20 @@ fn ort_session_surfaces_runtime_shape_errors() {
     let input = OnnxTensor::f32(vec![1, 3], vec![1.0, 2.0, 3.0]);
     let err = session.run(&[("x", &input)], &["y"]).unwrap_err();
     assert!(matches!(err, Error::Provider { .. }));
+}
+
+fn i32_identity_fixture() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/onnx/i32-identity.onnx")
+}
+
+#[test]
+fn ort_session_round_trips_i32_output() {
+    let mut session = OrtSession::load(&i32_identity_fixture(), "mock-provider", "i32 identity")
+        .expect("i32 fixture loads");
+    let input = OnnxTensor::i32(vec![2], vec![3, 4]);
+    let outputs = session.run(&[("x", &input)], &["y"]).expect("i32 run");
+    assert_eq!(outputs[0].shape, vec![2]);
+    assert!(matches!(&outputs[0].data, OnnxData::I32(v) if v == &[3, 4]));
 }
 
 fn mixed_fixture() -> std::path::PathBuf {
@@ -170,6 +196,8 @@ fn ort_session_builds_non_float_inputs() {
     // The graph rejects the mistyped input at Run, after the C-API value is built.
     let int_input = OnnxTensor::i64(vec![1, 2], vec![1, 2]);
     assert!(session.run(&[("x", &int_input)], &["y"]).is_err());
+    let i32_input = OnnxTensor::i32(vec![1, 2], vec![1, 2]);
+    assert!(session.run(&[("x", &i32_input)], &["y"]).is_err());
     let bool_input = OnnxTensor::bool(vec![1, 2], vec![1, 0]);
     assert!(session.run(&[("x", &bool_input)], &["y"]).is_err());
     // Empty tensors skip the host-to-device copy (Run still validates dims).

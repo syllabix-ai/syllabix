@@ -278,7 +278,13 @@ impl FrameSplitter {
         }
         let pad = FRAME_SAMPLES - self.buf.len();
         let zeros = vec![0; pad];
-        self.push(&zeros)
+        let mut frames = self.push(&zeros)?;
+        if let Some(last) = frames.last_mut() {
+            last.flush_pad_samples = u16::try_from(pad).map_err(|_| Error::InvalidAudio {
+                message: "frame splitter flush pad exceeds u16".into(),
+            })?;
+        }
+        Ok(frames)
     }
 }
 
@@ -404,6 +410,18 @@ mod tests {
         assert_eq!(frames[0].samples.len(), FRAME_SAMPLES);
         assert_eq!(split.leftover_samples(), 7);
         assert!(split.leftover_samples() <= FRAME_SPLITTER_MAX);
+    }
+
+    #[test]
+    fn flush_records_trailing_pad_on_last_frame() {
+        let mut split = FrameSplitter::new();
+        let rem = 17usize;
+        let _ = split.push(&vec![1; FRAME_SAMPLES + rem]).unwrap();
+        let frames = split.flush().unwrap();
+        assert_eq!(frames.len(), 1);
+        let pad = FRAME_SAMPLES - rem;
+        assert_eq!(frames[0].flush_pad_samples as usize, pad);
+        assert_eq!(frames[0].samples.len(), FRAME_SAMPLES);
     }
 
     #[test]

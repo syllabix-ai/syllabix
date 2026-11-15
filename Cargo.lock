@@ -2371,6 +2371,7 @@ name = "syllabix-stt"
 version = "0.1.0"
 dependencies = [
  "realfft",
+ "regex",
  "serde_json",
  "syllabix-native",
  "tokenizers",

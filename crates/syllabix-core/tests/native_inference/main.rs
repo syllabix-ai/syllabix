@@ -12,6 +12,8 @@
 //! TTS→ASR scorer when a TTS id is selected.
 
 #[cfg(not(coverage))]
+mod fluid_onnx;
+#[cfg(not(coverage))]
 mod kokoro;
 #[cfg(not(coverage))]
 mod lfm;
@@ -55,7 +57,7 @@ use syllabix_core::{AgentConfig, Cancel, ModelCache};
 const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM3_1_7B_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
-const SUITED_NATIVE_IDS: [&str; 12] = [
+const SUITED_NATIVE_IDS: [&str; 13] = [
     "whisper-small",
     LLAMA_32_1B_ASSET,
     "kokoro",
@@ -68,6 +70,7 @@ const SUITED_NATIVE_IDS: [&str; 12] = [
     LFM25_2_6B_ASSET,
     LFM25_350M_ASSET,
     LFM25_230M_ASSET,
+    "fluid-speech-pro-onnx-int8",
 ];
 
 /// Every selectable local TTS model uses this fixed latency corpus.

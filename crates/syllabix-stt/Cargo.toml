@@ -29,6 +29,8 @@ qwen3-asr = ["syllabix-native/cpp"]
 moonshine = ["syllabix-native/onnx", "dep:tokenizers"]
 # Hima-ASR ONNX frontend + greedy engine (same ort/onnx gate as Moonshine).
 hima = ["syllabix-native/onnx", "dep:realfft", "dep:tokenizers", "dep:serde_json", "dep:unicode-normalization", "dep:unicode_categories"]
+# Fluid Speech Pro int8 TDT ONNX (NeMo mel + greedy decode).
+fluid-onnx = ["syllabix-native/onnx", "dep:realfft", "dep:regex"]
 # OpenAI-compatible /audio/transcriptions client. HTTP only.
 remote = ["dep:ureq", "dep:zeroize", "dep:serde_json"]
 
@@ -39,6 +41,7 @@ ureq = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 realfft = { workspace = true, optional = true }
+regex = { version = "=1.13.1", optional = true }
 unicode-normalization = { workspace = true, optional = true }
 unicode_categories = { workspace = true, optional = true }
 
@@ -50,7 +53,7 @@ required-features = ["remote"]
 # Whisper and Qwen3-ASR still appear, as the stubs that build without C++.
 [package.metadata.docs.rs]
 no-default-features = true
-features = ["moonshine", "remote"]
+features = ["moonshine", "fluid-onnx", "remote"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

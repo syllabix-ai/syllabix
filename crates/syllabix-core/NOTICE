@@ -107,6 +107,14 @@ Hima-ASR weights are not distributed under the Apache-2.0 license that covers th
 rest of Syllabix.
 This is a reading of the terms, not legal advice.
 
+### Fluid Speech Pro ONNX INT8 (optional yaml STT)
+
+CC BY 4.0. Fluid Speech Pro by FluidVoice. Built on NVIDIA Parakeet TDT 0.6B v3 and
+Moondream Parakeet Ultra. Pinned int8 export:
+https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-onnx at revision
+`fa588e9f87f1b9ad0ca2e2d8f7eaf84dc3803581`. Fetched only when
+`pipeline.stt.model: fluid-speech-pro-onnx-int8` is selected.
+
 ### LFM3-1.7B Q8_0 (`LFM3-1.7B-Q8_0.gguf`, default)
 
 LiquidAI LFM 1.0 license. Copyright LiquidAI.

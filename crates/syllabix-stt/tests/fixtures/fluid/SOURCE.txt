@@ -1,0 +1,3 @@
+Generated with onnx_asr.preprocessors.numpy_preprocessor.NemoPreprocessorNumpy(nemo128)
+on the first 16000 samples of syllabix-core/tests/fixtures/stt/jfk.wav.
+Reference bundle: onnx_asr/preprocessors/data/nemo128.onnx

@@ -218,6 +218,11 @@ pub(crate) fn run_asr_worker(
     if stt_model.is_moonshine() {
         config.language = "en".into();
     }
+    if let Some(n) = threads {
+        if stt_model.is_fluid_onnx() {
+            syllabix_core::fluid_onnx::set_intra_threads(n);
+        }
+    }
     let cancel = Cancel::new();
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
@@ -1494,7 +1499,7 @@ mod tests {
         // Defaults are included; the sweep is one axis at a time, never a
         // cross-product of STT × LLM × TTS.
         assert!(SttModel::ALL.contains(&SttModel::Small));
-        assert_eq!(SttModel::ALL.len(), 9);
+        assert_eq!(SttModel::ALL.len(), 10);
         assert_eq!(V0_LLM_MODELS[0], "lfm3-1.7b");
         assert_eq!(V0_LLM_MODELS.len(), 8);
         assert!(TtsModel::ALL.contains(&TtsModel::PocketTts));

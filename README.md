@@ -112,7 +112,7 @@ VAD is always `silero`. Default stack is `whisper-small` + `lfm3-1.7b` + `pocket
 
 | Stage | Models |
 | --- | --- |
-| STT | `whisper-small` (default), `whisper-medium`, `whisper-large-v3-turbo`, `whisper-medium-q5_0`, `whisper-large-v3-turbo-q5_0`, `moonshine-streaming-small`, `moonshine-streaming-medium`, `qwen3-asr-0.6`, `hima-asr` |
+| STT | `whisper-small` (default), `whisper-medium`, `whisper-large-v3-turbo`, `whisper-medium-q5_0`, `whisper-large-v3-turbo-q5_0`, `moonshine-streaming-small`, `moonshine-streaming-medium`, `qwen3-asr-0.6`, `hima-asr`, `fluid-speech-pro-onnx-int8` |
 | Local LLM | `lfm3-1.7b` (default), `lfm3-1.7b-bf16`, `lfm2.5-2.6b`, `lfm2.5-350m`, `lfm2.5-230m`, `llama-3.2-1b`, `qwen3.5-0.8b`, `qwen3.5-2b` |
 | Online LLM | Any OpenAI-compatible endpoint, e.g. model `gpt-5.4` at `https://api.openai.com/v1` (needs `SYLLABIX_LLM_API_KEY`) |
 | TTS | `pocket-tts` (default), `kokoro`, `qwen3-0.6`, `qwen3-1.7` |
