@@ -451,9 +451,16 @@ mod production {
                             crate::remote_stt::PROVIDER_NAME
                         ),
                     })?;
+                    let base = config
+                        .stt_base_url
+                        .as_deref()
+                        .ok_or_else(|| Error::Config {
+                            field: "pipeline.stt.base_url".into(),
+                            message: "is required when pipeline.stt.provider is online".into(),
+                        })?;
                     Ok(LiveStt::Remote(RemoteStt::new(
                         RemoteSttSettings::from_parts(
-                            config.stt_base_url.as_deref(),
+                            Some(base),
                             &config.stt_model_id,
                             &config.language,
                         )?,
@@ -600,9 +607,16 @@ mod production {
                             crate::remote_tts::PROVIDER_NAME
                         ),
                     })?;
+                    let base = config
+                        .tts_base_url
+                        .as_deref()
+                        .ok_or_else(|| Error::Config {
+                            field: "pipeline.tts.base_url".into(),
+                            message: "is required when pipeline.tts.provider is online".into(),
+                        })?;
                     Ok(LiveTts::Remote(RemoteTts::new(
                         RemoteTtsSettings::from_parts(
-                            config.tts_base_url.as_deref(),
+                            Some(base),
                             &config.tts_model_id,
                             crate::remote_tts::DEFAULT_VOICE,
                         )?,

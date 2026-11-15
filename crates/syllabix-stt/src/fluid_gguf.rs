@@ -18,7 +18,7 @@ pub const PROVIDER_NAME: &str = "fluid-gguf";
 /// Decoder GGUF asset id.
 pub const ASSET: &str = "fluid-speech-pro-gguf-q8_0";
 
-/// European language codes Fluid's card documents (plus `auto` in yaml).
+/// European language codes Fluid's card documents (plus `auto`).
 pub const FLUID_LANGUAGE_CODES: &[&str] = &[
     "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt",
     "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk",
@@ -85,7 +85,7 @@ impl FluidGgufStt {
         Err(provider(if cfg!(coverage) {
             "Fluid Speech Pro inference is not loaded in coverage tests."
         } else {
-            "Fluid Speech Pro inference requires the `ggml` feature with parakeet"
+            "Fluid Speech Pro inference requires the `parakeet` feature"
         }))
     }
 
@@ -121,7 +121,7 @@ impl FluidGgufStt {
         let language = language.into();
         if !is_fluid_language(&language) {
             return Err(Error::Config {
-                field: "pipeline.stt.language".into(),
+                field: "language".into(),
                 message: format!(
                     "unsupported value {language:?} (allowed: auto or {})",
                     FLUID_LANGUAGE_CODES.join(", ")

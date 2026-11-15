@@ -5,7 +5,7 @@
 //! PCM can play before the rest of the body arrives. Barge-in drops the
 //! in-flight request. The API key comes from the environment only
 //! ([`TTS_API_KEY_ENV`]).
-//! Cancel, connect/idle timeouts, and a best-effort warm-up match syllabix-core's OpenAI LLM client.
+//! Cancel, connect/idle timeouts, and a best-effort warm-up use the shared OpenAI timeout policy.
 
 use std::io::{Cursor, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,10 +26,10 @@ use syllabix_native::types::{
     GenerationId, SynthesizedAudio, TokenChunk, TurnId, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ,
 };
 
-/// Config / log name. Same word as yaml `pipeline.tts.provider: online`.
+/// Config / log name. Must stay `"online"`.
 pub const PROVIDER_NAME: &str = "online";
 
-/// Environment variable for an online TTS API key. Never read from yaml.
+/// Environment variable for an online TTS API key. Never read from a config file.
 pub const TTS_API_KEY_ENV: &str = "SYLLABIX_TTS_API_KEY";
 
 /// Default `voice` for OpenAI-compatible speech endpoints. Workers may ignore it.
@@ -60,16 +60,12 @@ pub fn resolve_api_key(getenv: impl Fn(&str) -> Option<String>) -> Result<Zeroiz
         Some(key) if !key.trim().is_empty() => Ok(Zeroizing::new(key)),
         Some(_) => Err(Error::Config {
             field: TTS_API_KEY_ENV.into(),
-            message: "is set but empty. Export your key, e.g. export SYLLABIX_TTS_API_KEY=sk-…, \
-                      and start syllabix again."
-                .into(),
+            message: "is set but empty. Export SYLLABIX_TTS_API_KEY and run again.".into(),
         }),
         None => Err(Error::Config {
             field: TTS_API_KEY_ENV.into(),
             message: format!(
-                "is required when pipeline.tts.provider is {PROVIDER_NAME}. \
-                 Supply it for one run ({TTS_API_KEY_ENV}=sk-… syllabix run) or export it. \
-                 Keys are read from the environment only — never from syllabix.yaml or a .env file."
+                "is required. Export {TTS_API_KEY_ENV} and run again. Keys come from the environment only."
             ),
         }),
     }
@@ -90,8 +86,8 @@ impl RemoteTtsSettings {
     /// Build from plain endpoint parts (`base_url` already required for online).
     pub fn from_parts(base_url: Option<&str>, model: &str, voice: &str) -> Result<Self> {
         let base = base_url.ok_or_else(|| Error::Config {
-            field: "pipeline.tts.base_url".into(),
-            message: "is required when pipeline.tts.provider is online".into(),
+            field: "base_url".into(),
+            message: "is required".into(),
         })?;
         Ok(Self {
             endpoint: join_speech_endpoint(base),
@@ -810,7 +806,7 @@ mod tests {
     fn settings_from_parts_join_endpoint_and_require_base_url() {
         let err = RemoteTtsSettings::from_parts(None, "tts-1", DEFAULT_VOICE)
             .expect_err("missing base_url");
-        assert!(err.to_string().contains("pipeline.tts.base_url"), "{err}");
+        assert!(err.to_string().contains("base_url"), "{err}");
 
         let settings =
             RemoteTtsSettings::from_parts(Some("http://127.0.0.1:8092/v1/"), "tts-1", "nova")

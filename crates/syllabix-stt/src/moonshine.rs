@@ -25,7 +25,7 @@ use syllabix_native::Cancel;
 
 /// Config / log name for this engine.
 pub const PROVIDER_NAME: &str = "moonshine";
-/// Default STT language. Any other yaml value is rejected at load.
+/// Default STT language. Any other value is rejected at load.
 pub const LANGUAGE: &str = "en";
 
 pub const ENCODER_ASSET: &str = "moonshine-encoder";
@@ -343,7 +343,7 @@ impl MoonshineStt {
 fn validate_language(language: &str) -> Result<()> {
     if language != LANGUAGE {
         return Err(Error::Config {
-            field: "pipeline.stt.language".into(),
+            field: "language".into(),
             message: format!("unsupported value {language:?} (allowed: \"en\" with this model)"),
         });
     }
@@ -545,10 +545,7 @@ mod tests {
         validate_language("en").expect("en is accepted");
         for bad in ["fr", "auto", "", "EN"] {
             let err = validate_language(bad).unwrap_err();
-            assert!(
-                err.to_string().contains("pipeline.stt.language"),
-                "{bad}: {err}"
-            );
+            assert!(err.to_string().contains("language"), "{bad}: {err}");
         }
     }
 

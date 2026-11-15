@@ -79,8 +79,8 @@ pub trait Tts: Send {
     }
 }
 
-/// TTS model menu under `provider: local`. Pocket TTS is the default;
-/// Kokoro and the Qwen3-TTS backbones are YAML opt-ins.
+/// TTS model menu. Pocket TTS is the default;
+/// Kokoro and the Qwen3-TTS backbones are optional.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtsModel {
     /// Kokoro ONNX (`af_heart`, English).
@@ -116,7 +116,7 @@ impl TtsModel {
         }
     }
 
-    /// Parse a yaml `pipeline.tts.model` id.
+    /// Parse a model menu id.
     pub fn parse(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|m| m.as_str() == value)
     }

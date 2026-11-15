@@ -1,9 +1,9 @@
-//! Recoverable Syllabix failures with stable, user-facing messages.
+//! Recoverable failures with stable, user-facing messages.
 
 /// Process-level result shared by the CLI and runtime.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Recoverable Syllabix failures with stable, user-facing messages.
+/// Recoverable failures with stable, user-facing messages.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A command exists in the CLI but is not wired to a working implementation yet.
@@ -34,7 +34,7 @@ pub enum Error {
     },
 
     /// Shutdown or generation cancel interrupted in-flight work.
-    #[error("conversation cancelled")]
+    #[error("cancelled")]
     Cancelled,
 
     /// A pipeline stage exited while another stage still needed it.
@@ -65,10 +65,10 @@ pub enum Error {
         message: String,
     },
 
-    /// `syllabix.yaml` failed to parse or validate.
+    /// Configuration failed to parse or validate.
     #[error("{field}: {message}")]
     Config {
-        /// Field path (`pipeline.stt.language`) or file path.
+        /// Field path (for example `pipeline.stt.language`) or file path.
         field: String,
         /// Human-readable reason.
         message: String,
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn cancelled_and_disconnected_are_process_failures() {
-        assert_eq!(Error::Cancelled.to_string(), "conversation cancelled");
+        assert_eq!(Error::Cancelled.to_string(), "cancelled");
         assert_eq!(Error::Cancelled.exit_code(), 1);
         let err = Error::Disconnected { stage: "tts" };
         assert_eq!(err.to_string(), "pipeline stage tts disconnected");
