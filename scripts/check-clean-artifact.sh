@@ -60,9 +60,6 @@ case "${base}" in
   syllabix-Darwin-arm64)
     [[ "${os}" == "Darwin" && "${arch}" == "arm64" ]] || skip_exec=1
     ;;
-  syllabix-Darwin-x86_64)
-    [[ "${os}" == "Darwin" && "${arch}" == "x86_64" ]] || skip_exec=1
-    ;;
   syllabix-Windows-x86_64.exe)
     [[ "${os}" == MINGW* || "${os}" == MSYS* || "${os}" == CYGWIN* || "${os}" == "Windows_NT" ]] || skip_exec=1
     ;;
@@ -118,7 +115,7 @@ if [[ -n "${EXPECTED_VERSION:-}" ]]; then
   # or the trailing vX.Y.Z of a recovery release_name. Matching against
   # Cargo.toml alone would pass if the rewrite were skipped, because the
   # checkout stays at 0.1.0. This check is skipped when the artifact is
-  # not native (see skip_exec above), including macos-x64 on arm64.
+  # not native (see skip_exec above).
   want="syllabix ${EXPECTED_VERSION}"
   if [[ "${version_line}" != "${want}" ]]; then
     echo "--version printed '${version_line}', expected '${want}'" >&2

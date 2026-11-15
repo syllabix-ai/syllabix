@@ -29,7 +29,6 @@ chmod +x "${root}/scripts/write-sha256sums.sh"
 required=(
   syllabix-Linux-x86_64
   syllabix-Darwin-arm64
-  syllabix-Darwin-x86_64
   syllabix-Windows-x86_64.exe
   SHA256SUMS
 )

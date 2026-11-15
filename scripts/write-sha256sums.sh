@@ -20,7 +20,6 @@ file_sha256() {
 names=(
   syllabix-Linux-x86_64
   syllabix-Darwin-arm64
-  syllabix-Darwin-x86_64
   syllabix-Windows-x86_64.exe
 )
 

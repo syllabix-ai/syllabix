@@ -50,9 +50,6 @@ case "${base}" in
   syllabix-Darwin-arm64)
     [[ "${os}" == "Darwin" && "${arch}" == "arm64" ]] || skip_exec=1
     ;;
-  syllabix-Darwin-x86_64)
-    [[ "${os}" == "Darwin" && "${arch}" == "x86_64" ]] || skip_exec=1
-    ;;
   syllabix-Windows-x86_64.exe)
     [[ "${os}" == MINGW* || "${os}" == MSYS* || "${os}" == CYGWIN* || "${os}" == "Windows_NT" ]] || skip_exec=1
     ;;

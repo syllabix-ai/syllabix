@@ -9,7 +9,6 @@ pub const DIST_PROFILE: &str = "dist";
 pub const DIST_TARGETS: &[&str] = &[
     "x86_64-unknown-linux-gnu",
     "aarch64-apple-darwin",
-    "x86_64-apple-darwin",
     "x86_64-pc-windows-msvc",
 ];
 
@@ -17,11 +16,10 @@ pub const DIST_TARGETS: &[&str] = &[
 pub const ARTIFACT_FILE_NAMES: &[&str] = &[
     "syllabix-Linux-x86_64",
     "syllabix-Darwin-arm64",
-    "syllabix-Darwin-x86_64",
     "syllabix-Windows-x86_64.exe",
 ];
 
-/// GNU `sha256sum` text file published next to the four binaries.
+/// GNU `sha256sum` text file published next to the three binaries.
 pub const SHA256SUMS_FILE_NAME: &str = "SHA256SUMS";
 
 /// `https://github.com/syllabix-ai/syllabix/releases/latest/download/`
@@ -54,12 +52,11 @@ pub fn artifact_name_for_uname(sysname: &str, machine: &str) -> Option<&'static 
         _ => return None,
     };
     if windows {
-        return (arch == "x86_64").then_some(ARTIFACT_FILE_NAMES[3]);
+        return (arch == "x86_64").then_some(ARTIFACT_FILE_NAMES[2]);
     }
     match (sysname, arch) {
         ("Linux", "x86_64") => Some(ARTIFACT_FILE_NAMES[0]),
         ("Darwin", "arm64") => Some(ARTIFACT_FILE_NAMES[1]),
-        ("Darwin", "x86_64") => Some(ARTIFACT_FILE_NAMES[2]),
         _ => None,
     }
 }
@@ -107,12 +104,6 @@ pub const GOOSE_BINARIES: &[GooseBinary] = &[
         size_bytes: 74_774_082,
     },
     GooseBinary {
-        rustc_target: "x86_64-apple-darwin",
-        archive_name: "goose-x86_64-apple-darwin.tar.bz2",
-        sha256: "81fd55f4003950bb72719402e2defb1375eef4b9a739d901a365fb737b73aeee",
-        size_bytes: 76_781_506,
-    },
-    GooseBinary {
         rustc_target: "x86_64-pc-windows-msvc",
         archive_name: "goose-x86_64-pc-windows-msvc.zip",
         sha256: "5c39bc91c3eadc231847e21a8a469e778431084437b233a63a950fee22db6239",
@@ -133,8 +124,6 @@ pub fn host_rustc_target() -> Option<&'static str> {
         Some("x86_64-unknown-linux-gnu")
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Some("aarch64-apple-darwin")
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Some("x86_64-apple-darwin")
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         Some("x86_64-pc-windows-msvc")
     } else {
@@ -222,17 +211,14 @@ mod tests {
             artifact_name_for_target("aarch64-apple-darwin"),
             Some("syllabix-Darwin-arm64")
         );
-        assert_eq!(
-            artifact_name_for_target("x86_64-apple-darwin"),
-            Some("syllabix-Darwin-x86_64")
-        );
+        assert!(artifact_name_for_target("x86_64-apple-darwin").is_none());
         assert_eq!(
             artifact_name_for_target("x86_64-pc-windows-msvc"),
             Some("syllabix-Windows-x86_64.exe")
         );
         assert!(artifact_name_for_target("wasm32-unknown-unknown").is_none());
-        assert!(ARTIFACT_FILE_NAMES[3].ends_with(".exe"));
-        for name in &ARTIFACT_FILE_NAMES[..3] {
+        assert!(ARTIFACT_FILE_NAMES[2].ends_with(".exe"));
+        for name in &ARTIFACT_FILE_NAMES[..2] {
             assert!(!name.contains('.'), "{name} is a single executable file");
         }
     }
@@ -247,10 +233,7 @@ mod tests {
             artifact_name_for_uname("Darwin", "arm64"),
             Some("syllabix-Darwin-arm64")
         );
-        assert_eq!(
-            artifact_name_for_uname("Darwin", "x86_64"),
-            Some("syllabix-Darwin-x86_64")
-        );
+        assert!(artifact_name_for_uname("Darwin", "x86_64").is_none());
         assert_eq!(
             artifact_name_for_uname("Windows_NT", "AMD64"),
             Some("syllabix-Windows-x86_64.exe")
@@ -283,7 +266,7 @@ mod tests {
         let text = format!(
             "{}\n{}\n",
             format_sha256sums_line(hex, ARTIFACT_FILE_NAMES[0]),
-            format_sha256sums_line(hex, ARTIFACT_FILE_NAMES[3])
+            format_sha256sums_line(hex, ARTIFACT_FILE_NAMES[2])
         );
         let parsed = parse_sha256sums(&text).expect("valid");
         assert_eq!(parsed.len(), 2);
@@ -333,6 +316,7 @@ mod tests {
             assert!(url.contains(GOOSE_RELEASE_TAG), "{url}");
         }
         assert!(goose_binary_for_target("wasm32-unknown-unknown").is_none());
+        assert!(goose_binary_for_target("x86_64-apple-darwin").is_none());
         assert_eq!(goose_exe_name("x86_64-unknown-linux-gnu"), "goose");
         assert_eq!(goose_exe_name("x86_64-pc-windows-msvc"), "goose.exe");
         if let Some(host) = host_rustc_target() {

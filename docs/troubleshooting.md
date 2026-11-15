@@ -28,7 +28,8 @@ Check the SHA-256 of the file for your platform against the latest release's SHA
 | --- | --- |
 | Linux x86_64 | [`syllabix-Linux-x86_64`](https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-Linux-x86_64) |
 | macOS Apple Silicon | [`syllabix-Darwin-arm64`](https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-Darwin-arm64) |
-| macOS Intel | [`syllabix-Darwin-x86_64`](https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-Darwin-x86_64) |
 | Windows x64 | [`syllabix-Windows-x86_64.exe`](https://github.com/syllabix-ai/syllabix/releases/latest/download/syllabix-Windows-x86_64.exe) |
+
+Intel Macs are not supported.
 
 Latest checksums: [`SHA256SUMS`](https://github.com/syllabix-ai/syllabix/releases/latest/download/SHA256SUMS)

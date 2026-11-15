@@ -56,8 +56,9 @@ curl.exe -L https://github.com/syllabix-ai/syllabix/releases/latest/download/syl
 | --- | --- |
 | Linux x64 | `syllabix-Linux-x86_64` |
 | Mac with Apple chip | `syllabix-Darwin-arm64` |
-| Mac with Intel chip | `syllabix-Darwin-x86_64` |
 | Windows x64 | `syllabix-Windows-x86_64.exe` |
+
+Intel Macs are not supported.
 
 Blocked by macOS Gatekeeper or Windows SmartScreen? See [docs/install.md](docs/install.md).
 

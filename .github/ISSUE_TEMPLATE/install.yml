@@ -12,7 +12,6 @@ body:
       label: OS
       options:
         - macOS Apple Silicon
-        - macOS Intel
         - Linux x64
         - Windows x64
         - other

@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(all(not(coverage), feature = "kokoro"))]
 use ort::session::Session;
+#[cfg(all(not(coverage), feature = "kokoro"))]
+use ort::value::Tensor;
 #[cfg(all(not(coverage), feature = "qwen3"))]
 use syllabix_native::{QwenTtsBackend, QwenTtsContext, QwenTtsError};
 
@@ -621,11 +623,8 @@ mod native {
                 .map_err(ort_error)?
                 .commit_from_file(model)
                 .map_err(ort_error)?;
-            let input_names: Vec<&str> = session
-                .inputs
-                .iter()
-                .map(|input| input.name.as_str())
-                .collect();
+            let input_names: Vec<&str> =
+                session.inputs().iter().map(|input| input.name()).collect();
             if input_names != ["input_ids", "style", "speed"] {
                 return Err(Error::Provider {
                     provider: "kokoro",
@@ -646,21 +645,14 @@ mod native {
             let n = input_ids.len();
             let outputs = self
                 .session
-                .run(
-                    ort::inputs![
-                        "input_ids" => ([1_usize, n], input_ids),
-                        "style" => ([1_usize, STYLE_DIM], style),
-                        "speed" => ([1_usize], vec![1.0_f32]),
-                    ]
-                    .map_err(ort_error)?,
-                )
+                .run(ort::inputs![
+                    "input_ids" => Tensor::from_array(([1_usize, n], input_ids)).map_err(ort_error)?,
+                    "style" => Tensor::from_array(([1_usize, STYLE_DIM], style)).map_err(ort_error)?,
+                    "speed" => Tensor::from_array(([1_usize], vec![1.0_f32])).map_err(ort_error)?,
+                ])
                 .map_err(ort_error)?;
-            let samples = outputs[0]
-                .try_extract_tensor::<f32>()
-                .map_err(ort_error)?
-                .iter()
-                .copied()
-                .collect::<Vec<f32>>();
+            let (_shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_error)?;
+            let samples = data.to_vec();
             if samples.is_empty() {
                 return Err(Error::Provider {
                     provider: "kokoro",
