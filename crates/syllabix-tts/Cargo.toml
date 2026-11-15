@@ -32,7 +32,7 @@ remote = ["dep:ureq", "dep:zeroize", "dep:serde_json"]
 
 [dependencies]
 syllabix-native = { workspace = true, features = ["models"] }
-ort = { version = "=2.0.0-rc.9", optional = true }
+ort = { workspace = true, optional = true }
 # Keep espeak-ng (GPL + extra dylib) off.
 misaki-rs = { version = "=0.3.0", default-features = false, optional = true }
 sentencepiece-rs = { version = "=0.2.2", optional = true }

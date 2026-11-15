@@ -13,11 +13,14 @@ artifact_name() {
   case "$1" in
     x86_64-unknown-linux-gnu) echo "syllabix-Linux-x86_64" ;;
     aarch64-apple-darwin) echo "syllabix-Darwin-arm64" ;;
-    x86_64-apple-darwin) echo "syllabix-Darwin-x86_64" ;;
     x86_64-pc-windows-msvc) echo "syllabix-Windows-x86_64.exe" ;;
     *)
       echo "unsupported launch target: $1" >&2
-      echo "expected one of: x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc" >&2
+      if [[ "$1" == x86_64-*darwin ]]; then
+        echo "Intel Macs are not supported" >&2
+      else
+        echo "expected one of: x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc" >&2
+      fi
       return 1
       ;;
   esac

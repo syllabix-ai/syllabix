@@ -23,9 +23,9 @@ struct ReproSidecar {
 }
 
 #[test]
-fn dist_target_matrix_is_four_launch_oses() {
-    assert_eq!(DIST_TARGETS.len(), 4);
-    assert_eq!(ARTIFACT_FILE_NAMES.len(), 4);
+fn dist_target_matrix_is_three_launch_oses() {
+    assert_eq!(DIST_TARGETS.len(), 3);
+    assert_eq!(ARTIFACT_FILE_NAMES.len(), 3);
     assert_eq!(DIST_PROFILE, "dist");
     assert_eq!(
         artifact_name_for_target(DIST_TARGETS[0]).unwrap(),
@@ -55,8 +55,8 @@ fn sha256sums_file_covers_launch_artifacts() {
         body.push_str(&format_sha256sums_line(hex, name));
         body.push('\n');
     }
-    let parsed = parse_sha256sums(&body).expect("four launch artifacts");
-    assert_eq!(parsed.len(), 4);
+    let parsed = parse_sha256sums(&body).expect("three launch artifacts");
+    assert_eq!(parsed.len(), 3);
     for name in ARTIFACT_FILE_NAMES {
         assert!(sha256sums_contains(&parsed, name, hex), "{name}");
     }

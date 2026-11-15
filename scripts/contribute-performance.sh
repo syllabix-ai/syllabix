@@ -24,8 +24,14 @@ artifact_name() {
   case "$(uname -s)/$(uname -m)" in
     Linux/x86_64) echo syllabix-Linux-x86_64 ;;
     Darwin/arm64) echo syllabix-Darwin-arm64 ;;
-    Darwin/x86_64) echo syllabix-Darwin-x86_64 ;;
-    *) echo "unsupported release target: $(uname -s)/$(uname -m)" >&2; return 1 ;;
+    *)
+      if [[ "$(uname -s)" == Darwin && "$(uname -m)" == x86_64 ]]; then
+        echo "Intel Macs are not supported" >&2
+      else
+        echo "unsupported release target: $(uname -s)/$(uname -m)" >&2
+      fi
+      return 1
+      ;;
   esac
 }
 

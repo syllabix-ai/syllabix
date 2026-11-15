@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use ort::session::Session;
+use ort::value::Tensor;
 
 use crate::defaults::BuiltinDefaults;
 use crate::error::{Error, Result};
@@ -378,11 +379,7 @@ impl OrtScorer {
             .map_err(ort_error)?
             .commit_from_file(path)
             .map_err(ort_error)?;
-        let input_names: Vec<&str> = session
-            .inputs
-            .iter()
-            .map(|input| input.name.as_str())
-            .collect();
+        let input_names: Vec<&str> = session.inputs().iter().map(|input| input.name()).collect();
         if input_names != ["input", "state", "sr"] {
             return Err(Error::Provider {
                 provider: "silero",
@@ -390,9 +387,9 @@ impl OrtScorer {
             });
         }
         let output_names: Vec<&str> = session
-            .outputs
+            .outputs()
             .iter()
-            .map(|output| output.name.as_str())
+            .map(|output| output.name())
             .collect();
         if output_names != ["output", "stateN"] {
             return Err(Error::Provider {
@@ -424,30 +421,23 @@ impl ProbabilityScorer for OrtScorer {
         let window = audio.len();
         let outputs = self
             .session
-            .run(
-                ort::inputs![
-                    "input" => ([1_usize, window], audio),
-                    "state" => ([2_usize, 1, 128], self.state.clone()),
-                    "sr" => ((), vec![16_000_i64]),
-                ]
-                .map_err(ort_error)?,
-            )
+            .run(ort::inputs![
+                "input" => Tensor::from_array(([1_usize, window], audio)).map_err(ort_error)?,
+                "state" => Tensor::from_array(([2_usize, 1, 128], self.state.clone())).map_err(ort_error)?,
+                "sr" => Tensor::from_array(((), vec![16_000_i64])).map_err(ort_error)?,
+            ])
             .map_err(ort_error)?;
-        let probability = outputs["output"]
+        let (_shape, data) = outputs["output"]
             .try_extract_tensor::<f32>()
-            .map_err(ort_error)?
-            .first()
-            .copied()
-            .ok_or_else(|| Error::Provider {
-                provider: "silero",
-                message: "ONNX output probability was empty".into(),
-            })?;
-        self.state = outputs["stateN"]
+            .map_err(ort_error)?;
+        let probability = data.first().copied().ok_or_else(|| Error::Provider {
+            provider: "silero",
+            message: "ONNX output probability was empty".into(),
+        })?;
+        let (_shape, state) = outputs["stateN"]
             .try_extract_tensor::<f32>()
-            .map_err(ort_error)?
-            .iter()
-            .copied()
-            .collect();
+            .map_err(ort_error)?;
+        self.state = state.to_vec();
         Ok(probability)
     }
 

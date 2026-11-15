@@ -29,6 +29,7 @@ sonora = "=0.2.0"
 coreaudio-sys = "=0.2.16"
 # rustls-backed HTTP so the binary does not pick up libssl.
 # Stay on ureq 2.x; rustls is selected through Cargo.lock.
+# ort download-binaries uses tls-rustls (not the crate default tls-native/OpenSSL).
 ureq = { version = "=2.10.1", default-features = false, features = ["tls"] }
 sha2 = "=0.10.8"
 url = "=2.5.8"
@@ -48,7 +49,8 @@ serde_json = "=1.0.134"
 tokenizers = { version = "=0.22.1", default-features = false, features = ["progressbar", "onig"] }
 # Web-fetch HTML reaches the model as Markdown, not raw tag soup.
 htmd = "=0.5.5"
-ort-sys = "=2.0.0-rc.9"
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls", "copy-dylibs"] }
+ort-sys = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "download-binaries", "tls-rustls", "copy-dylibs"] }
 # Live `run` UI is crossterm (inline status/transcript), not a widget TUI.
 crossterm = "=0.27.0"
 # Blocking HTTP listen for `syllabix serve`. No async runtime.

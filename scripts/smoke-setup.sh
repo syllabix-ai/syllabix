@@ -45,7 +45,7 @@ fetch() { # fetch <url> <dest>
 if [[ -n "${release_url}" ]]; then
   base="${artifact}"
   case "${base}" in
-    syllabix-Linux-x86_64|syllabix-Darwin-arm64|syllabix-Darwin-x86_64|syllabix-Windows-x86_64.exe) ;;
+    syllabix-Linux-x86_64|syllabix-Darwin-arm64|syllabix-Windows-x86_64.exe) ;;
     *)
       echo "download mode needs a launch asset name, got: ${base}" >&2
       exit 2
@@ -61,17 +61,20 @@ else
   fi
   base="$(basename "${artifact}")"
   case "${base}" in
-    syllabix-Linux-x86_64|syllabix-Darwin-arm64|syllabix-Darwin-x86_64|syllabix-Windows-x86_64.exe) ;;
+    syllabix-Linux-x86_64|syllabix-Darwin-arm64|syllabix-Windows-x86_64.exe) ;;
     *)
       os="$(uname -s)"
       arch="$(uname -m)"
       case "${os}/${arch}" in
         Linux/x86_64) base="syllabix-Linux-x86_64" ;;
         Darwin/arm64) base="syllabix-Darwin-arm64" ;;
-        Darwin/x86_64) base="syllabix-Darwin-x86_64" ;;
         MINGW*/*|MSYS*/*|CYGWIN*/*) base="syllabix-Windows-x86_64.exe" ;;
         *)
-          echo "cannot map ${os}/${arch} to a launch artifact; rename it first" >&2
+          if [[ "${os}" == Darwin && "${arch}" == x86_64 ]]; then
+            echo "Intel Macs are not supported" >&2
+          else
+            echo "cannot map ${os}/${arch} to a launch artifact; rename it first" >&2
+          fi
           exit 2
           ;;
       esac

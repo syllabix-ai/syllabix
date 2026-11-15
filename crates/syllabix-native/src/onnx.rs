@@ -103,17 +103,17 @@ impl OrtSession {
 impl OnnxSession for OrtSession {
     fn input_names(&self) -> Vec<String> {
         self.session
-            .inputs
+            .inputs()
             .iter()
-            .map(|input| input.name.clone())
+            .map(|input| input.name().to_string())
             .collect()
     }
 
     fn output_names(&self) -> Vec<String> {
         self.session
-            .outputs
+            .outputs()
             .iter()
-            .map(|output| output.name.clone())
+            .map(|output| output.name().to_string())
             .collect()
     }
 
@@ -287,15 +287,16 @@ fn read_value(value: RawValue) -> Result<OnnxTensor> {
 }
 
 fn check(status: ort_sys::OrtStatusPtr) -> Result<()> {
-    if status.is_null() {
+    // rc.11 wraps the C status pointer in OrtStatusPtr.
+    if status.0.is_null() {
         return Ok(());
     }
     let message = unsafe {
-        CStr::from_ptr(ort::ortsys!(GetErrorMessage)(status))
+        CStr::from_ptr(ort::ortsys!(GetErrorMessage)(status.0))
             .to_string_lossy()
             .into_owned()
     };
-    unsafe { ort::ortsys!(ReleaseStatus)(status) };
+    unsafe { ort::ortsys!(ReleaseStatus)(status.0) };
     Err(Error::Provider {
         provider: "onnx",
         message: format!("ONNX Runtime C API: {message}"),

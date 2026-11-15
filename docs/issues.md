@@ -14,7 +14,7 @@ Check [troubleshooting](troubleshooting.md) and [FAQ](faq.md) first — mic, ech
 
 Include in every report:
 
-- Syllabix version or git SHA, and OS (macOS Apple Silicon / Intel, Linux x64, Windows x64).
+- Syllabix version or git SHA, and OS (macOS Apple Silicon, Linux x64, Windows x64). Intel Macs are not supported.
 - Artifact or how you installed (Release file name, or `cargo run`).
 - Exact command and full error text.
 - `syllabix.yaml` when used. Never paste API keys — `SYLLABIX_LLM_API_KEY` is environment-only.

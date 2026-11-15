@@ -15,13 +15,12 @@ curl.exe -L https://github.com/syllabix-ai/syllabix/releases/latest/download/syl
 .\syllabix.exe run
 ```
 
-`uname -s` / `uname -m` map to the names below (`Linux`/`x86_64`, `Darwin`/`arm64`, `Darwin`/`x86_64`).
+`uname -s` / `uname -m` map to the names below (`Linux`/`x86_64`, `Darwin`/`arm64`). Intel Macs are not supported.
 
 | Computer | File to download |
 | --- | --- |
 | Linux x64 | `syllabix-Linux-x86_64` |
 | macOS Apple Silicon | `syllabix-Darwin-arm64` |
-| macOS Intel | `syllabix-Darwin-x86_64` |
 | Windows x64 | `syllabix-Windows-x86_64.exe` |
 
 Optional: to confirm the file matches the release, see [Check that your download isn't damaged (optional)](troubleshooting.md#check-that-your-download-isnt-damaged-optional).

@@ -92,7 +92,7 @@ fn ort_load_rejects_a_missing_graph() {
 
 #[test]
 fn null_status_is_success() {
-    check(ptr::null_mut()).expect("null status means success");
+    check(ort_sys::OrtStatusPtr(ptr::null_mut())).expect("null status means success");
 }
 
 fn relu_fixture() -> std::path::PathBuf {
