@@ -186,9 +186,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: crates-io-package
-      - name: Package syllabix-native (verify from tarball)
+      - name: Package native, stt, tts and core (verify from tarballs)
+        # One call, in publish order. Cargo puts each new tarball in a
+        # temporary local registry, so stt, tts and core build against this
+        # checkout's crates instead of looking for this version on crates.io.
         run: |
-          cargo package -p syllabix-native
+          cargo package -p syllabix-native -p syllabix-stt -p syllabix-tts -p syllabix-core
           crate="$(echo target/package/syllabix-native-*.crate)"
           size="$(stat -c%s "$crate")"
           echo "syllabix-native .crate is ${size} bytes"
@@ -197,13 +200,6 @@ jobs:
             echo "syllabix-native .crate exceeds 10485760 bytes: ${size}" >&2
             exit 1
           fi
-      - name: List syllabix-core package (no verify)
-        # syllabix-core depends on syllabix-native by version. cargo package
-        # --verify would try to download that version from crates.io, which
-        # is not there until a version tag publishes native first. Listing
-        # the tarball is enough on PRs; native is the crate that must build
-        # from the packaged files.
-        run: cargo package -p syllabix-core --no-verify --list
 
   # Real-weight native inference is native-tests.yml (PRs, main, and
   # manual dispatch). The cross-platform test matrix (linux/windows/macos

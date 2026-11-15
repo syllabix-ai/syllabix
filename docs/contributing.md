@@ -190,11 +190,12 @@ Import-only edits on those files do not need a pasted report.
 
 ## Packaging (maintainers)
 
-Three packages share one version: the library other apps use
-(`syllabix-core`), the on-device speech build it compiles (`syllabix-native`),
-and the `syllabix` command. Push a tag named `vX.Y.Z`. The version comes
+Five packages share one version: the library other apps use
+(`syllabix-core`), the speech crates (`syllabix-stt`, `syllabix-tts`), the
+on-device speech build they compile (`syllabix-native`), and the `syllabix`
+command. Push a tag named `vX.Y.Z`. The version comes
 from the tag; don't bump Cargo.toml by hand. That tag is the GitHub Release
-and the crates.io publish of `syllabix-core` / `syllabix-native`. App
+and the crates.io publish of the four library crates. App
 binaries from the GitHub Release report the same version (`./syllabix --version`).
 Other apps normally depend with `syllabix-core = "0.1"`; a git pin (`tag = "vX.Y.Z"`,
 or unreleased `main`) is optional. Release notes are on the tag and the
@@ -208,9 +209,12 @@ in this order:
 
 1. `syllabix-native` first. It contains the whisper.cpp / llama.cpp source
    the library needs to compile.
-2. Wait until that version is listed on crates.io.
-3. Then `syllabix-core`, which depends on that same version of
-   `syllabix-native`.
+2. Then `syllabix-stt` and `syllabix-tts`, which depend on that same
+   version of `syllabix-native`.
+3. Then `syllabix-core`, which depends on all three.
+
+The job waits for each version to be listed on crates.io before the next
+step, and skips a crate whose version is already there.
 
 The `syllabix` command is not on crates.io. People download the app from
 GitHub Releases. The crates.io job is `.github/workflows/crates-io.yml`.
@@ -283,11 +287,12 @@ model cache; VAD and the LLM stay in-process.
 A **sdk no-native** job
 `cargo check`s `syllabix-core` with `--no-default-features` on a runner
 without CMake (`setup-linux.sh` is skipped). A Linux-only **crates.io
-package** job runs `cargo package -p syllabix-native` with verify (builds
-from the tarball) and lists `syllabix-core` without verify (`--verify` would
-download that version of `syllabix-native` from crates.io, which fails when
-that version is not published yet). It fails if the native `.crate` is over
-10 MB. PR template and harness-evidence checks also run on hosted Linux.
+package** job runs one `cargo package` for `syllabix-native`,
+`syllabix-stt`, `syllabix-tts` and `syllabix-core` with verify. Cargo builds
+each crate from its tarball against the other new tarballs, not crates.io
+([cargo package](https://doc.rust-lang.org/cargo/commands/cargo-package.html)).
+It fails if the native `.crate` is over 10 MB. PR template and
+harness-evidence checks also run on hosted Linux.
 
 The **git-consumer** workflow (`git-consumer.yml`) pretends to be another repo.
 It depends on `syllabix-core` from git: a `v*` tag when one exists, otherwise

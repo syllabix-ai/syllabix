@@ -9,8 +9,9 @@ license = "Apache-2.0"
 repository = "https://github.com/syllabix-ai/syllabix"
 homepage = "https://github.com/syllabix-ai/syllabix"
 rust-version = "1.91"
-# Default stays unpublished (CLI, examples, helpers). syllabix-core and
-# syllabix-native set publish = true so a version tag can upload them.
+# Default stays unpublished (CLI, examples, helpers). syllabix-native,
+# syllabix-stt, syllabix-tts and syllabix-core set publish = true so a
+# version tag can upload them.
 publish = false
 
 [workspace.dependencies]

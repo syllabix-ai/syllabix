@@ -44,7 +44,7 @@ The `syllabix` CLI is not on crates.io. Install it from a [GitHub Release](https
 
 ## Tags and versions
 
-The SDK (`syllabix-core`) and the CLI (`syllabix`) share one version. A git tag `vX.Y.Z` is that version for both crates, the GitHub Release binaries, and the crates.io publish. `syllabix-native` is not a public API; depend on `syllabix-core`.
+The SDK (`syllabix-core`), the speech crates (`syllabix-stt`, `syllabix-tts`) and the CLI (`syllabix`) share one version. A git tag `vX.Y.Z` is that version for all of them, the GitHub Release binaries, and the crates.io publish. `syllabix-native` is not a public API; depend on `syllabix-core`, `syllabix-stt` or `syllabix-tts`.
 
 What each release contains is on the git tag and its [GitHub Release](https://github.com/syllabix-ai/syllabix/releases). Maintainers cut tags as described in [contributing — Packaging](contributing.md#packaging-maintainers). Hosts: [Compatibility](#compatibility).
 

@@ -16,6 +16,8 @@ include = [
     "LICENSE",
     "NOTICE",
 ]
+keywords = ["speech-to-text", "asr", "whisper", "speech", "voice"]
+categories = ["multimedia::audio"]
 
 [features]
 default = ["whisper", "qwen3-asr", "moonshine", "remote"]

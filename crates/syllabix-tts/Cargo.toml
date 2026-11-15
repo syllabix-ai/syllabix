@@ -16,6 +16,8 @@ include = [
     "LICENSE",
     "NOTICE",
 ]
+keywords = ["text-to-speech", "tts", "speech", "voice", "kokoro"]
+categories = ["multimedia::audio"]
 
 [features]
 default = ["pocket", "kokoro", "qwen3", "remote"]
