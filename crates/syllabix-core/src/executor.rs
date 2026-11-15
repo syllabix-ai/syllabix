@@ -1207,18 +1207,22 @@ fn resolve_workspace_path(workspace: &Path, requested: &str) -> Result<PathBuf, 
     let root = workspace
         .canonicalize()
         .map_err(|_| "workspace is unavailable")?;
-    let requested = Path::new(requested);
-    if requested.is_absolute()
-        || requested
-            .components()
-            .any(|part| matches!(part, Component::ParentDir))
+    let requested = Path::new(requested.trim());
+    if requested
+        .components()
+        .any(|part| matches!(part, Component::ParentDir))
     {
         return Err("shell workdir must stay inside the workspace".into());
     }
-    let resolved = root
-        .join(requested)
-        .canonicalize()
-        .map_err(|_| "shell workdir does not exist")?;
+    let resolved = if requested.is_absolute() {
+        requested
+            .canonicalize()
+            .map_err(|_| "shell workdir does not exist")?
+    } else {
+        root.join(requested)
+            .canonicalize()
+            .map_err(|_| "shell workdir does not exist")?
+    };
     if !resolved.starts_with(&root) {
         return Err("shell workdir must stay inside the workspace".into());
     }
@@ -1325,6 +1329,24 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn shell_cwd_accepts_absolute_path_inside_workspace() {
+        let workspace = std::env::current_dir().unwrap();
+        let root = workspace.canonicalize().expect("workspace");
+        let abs = root.join(".");
+        let ValidatedCall::Shell(request) = validate_call(
+            &call(
+                "shell",
+                serde_json::json!({"command":"pwd","workdir": abs.to_string_lossy()}),
+            ),
+            &workspace,
+        )
+        .expect("absolute in-workspace workdir") else {
+            unreachable!()
+        };
+        assert_eq!(request.cwd, root);
     }
 
     #[test]

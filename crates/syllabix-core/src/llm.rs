@@ -1401,7 +1401,7 @@ pub fn local_tool_definitions_json_for(network: NetworkMode) -> String {
                     },
                     "workdir": {
                         "type": "string",
-                        "description": "Optional relative path inside the workspace."
+                        "description": "Optional working directory: a path relative to the workspace root, or an absolute path that resolves under the workspace root."
                     },
                     "permission": {
                         "type": "string",
@@ -1938,11 +1938,11 @@ mod tests {
 
     #[test]
     fn skill_context_is_labelled_and_empty_context_preserves_prompt() {
-        let context = "--- skill release-check | source: custom ---\nRead the release notes.\n";
+        let context = "--- skill release-check | source: custom ---\ndescription: Checklist\npath: skills/release-check/SKILL.md\n--- end skill ---\n";
         let rendered = render_system_prompt_with_skills("Speak plainly.", "en", context);
         assert!(rendered.contains("source: custom"));
         assert!(!rendered.contains("trust:"));
-        assert!(rendered.contains("Read the release notes."));
+        assert!(rendered.contains("path: skills/release-check/SKILL.md"));
         assert_eq!(
             render_system_prompt_with_skills("Speak plainly.", "en", ""),
             "Speak plainly."

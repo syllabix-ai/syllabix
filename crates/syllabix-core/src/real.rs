@@ -19,7 +19,7 @@ mod production {
     use crate::config::AgentConfig;
     use crate::error::{Error, Result};
     #[cfg(feature = "cloud")]
-    use crate::goose::{skill_file_list, GooseAgent, GooseStart};
+    use crate::goose::{GooseAgent, GooseStart};
     use crate::hima::{HimaConfig, HimaLanguage, HimaStt};
     use crate::language::LANGUAGE_AUTO;
     use crate::llm::LlamaLlm;
@@ -646,7 +646,7 @@ mod production {
                     cache: path_root,
                     config: config.clone(),
                     workspace: workspace.clone(),
-                    skill_list: skill_file_list(&discovery),
+                    skill_list: discovery.model_context(&workspace),
                     resolved_model: prepared.display_model,
                     provider_env: prepared.child_env,
                 })?));
@@ -675,7 +675,7 @@ mod production {
                     "local skill ignored"
                 );
             }
-            discovery.model_context()
+            discovery.model_context(&workspace)
         } else {
             String::new()
         };
