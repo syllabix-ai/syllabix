@@ -23,8 +23,18 @@ Runtime at build time; some targets have no binary. For HTTP only, use
 
 C++ engines need the host packages in
 [embed — Host compile](https://github.com/syllabix-ai/syllabix/blob/main/docs/embed.md#host-compile).
-Local engines download their weights on first use
-([embed — Cache](https://github.com/syllabix-ai/syllabix/blob/main/docs/embed.md#cache)).
+
+## Cache
+
+By default, weights land under `models/v1` at `$SYLLABIX_CACHE_DIR`, else
+`$XDG_CACHE_HOME/syllabix`, else `~/.cache/syllabix` (on Windows,
+`%LOCALAPPDATA%\syllabix\cache` when those are unset). The first use of a
+model id downloads only that asset over HTTPS, checks SHA-256, then reuses the
+file; sharing the same root with the Syllabix CLI is fine. Point a custom root
+at `ModelCache::new` in `syllabix-native`. Model ids and licenses:
+[engines](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md).
+This crate is Apache-2.0; third-party notices are in [NOTICE](NOTICE).
+
 The remote engine reads its key from `SYLLABIX_STT_API_KEY` only.
 
 Example: [transcribe a WAV file](https://github.com/syllabix-ai/syllabix/blob/main/crates/syllabix-stt/examples/transcribe-wav.rs)
