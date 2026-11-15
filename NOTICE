@@ -92,6 +92,21 @@ https://huggingface.co/Mazino0/moonshine-streaming-medium-onnx
 It is fetched only when `pipeline.stt.provider: local` and
 `pipeline.stt.model: moonshine-streaming-medium` are selected.
 
+### Hima-ASR ONNX INT8 (optional yaml STT)
+
+Optional yaml STT. Fetched only when `pipeline.stt.model: hima-asr` is selected.
+The encoder is Apache-2.0 (Qwen3-ASR). The decoder is derived from Gemma 3 270M,
+so the Gemma Terms of Use apply.
+
+Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms
+
+Prohibited Use Policy: https://ai.google.dev/gemma/prohibited_use_policy
+Pinned ONNX export: https://huggingface.co/Prahaladha/hima-asr-ONNX at revision
+`18fa854f8ecaf2f48fe7416035643f86da3834d8`.
+Hima-ASR weights are not distributed under the Apache-2.0 license that covers the
+rest of Syllabix.
+This is a reading of the terms, not legal advice.
+
 ### LFM3-1.7B Q8_0 (`LFM3-1.7B-Q8_0.gguf`, default)
 
 LiquidAI LFM 1.0 license. Copyright LiquidAI.

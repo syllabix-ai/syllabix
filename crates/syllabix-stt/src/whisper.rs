@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "whisper")]
 use syllabix_native::{DecodeError, WhisperContext};
 
-use crate::language::{is_supported as is_supported_language, LANGUAGE_AUTO};
+use crate::language::{is_whisper_language as is_supported_language, LANGUAGE_AUTO};
 use crate::{Stt, SttModel};
 use syllabix_native::error::{Error, Result};
 use syllabix_native::models::{Fetcher, ModelCache, Progress};
@@ -409,6 +409,16 @@ mod tests {
             Ok(_) => panic!("unsupported language must fail"),
         };
         assert!(err.to_string().contains("pipeline.stt.language"));
+        let or = match WhisperStt::with_decoder(
+            Box::new(ScriptedDecoder::new(&["hello"])),
+            SttModel::Small,
+        )
+        .with_language("or")
+        {
+            Err(err) => err,
+            Ok(_) => panic!("odia is hima-only"),
+        };
+        assert!(or.to_string().contains("pipeline.stt.language"));
         let fr = WhisperStt::with_decoder(
             Box::new(ScriptedDecoder::new(&["bonjour"]).with_detected("fr")),
             SttModel::Small,

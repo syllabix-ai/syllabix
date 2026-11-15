@@ -20,6 +20,8 @@ mod production {
     use crate::error::{Error, Result};
     #[cfg(feature = "cloud")]
     use crate::goose::{skill_file_list, GooseAgent, GooseStart};
+    use crate::hima::{HimaConfig, HimaLanguage, HimaStt};
+    use crate::language::LANGUAGE_AUTO;
     use crate::llm::LlamaLlm;
     use crate::models::{Fetcher, ModelCache, Progress};
     use crate::moonshine::MoonshineStt;
@@ -225,6 +227,8 @@ mod production {
         Moonshine(Box<MoonshineStt>),
         /// Qwen3-ASR 0.6B through the shared ggml (finalize only).
         Qwen(Box<crate::qwen_asr::QwenAsrStt>),
+        /// Hima-ASR int8 ONNX (finalize only).
+        Hima(Box<HimaStt>),
         /// OpenAI-compatible transcriptions endpoint. No local STT weights.
         #[cfg(feature = "cloud")]
         Remote(RemoteStt),
@@ -236,6 +240,7 @@ mod production {
                 Self::Whisper(stt) => stt.name(),
                 Self::Moonshine(stt) => stt.name(),
                 Self::Qwen(stt) => stt.name(),
+                Self::Hima(stt) => stt.name(),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => stt.name(),
             }
@@ -246,6 +251,7 @@ mod production {
                 Self::Whisper(stt) => stt.transcribe(utterance, cancel),
                 Self::Moonshine(stt) => stt.transcribe(utterance, cancel),
                 Self::Qwen(stt) => stt.transcribe(utterance, cancel),
+                Self::Hima(stt) => stt.transcribe(utterance, cancel),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => stt.transcribe(utterance, cancel),
             }
@@ -260,6 +266,7 @@ mod production {
                 Self::Whisper(stt) => stt.start_turn(turn, cancel),
                 Self::Moonshine(stt) => stt.start_turn(turn, cancel),
                 Self::Qwen(stt) => stt.start_turn(turn, cancel),
+                Self::Hima(stt) => stt.start_turn(turn, cancel),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => stt.start_turn(turn, cancel),
             }
@@ -274,6 +281,7 @@ mod production {
                 Self::Whisper(stt) => stt.push_frame(frame, cancel),
                 Self::Moonshine(stt) => stt.push_frame(frame, cancel),
                 Self::Qwen(stt) => stt.push_frame(frame, cancel),
+                Self::Hima(stt) => stt.push_frame(frame, cancel),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => stt.push_frame(frame, cancel),
             }
@@ -284,6 +292,7 @@ mod production {
                 Self::Whisper(stt) => stt.cancel_turn(turn),
                 Self::Moonshine(stt) => stt.cancel_turn(turn),
                 Self::Qwen(stt) => stt.cancel_turn(turn),
+                Self::Hima(stt) => stt.cancel_turn(turn),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => stt.cancel_turn(turn),
             }
@@ -292,12 +301,12 @@ mod production {
 
     impl LiveStt {
         /// Compute backend confirmed after load for Qwen ASR (`cpu` / `metal` /
-        /// `vulkan`). Whisper and Moonshine return `None` (bench uses the
+        /// `vulkan`). Whisper, Moonshine, and Hima return `None` (bench uses the
         /// fingerprint ggml backend instead).
         pub fn backend_id(&self) -> Option<&str> {
             match self {
                 Self::Qwen(stt) => stt.backend_id(),
-                Self::Whisper(_) | Self::Moonshine(_) => None,
+                Self::Whisper(_) | Self::Moonshine(_) | Self::Hima(_) => None,
                 #[cfg(feature = "cloud")]
                 Self::Remote(_) => None,
             }
@@ -309,13 +318,15 @@ mod production {
                 Self::Whisper(stt) => Ok(Self::Whisper(stt.with_language(language)?)),
                 Self::Moonshine(stt) => Ok(Self::Moonshine(stt)),
                 Self::Qwen(stt) => Ok(Self::Qwen(Box::new(stt.with_language(language)?))),
+                Self::Hima(stt) => Ok(Self::Hima(Box::new(stt.with_language(language)?))),
                 #[cfg(feature = "cloud")]
                 Self::Remote(stt) => Ok(Self::Remote(stt.with_language(language))),
             }
         }
 
-        /// Set whisper.cpp `n_threads` when this is a Whisper engine. Moonshine
-        /// (`OrtSession::load`) and Qwen ASR have no post-load intra-op setter.
+        /// Set whisper.cpp `n_threads` when this is a Whisper engine. Moonshine,
+        /// Hima-ASR (`OrtSession::load`), and Qwen ASR have no post-load intra-op
+        /// setter.
         pub fn with_threads(self, n: i32) -> Self {
             match self {
                 Self::Whisper(stt) => Self::Whisper(stt.with_threads(n)),
@@ -327,7 +338,7 @@ mod production {
         pub fn intra_op_threads(&self) -> Option<i32> {
             match self {
                 Self::Whisper(stt) => stt.intra_op_threads(),
-                Self::Moonshine(_) | Self::Qwen(_) => None,
+                Self::Moonshine(_) | Self::Qwen(_) | Self::Hima(_) => None,
                 #[cfg(feature = "cloud")]
                 Self::Remote(_) => None,
             }
@@ -374,6 +385,33 @@ mod production {
                         config.stt_compute,
                     )?,
                 ))),
+                crate::defaults::SttModel::HimaAsr => {
+                    let language = if config.language == LANGUAGE_AUTO {
+                        None
+                    } else {
+                        Some(HimaLanguage::parse(&config.language).ok_or_else(|| {
+                            Error::Config {
+                                field: "pipeline.stt.language".into(),
+                                message: format!(
+                                    "unsupported value {:?} (allowed: {})",
+                                    config.language,
+                                    HimaLanguage::allowed_csv()
+                                ),
+                            }
+                        })?)
+                    };
+                    Ok(LiveStt::Hima(Box::new(HimaStt::from_cache(
+                        cache,
+                        fetcher,
+                        progress,
+                        cancel,
+                        config.stt_model,
+                        HimaConfig {
+                            language,
+                            style: config.stt_style,
+                        },
+                    )?)))
+                }
             },
             crate::defaults::SttProvider::Online => {
                 #[cfg(feature = "cloud")]

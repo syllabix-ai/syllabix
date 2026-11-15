@@ -11,6 +11,7 @@ use crate::defaults::{
     TtsProvider, VadProvider,
 };
 use crate::error::{Error, Result};
+use crate::hima::{HimaLanguage, HimaStyle};
 use crate::language::is_supported as is_supported_language;
 pub use crate::policy::{DeveloperPermissions, FilesystemMode, NetworkMode, SecretPolicy};
 use crate::skills::{SkillRoot, SkillSource, SkillsConfig};
@@ -65,7 +66,9 @@ pub struct AgentConfig {
     pub stt_base_url: Option<String>,
     /// Qwen3-ASR compute placement (`auto`, `cpu`, `metal`, or `vulkan`).
     pub stt_compute: TtsCompute,
-    /// STT language code: a whisper-supported ISO code or `auto`.
+    /// Hima-ASR prompt style (`native` or `mixed`). Ignored for other engines.
+    pub stt_style: HimaStyle,
+    /// STT language code: an ISO code the selected engine supports, or `auto`.
     pub language: String,
     /// `agent_harness.agent` (`none`, `syllabix`, or `goose`). Default `syllabix`.
     /// `goose` uses `pipeline.llm` to configure Goose's provider and model.
@@ -152,6 +155,7 @@ impl AgentConfig {
             stt_model_id: defaults.stt_model.as_str().to_string(),
             stt_base_url: None,
             stt_compute: TtsCompute::Auto,
+            stt_style: HimaStyle::Native,
             language: defaults.language.to_string(),
             agent: AgentBackend::Syllabix,
             inherit_current_session: true,
@@ -237,6 +241,11 @@ impl AgentConfig {
         } else {
             format!("    compute: {}\n", self.stt_compute.as_str())
         };
+        let stt_style_line = if self.stt_style == HimaStyle::Native {
+            String::new()
+        } else {
+            format!("    style: {}\n", self.stt_style.as_str())
+        };
         let tts_compute_line = if self.tts_compute == TtsCompute::Auto {
             String::new()
         } else {
@@ -257,7 +266,7 @@ pipeline:
     provider: {stt}
     model: {stt_model}
 {stt_compute_line}    language: {language}
-{stt_base_url_line}  llm:
+{stt_style_line}{stt_base_url_line}  llm:
     provider: {llm}
     model: {llm_model}
     thinking: {thinking}
@@ -276,6 +285,7 @@ pipeline:
             stt = self.stt.as_str(),
             stt_model = self.stt_model_id,
             stt_compute_line = stt_compute_line,
+            stt_style_line = stt_style_line,
             agent_harness_block = agent_harness_block,
             language = self.language,
             stt_base_url_line = self
@@ -488,7 +498,9 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     deny_unknown(
         stt,
         "pipeline.stt",
-        &["provider", "model", "language", "compute", "base_url"],
+        &[
+            "provider", "model", "language", "style", "compute", "base_url",
+        ],
     )?;
     let stt_provider = parse_stt(required_string(stt, "pipeline.stt.provider", "provider")?)?;
     let stt_model_raw = required_string(stt, "pipeline.stt.model", "model")?;
@@ -521,6 +533,23 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
             message: "is only valid with qwen3-asr-0.6".into(),
         });
     }
+    let stt_style = match optional_string(stt, "pipeline.stt", "style")? {
+        Some(value) => HimaStyle::parse(&value)
+            .ok_or_else(|| unsupported("pipeline.stt.style", &value, "native, mixed"))?,
+        None => HimaStyle::Native,
+    };
+    if stt_provider == SttProvider::Online && stt_style != HimaStyle::Native {
+        return Err(Error::Config {
+            field: "pipeline.stt.style".into(),
+            message: "is only valid with local hima-asr".into(),
+        });
+    }
+    if stt_style != HimaStyle::Native && !stt_model.is_hima() {
+        return Err(Error::Config {
+            field: "pipeline.stt.style".into(),
+            message: "is only valid with hima-asr".into(),
+        });
+    }
     let stt_base_url = resolve_online_base_url(
         stt,
         "pipeline.stt.base_url",
@@ -534,6 +563,24 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         return Err(Error::Config {
             field: "pipeline.stt.language".into(),
             message: format!("unsupported value {language:?} (allowed: \"en\" with this model)"),
+        });
+    }
+    if stt_model.is_hima() {
+        let hima_ok =
+            language == crate::language::LANGUAGE_AUTO || HimaLanguage::parse(&language).is_some();
+        if !hima_ok {
+            return Err(Error::Config {
+                field: "pipeline.stt.language".into(),
+                message: format!(
+                    "unsupported value {language:?} (allowed: {})",
+                    HimaLanguage::allowed_csv()
+                ),
+            });
+        }
+    } else if language == "or" {
+        return Err(Error::Config {
+            field: "pipeline.stt.language".into(),
+            message: "unsupported value \"or\" (Odia is valid only with hima-asr)".into(),
         });
     }
 
@@ -669,6 +716,7 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         stt_model_id,
         stt_base_url,
         stt_compute,
+        stt_style,
         language,
         agent,
         inherit_current_session,
@@ -1139,7 +1187,7 @@ fn parse_stt_model(value: &str) -> Result<SttModel> {
         unsupported(
             "pipeline.stt.model",
             value,
-            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small, moonshine-streaming-medium",
+            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small, moonshine-streaming-medium, qwen3-asr-0.6, hima-asr",
         )
     })
 }
@@ -2681,6 +2729,58 @@ pipeline:
             assert_eq!(cfg.stt_model, expected);
             assert_eq!(cfg.language, "en");
         }
+    }
+
+    #[test]
+    fn hima_asr_language_and_style_parse() {
+        // Scoped to the STT block: `pipeline.tts.language` exists too.
+        let stt_line = "  stt:\n    provider: local\n    model: whisper-small\n    language: en";
+        let hima_line = "  stt:\n    provider: local\n    model: hima-asr\n    language: en";
+        let base = AgentConfig::v0().to_yaml().replace(stt_line, hima_line);
+        for code in ["en", "auto", "or", "hi"] {
+            let swapped = hima_line.replace("language: en", &format!("language: {code}"));
+            let yaml = base.replace(hima_line, &swapped);
+            let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+            assert_eq!(cfg.stt_model, SttModel::HimaAsr);
+            assert_eq!(cfg.language, code);
+            assert_eq!(cfg.stt_style, HimaStyle::Native);
+        }
+        let err = AgentConfig::parse_yaml(&base.replace(
+            hima_line,
+            &hima_line.replace("language: en", "language: fr"),
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("pipeline.stt.language"), "{err}");
+        assert!(err.to_string().contains("fr"), "{err}");
+
+        let whisper_or = AgentConfig::v0()
+            .to_yaml()
+            .replace(stt_line, &stt_line.replace("language: en", "language: or"));
+        let err = AgentConfig::parse_yaml(&whisper_or).unwrap_err();
+        assert!(err.to_string().contains("pipeline.stt.language"), "{err}");
+        assert!(err.to_string().contains("or"), "{err}");
+
+        let mixed = base.replace(
+            "model: hima-asr\n    language: en",
+            "model: hima-asr\n    language: en\n    style: mixed",
+        );
+        let cfg = AgentConfig::parse_yaml(&mixed).unwrap();
+        assert_eq!(cfg.stt_style, HimaStyle::Mixed);
+        assert!(cfg.to_yaml().contains("style: mixed"));
+
+        assert_eq!(
+            AgentConfig::parse_yaml(&base).unwrap().stt_style,
+            HimaStyle::Native
+        );
+        assert!(!base.contains("style:"));
+
+        let err = AgentConfig::parse_yaml(&AgentConfig::v0().to_yaml().replace(
+            "model: whisper-small\n    language: en",
+            "model: whisper-small\n    language: en\n    style: mixed",
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("pipeline.stt.style"), "{err}");
+        assert!(err.to_string().contains("hima-asr"), "{err}");
     }
 
     #[test]
