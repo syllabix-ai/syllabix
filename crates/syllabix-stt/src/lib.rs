@@ -72,6 +72,7 @@ pub trait Stt: Send {
 /// fp16 siblings (`tiny` / `base` are deliberately not offered).
 /// `MoonshineStreamingSmall` / `MoonshineStreamingMedium` are Moonshine ONNX engine ids.
 /// `QwenAsr06` is Qwen3-ASR 0.6B through llama.cpp mtmd.
+/// `HimaAsr` is Hima-ASR int8 ONNX (Indic / code-switched, finalize only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SttModel {
     /// `whisper-small` multilingual weights used by default.
@@ -90,11 +91,13 @@ pub enum SttModel {
     MoonshineStreamingMedium,
     /// Qwen3-ASR 0.6B via llama.cpp mtmd (finalize only).
     QwenAsr06,
+    /// Hima-ASR int8 ONNX (Indic / code-switched, finalize only).
+    HimaAsr,
 }
 
 impl SttModel {
     /// Every yaml-selectable id, manifest order.
-    pub const ALL: [SttModel; 8] = [
+    pub const ALL: [SttModel; 9] = [
         SttModel::Small,
         SttModel::Medium,
         SttModel::LargeV3Turbo,
@@ -103,6 +106,7 @@ impl SttModel {
         SttModel::MoonshineStreamingSmall,
         SttModel::MoonshineStreamingMedium,
         SttModel::QwenAsr06,
+        SttModel::HimaAsr,
     ];
 
     /// Config / log name.
@@ -116,6 +120,7 @@ impl SttModel {
             Self::MoonshineStreamingSmall => "moonshine-streaming-small",
             Self::MoonshineStreamingMedium => "moonshine-streaming-medium",
             Self::QwenAsr06 => "qwen3-asr-0.6",
+            Self::HimaAsr => "hima-asr",
         }
     }
 
@@ -133,6 +138,9 @@ impl SttModel {
             Self::MoonshineStreamingSmall => "moonshine-encoder",
             Self::MoonshineStreamingMedium => "moonshine-medium-encoder",
             Self::QwenAsr06 => qwen_asr::ASR_ASSET,
+            // Same id as `hima::ENCODER_ASSET`; spelled out so this builds
+            // without the `hima` feature.
+            Self::HimaAsr => "hima-encoder",
         }
     }
 
@@ -147,6 +155,11 @@ impl SttModel {
     /// True for the Qwen3-ASR 0.6B mtmd engine.
     pub fn is_qwen_asr(self) -> bool {
         matches!(self, Self::QwenAsr06)
+    }
+
+    /// True for the Hima-ASR int8 ONNX engine.
+    pub fn is_hima(self) -> bool {
+        matches!(self, Self::HimaAsr)
     }
 
     /// Parse a yaml `pipeline.stt.model` id.
@@ -170,6 +183,7 @@ mod tests {
             "moonshine-streaming-small",
             "moonshine-streaming-medium",
             "qwen3-asr-0.6",
+            "hima-asr",
         ];
         for (model, id) in SttModel::ALL.into_iter().zip(ids) {
             assert_eq!(model.as_str(), id);
@@ -183,5 +197,10 @@ mod tests {
         assert!(!SttModel::MoonshineStreamingSmall.is_qwen_asr());
         assert!(SttModel::MoonshineStreamingSmall.is_moonshine());
         assert!(!SttModel::QwenAsr06.is_moonshine());
+        assert!(SttModel::HimaAsr.is_hima());
+        assert!(!SttModel::Small.is_hima());
+        assert!(!SttModel::QwenAsr06.is_hima());
+        assert!(!SttModel::HimaAsr.is_moonshine());
+        assert!(!SttModel::HimaAsr.is_qwen_asr());
     }
 }

@@ -1,6 +1,7 @@
 //! `syllabix serve`: localhost HTTP worker for speech weights.
 //!
-//! `serve stt` loads one yaml finalize model (`whisper-*` / `qwen3-asr-0.6`) and
+//! `serve stt` loads one yaml finalize model (`whisper-*` / `qwen3-asr-0.6` /
+//! `hima-asr`) and
 //! answers OpenAI `POST /v1/audio/transcriptions`. `serve tts` loads Pocket,
 //! Kokoro, or Qwen and answers `POST /v1/audio/speech` (full body or
 //! `stream_format=audio`).
@@ -225,7 +226,7 @@ pub fn validate_finalize_stt_model(model: &str) -> Result<SttModel> {
         return Err(Error::Config {
             field: "serve.stt.model".into(),
             message: format!(
-                "{model} is a streaming engine; this worker serves Whisper and Qwen3-ASR on POST /v1/audio/transcriptions"
+                "{model} is a streaming engine; this worker serves Whisper, Qwen3-ASR, and Hima-ASR on POST /v1/audio/transcriptions"
             ),
         });
     }
@@ -1268,6 +1269,7 @@ mod tests {
         assert!(matches!(err, Error::Config { .. }));
         validate_finalize_stt_model("whisper-small").expect("whisper");
         validate_finalize_stt_model("qwen3-asr-0.6").expect("qwen");
+        validate_finalize_stt_model("hima-asr").expect("hima");
         validate_finalize_stt_model("nope").expect_err("unknown");
     }
 

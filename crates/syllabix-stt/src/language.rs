@@ -110,9 +110,18 @@ pub const WHISPER_LANGUAGES: &[(&str, &str)] = &[
     ("yue", "Cantonese"),
 ];
 
+/// Codes yaml may use that are not in whisper.cpp (Hima-ASR Odia).
+pub const EXTRA_LANGUAGES: &[(&str, &str)] = &[("or", "Odia")];
+
 /// True when yaml may select `code` (a table code or [`LANGUAGE_AUTO`]).
 pub fn is_supported(code: &str) -> bool {
     code == LANGUAGE_AUTO || language_name(code).is_some()
+}
+
+/// True when whisper.cpp / Qwen3-ASR may select `code` (`auto` or the
+/// whisper.cpp table). Odia (`or`) is yaml-only for Hima-ASR.
+pub fn is_whisper_language(code: &str) -> bool {
+    code == LANGUAGE_AUTO || WHISPER_LANGUAGES.iter().any(|(id, _)| *id == code)
 }
 
 /// English display name for a language code (`French`). `None` when unknown.
@@ -120,6 +129,7 @@ pub fn language_name(code: &str) -> Option<&'static str> {
     WHISPER_LANGUAGES
         .iter()
         .find(|(id, _)| *id == code)
+        .or_else(|| EXTRA_LANGUAGES.iter().find(|(id, _)| *id == code))
         .map(|(_, name)| *name)
 }
 
@@ -158,5 +168,12 @@ mod tests {
         assert_eq!(language_name("fr"), Some("French"));
         assert_eq!(language_name("de"), Some("German"));
         assert_eq!(language_name("nope"), None);
+        assert!(is_supported("or"));
+        assert_eq!(language_name("or"), Some("Odia"));
+        assert!(!is_whisper_language("or"));
+        assert!(is_whisper_language(LANGUAGE_AUTO));
+        assert!(is_whisper_language("en"));
+        assert_eq!(WHISPER_LANGUAGES.len(), 100);
+        assert_eq!(EXTRA_LANGUAGES, &[("or", "Odia")]);
     }
 }

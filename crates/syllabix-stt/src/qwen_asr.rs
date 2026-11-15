@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(all(not(coverage), feature = "qwen3-asr"))]
 use syllabix_native::{DecodeError, QwenAsrContext, QwenTtsBackend};
 
-use crate::language::{is_supported, language_name, LANGUAGE_AUTO};
+use crate::language::{is_whisper_language as is_supported, language_name, LANGUAGE_AUTO};
 use crate::{Stt, SttModel, STT_LANGUAGE};
 use syllabix_native::compute::TtsCompute;
 use syllabix_native::error::{Error, Result};
@@ -455,6 +455,13 @@ mod tests {
             Ok(_) => panic!("unknown language should fail"),
         };
         assert!(err.to_string().contains("pipeline.stt.language"), "{err}");
+        let or = match QwenAsrStt::with_decoder(Box::new(ScriptedDecoder::new(&[])))
+            .with_language("or")
+        {
+            Err(err) => err,
+            Ok(_) => panic!("odia is hima-only"),
+        };
+        assert!(or.to_string().contains("pipeline.stt.language"), "{or}");
     }
 
     #[test]

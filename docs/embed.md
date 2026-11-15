@@ -289,6 +289,6 @@ Hosts that embed `syllabix-core` ship Syllabix code plus vendored audio/ML and f
 | Default STT (Whisper `small`) | MIT (OpenAI Whisper) | Fetched into the cache. |
 | Default LLM (LFM3-1.7B) | LiquidAI LFM 1.0 | **Not** Apache-2.0. Governs the default local weights. |
 | Default TTS (Pocket TTS) | CC BY 4.0 | Fetched into the cache; attribution in NOTICE. |
-| Optional yaml models | Llama 3.2 Community, Qwen Apache-2.0, Kokoro Apache-2.0, Moonshine MIT, … | Only if you select that id. |
+| Optional yaml models | Llama 3.2 Community, Qwen Apache-2.0, Kokoro Apache-2.0, Moonshine MIT, Hima/Gemma terms, … | Only if you select that id. See [NOTICE](../NOTICE). |
 
 Full third-party list and model URLs: [NOTICE](../NOTICE). Nothing in the default binary requires a GPL component at runtime or as a static link.

@@ -1,9 +1,9 @@
 //! Hima-ASR ONNX engine: log-mel frontend plus greedy KV-cache decode.
 //!
 //! Pinned to Prahaladha/hima-asr-ONNX revision
-//! `18fa854f8ecaf2f48fe7416035643f86da3834d8` (int8 encoder/decoder). Config
-//! yaml, `SttModel`, and manifest wiring are the next PR. Default CI uses
-//! [`syllabix_native::onnx::MockSession`]; production loads [`OrtSession`].
+//! `18fa854f8ecaf2f48fe7416035643f86da3834d8` (int8 encoder/decoder). Default
+//! CI uses [`syllabix_native::onnx::MockSession`]; production loads
+//! [`OrtSession`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,16 +12,27 @@ use tokenizers::Tokenizer;
 use unicode_categories::UnicodeCategories;
 use unicode_normalization::UnicodeNormalization;
 
+use crate::language::LANGUAGE_AUTO;
 use crate::npy;
 use crate::stft::power_spectrogram;
-use crate::Stt;
+use crate::{Stt, SttModel};
 use syllabix_native::error::{Error, Result};
+use syllabix_native::models::{Fetcher, ModelCache, Progress};
 use syllabix_native::onnx::{OnnxData, OnnxSession, OnnxTensor, OrtSession};
 use syllabix_native::types::{Transcript, Utterance};
 use syllabix_native::Cancel;
 
-/// Config / log name for this engine (not selectable yet).
+/// Config / log name for this engine.
 pub const PROVIDER_NAME: &str = "hima";
+pub const ENCODER_ASSET: &str = "hima-encoder";
+pub const ENCODER_DATA_ASSET: &str = "hima-encoder-data";
+pub const DECODER_ASSET: &str = "hima-decoder";
+pub const DECODER_DATA_ASSET: &str = "hima-decoder-data";
+pub const EMBED_ASSET: &str = "hima-embed";
+pub const KEEP_IDS_ASSET: &str = "hima-keep-ids";
+pub const START_OF_TEXT_ASSET: &str = "hima-start-of-text";
+pub const MEL_FILTERS_ASSET: &str = "hima-mel-filters";
+pub const TOKENIZER_ASSET: &str = "hima-tokenizer";
 /// 16 kHz mono, same as `hima_onnx.RATE`.
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 /// STFT size in `hima_onnx._log_mel`.
@@ -227,6 +238,19 @@ impl HimaLanguage {
         Self::Te,
     ];
 
+    /// Codes yaml accepts, including `auto`, in `ALL` order.
+    pub fn allowed_csv() -> String {
+        let mut out = String::new();
+        for lang in Self::ALL {
+            if !out.is_empty() {
+                out.push_str(", ");
+            }
+            out.push_str(lang.code());
+        }
+        out.push_str(", auto");
+        out
+    }
+
     /// ISO code (`hi`).
     pub fn code(self) -> &'static str {
         match self {
@@ -286,9 +310,18 @@ impl HimaStyle {
             Self::Mixed => "mixed",
         }
     }
+
+    /// Parse `native` or `mixed`.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "native" => Some(Self::Native),
+            "mixed" => Some(Self::Mixed),
+            _ => None,
+        }
+    }
 }
 
-/// Typed engine options. Yaml parsing is the next PR.
+/// Typed engine options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HimaConfig {
     /// `None` is auto-detect: omit the `"<language style>"` prompt tokens.
@@ -516,6 +549,51 @@ pub struct HimaStt {
 }
 
 impl HimaStt {
+    /// Resolve the nine Hima-ASR assets and load graphs from the cache
+    /// subdirectory that keeps the original HF sibling names.
+    pub fn from_cache(
+        cache: &ModelCache,
+        fetcher: &dyn Fetcher,
+        progress: &mut dyn Progress,
+        cancel: &Cancel,
+        model: SttModel,
+        config: HimaConfig,
+    ) -> Result<Self> {
+        if model != SttModel::HimaAsr {
+            return Err(provider(format!(
+                "HimaStt::from_cache requires hima-asr, got {}",
+                model.as_str()
+            )));
+        }
+        let ids = [
+            ENCODER_ASSET,
+            ENCODER_DATA_ASSET,
+            DECODER_ASSET,
+            DECODER_DATA_ASSET,
+            EMBED_ASSET,
+            KEEP_IDS_ASSET,
+            START_OF_TEXT_ASSET,
+            MEL_FILTERS_ASSET,
+            TOKENIZER_ASSET,
+        ];
+        let mut paths = Vec::with_capacity(ids.len());
+        for id in ids {
+            let asset = cache
+                .manifest()
+                .asset(id)
+                .ok_or_else(|| Error::ModelCache {
+                    message: format!("manifest does not contain the {id} asset"),
+                })?;
+            paths.push(cache.resolve(asset, fetcher, progress, cancel)?);
+        }
+        let encoder_path = &paths[0];
+        let dir = encoder_path
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| provider("hima encoder path has no hima-asr directory"))?;
+        Self::from_dir(dir, config)
+    }
+
     /// Load int8 encoder/decoder plus shared npy/json from `dir`.
     ///
     /// Graphs may sit in `dir` or `dir/onnx/`. Shared files (`embed.npy`,
@@ -644,6 +722,27 @@ impl HimaStt {
     pub fn with_config(mut self, config: HimaConfig) -> Self {
         self.config = config;
         self
+    }
+
+    /// Set the yaml language: a Hima ISO code or `auto`. Style is unchanged.
+    pub fn with_language(self, language: impl Into<String>) -> Result<Self> {
+        let language = language.into();
+        let mapped = if language == LANGUAGE_AUTO {
+            None
+        } else {
+            Some(HimaLanguage::parse(&language).ok_or_else(|| Error::Config {
+                field: "pipeline.stt.language".into(),
+                message: format!(
+                    "unsupported value {language:?} (allowed: {})",
+                    HimaLanguage::allowed_csv()
+                ),
+            })?)
+        };
+        let style = self.config.style;
+        Ok(self.with_config(HimaConfig {
+            language: mapped,
+            style,
+        }))
     }
 
     fn transcribe_pcm(&mut self, pcm: &[f32], cancel: &Cancel) -> Result<String> {
@@ -1073,6 +1172,11 @@ mod tests {
         assert_eq!(HimaLanguage::parse("or"), Some(HimaLanguage::Or));
         assert_eq!(HimaLanguage::parse("xx"), None);
         assert_eq!(HimaLanguage::ALL.len(), 12);
+        assert_eq!(
+            HimaLanguage::allowed_csv().split(", ").count(),
+            HimaLanguage::ALL.len() + 1
+        );
+        assert!(HimaLanguage::allowed_csv().ends_with(", auto"));
         assert_eq!(HimaConfig::default().language, None);
         assert_eq!(HimaConfig::default().style, HimaStyle::Native);
         for lang in HimaLanguage::ALL {
@@ -1083,6 +1187,10 @@ mod tests {
         }
         assert_eq!(HimaStyle::Mixed.as_str(), "mixed");
         assert_eq!(HimaStyle::Native.as_str(), "native");
+        assert_eq!(HimaStyle::parse("mixed"), Some(HimaStyle::Mixed));
+        assert_eq!(HimaStyle::parse("native"), Some(HimaStyle::Native));
+        assert_eq!(HimaStyle::parse("formal"), None);
+        assert_eq!(SttModel::HimaAsr.asset_id(), ENCODER_ASSET);
     }
 
     #[test]

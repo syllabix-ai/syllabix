@@ -1,6 +1,6 @@
 //! `syllabix-core` defaults still turn on every speech-to-text engine after
 //! the move to `syllabix-stt`: Whisper and Qwen3-ASR with `ggml`, the remote
-//! client with `cloud`, and Moonshine always.
+//! client with `cloud`, and Moonshine plus Hima-ASR always.
 
 const CORE_TOML: &str = include_str!("../Cargo.toml");
 
@@ -39,6 +39,7 @@ fn default_features_keep_every_stt_engine() {
     assert!(cloud.contains(r#""syllabix-stt/remote""#), "{cloud}");
     let dep = entry("[dependencies]", "syllabix-stt");
     assert!(dep.contains(r#""moonshine""#), "{dep}");
+    assert!(dep.contains(r#""hima""#), "{dep}");
 }
 
 #[test]
@@ -47,6 +48,7 @@ fn stt_paths_still_compile() {
     let _: Option<syllabix_core::stt::SttModel> =
         syllabix_core::defaults::SttModel::parse("whisper-small");
     let _ = syllabix_core::moonshine::ENCODER_ASSET;
+    let _ = syllabix_core::hima::ENCODER_ASSET;
     let _ = syllabix_core::qwen_asr::ASR_ASSET;
     let _ = syllabix_core::stt::STT_LANGUAGE;
     fn takes_stt(_: &dyn syllabix_core::Stt) {}

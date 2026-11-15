@@ -147,6 +147,12 @@ Whisper-supported ISO code (`en`, `fr`, `de`, `ja`, …) or `auto`.
 
 Moonshine models are English-only: `language` must be `en`; `auto` and other codes fail at load. Partials show automatically while VAD owns the turn. There is no separate partials key — Silero `end_silence_ms` remains the one turn-end control. Medium uses a larger INT8 ONNX export (~590 MB vs ~360 MB for small) with the same runtime.
 
+Hima-ASR (`hima-asr`) accepts `auto` (omit the language prompt; auto-detect) or one of `as`, `bn`, `en`, `gu`, `hi`, `kn`, `ml`, `mr`, `or`, `pa`, `ta`, `te`. Odia (`or`) is valid only with this model. Hima `auto` does not report a language, so set a language code to get replies in that language.
+
+### `style`
+
+Hima-ASR only. `native` (default when omitted) or `mixed`.
+
 ### `compute`
 
 Optional and valid only for Qwen3-ASR (`qwen3-asr-0.6`). Values: `auto` (default), `cpu`, `metal`, or `vulkan`.

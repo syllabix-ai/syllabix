@@ -54,9 +54,9 @@ tokenizers.workspace = true
 htmd.workspace = true
 tracing.workspace = true
 syllabix-native = { workspace = true, features = ["models", "onnx"] }
-# Speech-to-text engines. Moonshine is always on (ONNX, like today);
+# Speech-to-text engines. Moonshine and Hima-ASR are always on (ONNX);
 # Whisper and Qwen3-ASR follow `ggml`, the remote client follows `cloud`.
-syllabix-stt = { workspace = true, features = ["moonshine"] }
+syllabix-stt = { workspace = true, features = ["moonshine", "hima"] }
 # Text-to-speech engines. Kokoro and Pocket are always on (ONNX, like today);
 # Qwen3-TTS follows `ggml`, the remote client follows `cloud`.
 syllabix-tts = { workspace = true, features = ["kokoro", "pocket"] }

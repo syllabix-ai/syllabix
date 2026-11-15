@@ -21,10 +21,10 @@ mod tests {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
         // Silero + five whisper ids + eight moonshine assets (small+medium) +
-        // Qwen3-ASR 0.6B decoder/mmproj + three GGUFs + Kokoro weights + voice +
-        // eight internal-only Pocket TTS assets + two Qwen3-TTS backbones, each
-        // with its own projector, plus five LFM assets.
-        assert_eq!(m.assets.len(), 38);
+        // Qwen3-ASR 0.6B decoder/mmproj + nine Hima-ASR files + three GGUFs +
+        // Kokoro weights + voice + eight internal-only Pocket TTS assets + two
+        // Qwen3-TTS backbones, each with its own projector, plus five LFM assets.
+        assert_eq!(m.assets.len(), 47);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -46,6 +46,10 @@ mod tests {
             }
             if model == SttModel::QwenAsr06 {
                 assert_eq!(asset.file_name, "Qwen3-ASR-0.6B-Q8_0.gguf");
+                continue;
+            }
+            if model == SttModel::HimaAsr {
+                assert_eq!(asset.file_name, "hima-asr/onnx/encoder_model_int8.onnx");
                 continue;
             }
             assert!(asset.file_name.starts_with("ggml-"), "{}", asset.id);
@@ -92,6 +96,25 @@ mod tests {
             m.asset("moonshine-medium-tokenizer").unwrap().size_bytes,
             3_761_754
         );
+        assert_eq!(
+            m.asset("hima-encoder").unwrap().file_name,
+            "hima-asr/onnx/encoder_model_int8.onnx"
+        );
+        assert_eq!(m.asset("hima-encoder").unwrap().size_bytes, 233_184);
+        assert_eq!(
+            m.asset("hima-encoder-data").unwrap().size_bytes,
+            342_098_944
+        );
+        assert_eq!(m.asset("hima-decoder").unwrap().size_bytes, 342_240);
+        assert_eq!(
+            m.asset("hima-decoder-data").unwrap().size_bytes,
+            145_428_364
+        );
+        assert_eq!(m.asset("hima-embed").unwrap().size_bytes, 81_068_928);
+        assert_eq!(m.asset("hima-keep-ids").unwrap().layer, ModelLayer::Stt);
+        assert_eq!(m.asset("hima-start-of-text").unwrap().size_bytes, 2_688);
+        assert_eq!(m.asset("hima-mel-filters").unwrap().size_bytes, 103_040);
+        assert_eq!(m.asset("hima-tokenizer").unwrap().size_bytes, 33_384_567);
         assert_eq!(
             m.asset(BuiltinDefaults::v0().llm_model).unwrap().layer,
             ModelLayer::Llm

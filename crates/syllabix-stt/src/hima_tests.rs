@@ -4,12 +4,13 @@
 //! behind the shared [`OnnxSession`](syllabix_native::onnx::OnnxSession) seam.
 
 use super::*;
-use crate::Stt;
+use crate::{Stt, SttModel};
 use syllabix_native::onnx::{MockSession, OnnxData, OnnxSession, OnnxTensor};
 use syllabix_native::types::{AudioFrame, TurnId, Utterance};
 use syllabix_native::types::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES};
 use syllabix_native::{Cancel, Error};
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -561,6 +562,159 @@ fn from_dir_loads_relu_fixture_then_rejects_the_contract() {
     write_shared_tables(&walked, "(16, 640)", &vec![0u16; 16 * EMBED_DIM], EMBED_DIM);
     let err = from_dir_err(&onnx);
     assert!(err.contains("unexpected encoder inputs"), "{err}");
+}
+
+fn empty_cache(tag: &str) -> (std::path::PathBuf, syllabix_native::models::ModelCache) {
+    let root = scratch_dir(tag);
+    let cache = syllabix_native::models::ModelCache::new(
+        root.clone(),
+        syllabix_native::models::Manifest {
+            version: 1,
+            assets: vec![],
+        },
+    );
+    (root, cache)
+}
+
+#[test]
+fn from_cache_rejects_non_hima_models_before_any_fetch() {
+    let (_root, cache) = empty_cache("reject");
+    let err = match HimaStt::from_cache(
+        &cache,
+        &syllabix_native::models::BlockedFetcher::default(),
+        &mut syllabix_native::models::NoProgress,
+        &Cancel::new(),
+        SttModel::Small,
+        HimaConfig::default(),
+    ) {
+        Err(err) => err,
+        Ok(_) => panic!("non-Hima model should fail"),
+    };
+    assert!(err.to_string().contains("requires hima-asr"), "{err}");
+}
+
+#[test]
+fn from_cache_of_hima_asr_names_a_missing_asset() {
+    let (_root, cache) = empty_cache("missing");
+    let err = match HimaStt::from_cache(
+        &cache,
+        &syllabix_native::models::BlockedFetcher::default(),
+        &mut syllabix_native::models::NoProgress,
+        &Cancel::new(),
+        SttModel::HimaAsr,
+        HimaConfig::default(),
+    ) {
+        Err(err) => err,
+        Ok(_) => panic!("empty manifest should fail"),
+    };
+    assert!(err.to_string().contains(ENCODER_ASSET), "{err}");
+}
+
+#[test]
+fn from_cache_layout_keeps_hf_sibling_names() {
+    use syllabix_native::models::{Manifest, ModelAsset, ModelCache, ModelLayer};
+    let root = scratch_dir("layout");
+    let files = [
+        (
+            ENCODER_ASSET,
+            "hima-asr/onnx/encoder_model_int8.onnx",
+            relu_fixture(),
+        ),
+        (
+            ENCODER_DATA_ASSET,
+            "hima-asr/onnx/encoder_model_int8.onnx_data",
+            PathBuf::from(""),
+        ),
+        (
+            DECODER_ASSET,
+            "hima-asr/onnx/decoder_model_int8.onnx",
+            relu_fixture(),
+        ),
+        (
+            DECODER_DATA_ASSET,
+            "hima-asr/onnx/decoder_model_int8.onnx_data",
+            PathBuf::from(""),
+        ),
+        (EMBED_ASSET, "hima-asr/embed.npy", PathBuf::from("")),
+        (KEEP_IDS_ASSET, "hima-asr/keep_ids.json", PathBuf::from("")),
+        (
+            START_OF_TEXT_ASSET,
+            "hima-asr/start_of_text.npy",
+            PathBuf::from(""),
+        ),
+        (
+            MEL_FILTERS_ASSET,
+            "hima-asr/mel_filters.npy",
+            PathBuf::from(""),
+        ),
+        (
+            TOKENIZER_ASSET,
+            "hima-asr/tokenizer.json",
+            PathBuf::from(""),
+        ),
+    ];
+    let assets = files
+        .iter()
+        .map(|(id, file_name, _)| ModelAsset {
+            id: id.to_string(),
+            layer: ModelLayer::Stt,
+            file_name: file_name.to_string(),
+            url: "https://example.invalid/hima".to_string(),
+            sha256: "0".repeat(64),
+            size_bytes: 1,
+        })
+        .collect();
+    let cache = ModelCache::new(root, Manifest { version: 1, assets });
+    let dir = cache.models_dir().join("hima-asr");
+    std::fs::create_dir_all(dir.join("onnx")).unwrap();
+    std::fs::copy(
+        relu_fixture(),
+        dir.join("onnx").join("encoder_model_int8.onnx"),
+    )
+    .unwrap();
+    std::fs::copy(
+        relu_fixture(),
+        dir.join("onnx").join("decoder_model_int8.onnx"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("onnx").join("encoder_model_int8.onnx_data"), [0u8]).unwrap();
+    std::fs::write(dir.join("onnx").join("decoder_model_int8.onnx_data"), [0u8]).unwrap();
+    write_shared_tables(&dir, "(16, 640)", &vec![0u16; 16 * EMBED_DIM], EMBED_DIM);
+    let encoder = cache
+        .manifest()
+        .asset(ENCODER_ASSET)
+        .expect("encoder asset");
+    assert_eq!(
+        cache.asset_path(encoder),
+        cache
+            .models_dir()
+            .join("hima-asr/onnx/encoder_model_int8.onnx")
+    );
+    let err = from_dir_err(&dir);
+    assert!(err.contains("unexpected encoder inputs"), "{err}");
+}
+
+#[test]
+fn with_language_maps_auto_odia_and_rejects_french() {
+    let stt = adapter(
+        mock_encoder(),
+        mock_decoder_script(vec![1]),
+        HimaConfig {
+            language: Some(HimaLanguage::En),
+            style: HimaStyle::Mixed,
+        },
+    );
+    let auto = stt.with_language("auto").expect("auto");
+    assert_eq!(auto.language(), None);
+    assert_eq!(auto.style(), HimaStyle::Mixed);
+    let odia = auto.with_language("or").expect("or");
+    assert_eq!(odia.language(), Some(HimaLanguage::Or));
+    assert_eq!(odia.style(), HimaStyle::Mixed);
+    let err = match odia.with_language("fr") {
+        Err(err) => err,
+        Ok(_) => panic!("french is not a hima language"),
+    };
+    assert!(err.to_string().contains("pipeline.stt.language"), "{err}");
 }
 
 #[test]
