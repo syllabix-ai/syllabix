@@ -7,6 +7,7 @@ mod devices;
 #[cfg(feature = "device-audio")]
 mod echo;
 mod fixture;
+mod jitter;
 #[cfg(feature = "device-audio")]
 mod native;
 mod ring;
@@ -20,6 +21,7 @@ pub use fixture::{
     play_fixture_to_device_pcm, record_fixture_to_frames, DrainStats, DrainingPlayback,
     FixtureCapture, FixturePlayback,
 };
+pub use jitter::{JitterBuffer, JITTER_CAP_MS, JITTER_REFILL_MS, JITTER_START_MS};
 #[cfg(feature = "device-audio")]
 pub use native::{
     backend_name, probe_device_names, NativeCapture, NativePlayback, SelectedCpalDevice,
