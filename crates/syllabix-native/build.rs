@@ -80,6 +80,10 @@ fn build_cpp() {
         .define("LLAMA_BUILD_APP", "OFF")
         .define("LLAMA_OPENSSL", "OFF");
 
+    if parakeet {
+        config.define("SYLLABIX_PARAKEET", "ON");
+    }
+
     if apple {
         config
             .define("GGML_METAL", "ON")
@@ -107,7 +111,6 @@ fn build_cpp() {
             .define("GGML_CPU_KLEIDIAI", "OFF")
             .define("GGML_VULKAN", if vulkan { "ON" } else { "OFF" });
         if parakeet {
-            config.define("SYLLABIX_PARAKEET", "ON");
             config.define("GGML_LLAMAFILE", "ON");
         }
         if linux {
