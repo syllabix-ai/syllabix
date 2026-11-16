@@ -11,7 +11,9 @@ use crate::cancel::Cancel;
 use crate::defaults::{BuiltinDefaults, QueueCaps};
 use crate::error::{Error, Result};
 use crate::providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
+use crate::queue::Occupancy;
 use crate::queue::{bounded, BoundedSender, QueueReport};
+use crate::s2s::S2sEngine;
 use crate::turn_debug::{TimelineAnchor, TurnDebug};
 use crate::types::{
     AudioFrame, CompletedTurn, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId,
@@ -610,6 +612,22 @@ impl Shared {
         }
     }
 
+    fn note_s2s_speech_end(&self, utterance: &Utterance, at: Instant) {
+        {
+            let mut map = self.turns.lock().expect("turn accumulator");
+            let entry = map.entry(utterance.turn).or_insert_with(TurnAcc::new);
+            entry.user_text = Some(String::new());
+            entry.text_done = true;
+            if entry.utterance_at.is_none() {
+                entry.utterance_at = Some(at);
+            }
+        }
+        if let Some(debug) = &self.turn_debug {
+            debug.note_utterance(utterance);
+            debug.note_anchor(utterance.turn, TimelineAnchor::SpeechEnd, at);
+        }
+    }
+
     fn note_user(&self, turn: TurnId, text: String, language: &str, at: Instant) {
         {
             let mut map = self.turns.lock().expect("turn accumulator");
@@ -1001,6 +1019,319 @@ where
         cancelled: cancel.is_shutdown(),
         skipped_turns: shared.skipped.load(Ordering::SeqCst),
     })
+}
+
+/// S2S provider set: VAD, engine, sink (no cascade STT/LLM/TTS).
+pub struct S2sStages<V, E, K> {
+    /// VAD implementation.
+    pub vad: V,
+    /// Turn-based S2S engine.
+    pub engine: E,
+    /// Playback or collecting sink.
+    pub sink: K,
+}
+
+/// Run the turn-based S2S loop on an in-memory frame iterator.
+pub fn run_s2s_loop<V, E, K, I>(
+    config: LoopConfig,
+    stages: S2sStages<V, E, K>,
+    frames: I,
+    cancel: Cancel,
+) -> Result<LoopReport>
+where
+    V: Vad + 'static,
+    E: S2sEngine + 'static,
+    K: AudioSink + 'static,
+    I: IntoIterator<Item = AudioFrame> + Send + 'static,
+    I::IntoIter: Send + 'static,
+{
+    run_s2s_loop_captured(
+        config,
+        stages,
+        IterCapture {
+            iter: frames.into_iter(),
+        },
+        cancel,
+    )
+}
+
+/// Run the turn-based S2S loop from an [`AudioCapture`] source.
+pub fn run_s2s_loop_captured<V, E, K, C>(
+    config: LoopConfig,
+    stages: S2sStages<V, E, K>,
+    capture: C,
+    cancel: Cancel,
+) -> Result<LoopReport>
+where
+    V: Vad + 'static,
+    E: S2sEngine + 'static,
+    K: AudioSink + 'static,
+    C: AudioCapture + 'static,
+{
+    let S2sStages {
+        vad,
+        engine,
+        mut sink,
+    } = stages;
+    let engine_name = engine.name();
+    let caps: QueueCaps = config.defaults.queues;
+    let (frame_tx, frame_rx, frame_stats) = bounded("frames", caps.frames);
+    let (utt_tx, utt_rx, utt_stats) = bounded("utterances", caps.utterances);
+    let (aud_tx, aud_rx, aud_stats) = bounded("audio", caps.audio);
+
+    let shared = Shared::new(
+        config.events.clone(),
+        config.turn_debug.clone(),
+        config.controls.clone(),
+        engine_name,
+        None,
+        None,
+    );
+    config.controls.arm_idle();
+    let mut joins: Vec<JoinHandle<()>> = Vec::new();
+
+    {
+        let cancel = cancel.clone();
+        let shared = Arc::clone(&shared);
+        let live = Arc::clone(&shared.live_tasks);
+        joins.push(spawn("syllabix-capture", live, move || {
+            capture_loop(capture, frame_tx, &cancel, &shared)
+        }));
+    }
+
+    {
+        let cancel = cancel.clone();
+        let shared = Arc::clone(&shared);
+        let live = Arc::clone(&shared.live_tasks);
+        let utt_tx = utt_tx.clone();
+        joins.push(spawn("syllabix-vad", live, move || {
+            s2s_vad_loop(vad, frame_rx, utt_tx, &cancel, &shared)
+        }));
+    }
+    drop(utt_tx);
+
+    {
+        let cancel = cancel.clone();
+        let shared = Arc::clone(&shared);
+        let live = Arc::clone(&shared.live_tasks);
+        let aud_tx = aud_tx.clone();
+        joins.push(spawn("syllabix-s2s", live, move || {
+            s2s_engine_loop(engine, utt_rx, aud_tx, &cancel, &shared)
+        }));
+    }
+    drop(aud_tx);
+
+    {
+        let cancel = cancel.clone();
+        let shared = Arc::clone(&shared);
+        let live = Arc::clone(&shared.live_tasks);
+        let mode = config.mode;
+        joins.push(spawn("syllabix-sink", live, move || {
+            sink_loop(&mut sink, aud_rx, mode, &cancel, &shared)
+        }));
+    }
+
+    let task_count = joins.len();
+    let mut panic_msg = None;
+    for handle in joins {
+        if let Err(payload) = handle.join() {
+            panic_msg = Some(panic_message(payload));
+            cancel.shutdown();
+        }
+    }
+
+    let tasks_still_running = shared.live_tasks.load(Ordering::SeqCst);
+    if let Some(message) = panic_msg {
+        return Err(Error::WorkerPanic { message });
+    }
+    if let Some(err) = shared.take_fail() {
+        match err {
+            Error::Cancelled => {}
+            other => return Err(other),
+        }
+    }
+    if let Some(debug) = &config.turn_debug {
+        debug.finish_open()?;
+    }
+
+    let empty = |name: &'static str, capacity: usize| Occupancy {
+        name,
+        capacity,
+        current: 0,
+        high_water: 0,
+        sent: 0,
+        received: 0,
+    };
+
+    Ok(LoopReport {
+        turns: shared.finished_turns(),
+        queues: QueueReport {
+            frames: frame_stats.snapshot(),
+            utterances: utt_stats.snapshot(),
+            stt_partials: empty("stt_partials", caps.stt_partials),
+            transcripts: empty("transcripts", caps.transcripts),
+            tokens: empty("tokens", caps.tokens),
+            audio: aud_stats.snapshot(),
+        },
+        dropped_stt_partials: 0,
+        tasks_exited: task_count,
+        tasks_still_running,
+        cancelled: cancel.is_shutdown(),
+        skipped_turns: shared.skipped.load(Ordering::SeqCst),
+    })
+}
+
+fn s2s_vad_loop<V: Vad>(
+    mut vad: V,
+    rx: crate::queue::BoundedReceiver<AudioFrame>,
+    utt_tx: BoundedSender<Utterance>,
+    cancel: &Cancel,
+    shared: &Shared,
+) {
+    let mut active: Option<TurnId> = None;
+    let emit = |events: Vec<VadEvent>,
+                utt_tx: &BoundedSender<Utterance>,
+                cancel: &Cancel,
+                active: &mut Option<TurnId>,
+                frame: Option<&AudioFrame>|
+     -> Result<()> {
+        for event in &events {
+            if let VadEvent::SpeechStart { turn } = event {
+                shared.controls.disarm_idle();
+                shared.interrupt_assistant(cancel);
+                *active = Some(*turn);
+                if let Some(debug) = &shared.turn_debug {
+                    debug.start_turn(*turn);
+                    debug.note_anchor(*turn, TimelineAnchor::SpeechStart, Instant::now());
+                }
+            }
+        }
+        if let (Some(debug), Some(frame), Some(turn)) = (&shared.turn_debug, frame, *active) {
+            debug.note_frame(turn, &frame.samples, frame.capture_pcm.as_deref());
+        }
+        for event in events {
+            if let VadEvent::SpeechEnd { utterance } = event {
+                let at = Instant::now();
+                shared.mark_assistant(utterance.turn);
+                shared.note_s2s_speech_end(&utterance, at);
+                *active = None;
+                ignore_cancel(utt_tx.send_cancellable(utterance, cancel), shared, cancel);
+            }
+        }
+        Ok(())
+    };
+
+    loop {
+        if cancel.is_shutdown() {
+            return;
+        }
+        match shared.controls.poll_auto_timeout() {
+            AutoTimeoutAction::Exit => {
+                cancel.shutdown();
+                return;
+            }
+            AutoTimeoutAction::MicMute | AutoTimeoutAction::None => {}
+        }
+        shared.sync_barge_in();
+        if shared.pause_vad.load(Ordering::SeqCst) || shared.controls.mic_muted() {
+            match rx.recv_timeout(POLL) {
+                Ok(frame) => {
+                    drop(frame);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    thread::sleep(POLL);
+                }
+            }
+            continue;
+        }
+        let frame = rx.recv_timeout(POLL);
+        match frame {
+            Ok(frame) => {
+                let streamed = frame.clone();
+                match vad.push_frame(frame) {
+                    Ok(events) => ignore_cancel(
+                        emit(events, &utt_tx, cancel, &mut active, Some(&streamed)),
+                        shared,
+                        cancel,
+                    ),
+                    Err(Error::Cancelled) => return,
+                    Err(err) => {
+                        shared.fail(err, cancel);
+                        return;
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => {
+                match vad.flush() {
+                    Ok(events) => ignore_cancel(
+                        emit(events, &utt_tx, cancel, &mut active, None),
+                        shared,
+                        cancel,
+                    ),
+                    Err(Error::Cancelled) => {}
+                    Err(err) => shared.fail(err, cancel),
+                }
+                return;
+            }
+        }
+    }
+}
+
+fn s2s_engine_loop<E: S2sEngine>(
+    mut engine: E,
+    rx: crate::queue::BoundedReceiver<Utterance>,
+    tx: BoundedSender<SynthesizedAudio>,
+    cancel: &Cancel,
+    shared: &Shared,
+) {
+    loop {
+        match rx.recv_cancellable(cancel) {
+            Ok(Some(utterance)) => {
+                if shared.is_interrupted(utterance.turn) {
+                    continue;
+                }
+                let queued_at = Instant::now();
+                shared.mark_utterance(utterance.turn, queued_at);
+                match engine.generate(&utterance, cancel, &mut |audio| {
+                    if cancel.is_stale(audio.generation) || shared.is_interrupted(audio.turn) {
+                        return Ok(());
+                    }
+                    if let Some(debug) = &shared.turn_debug {
+                        let now = Instant::now();
+                        debug.note_anchor(audio.turn, TimelineAnchor::TtsFirstPcm, now);
+                        if audio.is_last {
+                            debug.note_last_anchor(audio.turn, TimelineAnchor::TtsLastPcm, now);
+                        }
+                    }
+                    ignore_cancel(tx.send_cancellable(audio, cancel), shared, cancel);
+                    Ok(())
+                }) {
+                    Ok(()) => {}
+                    Err(Error::Cancelled) => {
+                        shared.release_assistant(utterance.turn);
+                        if cancel.is_shutdown() {
+                            return;
+                        }
+                    }
+                    Err(err) if err.is_turn_recoverable() => {
+                        shared.note_skip(utterance.turn, cancel);
+                    }
+                    Err(err) => {
+                        shared.fail(err, cancel);
+                        return;
+                    }
+                }
+            }
+            Ok(None) => return,
+            Err(Error::Cancelled) => return,
+            Err(err) => {
+                shared.fail(err, cancel);
+                return;
+            }
+        }
+    }
 }
 
 fn spawn(
