@@ -5,6 +5,6 @@
 //! should import them from here (`syllabix_core::testing::FakeLlm`, and so on).
 
 pub use crate::fake::{
-    scripted_frames, CollectingSink, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeStt,
-    FakeTts, FakeVad, LlmCall, ScriptedStt,
+    scripted_frames, CollectingSink, FailOnceLlm, FailOnceStt, FailOnceTts, FakeLlm, FakeS2s,
+    FakeStt, FakeTts, FakeVad, LlmCall, ScriptedStt,
 };
