@@ -20,7 +20,7 @@ keywords = ["text-to-speech", "tts", "speech", "voice", "kokoro"]
 categories = ["multimedia::audio"]
 
 [features]
-default = ["pocket", "kokoro", "qwen3", "remote"]
+default = ["pocket", "kokoro", "remote"]
 # Pocket TTS ONNX graphs (ONNX Runtime, no CMake).
 pocket = ["syllabix-native/onnx", "dep:sentencepiece-rs", "dep:getrandom", "dep:serde", "dep:serde_json"]
 # Kokoro-82M ONNX with the in-process Misaki G2P (ONNX Runtime, no CMake).

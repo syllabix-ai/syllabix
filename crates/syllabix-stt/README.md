@@ -4,16 +4,22 @@ Speech-to-text for Rust: one `Stt` trait over local engines and an
 OpenAI-compatible remote client. It is the speech-to-text part of
 [Syllabix](https://github.com/syllabix-ai/syllabix), without the voice agent.
 
-Pick engines with Cargo features. All four are on by default. Turn defaults
-off and list only the ones you need; with only `remote` the crate builds
-without CMake, a C++ compiler, or ONNX Runtime.
+Pick engines with Cargo features. Defaults are `moonshine` and `remote` (ONNX
+plus HTTP). `whisper`, `qwen3-asr`, `parakeet`, and `hima` are opt-in. With only `remote`
+the crate builds without CMake, a C++ compiler, or ONNX Runtime.
+
+Default ONNX engines use the `ort` crate, which may download a prebuilt ONNX
+Runtime at build time; some targets have no binary. For HTTP only, use
+`default-features = false` with the `remote` feature.
 
 | Feature | Engine | Needs C++? | Model ids |
 | --- | --- | --- | --- |
-| `whisper` | whisper.cpp | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
-| `qwen3-asr` | Qwen3-ASR 0.6B | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
 | `moonshine` | Moonshine streaming (ONNX) | No (ONNX Runtime) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
 | `remote` | OpenAI-compatible `/audio/transcriptions` | No (HTTP only) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
+| `whisper` | whisper.cpp | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
+| `qwen3-asr` | Qwen3-ASR 0.6B | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
+| `parakeet` | Fluid Speech Pro GGUF | Yes (CMake) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
+| `hima` | Hima-ASR (ONNX) | No (ONNX Runtime) | [engines — STT](https://github.com/syllabix-ai/syllabix/blob/main/docs/engines.md#stt) |
 
 C++ engines need the host packages in
 [embed — Host compile](https://github.com/syllabix-ai/syllabix/blob/main/docs/embed.md#host-compile).
