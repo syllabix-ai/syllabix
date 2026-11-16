@@ -311,6 +311,7 @@ impl Session {
             sink,
             input,
         } = self;
+        config.ensure_pipeline_mode_supported()?;
         crate::session_env::install_from_config(&config);
         let llm_api_key = if needs_llm_api_key(&config, llm.is_none()) {
             Some(resolve_api_key(|name| std::env::var(name).ok())?)
@@ -681,6 +682,7 @@ fn resolve_io(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PipelineMode;
     use crate::defaults::LlmProvider;
     use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
     use crate::Error;
@@ -716,6 +718,18 @@ mod tests {
             .with_tts(FakeTts)
             .with_sink(CollectingSink::default())
             .with_frames(scripted_frames(1, 2, 1))
+    }
+
+    #[test]
+    fn pipeline_mode_s2s_fails_before_cascade_turn() {
+        let mut config = AgentConfig::v0();
+        config.pipeline_mode = PipelineMode::S2s;
+        config.s2s = Some(crate::config::S2sConfig::default());
+        let err = swapped(Session::from_config(&config))
+            .run(Cancel::new())
+            .unwrap_err();
+        assert!(err.to_string().contains("pipeline.mode"), "{err}");
+        assert!(err.to_string().contains("not supported yet"), "{err}");
     }
 
     #[test]
