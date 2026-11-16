@@ -22,11 +22,22 @@
 //! [embed — Host compile](https://github.com/syllabix-ai/syllabix/blob/main/docs/embed.md#host-compile).
 //! Without `whisper` or `qwen3-asr` their types still exist and return an
 //! error when loaded. The remote engine reads its key from
-//! `SYLLABIX_STT_API_KEY` only. Example: `examples/transcribe-wav.rs`.
+//! `SYLLABIX_STT_API_KEY` only. Examples:
+//! [`transcribe-wav-local`](https://github.com/syllabix-ai/syllabix/blob/main/crates/syllabix-stt/examples/transcribe-wav-local.rs)
+//! (Moonshine) and
+//! [`transcribe-wav`](https://github.com/syllabix-ai/syllabix/blob/main/crates/syllabix-stt/examples/transcribe-wav.rs)
+//! (remote).
 
 // The types in the `Stt` signatures, so callers need no other crate.
 pub use syllabix_native::audio;
-pub use syllabix_native::types::{AudioFrame, Transcript, TurnId, Utterance};
+pub use syllabix_native::models::{
+    cache_root, BlockedFetcher, Fetcher, HttpFetcher, Manifest, ModelAsset, ModelCache, NoProgress,
+    Progress, StderrProgress,
+};
+pub use syllabix_native::types::{
+    AudioFrame, Transcript, TurnId, Utterance, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ,
+    FRAME_SAMPLES,
+};
 pub use syllabix_native::{Cancel, Error, Result};
 
 pub mod fluid_gguf;
@@ -189,9 +200,55 @@ impl SttModel {
     }
 }
 
+/// Build one [`Utterance`] from PCM in any WAV layout, resampling to 16 kHz mono.
+pub fn pcm_to_utterance(wav: &audio::WavPcm, turn: TurnId) -> Result<Utterance> {
+    Ok(Utterance {
+        turn,
+        frames: wav_to_frames(wav)?,
+    })
+}
+
+/// Read a WAV file, convert to engine PCM, and transcribe it.
+pub fn transcribe_wav(
+    stt: &mut impl Stt,
+    path: impl AsRef<std::path::Path>,
+    cancel: &Cancel,
+) -> Result<Transcript> {
+    let wav = audio::read_wav(std::fs::File::open(path.as_ref())?)?;
+    let utterance = pcm_to_utterance(&wav, TurnId(0))?;
+    stt.transcribe(&utterance, cancel)
+}
+
+fn wav_to_frames(wav: &audio::WavPcm) -> Result<Vec<AudioFrame>> {
+    use audio::{f32_to_i16, i16_to_f32, FrameSplitter, PcmConverter, PcmFormat};
+    let mut converter = PcmConverter::new(wav.format, PcmFormat::v0())?;
+    let mut mono = converter.push(&i16_to_f32(&wav.samples));
+    mono.extend(converter.flush());
+    let mut splitter = FrameSplitter::new();
+    let mut frames = splitter.push(&f32_to_i16(&mono))?;
+    frames.extend(splitter.flush()?);
+    Ok(frames)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NoopStt;
+
+    impl Stt for NoopStt {
+        fn name(&self) -> &'static str {
+            "noop"
+        }
+
+        fn transcribe(&mut self, _utterance: &Utterance, _cancel: &Cancel) -> Result<Transcript> {
+            Ok(Transcript {
+                turn: TurnId(0),
+                text: "ok".into(),
+                language: "en".into(),
+            })
+        }
+    }
 
     #[test]
     fn stt_menu_ids_round_trip() {
@@ -224,5 +281,58 @@ mod tests {
         assert!(!SttModel::QwenAsr06.is_hima());
         assert!(!SttModel::HimaAsr.is_moonshine());
         assert!(!SttModel::HimaAsr.is_qwen_asr());
+    }
+
+    #[test]
+    fn pcm_to_utterance_accepts_v0_pcm() {
+        let wav = audio::WavPcm {
+            format: audio::PcmFormat::v0(),
+            samples: vec![0; FRAME_SAMPLES],
+        };
+        let utterance = pcm_to_utterance(&wav, TurnId(3)).expect("v0 wav");
+        assert_eq!(utterance.turn, TurnId(3));
+        assert!(!utterance.frames.is_empty());
+    }
+
+    #[test]
+    fn transcribe_wav_reads_valid_wav() {
+        let mut stt = NoopStt;
+        assert_eq!(stt.name(), "noop");
+        stt.start_turn(TurnId(0), &Cancel::new())
+            .expect("default start");
+        assert!(stt
+            .push_frame(
+                &AudioFrame {
+                    seq: 0,
+                    sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
+                    channels: DEFAULT_CHANNELS,
+                    samples: vec![0; FRAME_SAMPLES],
+                    capture_pcm: None,
+                },
+                &Cancel::new(),
+            )
+            .expect("default push")
+            .is_none());
+        stt.cancel_turn(TurnId(0));
+        let path =
+            std::env::temp_dir().join(format!("syllabix-stt-tiny-wav-{}", std::process::id()));
+        let wav = audio::WavPcm {
+            format: audio::PcmFormat::v0(),
+            samples: vec![0; FRAME_SAMPLES],
+        };
+        audio::write_wav(std::fs::File::create(&path).expect("temp wav"), &wav).expect("write wav");
+        let transcript = transcribe_wav(&mut stt, &path, &Cancel::new()).expect("transcribe");
+        assert_eq!(transcript.text, "ok");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn transcribe_wav_rejects_missing_file() {
+        let mut stt = NoopStt;
+        assert_eq!(stt.name(), "noop");
+        let path =
+            std::env::temp_dir().join(format!("syllabix-stt-missing-wav-{}", std::process::id()));
+        let err = transcribe_wav(&mut stt, &path, &Cancel::new()).expect_err("missing wav");
+        assert!(err.to_string().contains("No such file") || err.to_string().contains("os error"));
     }
 }

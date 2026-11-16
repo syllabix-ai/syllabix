@@ -194,6 +194,13 @@ jobs:
         run: cargo check -p syllabix-core --no-default-features --features cloud --all-targets
       - name: cargo test supported API without default features
         run: cargo test -p syllabix-core --no-default-features --test supported_api -- --nocapture
+      - name: out-of-workspace speech consumer (no syllabix-native dep)
+        run: |
+          ./scripts/ci-speech-consumer.sh
+          if grep -n 'syllabix-native' target/speech-consumer/Cargo.toml; then
+            echo "speech consumer must not depend on syllabix-native directly" >&2
+            exit 1
+          fi
 
   # Dry-run the crates.io tarballs on every PR. Linux only: the native
   # verify step compiles C++, and other OSes would only repeat that cost.

@@ -1,15 +1,14 @@
 //! Speak one line of text into a WAV file with the OpenAI-compatible remote engine.
 //!
 //! Arguments: `<text> <out.wav> <base-url> <model> [voice]`. The API key comes
-//! from `SYLLABIX_TTS_API_KEY` only. Needs only the `remote` feature, so it
-//! builds without CMake or ONNX Runtime.
+//! from `SYLLABIX_TTS_API_KEY` only, or pass a key directly to
+//! [`RemoteTts::new`]. Needs only the `remote` feature, so it builds without
+//! CMake or ONNX Runtime.
 
-use std::fs::File;
 use std::process::ExitCode;
 
-use syllabix_tts::audio::{write_wav, PcmFormat, WavPcm};
 use syllabix_tts::remote::{resolve_api_key, RemoteTts, RemoteTtsSettings, DEFAULT_VOICE};
-use syllabix_tts::{Cancel, GenerationId, TokenChunk, Tts, TurnId};
+use syllabix_tts::{speak_to_wav, Cancel};
 
 type Res<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -35,29 +34,10 @@ fn run() -> Res<String> {
     };
     let voice = args.next().unwrap_or_else(|| DEFAULT_VOICE.to_string());
 
-    let settings = RemoteTtsSettings::from_parts(Some(&base_url), &model, &voice)?;
+    let settings = RemoteTtsSettings::new(base_url, model, voice);
     let api_key = resolve_api_key(|name| std::env::var(name).ok())?;
     let mut tts = RemoteTts::new(settings, api_key);
 
-    // The whole text as one final token: the engine speaks it sentence by sentence.
-    let token = TokenChunk {
-        turn: TurnId(0),
-        generation: GenerationId(0),
-        index: 0,
-        text,
-        is_last: true,
-    };
-    let samples = tts
-        .synthesize_chunk(&token, &Cancel::new())?
-        .into_iter()
-        .flat_map(|chunk| chunk.samples)
-        .collect();
-
-    // Every engine returns 16 kHz mono PCM.
-    let wav = WavPcm {
-        format: PcmFormat::v0(),
-        samples,
-    };
-    write_wav(File::create(&path)?, &wav)?;
+    speak_to_wav(&mut tts, text, &path, &Cancel::new())?;
     Ok(path)
 }

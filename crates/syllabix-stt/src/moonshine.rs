@@ -18,7 +18,7 @@ use tokenizers::Tokenizer;
 
 use crate::Stt;
 use syllabix_native::error::{Error, Result};
-use syllabix_native::models::{Fetcher, ModelCache, Progress};
+use syllabix_native::models::{Fetcher, HttpFetcher, ModelCache, NoProgress, Progress};
 use syllabix_native::onnx::{OnnxData, OnnxSession, OnnxTensor, OrtSession};
 use syllabix_native::types::{AudioFrame, Transcript, TurnId, Utterance};
 use syllabix_native::Cancel;
@@ -164,6 +164,17 @@ impl MoonshineStt {
             paths.push(cache.resolve(asset, fetcher, progress, cancel)?);
         }
         Self::from_paths(&paths)
+    }
+
+    /// Download (on first use) and load the selected Moonshine model.
+    pub fn load(model: crate::SttModel) -> Result<Self> {
+        Self::from_cache(
+            &ModelCache::v0(),
+            &HttpFetcher::new(),
+            &mut NoProgress,
+            &Cancel::new(),
+            model,
+        )
     }
 
     fn from_paths(paths: &[PathBuf]) -> Result<Self> {

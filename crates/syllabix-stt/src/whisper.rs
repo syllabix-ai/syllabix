@@ -12,6 +12,8 @@ use crate::language::{is_whisper_language as is_supported_language, LANGUAGE_AUT
 use crate::{Stt, SttModel};
 use syllabix_native::error::{Error, Result};
 use syllabix_native::models::{Fetcher, ModelCache, Progress};
+#[cfg(not(coverage))]
+use syllabix_native::models::{HttpFetcher, NoProgress};
 use syllabix_native::types::{Transcript, Utterance};
 use syllabix_native::Cancel;
 
@@ -75,6 +77,28 @@ impl WhisperStt {
             })?;
         let path = cache.resolve(asset, fetcher, progress, cancel)?;
         Self::from_model_path(path, model)
+    }
+
+    /// Download (on first use) and load the selected model from the shared cache.
+    #[cfg(coverage)]
+    pub fn load(model: SttModel) -> Result<Self> {
+        let _ = model;
+        Err(Error::Provider {
+            provider: "whisper.cpp",
+            message: "whisper.cpp inference is not loaded in coverage tests.".into(),
+        })
+    }
+
+    /// Download (on first use) and load the selected model from the shared cache.
+    #[cfg(not(coverage))]
+    pub fn load(model: SttModel) -> Result<Self> {
+        Self::from_cache(
+            &ModelCache::v0(),
+            &HttpFetcher::new(),
+            &mut NoProgress,
+            &Cancel::new(),
+            model,
+        )
     }
 
     /// Configured or last-detected STT language code.
@@ -537,6 +561,22 @@ mod tests {
         let err = stt.transcribe(&speech_utterance(0, 1), &cancel);
         assert!(matches!(err, Err(Error::Cancelled)));
         drop(stt);
+    }
+
+    #[test]
+    #[cfg(coverage)]
+    fn load_fails_closed_under_coverage() {
+        let err = match WhisperStt::load(SttModel::Small) {
+            Err(err) => err,
+            Ok(_) => panic!("coverage load must not resolve weights"),
+        };
+        assert!(matches!(
+            err,
+            Error::Provider {
+                provider: "whisper.cpp",
+                ..
+            }
+        ));
     }
 
     #[test]

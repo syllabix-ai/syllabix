@@ -19,12 +19,22 @@
 //! C++ engines need the host toolchain in
 //! [embed — Host compile](https://github.com/syllabix-ai/syllabix/blob/main/docs/embed.md#host-compile).
 //! Without `qwen3` its type still exists and returns an error when loaded. The
-//! remote engine reads its key from `SYLLABIX_TTS_API_KEY` only. Example:
-//! `examples/speak-wav.rs`.
+//! remote engine reads its key from `SYLLABIX_TTS_API_KEY` only. Examples:
+//! [`speak-wav-local`](https://github.com/syllabix-ai/syllabix/blob/main/crates/syllabix-tts/examples/speak-wav-local.rs)
+//! (Pocket) and
+//! [`speak-wav`](https://github.com/syllabix-ai/syllabix/blob/main/crates/syllabix-tts/examples/speak-wav.rs)
+//! (remote).
 
 // The types in the `Tts` signatures, so callers need no other crate.
 pub use syllabix_native::audio;
-pub use syllabix_native::types::{GenerationId, SynthesizedAudio, TokenChunk, TurnId};
+pub use syllabix_native::models::{
+    cache_root, BlockedFetcher, Fetcher, HttpFetcher, Manifest, ModelAsset, ModelCache, NoProgress,
+    Progress, StderrProgress,
+};
+pub use syllabix_native::types::{
+    GenerationId, SynthesizedAudio, TokenChunk, TurnId, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ,
+    FRAME_SAMPLES,
+};
 pub use syllabix_native::{Cancel, Error, Result};
 
 mod engines;
@@ -164,6 +174,42 @@ impl TtsModel {
     }
 }
 
+/// Synthesize `text` to 16 kHz mono PCM samples.
+pub fn speak_to_samples(
+    tts: &mut impl Tts,
+    text: impl Into<String>,
+    cancel: &Cancel,
+) -> Result<Vec<i16>> {
+    let token = TokenChunk {
+        turn: TurnId(0),
+        generation: GenerationId(0),
+        index: 0,
+        text: text.into(),
+        is_last: true,
+    };
+    Ok(tts
+        .synthesize_chunk(&token, cancel)?
+        .into_iter()
+        .flat_map(|chunk| chunk.samples)
+        .collect())
+}
+
+/// Synthesize `text` and write a WAV file at `path`.
+pub fn speak_to_wav(
+    tts: &mut impl Tts,
+    text: impl Into<String>,
+    path: impl AsRef<std::path::Path>,
+    cancel: &Cancel,
+) -> Result<()> {
+    let samples = speak_to_samples(tts, text, cancel)?;
+    let wav = audio::WavPcm {
+        format: audio::PcmFormat::v0(),
+        samples,
+    };
+    audio::write_wav(std::fs::File::create(path.as_ref())?, &wav)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +256,52 @@ mod tests {
         assert_eq!(TtsModel::IndicMio.mmproj_asset_id(), None);
         assert_eq!(TtsModel::IndicMio.model_id(), "indic-mio-q8");
         assert!(TtsModel::ALL.contains(&TtsModel::IndicMio));
+    }
+
+    #[test]
+    fn speak_to_samples_returns_flat_pcm() {
+        struct OneChunkTts;
+        impl Tts for OneChunkTts {
+            fn name(&self) -> &'static str {
+                "one-chunk"
+            }
+            fn synthesize_chunk(
+                &mut self,
+                token: &TokenChunk,
+                _cancel: &Cancel,
+            ) -> Result<Vec<SynthesizedAudio>> {
+                Ok(vec![SynthesizedAudio {
+                    turn: token.turn,
+                    generation: token.generation,
+                    index: 0,
+                    samples: vec![1, 2, 3],
+                    is_last: true,
+                }])
+            }
+        }
+        let samples = speak_to_samples(&mut OneChunkTts, "hi", &Cancel::new()).expect("samples");
+        assert_eq!(samples, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn speak_to_wav_rejects_missing_parent_dir() {
+        struct NoopTts;
+        impl Tts for NoopTts {
+            fn name(&self) -> &'static str {
+                "noop"
+            }
+            fn synthesize_chunk(
+                &mut self,
+                _token: &TokenChunk,
+                _cancel: &Cancel,
+            ) -> Result<Vec<SynthesizedAudio>> {
+                Ok(Vec::new())
+            }
+        }
+        let path =
+            std::env::temp_dir().join(format!("syllabix-tts-missing-out-{}", std::process::id()));
+        let nested = path.join("no/such/dir/out.wav");
+        let err = speak_to_wav(&mut NoopTts, "hi", &nested, &Cancel::new()).expect_err("bad path");
+        assert!(err.to_string().contains("No such file") || err.to_string().contains("os error"));
     }
 }

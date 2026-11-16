@@ -10,6 +10,8 @@ use crate::language::LANGUAGE_AUTO;
 use crate::{Stt, SttModel, STT_LANGUAGE};
 use syllabix_native::error::{Error, Result};
 use syllabix_native::models::{Fetcher, ModelCache, Progress};
+#[cfg(not(coverage))]
+use syllabix_native::models::{HttpFetcher, NoProgress};
 use syllabix_native::types::{Transcript, Utterance};
 use syllabix_native::Cancel;
 
@@ -111,6 +113,27 @@ impl FluidGgufStt {
             })?;
         let model_path = cache.resolve(asset, fetcher, progress, cancel)?;
         Self::from_path(model_path)
+    }
+
+    /// Download (on first use) and load Fluid Speech Pro from the shared cache.
+    #[cfg(coverage)]
+    pub fn load(model: SttModel) -> Result<Self> {
+        let _ = model;
+        Err(provider(
+            "Fluid Speech Pro inference is not loaded in coverage tests.",
+        ))
+    }
+
+    /// Download (on first use) and load Fluid Speech Pro from the shared cache.
+    #[cfg(not(coverage))]
+    pub fn load(model: SttModel) -> Result<Self> {
+        Self::from_cache(
+            &ModelCache::v0(),
+            &HttpFetcher::new(),
+            &mut NoProgress,
+            &Cancel::new(),
+            model,
+        )
     }
 
     pub fn language(&self) -> &str {
@@ -461,6 +484,16 @@ mod tests {
             Ok(_) => panic!("empty manifest should fail"),
         };
         assert!(matches!(err, Error::ModelCache { .. }));
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn load_fails_closed_under_coverage() {
+        let err = match FluidGgufStt::load(SttModel::FluidSpeechProGgufQ8) {
+            Err(err) => err,
+            Ok(_) => panic!("coverage load must not resolve weights"),
+        };
+        assert!(err.to_string().contains("coverage tests"), "{err}");
     }
 
     #[cfg(coverage)]

@@ -46,6 +46,10 @@ serde_json = { workspace = true, optional = true }
 name = "speak-wav"
 required-features = ["remote"]
 
+[[example]]
+name = "speak-wav-local"
+required-features = ["pocket"]
+
 # docs.rs has no CMake: document everything except the C++ engine.
 # Qwen3-TTS still appears, as the stub that builds without C++.
 [package.metadata.docs.rs]
