@@ -7,7 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 publish = true
 rust-version.workspace = true
-description = "Text-to-speech for Syllabix: one Tts trait over Pocket TTS, Kokoro, Qwen3-TTS, and an OpenAI-compatible remote client"
+description = "Text-to-speech for Rust: one Tts trait over Pocket TTS, Kokoro, Qwen3-TTS, Indic-Mio, and an OpenAI-compatible remote client"
 readme = "README.md"
 include = [
     "src/**",

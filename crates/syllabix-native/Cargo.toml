@@ -7,7 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 publish = true
 rust-version.workspace = true
-description = "Shared Syllabix types (errors, audio frames, model cache, ONNX helpers) and C++ engines behind the cpp feature"
+description = "Shared types (errors, audio frames, model cache, ONNX helpers) for the speech crates and core; C++ engines behind the cpp feature"
 readme = "README.md"
 # Ship README, Apache-2.0 LICENSE, NOTICE, and the vendored engine trees
 # (including their MIT LICENSE files). Keep mtmd-debug.h, miniaudio.h,

@@ -17,7 +17,7 @@ dataset; encode resampled to 24 kHz.
 | `hi-male.f32` | Hindi | male | `hi_in` | `695` | `1005638204747132541.wav` | 7.44 s |
 | `ta-female.f32` | Tamil | female | `ta_in` | `878` | `10004352805657441150.wav` | 7.08 s |
 
-Select with `pipeline.tts.voice` (`hi-female`, `hi-male`, `ta-female`).
+Select with voice ids `hi-female`, `hi-male`, or `ta-female`.
 Default is `hi-female`. An all-zero embedding is not shipped.
 
 Codec: Aratako/MioCodec-25Hz-24kHz @ `3a737f0de2c6324cb2fe40c1fbd1056c7add423d`.

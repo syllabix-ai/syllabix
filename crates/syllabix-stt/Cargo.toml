@@ -7,7 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 publish = true
 rust-version.workspace = true
-description = "Speech-to-text for Syllabix: one Stt trait over Whisper, Qwen3-ASR, Moonshine, Hima-ASR, and an OpenAI-compatible remote client"
+description = "Speech-to-text for Rust: one Stt trait over Whisper, Qwen3-ASR, Moonshine, Hima-ASR, Fluid Speech Pro, and an OpenAI-compatible remote client"
 readme = "README.md"
 include = [
     "src/**",

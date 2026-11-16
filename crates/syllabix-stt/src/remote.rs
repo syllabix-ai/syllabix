@@ -4,7 +4,7 @@
 //! utterance WAV to `POST {base_url}/audio/transcriptions` and maps the JSON
 //! body to a [`Transcript`]. The API key comes from the environment only
 //! ([`STT_API_KEY_ENV`]).
-//! Cancel, connect/idle timeouts, and a best-effort warm-up match syllabix-core's OpenAI LLM client.
+//! Cancel, connect/idle timeouts, and a best-effort warm-up use the shared OpenAI timeout policy.
 
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,10 +25,10 @@ use syllabix_native::types::{
     Transcript, Utterance, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
-/// Config / log name. Same word as yaml `pipeline.stt.provider: online`.
+/// Config / log name. Must stay `"online"`.
 pub const PROVIDER_NAME: &str = "online";
 
-/// Environment variable for an online STT API key. Never read from yaml.
+/// Environment variable for an online STT API key. Never read from a config file.
 pub const STT_API_KEY_ENV: &str = "SYLLABIX_STT_API_KEY";
 
 /// Attempts used to establish the initial transcriptions connection.
@@ -52,16 +52,12 @@ pub fn resolve_api_key(getenv: impl Fn(&str) -> Option<String>) -> Result<Zeroiz
         Some(key) if !key.trim().is_empty() => Ok(Zeroizing::new(key)),
         Some(_) => Err(Error::Config {
             field: STT_API_KEY_ENV.into(),
-            message: "is set but empty. Export your key, e.g. export SYLLABIX_STT_API_KEY=sk-…, \
-                      and start syllabix again."
-                .into(),
+            message: "is set but empty. Export SYLLABIX_STT_API_KEY and run again.".into(),
         }),
         None => Err(Error::Config {
             field: STT_API_KEY_ENV.into(),
             message: format!(
-                "is required when pipeline.stt.provider is {PROVIDER_NAME}. \
-                 Supply it for one run ({STT_API_KEY_ENV}=sk-… syllabix run) or export it. \
-                 Keys are read from the environment only — never from syllabix.yaml or a .env file."
+                "is required. Export {STT_API_KEY_ENV} and run again. Keys come from the environment only."
             ),
         }),
     }
@@ -74,8 +70,8 @@ pub struct RemoteSttSettings {
     pub endpoint: String,
     /// Model id sent verbatim; the endpoint decides what it serves.
     pub model: String,
-    /// Yaml STT language (`en`, `fr`, … or `auto`). `auto` omits the
-    /// multipart `language` field so the endpoint can detect it.
+    /// Language code (`en`, `fr`, … or `auto`). `auto` omits the multipart
+    /// `language` field so the endpoint can detect it.
     pub language: String,
 }
 
@@ -83,8 +79,8 @@ impl RemoteSttSettings {
     /// Build from plain endpoint parts (`base_url` already required for online).
     pub fn from_parts(base_url: Option<&str>, model: &str, language: &str) -> Result<Self> {
         let base = base_url.ok_or_else(|| Error::Config {
-            field: "pipeline.stt.base_url".into(),
-            message: "is required when pipeline.stt.provider is online".into(),
+            field: "base_url".into(),
+            message: "is required".into(),
         })?;
         Ok(Self {
             endpoint: join_transcriptions_endpoint(base),
@@ -127,7 +123,7 @@ impl RemoteStt {
         &self.settings
     }
 
-    /// Set the yaml STT language after construction (same as local engines).
+    /// Set the STT language after construction (same as local engines).
     pub fn with_language(mut self, language: impl Into<String>) -> Self {
         self.settings.language = language.into();
         self
@@ -660,7 +656,7 @@ mod tests {
     fn settings_from_parts_join_endpoint_and_require_base_url() {
         let err = RemoteSttSettings::from_parts(None, "whisper-large-v3", "en")
             .expect_err("missing base_url");
-        assert!(err.to_string().contains("pipeline.stt.base_url"), "{err}");
+        assert!(err.to_string().contains("base_url"), "{err}");
 
         let settings = RemoteSttSettings::from_parts(
             Some("http://127.0.0.1:8091/v1/"),

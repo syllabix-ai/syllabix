@@ -24,7 +24,6 @@ pub use syllabix_native::{Cancel, Error, Result};
 pub mod fluid_gguf;
 #[cfg(feature = "hima")]
 pub mod hima;
-#[doc(hidden)]
 pub mod language;
 #[cfg(feature = "moonshine")]
 pub mod moonshine;
@@ -100,7 +99,7 @@ pub enum SttModel {
 }
 
 impl SttModel {
-    /// Every yaml-selectable id, manifest order.
+    /// Every menu id, manifest order.
     pub const ALL: [SttModel; 10] = [
         SttModel::Small,
         SttModel::Medium,
@@ -176,7 +175,7 @@ impl SttModel {
         matches!(self, Self::FluidSpeechProGgufQ8)
     }
 
-    /// Parse a yaml `pipeline.stt.model` id.
+    /// Parse a model menu id.
     pub fn parse(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|m| m.as_str() == value)
     }

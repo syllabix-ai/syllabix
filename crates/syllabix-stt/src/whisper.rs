@@ -15,7 +15,7 @@ use syllabix_native::models::{Fetcher, ModelCache, Progress};
 use syllabix_native::types::{Transcript, Utterance};
 use syllabix_native::Cancel;
 
-/// Default STT language. YAML may select any whisper-supported ISO code.
+/// Default STT language. Any whisper-supported ISO code may be selected.
 pub const STT_LANGUAGE: &str = "en";
 
 /// In-process whisper.cpp adapter. Loads one menu GGML (default [`SttModel::Small`]).
@@ -47,13 +47,13 @@ impl WhisperStt {
         })
     }
 
-    /// Without `ggml` there is no whisper.cpp frontend.
+    /// Without `whisper` there is no whisper.cpp frontend.
     #[cfg(not(feature = "whisper"))]
     pub fn from_model_path(path: impl AsRef<Path>, model: SttModel) -> Result<Self> {
         let _ = (path, model);
         Err(Error::Provider {
             provider: "whisper.cpp",
-            message: "whisper.cpp inference requires the `ggml` feature".into(),
+            message: "whisper.cpp inference requires the `whisper` feature".into(),
         })
     }
 
@@ -82,12 +82,12 @@ impl WhisperStt {
         &self.language
     }
 
-    /// Set the yaml language: any whisper-supported code or `auto`.
+    /// Set the language: any whisper-supported code or `auto`.
     pub fn with_language(mut self, language: impl Into<String>) -> Result<Self> {
         let language = language.into();
         if !is_supported_language(&language) {
             return Err(Error::Config {
-                field: "pipeline.stt.language".into(),
+                field: "language".into(),
                 message: format!("unsupported value {language:?} (allowed: ISO code or \"auto\")"),
             });
         }
@@ -408,7 +408,7 @@ mod tests {
             Err(err) => err,
             Ok(_) => panic!("unsupported language must fail"),
         };
-        assert!(err.to_string().contains("pipeline.stt.language"));
+        assert!(err.to_string().contains("language"));
         let or = match WhisperStt::with_decoder(
             Box::new(ScriptedDecoder::new(&["hello"])),
             SttModel::Small,
@@ -418,7 +418,7 @@ mod tests {
             Err(err) => err,
             Ok(_) => panic!("odia is hima-only"),
         };
-        assert!(or.to_string().contains("pipeline.stt.language"));
+        assert!(or.to_string().contains("language"));
         let fr = WhisperStt::with_decoder(
             Box::new(ScriptedDecoder::new(&["bonjour"]).with_detected("fr")),
             SttModel::Small,

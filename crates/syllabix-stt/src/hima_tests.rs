@@ -714,7 +714,7 @@ fn with_language_maps_auto_odia_and_rejects_french() {
         Err(err) => err,
         Ok(_) => panic!("french is not a hima language"),
     };
-    assert!(err.to_string().contains("pipeline.stt.language"), "{err}");
+    assert!(err.to_string().contains("language"), "{err}");
 }
 
 #[test]

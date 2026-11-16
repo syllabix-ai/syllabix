@@ -88,7 +88,7 @@ impl QwenAsrStt {
         Err(provider(if cfg!(coverage) {
             "Qwen3-ASR inference is not loaded in coverage tests."
         } else {
-            "Qwen3-ASR inference requires the `ggml` feature"
+            "Qwen3-ASR inference requires the `qwen3-asr` feature"
         }))
     }
 
@@ -135,12 +135,12 @@ impl QwenAsrStt {
         &self.language
     }
 
-    /// Set the yaml language: any whisper-supported code or `auto`.
+    /// Set the language: any whisper-supported code or `auto`.
     pub fn with_language(mut self, language: impl Into<String>) -> Result<Self> {
         let language = language.into();
         if !is_supported(&language) {
             return Err(Error::Config {
-                field: "pipeline.stt.language".into(),
+                field: "language".into(),
                 message: format!("unsupported value {language:?} (allowed: ISO code or \"auto\")"),
             });
         }
@@ -454,14 +454,14 @@ mod tests {
             Err(err) => err,
             Ok(_) => panic!("unknown language should fail"),
         };
-        assert!(err.to_string().contains("pipeline.stt.language"), "{err}");
+        assert!(err.to_string().contains("language"), "{err}");
         let or = match QwenAsrStt::with_decoder(Box::new(ScriptedDecoder::new(&[])))
             .with_language("or")
         {
             Err(err) => err,
             Ok(_) => panic!("odia is hima-only"),
         };
-        assert!(or.to_string().contains("pipeline.stt.language"), "{or}");
+        assert!(or.to_string().contains("language"), "{or}");
     }
 
     #[test]

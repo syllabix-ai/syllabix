@@ -1,4 +1,4 @@
-//! Whisper language codes for `pipeline.stt.language`.
+//! Whisper language codes.
 //!
 //! The table mirrors the vendored whisper.cpp language list (id order) so
 //! config validation stays field-level and never needs native weights.
@@ -110,16 +110,16 @@ pub const WHISPER_LANGUAGES: &[(&str, &str)] = &[
     ("yue", "Cantonese"),
 ];
 
-/// Codes yaml may use that are not in whisper.cpp (Hima-ASR Odia).
+/// Extra language codes not in the whisper.cpp table (Hima-ASR Odia).
 pub const EXTRA_LANGUAGES: &[(&str, &str)] = &[("or", "Odia")];
 
-/// True when yaml may select `code` (a table code or [`LANGUAGE_AUTO`]).
+/// True when `code` is supported (a table code or [`LANGUAGE_AUTO`]).
 pub fn is_supported(code: &str) -> bool {
     code == LANGUAGE_AUTO || language_name(code).is_some()
 }
 
-/// True when whisper.cpp / Qwen3-ASR may select `code` (`auto` or the
-/// whisper.cpp table). Odia (`or`) is yaml-only for Hima-ASR.
+/// True when whisper.cpp / Qwen3-ASR accept `code` (`auto` or the whisper.cpp
+/// table). Odia (`or`) is for Hima-ASR only.
 pub fn is_whisper_language(code: &str) -> bool {
     code == LANGUAGE_AUTO || WHISPER_LANGUAGES.iter().any(|(id, _)| *id == code)
 }

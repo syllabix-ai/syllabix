@@ -724,14 +724,14 @@ impl HimaStt {
         self
     }
 
-    /// Set the yaml language: a Hima ISO code or `auto`. Style is unchanged.
+    /// Set the language: a Hima ISO code or `auto`. Style is unchanged.
     pub fn with_language(self, language: impl Into<String>) -> Result<Self> {
         let language = language.into();
         let mapped = if language == LANGUAGE_AUTO {
             None
         } else {
             Some(HimaLanguage::parse(&language).ok_or_else(|| Error::Config {
-                field: "pipeline.stt.language".into(),
+                field: "language".into(),
                 message: format!(
                     "unsupported value {language:?} (allowed: {})",
                     HimaLanguage::allowed_csv()
