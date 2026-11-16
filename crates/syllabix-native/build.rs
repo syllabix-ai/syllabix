@@ -78,7 +78,8 @@ fn build_cpp() {
         .define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
         .define("LLAMA_BUILD_APP", "OFF")
-        .define("LLAMA_OPENSSL", "OFF");
+        .define("LLAMA_OPENSSL", "OFF")
+        .define("LLAMA_BUILD_IS_DEV", "OFF");
 
     if parakeet {
         config.define("SYLLABIX_PARAKEET", "ON");

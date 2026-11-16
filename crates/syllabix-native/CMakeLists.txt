@@ -80,11 +80,9 @@ target_compile_definitions(whisper PRIVATE WHISPER_VERSION="1.9.2")
 find_package(Threads REQUIRED)
 target_link_libraries(whisper PUBLIC Threads::Threads)
 
-# Qwen3-TTS audio path. Vendored upstream libmtmd slice (pinned at
-# ad1de39e0708) built against the SAME ggml as whisper/llama. Video support
-# and its ffmpeg/subprocess dependencies stay off; audio generation only.
-set(LLAMA_VERSION_BASE 0)
-set(LLAMA_VERSION_MAJOR 0)
+# Qwen3-TTS audio path. Upstream tools/mtmd from the same llama.cpp pin as above
+# (see vendor/README.md); uses the same ggml as whisper/llama. Video support and
+# its ffmpeg/subprocess dependencies stay off; audio generation only.
 set(MTMD_VIDEO OFF CACHE BOOL "mtmd video support" FORCE)
 add_subdirectory("${LLAMA_DIR}/tools/mtmd" "${CMAKE_BINARY_DIR}/mtmd")
 

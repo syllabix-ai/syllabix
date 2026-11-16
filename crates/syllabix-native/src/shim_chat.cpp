@@ -2,7 +2,7 @@
 
 #include "chat.h"
 #include "common.h"
-#include "nlohmann/json.hpp"
+#include "json.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -12,8 +12,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-using json = nlohmann::ordered_json;
 
 struct syllabix_llama;
 struct llama_model *syllabix_llama_model(struct syllabix_llama *llm);
@@ -51,9 +49,9 @@ void syllabix_chat_string_free(char *s) {
 }
 
 static bool template_has_tools(const common_chat_templates * tmpls) {
-    const auto caps = common_chat_templates_get_caps(tmpls);
-    const auto it   = caps.find("supports_tools");
-    if (it != caps.end() && !it->second) {
+    const common_json caps = common_chat_templates_get_caps(tmpls);
+    if (caps.contains("supports_tools") && caps["supports_tools"].is_boolean()
+        && !caps["supports_tools"].get<bool>()) {
         return false;
     }
     try {
@@ -81,12 +79,10 @@ static bool template_has_tools(const common_chat_templates * tmpls) {
 }
 
 static void apply_parser_from_params(syllabix_chat_session * session, const common_chat_params & params) {
-    session->parser_params                    = common_chat_parser_params(params);
-    session->parser_params.parse_tool_calls   = true;
-    session->parser_params.reasoning_format   = COMMON_REASONING_FORMAT_DEEPSEEK;
-    session->last_format                      = common_chat_format_name(params.format);
+    session->parser_params = common_chat_parser_params(params);
+    session->last_format   = common_chat_format_name(params.format);
     if (!params.parser.empty()) {
-        session->parser_params.parser.load(params.parser);
+        session->parser_params.parser = params.parser;
     }
 }
 
@@ -165,11 +161,11 @@ const char *syllabix_chat_last_format_name(const struct syllabix_chat_session *s
     return session->last_format.c_str();
 }
 
-static json parse_json_or_throw(const char *text, const char *what) {
+static common_json parse_json_or_throw(const char *text, const char *what) {
     if (text == NULL) {
         throw std::invalid_argument(std::string("missing ") + what);
     }
-    return json::parse(text);
+    return common_json::parse(text);
 }
 
 int syllabix_chat_apply(struct syllabix_chat_session *session, const char *messages_json,
@@ -181,7 +177,7 @@ int syllabix_chat_apply(struct syllabix_chat_session *session, const char *messa
     }
     *prompt_out = NULL;
     try {
-        const json messages = parse_json_or_throw(messages_json, "messages_json");
+        const common_json messages = parse_json_or_throw(messages_json, "messages_json");
         common_chat_templates_inputs inputs;
         inputs.messages              = common_chat_msgs_parse_oaicompat(messages);
         inputs.use_jinja             = true;
@@ -209,7 +205,7 @@ int syllabix_chat_apply(struct syllabix_chat_session *session, const char *messa
                 }
             }
         }
-        std::string prompt = params.prompt;
+        std::string prompt = params.prompt.str();
         if (enable_thinking == 0) {
             const std::string src = common_chat_templates_source(session->tmpls.get());
             if (src.find("<think>") != std::string::npos) {
@@ -238,10 +234,10 @@ int syllabix_chat_apply(struct syllabix_chat_session *session, const char *messa
     }
 }
 
-static json tool_calls_to_json(const common_chat_msg & msg) {
-    json calls = json::array();
+static common_json tool_calls_to_json(const common_chat_msg & msg) {
+    common_json calls = common_json::array();
     for (const auto & tc : msg.tool_calls) {
-        json entry;
+        common_json entry = common_json::object();
         entry["name"]      = tc.name;
         entry["arguments"] = tc.arguments;
         entry["id"]        = tc.id;
@@ -258,11 +254,11 @@ int syllabix_chat_parse(struct syllabix_chat_session *session, const char *text,
     }
     *result_out = NULL;
     try {
-        const common_chat_msg msg =
-            common_chat_parse(text, is_partial != 0, session->parser_params);
-        json out;
-        out["content"]     = msg.content;
-        out["tool_calls"]  = tool_calls_to_json(msg);
+        const common_chat_msg msg = common_chat_parse(common_chat_input(std::string(text)),
+                                                     is_partial != 0, session->parser_params);
+        common_json out = common_json::object();
+        out["content"]    = msg.content;
+        out["tool_calls"] = tool_calls_to_json(msg);
         const std::string dumped = out.dump();
         *result_out              = dup_cstr(dumped);
         if (*result_out == NULL) {
