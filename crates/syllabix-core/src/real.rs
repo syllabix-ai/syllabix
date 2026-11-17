@@ -553,6 +553,29 @@ mod production {
         Ok((vad, stt, llm, tts))
     }
 
+    /// Load the configured turn-based S2S engine (LFM3-Audio only). Does not fetch cascade STT/LLM/TTS weights.
+    #[cfg(feature = "lfm3-s2s")]
+    pub fn load_s2s_engine(
+        cache: &ModelCache,
+        fetcher: &dyn Fetcher,
+        progress: &mut dyn Progress,
+        cancel: &Cancel,
+        config: &AgentConfig,
+    ) -> Result<crate::s2s_lfm3::Lfm3AudioEngine> {
+        use crate::s2s::{Lfm3AudioEngine, LFM3_AUDIO_2B};
+        let model_id = config.s2s.as_ref().and_then(|s| s.model.as_deref());
+        if model_id != Some(LFM3_AUDIO_2B) {
+            return Err(Error::Config {
+                field: "pipeline.mode".into(),
+                message: "s2s is not supported yet".into(),
+            });
+        }
+        let n_threads = std::thread::available_parallelism()
+            .map(|n| n.get().min(4) as i32)
+            .unwrap_or(1);
+        Lfm3AudioEngine::from_cache(cache, fetcher, progress, cancel, n_threads)
+    }
+
     /// Build just the TTS slot from config. Only the selected provider's weights
     /// are fetched; selecting other models does not fetch Qwen GGUFs.
     /// Online TTS never touches the model cache.

@@ -22,6 +22,8 @@ mod lfm;
 #[cfg(not(coverage))]
 mod lfm3;
 #[cfg(not(coverage))]
+mod lfm3_audio;
+#[cfg(not(coverage))]
 mod llama;
 #[cfg(not(coverage))]
 mod pocket_tts;
@@ -44,6 +46,7 @@ use syllabix_core::llm::{
     LFM25_230M_ASSET, LFM25_2_6B_ASSET, LFM25_350M_ASSET, LFM3_1_7B_ASSET, LFM3_1_7B_BF16_ASSET,
     LLAMA_32_1B_ASSET, QWEN35_08B_ASSET, QWEN35_2B_ASSET,
 };
+use syllabix_core::s2s::LFM3_AUDIO_2B;
 
 #[cfg(not(coverage))]
 use syllabix_core::llm::LlamaLlm;
@@ -53,13 +56,14 @@ use syllabix_core::models::{HttpFetcher, StderrProgress};
 use syllabix_core::real::{build_tts, LiveTts};
 #[cfg(not(coverage))]
 use syllabix_core::stt::WhisperStt;
+#[cfg(not(coverage))]
 use syllabix_core::{AgentConfig, Cancel, ModelCache};
 
 /// YAML identifiers covered by the default native test set.
 const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM3_1_7B_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
-const SUITED_NATIVE_IDS: [&str; 14] = [
+const SUITED_NATIVE_IDS: [&str; 15] = [
     "whisper-small",
     LLAMA_32_1B_ASSET,
     "kokoro",
@@ -74,6 +78,7 @@ const SUITED_NATIVE_IDS: [&str; 14] = [
     LFM25_350M_ASSET,
     LFM25_230M_ASSET,
     "indic-mio",
+    LFM3_AUDIO_2B,
 ];
 
 /// Every selectable local TTS model uses this fixed latency corpus.
@@ -119,6 +124,7 @@ fn all_yaml_model_ids() -> BTreeSet<&'static str> {
     for model in TtsModel::ALL {
         ids.insert(model.as_str());
     }
+    ids.insert(LFM3_AUDIO_2B);
     ids
 }
 
@@ -431,6 +437,12 @@ fn launch_tts_config_matches_builtin_defaults() {
 fn native_models_list_is_exclusive() {
     let ids = parse_native_models(Some("qwen3-0.6")).expect("parse");
     assert_eq!(ids, BTreeSet::from(["qwen3-0.6".into()]));
+}
+
+#[test]
+fn lfm3_audio_2b_is_a_suited_native_id() {
+    let ids = parse_native_models(Some(LFM3_AUDIO_2B)).expect("parse");
+    assert_eq!(ids, BTreeSet::from([LFM3_AUDIO_2B.to_string()]));
 }
 
 #[test]

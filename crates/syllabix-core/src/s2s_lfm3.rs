@@ -19,6 +19,8 @@ pub struct Lfm3AudioEngine {
     ctx: Lfm3AudioContext,
     n_threads: i32,
     max_out_samples: i32,
+    /// Native-rate PCM samples emitted on the last `generate` (24 kHz for LFM3-A).
+    last_native_out_samples: u64,
 }
 
 impl Lfm3AudioEngine {
@@ -50,6 +52,7 @@ impl Lfm3AudioEngine {
             ctx,
             n_threads,
             max_out_samples: LFM3_AUDIO_DEFAULT_MAX_OUT_SAMPLES,
+            last_native_out_samples: 0,
         })
     }
 
@@ -92,6 +95,11 @@ impl Lfm3AudioEngine {
     /// Thread count passed through to the native loader.
     pub fn n_threads(&self) -> i32 {
         self.n_threads
+    }
+
+    /// Native PCM sample count from the most recent `generate` (before rate conversion).
+    pub fn last_native_out_samples(&self) -> u64 {
+        self.last_native_out_samples
     }
 
     fn utterance_to_f32_in(&self, utterance: &Utterance) -> Result<Vec<f32>> {
@@ -140,6 +148,7 @@ impl S2sEngine for Lfm3AudioEngine {
             });
         }
         let generation = cancel.generation();
+        self.last_native_out_samples = 0;
         let pcm_in = self.utterance_to_f32_in(utterance)?;
         let out_rate = self.ctx.out_rate_hz();
         let mut conv = PcmConverter::new(
@@ -154,6 +163,7 @@ impl S2sEngine for Lfm3AudioEngine {
             message: err.to_string(),
         })?;
         let mut index: u32 = 0;
+        let mut native_out_samples = 0u64;
         let mut abort_check = S2sAbortCheck { cancel, generation };
         let abort_user = (&mut abort_check as *mut S2sAbortCheck).cast();
         let turn = utterance.turn;
@@ -183,6 +193,7 @@ impl S2sEngine for Lfm3AudioEngine {
                             "unexpected native rate {rate} (expected {out_rate})"
                         )));
                     }
+                    native_out_samples += native.len() as u64;
                     let mut out = conv.push(native);
                     if is_last {
                         out.extend(conv.flush());
@@ -195,6 +206,7 @@ impl S2sEngine for Lfm3AudioEngine {
                 },
             )
         };
+        self.last_native_out_samples = native_out_samples;
         match result {
             Ok(()) => {
                 if cancel.is_stale(generation) || cancel.is_shutdown() {
@@ -258,6 +270,7 @@ mod tests {
                 ctx: Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0).expect("fake ctx"),
                 n_threads: 1,
                 max_out_samples: 0,
+                last_native_out_samples: 0,
             };
             assert_eq!(engine.name(), LFM3_AUDIO_2B);
             assert_eq!(S2sEngine::name(&engine), LFM3_AUDIO_2B);
@@ -277,6 +290,7 @@ mod tests {
             ctx: Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0).expect("coverage ctx"),
             n_threads: 1,
             max_out_samples: 0,
+            last_native_out_samples: 0,
         };
         let utterance = Utterance {
             turn: TurnId(1),
@@ -292,6 +306,13 @@ mod tests {
             .expect("fake generate");
         assert!(!chunks.is_empty());
         assert!(chunks.iter().any(|c| c.is_last));
+        assert!(engine.last_native_out_samples() > 0);
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_s2s_abort_handles_null_user_data() {
+        assert!(!unsafe { s2s_abort(std::ptr::null_mut()) });
     }
 
     #[cfg(coverage)]
@@ -302,6 +323,7 @@ mod tests {
             ctx: Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0).expect("coverage ctx"),
             n_threads: 1,
             max_out_samples: 0,
+            last_native_out_samples: 0,
         };
         let utterance = Utterance {
             turn: TurnId(0),
@@ -341,8 +363,11 @@ mod tests {
     #[cfg(coverage)]
     #[test]
     fn coverage_from_paths_builds_engine_and_accessors() {
+        use crate::s2s::S2sEngine;
         let engine = Lfm3AudioEngine::from_paths("fake-s2s", "fake-mmproj", 2).expect("from_paths");
         assert_eq!(engine.n_threads(), 2);
+        assert_eq!(engine.last_native_out_samples(), 0);
+        assert_eq!(S2sEngine::name(&engine), LFM3_AUDIO_2B);
         let engine = Lfm3AudioEngine::from_paths_with_seed("fake-s2s", "fake-mmproj", 3, 7)
             .expect("from_paths_with_seed")
             .with_max_out_samples(512);
@@ -393,6 +418,7 @@ mod tests {
             ctx: Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0).expect("coverage ctx"),
             n_threads: 1,
             max_out_samples: 0,
+            last_native_out_samples: 0,
         };
         let utterance = Utterance {
             turn: TurnId(3),
@@ -418,6 +444,7 @@ mod tests {
             ctx: Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0).expect("coverage ctx"),
             n_threads: 1,
             max_out_samples: 0,
+            last_native_out_samples: 0,
         };
         let utterance = Utterance {
             turn: TurnId(4),
@@ -442,6 +469,7 @@ mod tests {
             ctx: Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0).expect("coverage ctx"),
             n_threads: 1,
             max_out_samples: 0,
+            last_native_out_samples: 0,
         };
         let utterance = Utterance {
             turn: TurnId(5),
@@ -468,6 +496,7 @@ mod tests {
             ctx: Lfm3AudioContext::load("fake-s2s-badrate", "fake-mmproj", 1, 0).expect("badrate"),
             n_threads: 1,
             max_out_samples: 0,
+            last_native_out_samples: 0,
         };
         let utterance = Utterance {
             turn: TurnId(6),
@@ -488,6 +517,7 @@ mod tests {
             ctx: Lfm3AudioContext::load("fake-s2s-in24k", "fake-mmproj", 1, 0).expect("in24k"),
             n_threads: 1,
             max_out_samples: 0,
+            last_native_out_samples: 0,
         };
         let utterance = Utterance {
             turn: TurnId(7),
@@ -508,6 +538,7 @@ mod tests {
                 .expect("nativeerr"),
             n_threads: 1,
             max_out_samples: 0,
+            last_native_out_samples: 0,
         };
         let utterance = Utterance {
             turn: TurnId(8),
@@ -528,6 +559,7 @@ mod tests {
             ctx: Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0).expect("coverage ctx"),
             n_threads: 1,
             max_out_samples: 0,
+            last_native_out_samples: 0,
         };
         let utterance = Utterance {
             turn: TurnId(9),
@@ -556,6 +588,7 @@ mod tests {
             ctx: Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0).expect("coverage ctx"),
             n_threads: 1,
             max_out_samples: 0,
+            last_native_out_samples: 0,
         };
         let utterance = Utterance {
             turn: TurnId(2),
