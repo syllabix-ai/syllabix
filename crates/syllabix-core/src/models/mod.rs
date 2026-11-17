@@ -24,8 +24,8 @@ mod tests {
         // Qwen3-ASR 0.6B decoder/mmproj + nine Hima-ASR files + three GGUFs +
         // Kokoro weights + voice + eight internal-only Pocket TTS assets + two
         // Qwen3-TTS backbones, each with its own projector, Indic-Mio GGUF +
-        // MioCodec decoder, plus five LFM assets.
-        assert_eq!(m.assets.len(), 50);
+        // MioCodec decoder, five LFM LLM assets, and two LFM3-Audio S2s assets.
+        assert_eq!(m.assets.len(), 52);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -182,6 +182,40 @@ mod tests {
             "e75f83268de11b2a1bcfab5f3b5c5c0c97569ddbbc0990aad88437e45b8ba292"
         );
         assert_eq!(m.asset("lfm2.5-230m").unwrap().size_bytes, 149_081_056);
+        assert_eq!(
+            m.asset(crate::s2s::LFM3_AUDIO_2B).unwrap().layer,
+            ModelLayer::S2s
+        );
+        assert_eq!(
+            m.asset(crate::s2s::LFM3_AUDIO_2B).unwrap().sha256,
+            "9a773289bd321ed879cd3a76545f6aca506e403851a45fb315420aee45625be2"
+        );
+        assert_eq!(
+            m.asset(crate::s2s::LFM3_AUDIO_2B).unwrap().size_bytes,
+            1_099_626_016
+        );
+        assert_eq!(
+            m.asset(crate::s2s::LFM3_AUDIO_2B).unwrap().url,
+            "https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF/resolve/39670cb5c42e9c4bfe046519ba7ffbe47f9552ad/LFM3-Audio-2B-Q4_K_M.gguf"
+        );
+        assert_eq!(
+            m.asset(crate::s2s::LFM3_AUDIO_2B_MMPROJ).unwrap().layer,
+            ModelLayer::S2s
+        );
+        assert_eq!(
+            m.asset(crate::s2s::LFM3_AUDIO_2B_MMPROJ).unwrap().sha256,
+            "2b6648b1fd48af16aa0877b0592b144d15070783673e038a379fdbc51d40e365"
+        );
+        assert_eq!(
+            m.asset(crate::s2s::LFM3_AUDIO_2B_MMPROJ)
+                .unwrap()
+                .size_bytes,
+            303_811_840
+        );
+        assert_eq!(
+            m.asset(crate::s2s::LFM3_AUDIO_2B_MMPROJ).unwrap().url,
+            "https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF/resolve/39670cb5c42e9c4bfe046519ba7ffbe47f9552ad/mmproj-LFM3-Audio-2B-Q8_0.gguf"
+        );
         assert!(m.asset("missing").is_none());
         assert_eq!(SttModel::Small.as_str(), "whisper-small");
         for asset in &m.assets {
@@ -194,5 +228,6 @@ mod tests {
         assert_eq!(ModelLayer::Llm.as_str(), "llm");
         assert_eq!(ModelLayer::Tts.as_str(), "tts");
         assert_eq!(ModelLayer::Agent.as_str(), "agent");
+        assert_eq!(ModelLayer::S2s.as_str(), "s2s");
     }
 }

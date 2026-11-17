@@ -121,6 +121,17 @@ Source: https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF
 LFM is not distributed under the Apache-2.0 license that covers the
 rest of Syllabix.
 
+### LFM3-Audio-2B (`LFM3-Audio-2B-Q4_K_M.gguf` + mmproj, optional s2s)
+
+LiquidAI LFM 1.0 license. Copyright LiquidAI.
+English-only experimental voice chat. Model card:
+https://huggingface.co/LiquidAI/LFM3-Audio-2B
+GGUF weights: https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF
+Fetched only when `syllabix.yaml` sets `pipeline.mode: s2s` and
+`pipeline.s2s.model: lfm3-audio-2b`.
+LFM is not distributed under the Apache-2.0 license that covers the
+rest of Syllabix.
+
 ### LFM3-1.7B BF16 (`LFM3-1.7B-BF16.gguf`, optional)
 
 LiquidAI LFM 1.0 license. Copyright LiquidAI.

@@ -62,7 +62,7 @@ impl PipelineMode {
 /// Optional `pipeline.s2s` block when [`PipelineMode::S2s`] is selected.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct S2sConfig {
-    /// Optional yaml `pipeline.s2s.model`. Parsed only; not a menu id in Phase 2.
+    /// Optional yaml `pipeline.s2s.model`. When present, only `lfm3-audio-2b` is allowed.
     pub model: Option<String>,
 }
 
@@ -869,7 +869,7 @@ fn parse_s2s_block(
             deny_unknown(block, "pipeline.s2s", &["model"])?;
             let model = match optional_string(block, "pipeline.s2s", "model")? {
                 None => None,
-                Some(id) => Some(parse_online_model_id("pipeline.s2s.model", &id)?),
+                Some(id) => Some(parse_s2s_model_id(&id)?),
             };
             Ok(Some(S2sConfig { model }))
         }
@@ -1315,6 +1315,23 @@ fn parse_online_model_id(field: &str, value: &str) -> Result<String> {
     }
 }
 
+fn parse_s2s_model_id(value: &str) -> Result<String> {
+    if value.trim().is_empty() {
+        Err(Error::Config {
+            field: "pipeline.s2s.model".into(),
+            message: "must be a non-empty model id".into(),
+        })
+    } else if value == crate::s2s::LFM3_AUDIO_2B {
+        Ok(value.to_string())
+    } else {
+        Err(unsupported(
+            "pipeline.s2s.model",
+            value,
+            crate::s2s::LFM3_AUDIO_2B,
+        ))
+    }
+}
+
 fn parse_stt_model(value: &str) -> Result<SttModel> {
     SttModel::parse(value).ok_or_else(|| {
         unsupported(
@@ -1691,6 +1708,23 @@ mod tests {
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.s2s.model"), "{err}");
         assert!(err.to_string().contains("non-empty"), "{err}");
+    }
+
+    #[test]
+    fn pipeline_s2s_model_rejects_cascade_menu_ids() {
+        for model in ["lfm3-1.7b", "qwen3-0.6", "whisper-small"] {
+            let yaml = AgentConfig::v0().to_yaml().replacen(
+                "pipeline:\n",
+                &format!("pipeline:\n  mode: s2s\n  s2s:\n    model: {model}\n"),
+                1,
+            );
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("pipeline.s2s.model"),
+                "{model}: {err}"
+            );
+            assert!(err.to_string().contains("lfm3-audio-2b"), "{model}: {err}");
+        }
     }
 
     #[test]
