@@ -2,9 +2,10 @@
 
 use std::fs;
 use std::io::Cursor;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use syllabix_core::config::{AgentConfig, PipelineMode, S2sConfig};
@@ -20,7 +21,7 @@ use syllabix_core::{
     Cancel, ModelCache, Result, Session, Utterance,
 };
 
-use crate::{hex, skip_unless_model};
+use crate::{hex, native, skip_unless_model};
 
 const FIXTURE: &str = "librispeech-1089-134686-0000.wav";
 const FIXTURE_SHA256: &str = "c6517d6052651b2ff22d19526f49fc7da5fc56de30790b9ed54238abd9c48c36";
@@ -86,6 +87,17 @@ fn fixture_bytes() -> Vec<u8> {
     fs::read(&path).expect("fixture bytes")
 }
 
+fn short_fixture_utterance(max_secs: f64) -> Utterance {
+    let mut utterance = fixture_utterance();
+    let max_frames = ((max_secs * 16_000.0) / FRAME_SAMPLES as f64)
+        .ceil()
+        .max(1.0) as usize;
+    utterance
+        .frames
+        .truncate(max_frames.min(utterance.frames.len()));
+    utterance
+}
+
 fn fixture_utterance() -> Utterance {
     let bytes = fixture_bytes();
     assert_eq!(hex(Sha256::digest(&bytes)), FIXTURE_SHA256, "fixture hash");
@@ -147,6 +159,7 @@ fn host_label() -> String {
 #[test]
 fn lfm3_audio_engine_generate() {
     skip_unless_model!(LFM3_AUDIO_2B);
+    let _native = native();
 
     let host = host_label();
     let cpus = std::thread::available_parallelism()
@@ -201,6 +214,7 @@ fn lfm3_audio_engine_generate() {
 #[test]
 fn lfm3_audio_session_wiring_without_with_s2s() {
     skip_unless_model!(LFM3_AUDIO_2B);
+    let _native = native();
 
     let mut config = AgentConfig::v0();
     config.pipeline_mode = PipelineMode::S2s;
@@ -247,5 +261,66 @@ fn lfm3_audio_session_wiring_without_with_s2s() {
         report.tasks_exited,
         session_t0.elapsed().as_secs_f64() * 1000.0,
         sink.pcm_samples()
+    );
+}
+
+#[test]
+fn lfm3_audio_engine_cancel() {
+    skip_unless_model!(LFM3_AUDIO_2B);
+    let _native = native();
+    assert_engine_honours_cancel(&mut load_engine());
+}
+
+/// Engine abort is the native barge-in gate; loop barge-in stays on `fake_s2s_loop` (FakeS2s + AEC).
+fn assert_engine_honours_cancel(engine: &mut Lfm3AudioEngine) {
+    let already = Cancel::new();
+    already.shutdown();
+    let pre = engine
+        .generate(&short_fixture_utterance(0.1), &already, &mut |_| Ok(()))
+        .expect_err("pre-shutdown must cancel");
+    assert!(
+        matches!(pre, syllabix_core::Error::Cancelled),
+        "pre-shutdown got {pre:?}"
+    );
+
+    let utterance = short_fixture_utterance(1.0);
+    let cancel = Cancel::new();
+    let cancel_thread = cancel.clone();
+    let saw_pcm = Arc::new(AtomicBool::new(false));
+    let saw_pcm_for_wait = saw_pcm.clone();
+    let wait_start = Instant::now();
+    std::thread::spawn(move || {
+        while !saw_pcm_for_wait.load(Ordering::Relaxed)
+            && wait_start.elapsed() < Duration::from_millis(200)
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        cancel_thread.cancel_generation();
+    });
+
+    let start = Instant::now();
+    let cancel_on_pcm = cancel.clone();
+    let err = engine
+        .generate(&utterance, &cancel, &mut |audio| {
+            if !audio.samples.is_empty() {
+                saw_pcm.store(true, Ordering::Relaxed);
+                cancel_on_pcm.cancel_generation();
+            }
+            Ok(())
+        })
+        .expect_err("cancelled generate must error");
+    assert!(
+        matches!(err, syllabix_core::Error::Cancelled),
+        "got {err:?}"
+    );
+    let cancel_ms = start.elapsed().as_secs_f64() * 1000.0;
+    eprintln!(
+        "lfm3-audio-2b: engine cancel_ms={cancel_ms:.0} saw_first_pcm={}",
+        saw_pcm.load(Ordering::Relaxed)
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "engine cancel took {:?}, budget is 5 s",
+        start.elapsed()
     );
 }

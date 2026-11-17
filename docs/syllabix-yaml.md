@@ -56,6 +56,17 @@ Each of STT, LLM, and TTS is `local` (in-process, the default) or `online` (an O
 | LLM | GGUF in-process (named id or `.gguf` path). | `provider: openai-compatible` — OpenAI-compatible `chat/completions`. Key: `SYLLABIX_LLM_API_KEY` (self-hosted endpoints may use a placeholder; [API key](#api-key-environment-not-yaml)). See [`base_url`](#base_url). |
 | TTS | In-process. Ids: [engines](engines.md#tts). | OpenAI-compatible `audio/speech`. `base_url` ([same rules](#base_url)). Key: `SYLLABIX_TTS_API_KEY`. |
 
+## Pipeline mode — cascade vs s2s
+
+Default `run` omits `pipeline.mode` and uses **cascade** (VAD → STT → LLM → TTS). Set `pipeline.mode: s2s` only when you want a single local speech-to-speech engine instead of separate STT, LLM, and TTS stages.
+
+| Key | Default | Role |
+| --- | --- | --- |
+| `pipeline.mode` | cascade (omit the key) | `cascade` or `s2s` |
+| `pipeline.s2s.model` | none | Required for s2s today: `lfm3-audio-2b` — [engines S2S](engines.md#s2s-speech-to-speech) |
+
+With `mode: s2s`, `pipeline.stt`, `pipeline.llm`, and `pipeline.tts` stay required by the parser but are unused at runtime. Keep the `init` output and add `mode: s2s` plus `s2s.model` under `pipeline:`. Barge-in remains `run --barge-in`, not yaml.
+
 ## `name`
 
 Display label for the agent. Default: `demo-agent`.

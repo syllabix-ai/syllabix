@@ -69,12 +69,17 @@ static int s2s_decode_embd_rows(
     const float *rows,
     int32_t n_rows,
     llama_pos *n_past,
-    int logits_on_last_row) {
+    int logits_on_last_row,
+    bool (*abort_cb)(void *user),
+    void *abort_user) {
     if (n_rows <= 0) {
         return 0;
     }
     const int32_t n_embd = llama_model_n_embd_inp(s2s->model);
     for (int32_t offset = 0; offset < n_rows;) {
+        if (s2s_aborted(abort_cb, abort_user)) {
+            return 1;
+        }
         int32_t chunk = n_rows - offset;
         if (chunk > SYLLABIX_S2S_N_BATCH) {
             chunk = SYLLABIX_S2S_N_BATCH;
@@ -317,9 +322,10 @@ int syllabix_s2s_generate(
             mtmd_audio_stream_free(stream);
             return -1;
         }
-        if (s2s_decode_embd_rows(s2s, rows, n, &n_past, 0) != 0) {
+        const int dec = s2s_decode_embd_rows(s2s, rows, n, &n_past, 0, abort_cb, abort_user);
+        if (dec != 0) {
             mtmd_audio_stream_free(stream);
-            return s2s_aborted(abort_cb, abort_user) ? 1 : -1;
+            return dec == 1 ? 1 : -1;
         }
     }
     mtmd_audio_stream_free(stream);
