@@ -87,7 +87,7 @@ set(MTMD_VIDEO OFF CACHE BOOL "mtmd video support" FORCE)
 add_subdirectory("${LLAMA_DIR}/tools/mtmd" "${CMAKE_BINARY_DIR}/mtmd")
 
 option(SYLLABIX_PARAKEET "Fluid Speech Pro via parakeet.cpp" OFF)
-set(SYLLABIX_NATIVE_SRC src/shim.c src/shim_chat.cpp src/shim_tts.c src/shim_asr.c src/shim_mio.c src/shim_vulkan.cpp)
+set(SYLLABIX_NATIVE_SRC src/shim.c src/shim_chat.cpp src/shim_tts.c src/shim_asr.c src/shim_s2s.c src/shim_mio.c src/shim_vulkan.cpp)
 if (SYLLABIX_PARAKEET)
     set(PARAKEET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/parakeet.cpp")
     set(PARAKEET_SRC
@@ -171,7 +171,7 @@ add_library(syllabix_native STATIC ${SYLLABIX_NATIVE_SRC})
 # GCC/Clang only unwind C frames compiled with -fexceptions.
 if(NOT MSVC)
     set_source_files_properties(
-        src/shim_tts.c src/shim_asr.c src/shim_mio.c
+        src/shim_tts.c src/shim_asr.c src/shim_s2s.c src/shim_mio.c
         PROPERTIES COMPILE_OPTIONS "-fexceptions")
 endif()
 target_include_directories(syllabix_native PUBLIC

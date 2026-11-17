@@ -30,6 +30,8 @@ pub mod queue;
 #[cfg(any(coverage, feature = "ggml"))]
 pub mod real;
 pub mod s2s;
+#[cfg(all(feature = "ggml", any(feature = "lfm3-s2s", coverage)))]
+mod s2s_lfm3;
 pub mod sandbox;
 mod session_env;
 pub mod skills;

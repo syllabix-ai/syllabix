@@ -11,6 +11,9 @@ pub const LFM3_AUDIO_2B: &str = "lfm3-audio-2b";
 pub const LFM3_AUDIO_2B_MMPROJ: &str = "lfm3-audio-2b-mmproj";
 
 /// One VAD-committed user utterance in, streamed assistant PCM out.
+#[cfg(all(feature = "ggml", any(feature = "lfm3-s2s", coverage)))]
+pub use crate::s2s_lfm3::Lfm3AudioEngine;
+
 pub trait S2sEngine: Send {
     /// Config / backend name.
     fn name(&self) -> &'static str;

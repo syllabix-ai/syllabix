@@ -407,6 +407,43 @@ mod tests {
     }
 
     #[test]
+    fn mono_24k_to_16k_shortens_by_ratio() {
+        let mut conv = PcmConverter::new(
+            PcmFormat {
+                sample_rate_hz: 24_000,
+                channels: 1,
+            },
+            PcmFormat::v0(),
+        )
+        .unwrap();
+        let input = vec![0.5_f32; 24_000];
+        let mut out = conv.push(&input);
+        out.extend(conv.flush());
+        let expected = 16_000usize;
+        let delta = (out.len() as i32 - expected as i32).unsigned_abs() as usize;
+        assert!(
+            delta < 32,
+            "expected ~{expected} mono samples, got {}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn mono_16k_to_16k_is_near_identity() {
+        let mut conv = PcmConverter::new(PcmFormat::v0(), PcmFormat::v0()).unwrap();
+        let input = vec![0.25_f32; 1_600];
+        let mut out = conv.push(&input);
+        out.extend(conv.flush());
+        let delta = (out.len() as i32 - input.len() as i32).unsigned_abs() as usize;
+        assert!(
+            delta < 32,
+            "expected ~{} mono samples, got {}",
+            input.len(),
+            out.len()
+        );
+    }
+
+    #[test]
     fn reset_clears_leftover() {
         let mut conv = PcmConverter::new(
             PcmFormat {

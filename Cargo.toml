@@ -20,7 +20,7 @@ clap = { version = "=4.5.23", features = ["derive"] }
 thiserror = "=2.0.17"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
-syllabix-core = { path = "crates/syllabix-core" }
+syllabix-core = { path = "crates/syllabix-core", features = ["lfm3-s2s"] }
 assert_cmd = "=2.0.16"
 predicates = "=3.1.2"
 cpal = "=0.15.3"
