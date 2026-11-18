@@ -21,6 +21,7 @@ use crate::audio::devices::DeviceChoice;
 #[cfg(not(coverage))]
 use crate::audio::devices::{select_input, select_output, DeviceInfo, DeviceInventory};
 use crate::audio::echo::{EchoCalibration, EchoController, EchoReference};
+use crate::audio::jitter::JitterBuffer;
 #[cfg(not(coverage))]
 use crate::audio::ring::device_ring_capacity_samples;
 use crate::audio::ring::SampleRing;
@@ -1010,6 +1011,8 @@ pub struct NativePlayback {
     _worker: StreamWorker,
     ring: Arc<SampleRing>,
     echo_ring: Option<Arc<SampleRing>>,
+    jitter: JitterBuffer,
+    ring_underruns_seen: u64,
     conv: PcmConverter,
     watch: Option<PlaybackWatch>,
     drain: PlaybackDrain,
@@ -1056,11 +1059,14 @@ impl NativePlayback {
             .echo_ring
             .as_ref()
             .map(|ring| EchoReference::new(Arc::clone(ring), opened.device_format));
+        let device_format = opened.device_format;
         Ok((
             Self {
-                conv: PcmConverter::new(PcmFormat::v0(), opened.device_format)?,
+                conv: PcmConverter::new(PcmFormat::v0(), device_format)?,
                 device_name: opened.name,
-                device_format: opened.device_format,
+                device_format,
+                jitter: JitterBuffer::new(device_format.sample_rate_hz, device_format.channels),
+                ring_underruns_seen: opened.ring.underruns(),
                 ring: opened.ring,
                 echo_ring: opened.echo_ring,
                 watch,
@@ -1096,21 +1102,35 @@ impl AudioSink for NativePlayback {
         if audio.is_last {
             self.drain.begin_final(audio.turn, audio.generation);
         }
+        let underruns = self.ring.underruns();
+        if underruns > self.ring_underruns_seen {
+            self.jitter.note_underrun();
+        }
+        self.ring_underruns_seen = underruns;
+
         let f32s = i16_to_f32(&audio.samples);
         let mut device_pcm = self.conv.push(&f32s);
         if audio.is_last {
             device_pcm.extend(self.conv.flush());
         }
-        let result = match self
-            .ring
-            .push_slice_cancellable(&device_pcm, cancel, audio.generation)
-        {
-            Ok(()) => Ok(()),
-            Err(Error::Cancelled) if !cancel.is_shutdown() => {
-                self.interrupt();
-                Ok(())
+        let mut ready = self.jitter.push(&device_pcm);
+        if audio.is_last {
+            ready.extend(self.jitter.flush());
+        }
+        let result = if ready.is_empty() {
+            Ok(())
+        } else {
+            match self
+                .ring
+                .push_slice_cancellable(&ready, cancel, audio.generation)
+            {
+                Ok(()) => Ok(()),
+                Err(Error::Cancelled) if !cancel.is_shutdown() => {
+                    self.interrupt();
+                    Ok(())
+                }
+                Err(err) => Err(err),
             }
-            Err(err) => Err(err),
         };
         if result.is_ok() && audio.is_last {
             self.drain.final_enqueued(audio.turn);
@@ -1123,6 +1143,7 @@ impl AudioSink for NativePlayback {
     }
 
     fn interrupt(&mut self) {
+        self.jitter.clear();
         self.ring.clear();
         self.conv.reset();
         self.drain.clear();
@@ -1351,10 +1372,13 @@ mod tests {
 
     fn test_playback() -> NativePlayback {
         let device_format = PcmFormat::v0();
+        let ring = Arc::new(SampleRing::new(4_096));
         NativePlayback {
             _worker: idle_worker(),
-            ring: Arc::new(SampleRing::new(4_096)),
+            ring: Arc::clone(&ring),
             echo_ring: None,
+            jitter: JitterBuffer::new(device_format.sample_rate_hz, device_format.channels),
+            ring_underruns_seen: ring.underruns(),
             conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
             watch: None,
             drain: PlaybackDrain::new(),
@@ -1796,11 +1820,14 @@ mod tests {
     fn playback_drops_stale_audio_and_writes_live_audio() {
         let mut playback = test_playback();
         let cancel = Cancel::new();
+        let mut samples = vec![0i16; 1_440];
+        samples[0] = 1_024;
+        samples[1] = -1_024;
         let audio = SynthesizedAudio {
             turn: crate::types::TurnId(0),
             generation: cancel.generation(),
             index: 0,
-            samples: vec![1_024, -1_024],
+            samples,
             is_last: true,
         };
         playback.play(audio.clone(), &cancel).expect("play audio");
@@ -1808,7 +1835,7 @@ mod tests {
         assert_eq!(playback.ring.try_pop_slice(&mut rendered), 2);
         assert!(rendered[0] > 0.0);
         assert!(rendered[1] < 0.0);
-        let mut flush_tail = [0.0; 8];
+        let mut flush_tail = [0.0; 1_440];
         assert!(playback.ring.try_pop_slice(&mut flush_tail) > 0);
 
         cancel.cancel_generation();
@@ -1898,7 +1925,7 @@ mod tests {
                     turn: crate::types::TurnId(0),
                     generation: cancel.generation(),
                     index: 0,
-                    samples: vec![1_024; 16],
+                    samples: vec![1_024; 1_440],
                     is_last: false,
                 },
                 &cancel,
@@ -1928,10 +1955,13 @@ mod tests {
             std::time::Instant::now(),
         );
         let device_format = PcmFormat::v0();
+        let ring = Arc::new(SampleRing::new(4_096));
         let mut playback = NativePlayback {
             _worker: idle_worker(),
-            ring: Arc::new(SampleRing::new(4_096)),
+            ring: Arc::clone(&ring),
             echo_ring: None,
+            jitter: JitterBuffer::new(device_format.sample_rate_hz, device_format.channels),
+            ring_underruns_seen: ring.underruns(),
             conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
             watch: Some(watch.clone()),
             drain: PlaybackDrain::new(),
@@ -1946,7 +1976,7 @@ mod tests {
                     turn: crate::types::TurnId(3),
                     generation: live_generation,
                     index: 0,
-                    samples: vec![256; 64],
+                    samples: vec![256; 1_440],
                     is_last: false,
                 },
                 &cancel,
@@ -1954,7 +1984,7 @@ mod tests {
             .expect("queue chunk");
 
         // Simulate the device callback consuming what play() queued.
-        let mut out = [0.0f32; 64];
+        let mut out = [0.0f32; 1_440];
         let rendered = playback.ring.try_pop_slice(&mut out);
         assert!(rendered > 0);
         watch.on_callback(rendered);
@@ -1993,15 +2023,19 @@ mod tests {
 
     #[test]
     fn play_stops_feeding_the_ring_when_generation_goes_stale() {
+        let device_format = PcmFormat::v0();
+        let ring = Arc::new(SampleRing::new(32));
         let mut playback = NativePlayback {
             _worker: idle_worker(),
-            ring: Arc::new(SampleRing::new(32)),
+            ring: Arc::clone(&ring),
             echo_ring: None,
-            conv: PcmConverter::new(PcmFormat::v0(), PcmFormat::v0()).expect("v0 converter"),
+            jitter: JitterBuffer::new(device_format.sample_rate_hz, device_format.channels),
+            ring_underruns_seen: ring.underruns(),
+            conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
             watch: None,
             drain: PlaybackDrain::new(),
             device_name: "test speakers".into(),
-            device_format: PcmFormat::v0(),
+            device_format,
         };
         let cancel = Cancel::new();
         let generation = cancel.generation();
