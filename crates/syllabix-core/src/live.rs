@@ -54,6 +54,7 @@ pub fn run_live_with_controls(
     events: Option<Sender<LoopEvent>>,
     controls: RuntimeControls,
 ) -> Result<LoopReport> {
+    config.ensure_pipeline_mode_supported()?;
     crate::session_env::install_from_config(config);
     let llm_api_key = match (&config.agent, &config.llm) {
         (crate::defaults::AgentBackend::Goose, _) => None,

@@ -39,6 +39,33 @@ pub const DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS: u32 = 180_000;
 /// Default idle duration before `run` exits (`auto-timeout.exit_ms`).
 pub const DEFAULT_AUTO_TIMEOUT_EXIT_MS: u32 = 600_000;
 
+/// Cascade STT/LLM/TTS vs turn-based speech-to-speech (`pipeline.mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PipelineMode {
+    /// Default multi-stage voice stack.
+    #[default]
+    Cascade,
+    /// Turn-based S2S; parsed in yaml, runtime backend lands in a later phase.
+    S2s,
+}
+
+impl PipelineMode {
+    /// Yaml scalar for this mode.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cascade => "cascade",
+            Self::S2s => "s2s",
+        }
+    }
+}
+
+/// Optional `pipeline.s2s` block when [`PipelineMode::S2s`] is selected.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct S2sConfig {
+    /// Optional yaml `pipeline.s2s.model`. Parsed only; not a menu id in Phase 2.
+    pub model: Option<String>,
+}
+
 /// Validated agent configuration with one provider selected for each pipeline stage.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentConfig {
@@ -136,6 +163,10 @@ pub struct AgentConfig {
     /// Idle milliseconds before process exit (`auto-timeout.exit_ms`).
     /// `0` disables. Default 600_000 (10 minutes).
     pub auto_timeout_exit_ms: u32,
+    /// `pipeline.mode`: cascade (default) or turn-based s2s.
+    pub pipeline_mode: PipelineMode,
+    /// Parsed `pipeline.s2s` when mode is s2s; `None` for cascade.
+    pub s2s: Option<S2sConfig>,
 }
 
 impl AgentConfig {
@@ -183,6 +214,20 @@ impl AgentConfig {
             diagnostics_directory: PathBuf::from(DEFAULT_TURN_DEBUG_DIR),
             auto_timeout_mic_mute_ms: DEFAULT_AUTO_TIMEOUT_MIC_MUTE_MS,
             auto_timeout_exit_ms: DEFAULT_AUTO_TIMEOUT_EXIT_MS,
+            pipeline_mode: PipelineMode::Cascade,
+            s2s: None,
+        }
+    }
+
+    /// Fail fast when yaml selects s2s before a backend exists.
+    pub(crate) fn ensure_pipeline_mode_supported(&self) -> Result<()> {
+        if self.pipeline_mode == PipelineMode::S2s {
+            Err(Error::Config {
+                field: "pipeline.mode".into(),
+                message: "s2s is not supported yet".into(),
+            })
+        } else {
+            Ok(())
         }
     }
 
@@ -455,7 +500,13 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
             message: "this key moved; set agent_harness.agent instead".into(),
         });
     }
-    deny_unknown(pipeline, "pipeline", &["vad", "stt", "llm", "tts"])?;
+    deny_unknown(
+        pipeline,
+        "pipeline",
+        &["mode", "s2s", "vad", "stt", "llm", "tts"],
+    )?;
+    let pipeline_mode = parse_pipeline_mode(pipeline)?;
+    let s2s = parse_s2s_block(pipeline, pipeline_mode)?;
     let (agent, inherit_current_session) = parse_agent_harness(root)?;
 
     let vad = mapping(required(pipeline, "pipeline.vad", "vad")?, "pipeline.vad")?;
@@ -778,7 +829,51 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
         diagnostics_directory,
         auto_timeout_mic_mute_ms,
         auto_timeout_exit_ms,
+        pipeline_mode,
+        s2s,
     })
+}
+
+fn parse_pipeline_mode(pipeline: &serde_yaml::Mapping) -> Result<PipelineMode> {
+    match optional_string(pipeline, "pipeline", "mode")? {
+        None => Ok(PipelineMode::Cascade),
+        Some(value) if value.is_empty() => {
+            Err(unsupported("pipeline.mode", &value, "cascade, s2s"))
+        }
+        Some(value) => match value.as_str() {
+            "cascade" => Ok(PipelineMode::Cascade),
+            "s2s" => Ok(PipelineMode::S2s),
+            other => Err(unsupported("pipeline.mode", other, "cascade, s2s")),
+        },
+    }
+}
+
+fn parse_s2s_block(
+    pipeline: &serde_yaml::Mapping,
+    pipeline_mode: PipelineMode,
+) -> Result<Option<S2sConfig>> {
+    match pipeline.get("s2s") {
+        None => {
+            if pipeline_mode == PipelineMode::S2s {
+                Ok(Some(S2sConfig::default()))
+            } else {
+                Ok(None)
+            }
+        }
+        Some(_) if pipeline_mode == PipelineMode::Cascade => Err(Error::Config {
+            field: "pipeline.s2s".into(),
+            message: "is only valid with pipeline.mode: s2s".into(),
+        }),
+        Some(value) => {
+            let block = mapping(value, "pipeline.s2s")?;
+            deny_unknown(block, "pipeline.s2s", &["model"])?;
+            let model = match optional_string(block, "pipeline.s2s", "model")? {
+                None => None,
+                Some(id) => Some(parse_online_model_id("pipeline.s2s.model", &id)?),
+            };
+            Ok(Some(S2sConfig { model }))
+        }
+    }
 }
 
 /// `auto-timeout: {mic_mute_ms, exit_ms}` — optional; defaults 180000 / 600000.
@@ -1493,6 +1588,109 @@ mod tests {
         assert_eq!(AgentConfig::parse_yaml(&yaml).unwrap(), AgentConfig::v0());
         assert_eq!(AgentConfig::v0().agent, AgentBackend::Syllabix);
         assert!(AgentConfig::v0().llm_agent_harness);
+        assert_eq!(AgentConfig::v0().pipeline_mode, PipelineMode::Cascade);
+        assert!(AgentConfig::v0().s2s.is_none());
+        assert!(!yaml.contains("mode:"));
+        assert!(!yaml.contains("s2s:"));
+    }
+
+    #[test]
+    fn pipeline_mode_defaults_to_cascade_and_explicit_cascade_matches_v0() {
+        let parsed = AgentConfig::parse_yaml(&AgentConfig::v0().to_yaml()).unwrap();
+        assert_eq!(parsed.pipeline_mode, PipelineMode::Cascade);
+        assert!(parsed.s2s.is_none());
+        let explicit =
+            AgentConfig::v0()
+                .to_yaml()
+                .replacen("pipeline:\n", "pipeline:\n  mode: cascade\n", 1);
+        let parsed = AgentConfig::parse_yaml(&explicit).unwrap();
+        assert_eq!(parsed.pipeline_mode, PipelineMode::Cascade);
+        assert!(parsed.s2s.is_none());
+    }
+
+    #[test]
+    fn pipeline_mode_s2s_parses_without_s2s_block() {
+        let yaml =
+            AgentConfig::v0()
+                .to_yaml()
+                .replacen("pipeline:\n", "pipeline:\n  mode: s2s\n", 1);
+        let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(parsed.pipeline_mode, PipelineMode::S2s);
+        assert_eq!(parsed.s2s, Some(S2sConfig { model: None }));
+    }
+
+    #[test]
+    fn pipeline_mode_s2s_parses_optional_model() {
+        let yaml = AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n",
+            1,
+        );
+        let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(parsed.pipeline_mode, PipelineMode::S2s);
+        assert_eq!(
+            parsed.s2s,
+            Some(S2sConfig {
+                model: Some("lfm3-audio-2b".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn pipeline_mode_rejects_unknown_values() {
+        for (label, mode_line) in [
+            ("duplex", "  mode: duplex\n"),
+            ("full-duplex", "  mode: full-duplex\n"),
+            ("", "  mode: \"\"\n"),
+        ] {
+            let yaml = AgentConfig::v0().to_yaml().replacen(
+                "pipeline:\n",
+                &format!("pipeline:\n{mode_line}"),
+                1,
+            );
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(err.to_string().contains("pipeline.mode"), "{label}: {err}");
+        }
+    }
+
+    #[test]
+    fn pipeline_s2s_block_requires_s2s_mode() {
+        let yaml = AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            "pipeline:\n  s2s:\n    model: lfm3-audio-2b\n",
+            1,
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.s2s"), "{err}");
+        assert!(err.to_string().contains("pipeline.mode: s2s"), "{err}");
+    }
+
+    #[test]
+    fn pipeline_s2s_rejects_moshi_class_keys() {
+        for key in ["base_url", "tls_insecure", "send_audio_off_device"] {
+            let yaml = AgentConfig::v0().to_yaml().replacen(
+                "pipeline:\n",
+                &format!("pipeline:\n  mode: s2s\n  s2s:\n    {key}: x\n"),
+                1,
+            );
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("pipeline.s2s.{key}")),
+                "{key}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn pipeline_s2s_model_must_be_non_empty() {
+        let yaml = AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            "pipeline:\n  mode: s2s\n  s2s:\n    model: \"\"\n",
+            1,
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.s2s.model"), "{err}");
+        assert!(err.to_string().contains("non-empty"), "{err}");
     }
 
     #[test]
