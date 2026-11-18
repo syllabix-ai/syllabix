@@ -12,6 +12,8 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
+#include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -25,6 +27,16 @@
 /* mtmd-helper-gen.cpp max_chunk_tokens (MAX_TOKEN_PER_CHUNK in the LFM3-Audio reference). */
 #define SYLLABIX_S2S_MIXED_MAX_CHUNK_TOKENS 50
 #define SYLLABIX_S2S_LAST_TEXT_INIT 256
+/* mtmd-helper-gen.cpp lfm3a_gen_audio_pipeline::frame_rate (codec steps per second). */
+#define SYLLABIX_S2S_LFM3A_CODEC_FRAME_RATE 12.5
+#define SYLLABIX_S2S_INTERLEAVE_N_TEXT 6
+#define SYLLABIX_S2S_INTERLEAVE_N_AUDIO 12
+
+typedef enum {
+    S2S_ASSIST_IDLE = 0,
+    S2S_ASSIST_GEN_TEXT,
+    S2S_ASSIST_GEN_AUDIO,
+} s2s_assist_phase;
 
 struct syllabix_s2s {
     struct llama_model *model;
@@ -44,6 +56,9 @@ struct syllabix_s2s {
     llama_token tok_audio_start;
     llama_token tok_mixed_start;
     char *system_prompt;
+    llama_pos n_past;
+    bool assist_open;
+    s2s_assist_phase assist_phase;
 };
 
 static void s2s_silent_log(enum ggml_log_level level, const char *text, void *user_data) {
@@ -256,12 +271,135 @@ static int s2s_decode_embd_rows(
     return 0;
 }
 
+static llama_pos s2s_gen_reserve_positions(int cap_samples, int out_rate) {
+    if (cap_samples <= 0 || out_rate <= 0) {
+        return (llama_pos)SYLLABIX_S2S_MIXED_MAX_CHUNK_TOKENS + 64;
+    }
+    const double n_audio_frames_fixed =
+        ceil((double)cap_samples * SYLLABIX_S2S_LFM3A_CODEC_FRAME_RATE / (double)out_rate);
+    const double interleave =
+        1.0 + (double)SYLLABIX_S2S_INTERLEAVE_N_TEXT / (double)SYLLABIX_S2S_INTERLEAVE_N_AUDIO;
+    return (llama_pos)(n_audio_frames_fixed * interleave) + SYLLABIX_S2S_MIXED_MAX_CHUNK_TOKENS + 4;
+}
+
+static int s2s_tokenize_prompt(const struct llama_vocab *vocab, const char *text, llama_token **out,
+                               int32_t *n_out) {
+    *out = NULL;
+    *n_out = 0;
+    if (text == NULL) {
+        return 0;
+    }
+    int32_t need =
+        llama_tokenize(vocab, text, (int32_t)strlen(text), NULL, 0, false, true);
+    if (need == INT32_MIN) {
+        return -1;
+    }
+    if (need < 0) {
+        need = -need;
+    }
+    if (need == 0) {
+        return 0;
+    }
+    llama_token *buf = (llama_token *)malloc((size_t)need * sizeof(llama_token));
+    if (buf == NULL) {
+        return -1;
+    }
+    const int32_t got = llama_tokenize(vocab, text, (int32_t)strlen(text), buf, need, false, true);
+    if (got < 0) {
+        free(buf);
+        return -1;
+    }
+    *out = buf;
+    *n_out = got;
+    return 0;
+}
+
+static void s2s_conversation_reset(struct syllabix_s2s *s2s) {
+    llama_memory_clear(llama_get_memory(s2s->ctx), true);
+    mtmd_helper_gen_audio_reset(s2s->gen);
+    s2s->n_past = 0;
+    s2s->assist_open = false;
+    s2s->assist_phase = S2S_ASSIST_IDLE;
+}
+
+static int s2s_decode_one_token(struct syllabix_s2s *s2s, llama_token tok, llama_pos *n_past) {
+    if (tok == LLAMA_TOKEN_NULL) {
+        return 0;
+    }
+    const int rc = s2s_decode_prompt_tokens(s2s, &tok, 1, n_past, NULL, NULL);
+    if (rc != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int s2s_decode_text(struct syllabix_s2s *s2s, const char *text, llama_pos *n_past) {
+    if (text == NULL || text[0] == '\0') {
+        return 0;
+    }
+    const struct llama_vocab *vocab = llama_model_get_vocab(s2s->model);
+    llama_token *tokens = NULL;
+    int32_t n_tokens = 0;
+    if (s2s_tokenize_prompt(vocab, text, &tokens, &n_tokens) != 0) {
+        return -1;
+    }
+    const int rc = s2s_decode_prompt_tokens(s2s, tokens, n_tokens, n_past, NULL, NULL);
+    free(tokens);
+    return rc != 0 ? -1 : 0;
+}
+
+/* Barge-in assistant close: change this one string to adjust the decoded marker. */
+#define SYLLABIX_S2S_INTERRUPT_MARKER_TEXT "(interrupted)"
+
+static int s2s_close_assistant_on_interrupt(struct syllabix_s2s *s2s, llama_pos *n_past) {
+    if (!s2s->assist_open) {
+        return 0;
+    }
+    const uint32_t n_ctx_seq = llama_n_ctx_seq(s2s->ctx);
+    llama_pos need = 12;
+    if ((llama_pos)*n_past + need > (llama_pos)n_ctx_seq) {
+        s2s_conversation_reset(s2s);
+        *n_past = 0;
+        s2s->assist_open = false;
+        s2s->assist_phase = S2S_ASSIST_IDLE;
+        return 0;
+    }
+
+    (void)mtmd_helper_gen_audio_flush(s2s->gen);
+    if (s2s->assist_phase == S2S_ASSIST_GEN_AUDIO && s2s->tok_text_end != LLAMA_TOKEN_NULL) {
+        if (s2s_decode_one_token(s2s, s2s->tok_text_end, n_past) != 0) {
+            return -1;
+        }
+    }
+    if (s2s_decode_text(s2s, SYLLABIX_S2S_INTERRUPT_MARKER_TEXT, n_past) != 0) {
+        return -1;
+    }
+    /* Segment close only; template EOT comes from the next turn's render_next prefix. */
+    mtmd_helper_gen_audio_reset(s2s->gen);
+    s2s->assist_open = false;
+    s2s->assist_phase = S2S_ASSIST_IDLE;
+    return 0;
+}
+
+static int s2s_render_turn(struct syllabix_s2s *s2s, char **prefix_out, char **suffix_out,
+                           char *err_buf, size_t err_cap) {
+    const char *voice_system =
+        s2s->system_prompt != NULL ? s2s->system_prompt : SYLLABIX_S2S_VOICE_CHAT_SYSTEM_DEFAULT;
+    if (s2s->n_past <= 0) {
+        return syllabix_s2s_voice_chat_render(s2s->model, voice_system, prefix_out, suffix_out,
+                                              err_buf, err_cap);
+    }
+    return syllabix_s2s_voice_chat_render_next(s2s->model, voice_system, prefix_out, suffix_out,
+                                             err_buf, err_cap);
+}
+
 /* Public entry is syllabix_s2s_load in shim_vulkan.cpp (C++ exception guard). */
 struct syllabix_s2s *syllabix_s2s_load_unguarded(
     const char *model_path,
     const char *mmproj_path,
     int n_threads,
     unsigned int seed,
+    int n_ctx,
     const char *system_prompt) {
     if (model_path == NULL || mmproj_path == NULL || n_threads < 1) {
         return NULL;
@@ -284,7 +422,7 @@ struct syllabix_s2s *syllabix_s2s_load_unguarded(
 
     struct llama_context_params ctx_params = llama_context_default_params();
     ctx_params.embeddings = true;
-    ctx_params.n_ctx = 0;
+    ctx_params.n_ctx = (uint32_t)(n_ctx > 0 ? n_ctx : 0);
     ctx_params.n_batch = SYLLABIX_S2S_N_BATCH;
     ctx_params.n_ubatch = SYLLABIX_S2S_N_BATCH;
     ctx_params.n_threads = n_threads;
@@ -406,6 +544,17 @@ const char *syllabix_s2s_last_text(const struct syllabix_s2s *s2s) {
     return s2s->last_text;
 }
 
+void syllabix_s2s_reset(struct syllabix_s2s *s2s) {
+    if (s2s == NULL) {
+        return;
+    }
+    s2s_conversation_reset(s2s);
+}
+
+int syllabix_s2s_n_past(const struct syllabix_s2s *s2s) {
+    return s2s != NULL ? (int)s2s->n_past : 0;
+}
+
 void syllabix_s2s_free(struct syllabix_s2s *s2s) {
     if (s2s == NULL) {
         return;
@@ -461,60 +610,111 @@ int syllabix_s2s_generate(
 
     const int cap = max_out_samples > 0 ? max_out_samples : SYLLABIX_S2S_DEFAULT_MAX_OUT_SAMPLES;
 
-    llama_memory_clear(llama_get_memory(s2s->ctx), true);
     s2s_last_text_clear(s2s);
+    s2s->assist_open = false;
+    s2s->assist_phase = S2S_ASSIST_IDLE;
 
     char *prefix_prompt = NULL;
     char *suffix_prompt = NULL;
     char err_buf[256];
-    const char *voice_system =
-        s2s->system_prompt != NULL ? s2s->system_prompt : SYLLABIX_S2S_VOICE_CHAT_SYSTEM_DEFAULT;
-    if (syllabix_s2s_voice_chat_render(s2s->model, voice_system, &prefix_prompt, &suffix_prompt,
-                                       err_buf, sizeof(err_buf))
-        != 0) {
+    int rc = -1;
+    llama_token *prefix_tokens = NULL;
+    llama_token *suffix_tokens = NULL;
+    int32_t n_prefix = 0;
+    int32_t n_suffix = 0;
+    llama_pos n_past = s2s->n_past;
+    llama_memory_t mem = NULL;
+    const struct llama_vocab *vocab = llama_model_get_vocab(s2s->model);
+
+    if (s2s_render_turn(s2s, &prefix_prompt, &suffix_prompt, err_buf, sizeof(err_buf)) != 0) {
         if (err_buf[0] != '\0') {
             fprintf(stderr, "lfm3-audio s2s: voice chat render failed: %s\n", err_buf);
         }
-        return -1;
+        goto finish;
     }
-
-    const struct llama_vocab *vocab = llama_model_get_vocab(s2s->model);
-    llama_token prefix_tokens[2048];
-    const int32_t n_prefix = llama_tokenize(vocab, prefix_prompt, (int32_t)strlen(prefix_prompt),
-                                            prefix_tokens, (int32_t)(sizeof(prefix_tokens) / sizeof(prefix_tokens[0])),
-                                            false, true);
-    if (n_prefix < 0) {
-        syllabix_chat_string_free(prefix_prompt);
-        syllabix_chat_string_free(suffix_prompt);
-        return -1;
+    if (s2s_tokenize_prompt(vocab, prefix_prompt, &prefix_tokens, &n_prefix) != 0) {
+        goto finish;
     }
-
-    llama_pos n_past = 0;
-    const int pre = s2s_decode_prompt_tokens(s2s, prefix_tokens, n_prefix, &n_past, abort_cb,
-                                               abort_user);
-    syllabix_chat_string_free(prefix_prompt);
-    if (pre != 0) {
-        syllabix_chat_string_free(suffix_prompt);
-        return pre == 1 ? 1 : -1;
+    if (s2s_tokenize_prompt(vocab, suffix_prompt, &suffix_tokens, &n_suffix) != 0) {
+        goto finish;
     }
 
     /* n_prompt must stay 0: non-zero selects live ASR, not voice-chat turn encoding. */
     struct mtmd_audio_stream_params sparams = mtmd_audio_stream_params_default();
     mtmd_audio_stream *stream = mtmd_audio_stream_init(s2s->mctx, sparams);
     if (stream == NULL) {
-        syllabix_chat_string_free(suffix_prompt);
-        return -1;
+        goto finish;
     }
 
     if (mtmd_audio_stream_push(stream, pcm_in, (size_t)n_samples) != 0) {
         mtmd_audio_stream_free(stream);
-        syllabix_chat_string_free(suffix_prompt);
-        return -1;
+        goto finish;
     }
     if (mtmd_audio_stream_flush(stream, true) != 0) {
         mtmd_audio_stream_free(stream);
-        syllabix_chat_string_free(suffix_prompt);
-        return -1;
+        goto finish;
+    }
+
+    const int64_t n_audio_rows = mtmd_audio_stream_get_n_rows_flushed(stream);
+    /* Voice-chat turns only reset seq_start on the first encoder rows of a conversation. */
+    (void)mtmd_audio_stream_is_seq_start(stream);
+
+    const uint32_t n_ctx_seq = llama_n_ctx_seq(s2s->ctx);
+    const llama_pos gen_reserve = s2s_gen_reserve_positions(cap, s2s->out_rate);
+    for (;;) {
+        const llama_pos need =
+            (llama_pos)n_prefix + (llama_pos)n_audio_rows + (llama_pos)n_suffix + 1 + gen_reserve;
+        if (s2s->n_past + need <= (llama_pos)n_ctx_seq) {
+            break;
+        }
+        if (s2s->n_past > 0) {
+            fprintf(stderr,
+                    "lfm3-audio s2s: context full (n_past=%d need=%lld n_ctx=%u), starting a new "
+                    "conversation\n",
+                    (int)s2s->n_past, (long long)need, n_ctx_seq);
+            s2s_conversation_reset(s2s);
+            syllabix_chat_string_free(prefix_prompt);
+            syllabix_chat_string_free(suffix_prompt);
+            prefix_prompt = NULL;
+            suffix_prompt = NULL;
+            free(prefix_tokens);
+            prefix_tokens = NULL;
+            free(suffix_tokens);
+            suffix_tokens = NULL;
+            n_prefix = 0;
+            n_suffix = 0;
+            if (s2s_render_turn(s2s, &prefix_prompt, &suffix_prompt, err_buf, sizeof(err_buf)) != 0) {
+                mtmd_audio_stream_free(stream);
+                goto finish;
+            }
+            if (s2s_tokenize_prompt(vocab, prefix_prompt, &prefix_tokens, &n_prefix) != 0) {
+                mtmd_audio_stream_free(stream);
+                goto finish;
+            }
+            if (s2s_tokenize_prompt(vocab, suffix_prompt, &suffix_tokens, &n_suffix) != 0) {
+                mtmd_audio_stream_free(stream);
+                goto finish;
+            }
+            continue;
+        }
+        fprintf(stderr, "lfm3-audio s2s: prompt exceeds context (need=%lld n_ctx=%u)\n",
+                (long long)need, n_ctx_seq);
+        mtmd_audio_stream_free(stream);
+        goto finish;
+    }
+    free(suffix_tokens);
+    suffix_tokens = NULL;
+
+    const int pre =
+        s2s_decode_prompt_tokens(s2s, prefix_tokens, n_prefix, &n_past, abort_cb, abort_user);
+    free(prefix_tokens);
+    prefix_tokens = NULL;
+    syllabix_chat_string_free(prefix_prompt);
+    prefix_prompt = NULL;
+    if (pre != 0) {
+        mtmd_audio_stream_free(stream);
+        rc = pre == 1 ? 1 : -1;
+        goto finish;
     }
 
     int64_t out_pcm = 0;
@@ -522,15 +722,14 @@ int syllabix_s2s_generate(
     for (;;) {
         if (s2s_aborted(abort_cb, abort_user)) {
             mtmd_audio_stream_free(stream);
-            syllabix_chat_string_free(suffix_prompt);
-            return 1;
+            rc = 1;
+            goto finish;
         }
         const int32_t n = mtmd_audio_stream_step(stream, LLAMA_TOKEN_NULL);
         if (n < 0) {
             if (n == -2) {
                 mtmd_audio_stream_free(stream);
-                syllabix_chat_string_free(suffix_prompt);
-                return -1;
+                goto finish;
             }
             break;
         }
@@ -540,21 +739,19 @@ int syllabix_s2s_generate(
         const float *rows = mtmd_audio_stream_get_output_embd(stream);
         if (rows == NULL) {
             mtmd_audio_stream_free(stream);
-            syllabix_chat_string_free(suffix_prompt);
-            return -1;
+            goto finish;
         }
         const int dec = s2s_decode_embd_rows(s2s, rows, n, &n_past, 0, abort_cb, abort_user);
         if (dec != 0) {
             mtmd_audio_stream_free(stream);
-            syllabix_chat_string_free(suffix_prompt);
-            return dec == 1 ? 1 : -1;
+            rc = dec == 1 ? 1 : -1;
+            goto finish;
         }
     }
     mtmd_audio_stream_free(stream);
 
     if (n_past <= 0) {
-        syllabix_chat_string_free(suffix_prompt);
-        return -1;
+        goto finish;
     }
 
     mtmd_helper_gen_audio_reset(s2s->gen);
@@ -570,9 +767,10 @@ int syllabix_s2s_generate(
     inp.seed = s2s->seed;
     if (mtmd_helper_gen_audio_set_input(s2s->gen, &inp) != 0) {
         syllabix_chat_string_free(suffix_prompt);
-        return -1;
+        goto finish;
     }
     syllabix_chat_string_free(suffix_prompt);
+    suffix_prompt = NULL;
 
     if (s2s->smpl != NULL) {
         llama_sampler_free(s2s->smpl);
@@ -580,16 +778,17 @@ int syllabix_s2s_generate(
     /* Do not apply mtmd_helper_gen_audio_get_logit_bias: live-ASR bias bans <|im_end|>. */
     s2s->smpl = s2s_make_sampler(s2s->model, vocab, s2s->seed, NULL, 0);
     if (s2s->smpl == NULL) {
-        return -1;
+        goto finish;
     }
 
     for (;;) {
         if (s2s_aborted(abort_cb, abort_user)) {
-            return 1;
+            rc = 1;
+            goto finish;
         }
         const int32_t remaining = mtmd_helper_gen_audio_step_prompt(s2s->gen, SYLLABIX_S2S_N_BATCH);
         if (remaining < 0) {
-            return -1;
+            goto finish;
         }
         if (remaining == 0) {
             break;
@@ -598,18 +797,28 @@ int syllabix_s2s_generate(
 
     const float *h_state = llama_get_embeddings_ith(s2s->ctx, -1);
     if (h_state == NULL) {
-        return -1;
+        goto finish;
     }
 
+    s2s->assist_open = true;
+
+    mem = llama_get_memory(s2s->ctx);
     llama_token sampled = LLAMA_TOKEN_NULL;
     bool stop = false;
     bool saw_audio_pcm = false;
     int32_t text_since_last_pcm = 0;
     while (!stop && out_pcm < cap) {
         if (s2s_aborted(abort_cb, abort_user)) {
-            return 1;
+            rc = 1;
+            goto finish;
         }
-        if (mtmd_helper_gen_audio_next_is_text(s2s->gen)) {
+        if (llama_memory_seq_pos_max(mem, 0) + 2 >= (llama_pos)n_ctx_seq) {
+            stop = true;
+            break;
+        }
+        s2s->assist_phase = mtmd_helper_gen_audio_next_is_text(s2s->gen) ? S2S_ASSIST_GEN_TEXT
+                                                                         : S2S_ASSIST_GEN_AUDIO;
+        if (s2s->assist_phase == S2S_ASSIST_GEN_TEXT) {
             text_since_last_pcm++;
             /* After codec EOS the helper stays in MODE_TEXT; interleaved bursts reset on PCM. */
             if (saw_audio_pcm && text_since_last_pcm > SYLLABIX_S2S_MIXED_MAX_CHUNK_TOKENS) {
@@ -622,28 +831,29 @@ int syllabix_s2s_generate(
                 stop = true;
             }
             if (s2s_maybe_append_sampled_text(s2s, sampled) != 0) {
-                return -1;
+                goto finish;
             }
         } else {
             sampled = LLAMA_TOKEN_NULL;
         }
         const float *h_next = NULL;
         if (mtmd_helper_gen_audio_step_gen(s2s->gen, sampled, h_state, &h_next, &stop) != 0) {
-            return -1;
+            goto finish;
         }
         int32_t rate = 0;
         const char *data = NULL;
         size_t data_len = 0;
         int64_t n_out = 0;
         if (mtmd_helper_gen_audio_get_output(s2s->gen, &rate, &data, &data_len, &n_out) != 0) {
-            return -1;
+            goto finish;
         }
         if (n_out > 0 && data != NULL && data_len >= (size_t)n_out * sizeof(float)) {
             out_pcm += n_out;
             saw_audio_pcm = true;
             text_since_last_pcm = 0;
             if (s2s_emit_pcm(rate, (const float *)data, n_out, 0, pcm_cb, pcm_user) != 0) {
-                return 1;
+                rc = 1;
+                goto finish;
             }
         }
         if (h_next != NULL) {
@@ -660,23 +870,47 @@ int syllabix_s2s_generate(
     }
 
     if (mtmd_helper_gen_audio_flush(s2s->gen) != 0) {
-        return s2s_aborted(abort_cb, abort_user) ? 1 : -1;
+        rc = s2s_aborted(abort_cb, abort_user) ? 1 : -1;
+        goto finish;
     }
     int32_t rate = 0;
     const char *data = NULL;
     size_t data_len = 0;
     int64_t n_out = 0;
     if (mtmd_helper_gen_audio_get_output(s2s->gen, &rate, &data, &data_len, &n_out) != 0) {
-        return -1;
+        goto finish;
     }
     if (n_out > 0 && data != NULL && data_len >= (size_t)n_out * sizeof(float)) {
         if (s2s_emit_pcm(rate, (const float *)data, n_out, 1, pcm_cb, pcm_user) != 0) {
-            return 1;
+            rc = 1;
+            goto finish;
         }
     } else {
         if (s2s_emit_pcm(rate, NULL, 0, 1, pcm_cb, pcm_user) != 0) {
-            return 1;
+            rc = 1;
+            goto finish;
         }
     }
-    return 0;
+    rc = 0;
+
+finish:
+    syllabix_chat_string_free(prefix_prompt);
+    syllabix_chat_string_free(suffix_prompt);
+    free(prefix_tokens);
+    free(suffix_tokens);
+    mem = llama_get_memory(s2s->ctx);
+    if (rc == 0) {
+        s2s->n_past = llama_memory_seq_pos_max(mem, 0) + 1;
+        return rc;
+    }
+    if (s2s->assist_open) {
+        if (s2s_close_assistant_on_interrupt(s2s, &n_past) != 0) {
+            s2s_conversation_reset(s2s);
+            return rc;
+        }
+        s2s->n_past = llama_memory_seq_pos_max(mem, 0) + 1;
+    } else {
+        s2s_conversation_reset(s2s);
+    }
+    return rc;
 }

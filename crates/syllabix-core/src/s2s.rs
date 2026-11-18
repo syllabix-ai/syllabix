@@ -14,6 +14,9 @@ pub const LFM3_AUDIO_2B_MMPROJ: &str = "lfm3-audio-2b-mmproj";
 /// (Voice chat: speech and text responses). It is not stored in the GGUF metadata.
 pub const LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT: &str = "Respond with interleaved text and audio.";
 
+/// Decoded into the KV cache on barge-in before end-of-turn. Must match `SYLLABIX_S2S_INTERRUPT_MARKER_TEXT` in `shim_s2s.c`.
+pub const S2S_INTERRUPT_MARKER: &str = "(interrupted)";
+
 /// One VAD-committed user utterance in, streamed assistant PCM out.
 #[cfg(all(feature = "ggml", any(feature = "lfm3-s2s", coverage)))]
 pub use crate::s2s_lfm3::Lfm3AudioEngine;

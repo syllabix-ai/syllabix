@@ -340,10 +340,31 @@ impl Llm for FailOnceLlm {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FakeAssistPhase {
+    Idle,
+    Audio,
+    Text,
+}
+
+#[derive(Clone, Debug)]
+pub struct FakeS2sCloseRecord {
+    pub phase: FakeAssistPhase,
+    pub marker: bool,
+    pub closed: bool,
+}
+
+type FakeS2sSeenLog = Arc<Mutex<Vec<(TurnId, Vec<TurnId>)>>>;
+
 /// Delayed echo S2S: streams the user utterance PCM back as assistant audio.
 pub struct FakeS2s {
     delay: Duration,
+    audio_delay: Duration,
+    text_delay: Duration,
     call_log: Arc<Mutex<Vec<TurnId>>>,
+    history: Arc<Mutex<Vec<TurnId>>>,
+    seen: FakeS2sSeenLog,
+    close_log: Arc<Mutex<Vec<(TurnId, FakeS2sCloseRecord)>>>,
 }
 
 impl FakeS2s {
@@ -351,7 +372,12 @@ impl FakeS2s {
     pub fn new() -> Self {
         Self {
             delay: Duration::ZERO,
+            audio_delay: Duration::ZERO,
+            text_delay: Duration::ZERO,
             call_log: Arc::new(Mutex::new(Vec::new())),
+            history: Arc::new(Mutex::new(Vec::new())),
+            seen: Arc::new(Mutex::new(Vec::new())),
+            close_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -359,13 +385,69 @@ impl FakeS2s {
     pub fn with_delay(delay: Duration) -> Self {
         Self {
             delay,
+            audio_delay: Duration::ZERO,
+            text_delay: Duration::ZERO,
             call_log: Arc::new(Mutex::new(Vec::new())),
+            history: Arc::new(Mutex::new(Vec::new())),
+            seen: Arc::new(Mutex::new(Vec::new())),
+            close_log: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Audio-shaped delay then text-shaped delay (for barge-in phase tests).
+    pub fn with_staged_delay(audio: Duration, text: Duration) -> Self {
+        Self {
+            delay: audio.saturating_add(text),
+            audio_delay: audio,
+            text_delay: text,
+            call_log: Arc::new(Mutex::new(Vec::new())),
+            history: Arc::new(Mutex::new(Vec::new())),
+            seen: Arc::new(Mutex::new(Vec::new())),
+            close_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     /// Shared generate log. Clone the `Arc` before moving the engine into the pipeline.
     pub fn call_log(&self) -> Arc<Mutex<Vec<TurnId>>> {
         Arc::clone(&self.call_log)
+    }
+
+    pub fn seen_at_generate(&self) -> FakeS2sSeenLog {
+        Arc::clone(&self.seen)
+    }
+
+    pub fn close_log(&self) -> Arc<Mutex<Vec<(TurnId, FakeS2sCloseRecord)>>> {
+        Arc::clone(&self.close_log)
+    }
+
+    fn record_close(&self, turn: TurnId, phase: FakeAssistPhase) {
+        self.close_log.lock().expect("close log").push((
+            turn,
+            FakeS2sCloseRecord {
+                phase,
+                marker: true,
+                closed: true,
+            },
+        ));
+        self.history.lock().expect("s2s history").push(turn);
+    }
+
+    fn wait_phase(
+        &self,
+        generation: crate::types::GenerationId,
+        cancel: &Cancel,
+        mut remaining: Duration,
+    ) -> Result<(), Error> {
+        let step = Duration::from_millis(1);
+        while remaining > Duration::ZERO {
+            if cancel.is_shutdown() || cancel.is_stale(generation) {
+                return Err(Error::Cancelled);
+            }
+            let slice = step.min(remaining);
+            std::thread::sleep(slice);
+            remaining = remaining.saturating_sub(slice);
+        }
+        Ok(())
     }
 }
 
@@ -396,33 +478,85 @@ impl S2sEngine for FakeS2s {
             });
         }
         let generation = cancel.generation();
+        let history_at_start = {
+            let history = self.history.lock().expect("s2s history");
+            history.clone()
+        };
         {
             let mut log = self.call_log.lock().expect("s2s call log");
             log.push(utterance.turn);
+            let mut seen = self.seen.lock().expect("s2s seen log");
+            seen.push((utterance.turn, history_at_start));
+        }
+
+        let text_wait = self.text_delay;
+        let text_first = self.audio_delay.is_zero() && text_wait > Duration::ZERO;
+        let audio_wait = if self.audio_delay > Duration::ZERO {
+            self.audio_delay
+        } else if text_first {
+            Duration::ZERO
+        } else {
+            self.delay
+        };
+
+        if text_first {
+            if let Err(Error::Cancelled) = self.wait_phase(generation, cancel, text_wait) {
+                self.record_close(utterance.turn, FakeAssistPhase::Text);
+                return Err(Error::Cancelled);
+            }
+        } else {
+            if let Err(Error::Cancelled) = self.wait_phase(generation, cancel, audio_wait) {
+                return Err(Error::Cancelled);
+            }
+
+            let pcm = utterance.pcm();
+            if text_wait > Duration::ZERO && !pcm.is_empty() {
+                on_audio(SynthesizedAudio {
+                    turn: utterance.turn,
+                    generation,
+                    index: 0,
+                    samples: pcm[..pcm.len().min(4)].to_vec(),
+                    is_last: false,
+                })?;
+            }
+
+            if text_wait > Duration::ZERO {
+                if let Err(Error::Cancelled) = self.wait_phase(generation, cancel, text_wait) {
+                    let phase = if text_wait > audio_wait {
+                        FakeAssistPhase::Text
+                    } else {
+                        FakeAssistPhase::Audio
+                    };
+                    self.record_close(utterance.turn, phase);
+                    return Err(Error::Cancelled);
+                }
+            }
         }
 
         let pcm = utterance.pcm();
-        let step = Duration::from_millis(1);
-        let mut remaining = self.delay;
-        while remaining > Duration::ZERO {
-            if cancel.is_shutdown() || cancel.is_stale(generation) {
-                return Err(Error::Cancelled);
-            }
-            let slice = step.min(remaining);
-            std::thread::sleep(slice);
-            remaining = remaining.saturating_sub(slice);
-        }
+
         if cancel.is_shutdown() || cancel.is_stale(generation) {
+            if text_wait > Duration::ZERO {
+                self.record_close(utterance.turn, FakeAssistPhase::Text);
+            }
             return Err(Error::Cancelled);
         }
 
         on_audio(SynthesizedAudio {
             turn: utterance.turn,
             generation,
-            index: 0,
+            index: if text_first || text_wait.is_zero() {
+                0
+            } else {
+                1
+            },
             samples: pcm,
             is_last: true,
         })?;
+        self.history
+            .lock()
+            .expect("s2s history")
+            .push(utterance.turn);
         Ok(())
     }
 }

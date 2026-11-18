@@ -8,12 +8,25 @@ use syllabix_core::config::{AgentConfig, PipelineMode};
 use syllabix_core::defaults::BuiltinDefaults;
 use syllabix_core::pipeline::LoopMode;
 use syllabix_core::testing::{
-    run_s2s_loop, scripted_frames, CollectingSink, FakeS2s, FakeVad, S2sStages,
+    run_s2s_loop, scripted_frames, CollectingSink, FakeAssistPhase, FakeS2s, FakeS2sCloseRecord,
+    FakeVad, S2sStages,
 };
 use syllabix_core::types::Utterance;
 use syllabix_core::{
-    AudioSink, Cancel, LoopConfig, Result, RuntimeControls, Session, SynthesizedAudio, TurnId,
+    AudioSink, Cancel, LoopConfig, LoopReport, Result, RuntimeControls, Session, SynthesizedAudio,
+    TurnId,
 };
+
+type FakeS2sCloseLog = Arc<Mutex<Vec<(TurnId, FakeS2sCloseRecord)>>>;
+type FakeS2sSeenLog = Arc<Mutex<Vec<(TurnId, Vec<TurnId>)>>>;
+type FakeS2sCallLog = Arc<Mutex<Vec<TurnId>>>;
+
+struct BargeS2sOutcome {
+    report: LoopReport,
+    sink: SharedSink,
+    calls: Vec<TurnId>,
+    seen: FakeS2sSeenLog,
+}
 
 #[derive(Clone)]
 struct SharedSink(Arc<Mutex<CollectingSink>>);
@@ -175,11 +188,69 @@ fn cascade_session_still_uses_six_worker_loop() {
     assert_eq!(report.tasks_exited, 6);
 }
 
-fn barge_s2s(barge_in: bool) -> (syllabix_core::LoopReport, SharedSink, Vec<TurnId>) {
+fn wait_for_generate_turn(call_log: &FakeS2sCallLog, turn: TurnId) {
+    while !call_log.lock().expect("call log").contains(&turn) {
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn wait_for_assistant_prefix(sink: &SharedSink, turn: TurnId) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if sink
+            .chunks()
+            .iter()
+            .any(|chunk| chunk.turn == turn && !chunk.is_last)
+        {
+            return;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    panic!(
+        "timeout waiting for non-final assistant audio on turn {}",
+        turn.0
+    );
+}
+
+fn wait_for_assistant_text_without_audio(sink: &SharedSink, turn: TurnId) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if !sink.chunks().iter().any(|chunk| chunk.turn == turn) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    panic!(
+        "timeout waiting for text-only assistant segment on turn {}",
+        turn.0
+    );
+}
+
+fn close_record_log(close_log: &FakeS2sCloseLog, turn: TurnId) -> FakeS2sCloseRecord {
+    close_log
+        .lock()
+        .expect("close log")
+        .iter()
+        .find(|(t, _)| *t == turn)
+        .map(|(_, r)| r.clone())
+        .expect("close record for turn")
+}
+
+fn history_at_generate_log(seen: &FakeS2sSeenLog, turn: TurnId) -> Vec<TurnId> {
+    seen.lock()
+        .expect("seen")
+        .iter()
+        .find(|(t, _)| *t == turn)
+        .map(|(_, h)| h.clone())
+        .unwrap_or_default()
+}
+
+fn barge_s2s(barge_in: bool) -> BargeS2sOutcome {
     let slow = SlowSink::new(Duration::from_millis(30));
     let sink = slow.shared();
     let engine = FakeS2s::with_delay(Duration::from_millis(25));
     let call_log = engine.call_log();
+    let seen = engine.seen_at_generate();
     let report = run_s2s_loop(
         LoopConfig {
             defaults: BuiltinDefaults::v0(),
@@ -198,19 +269,30 @@ fn barge_s2s(barge_in: bool) -> (syllabix_core::LoopReport, SharedSink, Vec<Turn
     )
     .expect("barge s2s");
     let calls = call_log.lock().expect("call log").clone();
-    (report, sink, calls)
+    BargeS2sOutcome {
+        report,
+        sink,
+        calls,
+        seen,
+    }
 }
 
 #[test]
 fn without_barge_in_speech_during_playback_is_discarded() {
-    let (report, _, calls) = barge_s2s(false);
+    let BargeS2sOutcome { report, calls, .. } = barge_s2s(false);
     assert_eq!(report.turns.len(), 1);
     assert_eq!(calls.len(), 1);
 }
 
 #[test]
 fn barge_in_cancels_playback_and_completes_second_turn() {
-    let (report, sink, calls) = barge_s2s(true);
+    let BargeS2sOutcome {
+        report,
+        sink,
+        calls,
+        seen,
+        ..
+    } = barge_s2s(true);
     assert!(sink.interrupted() >= 1);
     assert!(
         report.turns.iter().any(|t| t.id.0 == 1),
@@ -222,6 +304,218 @@ fn barge_in_cancels_playback_and_completes_second_turn() {
     );
     assert_eq!(calls[0], TurnId(0));
     assert_eq!(calls.last().copied(), Some(TurnId(1)));
+    assert!(
+        history_at_generate_log(&seen, TurnId(1)).contains(&TurnId(0)),
+        "turn 0 stays in memory after playback barge-in"
+    );
+}
+
+#[test]
+fn barge_in_mid_audio_puts_interrupt_marker() {
+    let engine = FakeS2s::with_staged_delay(Duration::from_millis(40), Duration::from_millis(40));
+    let close_log = engine.close_log();
+    let seen = engine.seen_at_generate();
+    let call_log = engine.call_log();
+    let sink = SharedSink::default();
+    let sink_wait = sink.clone();
+    let cancel = Cancel::new();
+    let cancel_thread = cancel.clone();
+    std::thread::spawn(move || {
+        wait_for_generate_turn(&call_log, TurnId(0));
+        wait_for_assistant_prefix(&sink_wait, TurnId(0));
+        cancel_thread.cancel_generation();
+    });
+    let report = run_s2s_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: None,
+            controls: RuntimeControls::new(true),
+        },
+        S2sStages {
+            vad: FakeVad::new(),
+            engine,
+            sink,
+        },
+        scripted_frames(2, 2, 1),
+        cancel,
+    )
+    .expect("mid-audio barge");
+    assert!(report.turns.iter().any(|t| t.id.0 == 1));
+    let record = close_record_log(&close_log, TurnId(0));
+    assert_eq!(record.phase, FakeAssistPhase::Audio);
+    assert!(record.marker);
+    assert!(record.closed);
+    assert!(
+        history_at_generate_log(&seen, TurnId(1)).contains(&TurnId(0)),
+        "turn 0 must stay in memory for turn 1"
+    );
+}
+
+#[test]
+fn barge_in_mid_text_puts_interrupt_marker() {
+    let engine = FakeS2s::with_staged_delay(Duration::ZERO, Duration::from_millis(40));
+    let close_log = engine.close_log();
+    let seen = engine.seen_at_generate();
+    let call_log = engine.call_log();
+    let sink = SharedSink::default();
+    let sink_wait = sink.clone();
+    let sink_assert = sink.clone();
+    let cancel = Cancel::new();
+    let cancel_thread = cancel.clone();
+    std::thread::spawn(move || {
+        wait_for_generate_turn(&call_log, TurnId(0));
+        wait_for_assistant_text_without_audio(&sink_wait, TurnId(0));
+        cancel_thread.cancel_generation();
+    });
+    let report = run_s2s_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: None,
+            controls: RuntimeControls::new(true),
+        },
+        S2sStages {
+            vad: FakeVad::new(),
+            engine,
+            sink,
+        },
+        scripted_frames(2, 2, 1),
+        cancel,
+    )
+    .expect("mid-text barge");
+    assert!(report.turns.iter().any(|t| t.id.0 == 1));
+    let record = close_record_log(&close_log, TurnId(0));
+    assert_eq!(record.phase, FakeAssistPhase::Text);
+    assert!(record.marker);
+    assert!(record.closed);
+    assert!(
+        !sink_assert
+            .chunks()
+            .iter()
+            .any(|chunk| chunk.turn == TurnId(0)),
+        "barge during text must close the segment before any assistant audio"
+    );
+    assert!(
+        history_at_generate_log(&seen, TurnId(1)).contains(&TurnId(0)),
+        "turn 0 must stay in memory for turn 1"
+    );
+}
+
+#[test]
+fn cancel_before_assistant_reply_does_not_leave_partial_turn_in_memory() {
+    let engine = FakeS2s::with_staged_delay(Duration::from_millis(80), Duration::from_millis(80));
+    let close_log = engine.close_log();
+    let seen = engine.seen_at_generate();
+    let call_log = engine.call_log();
+    let cancel = Cancel::new();
+    let cancel_thread = cancel.clone();
+    std::thread::spawn(move || {
+        wait_for_generate_turn(&call_log, TurnId(0));
+        cancel_thread.cancel_generation();
+    });
+    let report = run_s2s_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: None,
+            controls: RuntimeControls::new(true),
+        },
+        S2sStages {
+            vad: FakeVad::new(),
+            engine,
+            sink: SharedSink::default(),
+        },
+        scripted_frames(2, 2, 1),
+        cancel,
+    )
+    .expect("cancel before assistant reply");
+    assert!(report.turns.iter().any(|t| t.id.0 == 1));
+    assert!(
+        close_log
+            .lock()
+            .expect("close log")
+            .iter()
+            .all(|(t, _)| *t != TurnId(0)),
+        "turn 0 must not get an interrupt close before any assistant output"
+    );
+    assert!(
+        !history_at_generate_log(&seen, TurnId(1)).contains(&TurnId(0)),
+        "turn 1 must not inherit a partial turn 0 in memory"
+    );
+}
+
+#[test]
+fn barge_in_during_playback_keeps_closed_turn_in_memory() {
+    let slow = SlowSink::new(Duration::from_millis(80));
+    let _sink = slow.shared();
+    let engine = FakeS2s::new();
+    let seen = engine.seen_at_generate();
+    let report = run_s2s_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: None,
+            controls: RuntimeControls::new(true),
+        },
+        S2sStages {
+            vad: FakeVad::new(),
+            engine,
+            sink: slow,
+        },
+        scripted_frames(2, 2, 1),
+        Cancel::new(),
+    )
+    .expect("barge playback");
+    assert!(report.turns.iter().any(|t| t.id.0 == 1));
+    let turn1_history = seen
+        .lock()
+        .expect("seen")
+        .iter()
+        .find(|(t, _)| *t == TurnId(1))
+        .map(|(_, h)| h.clone())
+        .unwrap_or_default();
+    assert_eq!(
+        turn1_history,
+        vec![TurnId(0)],
+        "barge during playback keeps the prior turn in memory"
+    );
+}
+
+#[test]
+fn two_turns_without_barge_keeps_memory() {
+    let engine = FakeS2s::new();
+    let seen = engine.seen_at_generate();
+    let report = run_s2s_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: None,
+            turn_debug: None,
+            controls: RuntimeControls::new(false),
+        },
+        S2sStages {
+            vad: FakeVad::new(),
+            engine,
+            sink: SharedSink::default(),
+        },
+        scripted_frames(2, 2, 1),
+        Cancel::new(),
+    )
+    .expect("two turns");
+    assert_eq!(report.turns.len(), 2);
+    let turn1_history = seen
+        .lock()
+        .expect("seen")
+        .iter()
+        .find(|(t, _)| *t == TurnId(1))
+        .map(|(_, h)| h.clone())
+        .unwrap_or_default();
+    assert_eq!(turn1_history, vec![TurnId(0)]);
 }
 
 #[test]

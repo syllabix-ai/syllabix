@@ -45,11 +45,22 @@ impl Lfm3AudioEngine {
         n_threads: i32,
         seed: u32,
     ) -> Result<Self> {
+        Self::from_paths_with_n_ctx(model, mmproj, n_threads, seed, 0)
+    }
+
+    pub fn from_paths_with_n_ctx(
+        model: impl AsRef<Path>,
+        mmproj: impl AsRef<Path>,
+        n_threads: i32,
+        seed: u32,
+        n_ctx: u32,
+    ) -> Result<Self> {
         let ctx = Lfm3AudioContext::load(
             model,
             mmproj,
             n_threads,
             seed,
+            n_ctx,
             LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
         )
         .map_err(|message| Error::Provider {
@@ -109,6 +120,14 @@ impl Lfm3AudioEngine {
     /// Native PCM sample count from the most recent `generate` (before rate conversion).
     pub fn last_native_out_samples(&self) -> u64 {
         self.last_native_out_samples
+    }
+
+    pub fn n_past(&self) -> i32 {
+        self.ctx.n_past()
+    }
+
+    pub fn reset_conversation(&mut self) {
+        self.ctx.reset();
     }
 
     fn utterance_to_f32_in(&self, utterance: &Utterance) -> Result<Vec<f32>> {
@@ -291,6 +310,7 @@ mod tests {
                     "fake-mmproj",
                     1,
                     0,
+                    0,
                     LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
                 )
                 .expect("fake ctx"),
@@ -318,6 +338,7 @@ mod tests {
                 "fake-s2s",
                 "fake-mmproj",
                 1,
+                0,
                 0,
                 LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
             )
@@ -359,6 +380,7 @@ mod tests {
                 "fake-s2s",
                 "fake-mmproj",
                 1,
+                0,
                 0,
                 LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
             )
@@ -463,6 +485,7 @@ mod tests {
                 "fake-mmproj",
                 1,
                 0,
+                0,
                 LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
             )
             .expect("coverage ctx"),
@@ -497,6 +520,7 @@ mod tests {
                 "fake-mmproj",
                 1,
                 0,
+                0,
                 LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
             )
             .expect("coverage ctx"),
@@ -529,6 +553,7 @@ mod tests {
                 "fake-s2s",
                 "fake-mmproj",
                 1,
+                0,
                 0,
                 LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
             )
@@ -565,6 +590,7 @@ mod tests {
                 "fake-mmproj",
                 1,
                 0,
+                0,
                 LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
             )
             .expect("badrate"),
@@ -594,6 +620,7 @@ mod tests {
                 "fake-mmproj",
                 1,
                 0,
+                0,
                 LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
             )
             .expect("in24k"),
@@ -621,6 +648,7 @@ mod tests {
                 "fake-s2s-nativeerr",
                 "fake-mmproj",
                 1,
+                0,
                 0,
                 LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
             )
@@ -650,6 +678,7 @@ mod tests {
                 "fake-s2s",
                 "fake-mmproj",
                 1,
+                0,
                 0,
                 LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
             )
@@ -687,6 +716,7 @@ mod tests {
                 "fake-s2s",
                 "fake-mmproj",
                 1,
+                0,
                 0,
                 LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
             )

@@ -56,6 +56,10 @@ impl S2sEngine for DynS2s {
     ) -> Result<()> {
         self.0.generate(utterance, cancel, on_audio)
     }
+
+    fn last_text(&self) -> Option<&str> {
+        self.0.last_text()
+    }
 }
 
 impl Vad for DynVad {

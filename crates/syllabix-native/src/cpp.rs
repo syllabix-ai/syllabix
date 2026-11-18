@@ -209,6 +209,7 @@ mod ffi {
             mmproj_path: *const c_char,
             n_threads: c_int,
             seed: u32,
+            n_ctx: c_int,
             voice_chat_system_prompt: *const c_char,
         ) -> *mut S2sHandle;
         pub fn syllabix_s2s_free(s2s: *mut S2sHandle);
@@ -216,6 +217,8 @@ mod ffi {
         pub fn syllabix_s2s_out_rate(s2s: *const S2sHandle) -> c_int;
         pub fn syllabix_s2s_n_gpu_layers(s2s: *const S2sHandle) -> c_int;
         pub fn syllabix_s2s_last_text(s2s: *const S2sHandle) -> *const c_char;
+        pub fn syllabix_s2s_reset(s2s: *mut S2sHandle);
+        pub fn syllabix_s2s_n_past(s2s: *const S2sHandle) -> c_int;
         pub fn syllabix_s2s_generate(
             s2s: *mut S2sHandle,
             pcm_in: *const f32,
@@ -284,6 +287,9 @@ mod ffi {
 
     #[cfg(coverage)]
     static COVERAGE_S2S_MODEL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+    #[cfg(coverage)]
+    static COVERAGE_S2S_N_PAST: std::sync::Mutex<i32> = std::sync::Mutex::new(0);
 
     #[cfg(coverage)]
     fn fail(text: &str, needle: &str) -> bool {
@@ -776,6 +782,7 @@ mod ffi {
         _mmproj_path: *const c_char,
         _n_threads: c_int,
         _seed: u32,
+        _n_ctx: c_int,
         _voice_chat_system_prompt: *const c_char,
     ) -> *mut S2sHandle {
         let path = text(model_path);
@@ -785,6 +792,9 @@ mod ffi {
         if fail(&path, "fail") {
             std::ptr::null_mut()
         } else {
+            if let Ok(mut past) = COVERAGE_S2S_N_PAST.lock() {
+                *past = 0;
+            }
             std::ptr::dangling_mut::<S2sHandle>()
         }
     }
@@ -866,7 +876,22 @@ mod ffi {
                 return 1;
             }
         }
+        if let Ok(mut past) = COVERAGE_S2S_N_PAST.lock() {
+            *past += 37;
+        }
         0
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_s2s_reset(_s2s: *mut S2sHandle) {
+        if let Ok(mut past) = COVERAGE_S2S_N_PAST.lock() {
+            *past = 0;
+        }
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_s2s_n_past(_s2s: *const S2sHandle) -> c_int {
+        COVERAGE_S2S_N_PAST.lock().map(|p| *p).unwrap_or(0)
     }
 
     #[cfg(all(coverage, feature = "parakeet"))]
@@ -1932,6 +1957,7 @@ impl Lfm3AudioContext {
         mmproj_path: impl AsRef<Path>,
         n_threads: i32,
         seed: u32,
+        n_ctx: u32,
         voice_chat_system_prompt: &str,
     ) -> Result<Self, String> {
         hush_logs();
@@ -1953,6 +1979,7 @@ impl Lfm3AudioContext {
                 c_mmproj.as_ptr(),
                 n_threads,
                 seed,
+                n_ctx as c_int,
                 c_system.as_ptr(),
             )
         };
@@ -1982,6 +2009,16 @@ impl Lfm3AudioContext {
 
     pub fn n_gpu_layers(&self) -> i32 {
         unsafe { ffi::syllabix_s2s_n_gpu_layers(self.raw) }
+    }
+
+    /// Clear KV and conversation position.
+    pub fn reset(&mut self) {
+        let _ggml = ggml_lock();
+        unsafe { ffi::syllabix_s2s_reset(self.raw) };
+    }
+
+    pub fn n_past(&self) -> i32 {
+        unsafe { ffi::syllabix_s2s_n_past(self.raw) }
     }
 
     /// Text sampled during the last successful `generate_streaming`.
@@ -2576,6 +2613,7 @@ mod tests {
             "/no/such/mmproj.gguf",
             1,
             0,
+            0,
             VOICE_CHAT_SYSTEM,
         ) {
             Err(err) => err,
@@ -2807,9 +2845,9 @@ mod tests {
     fn coverage_exercises_lfm3_s2s_wrapper_without_weights() {
         const VOICE_CHAT_SYSTEM: &str = "Respond with interleaved text and audio.";
         assert!(
-            Lfm3AudioContext::load("fail-s2s", "fake-mmproj", 1, 0, VOICE_CHAT_SYSTEM).is_err()
+            Lfm3AudioContext::load("fail-s2s", "fake-mmproj", 1, 0, 0, VOICE_CHAT_SYSTEM).is_err()
         );
-        let mut ctx = Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0, VOICE_CHAT_SYSTEM)
+        let mut ctx = Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0, 0, VOICE_CHAT_SYSTEM)
             .expect("fake context");
         assert_eq!(ctx.in_rate_hz(), 16_000);
         assert_eq!(ctx.out_rate_hz(), 24_000);
@@ -2834,6 +2872,14 @@ mod tests {
         assert_eq!(windows.len(), 2);
         assert!(windows[1].1.is_empty());
         assert!(windows[1].2);
+        assert_eq!(ctx.n_past(), 37);
+        ctx.reset();
+        assert_eq!(ctx.n_past(), 0);
+        unsafe {
+            ctx.generate_streaming(&[0.0], 0, None, std::ptr::null_mut(), &mut |_, _, _| Ok(()))
+                .unwrap();
+        }
+        assert_eq!(ctx.n_past(), 37);
         let cancel = crate::Cancel::new();
         let cancel_ptr = &cancel as *const crate::Cancel as *mut c_void;
         unsafe extern "C" fn abort_now(user: *mut c_void) -> bool {
@@ -2861,6 +2907,7 @@ mod tests {
             "fake-s2s-nativeerr",
             "fake-mmproj",
             1,
+            0,
             0,
             "Respond with interleaved text and audio.",
         )

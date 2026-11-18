@@ -88,6 +88,6 @@ Local speech-to-speech is not an STT, LLM, or TTS menu id. Select it with `pipel
 | --- | --- | --- |
 | `lfm3-audio-2b` | English-only experimental voice chat (LFM 1.0). The turn uses the model’s default GGUF chat template in mixed text+audio mode ([Voice chat](https://huggingface.co/LiquidAI/LFM3-Audio-2B#voice-chat-speech-and-text-responses)). Weights fetch on first s2s run only. Indic / code-switched voice chat remains the cascade path (Hima, Indic-Mio, and related ids). | [model card](https://huggingface.co/LiquidAI/LFM3-Audio-2B), [GGUF repo](https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF), [NOTICE](../NOTICE) |
 
-Silero VAD still commits each user turn. `run --barge-in` still interrupts playback on user speech; this path is turn-based, not full duplex. Loop diagram: [architecture](architecture.md#speech-to-speech-pipelinemode-s2s).
+Silero VAD still commits each user turn. `run --barge-in` still interrupts playback on user speech; this path is turn-based, not full duplex. Assistant replies stay in the conversation until the context is full; a barged-in reply is closed in-cache so the next user turn can continue. Loop diagram: [architecture](architecture.md#speech-to-speech-pipelinemode-s2s).
 
 Contributor pins, ggml patches, and llama-bench: [contributing.md](contributing.md#models).
