@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use syllabix_core::config::{AgentConfig, PipelineMode, S2sConfig};
 use syllabix_core::models::{HttpFetcher, StderrProgress};
 use syllabix_core::pipeline::{LoopEvent, LoopMode};
-use syllabix_core::s2s::{Lfm3AudioEngine, S2sEngine, LFM3_AUDIO_2B};
+use syllabix_core::s2s::{Lfm3AudioEngine, S2sEngine, LFM3_AUDIO_2B, LFM3_AUDIO_2B_MMPROJ};
 use syllabix_core::testing::CollectingSink;
 use syllabix_core::types::{SynthesizedAudio, TurnId, FRAME_SAMPLES};
 use syllabix_core::vad::END_SILENCE_FRAMES;
@@ -20,6 +20,7 @@ use syllabix_core::{
     audio::{read_wav, record_fixture_to_frames},
     Cancel, ModelCache, Result, Session, Utterance,
 };
+use syllabix_native::Lfm3AudioContext;
 
 use crate::{hex, native, skip_unless_model};
 
@@ -322,5 +323,40 @@ fn assert_engine_honours_cancel(engine: &mut Lfm3AudioEngine) {
         start.elapsed() < Duration::from_secs(5),
         "engine cancel took {:?}, budget is 5 s",
         start.elapsed()
+    );
+}
+
+#[test]
+fn lfm3_s2s_n_gpu_layers_matches_host() {
+    skip_unless_model!(LFM3_AUDIO_2B);
+    let _native = native();
+    let cache = ModelCache::v0();
+    let manifest = syllabix_native::models::Manifest::v0();
+    let mut progress = StderrProgress::new();
+    let cancel = Cancel::new();
+    let fetcher = HttpFetcher;
+    let model = cache
+        .resolve(
+            manifest.asset(LFM3_AUDIO_2B).expect("manifest backbone"),
+            &fetcher,
+            &mut progress,
+            &cancel,
+        )
+        .expect("model path");
+    let mmproj = cache
+        .resolve(
+            manifest
+                .asset(LFM3_AUDIO_2B_MMPROJ)
+                .expect("manifest mmproj"),
+            &fetcher,
+            &mut progress,
+            &cancel,
+        )
+        .expect("mmproj path");
+    let ctx = Lfm3AudioContext::load(&model, &mmproj, N_THREADS, u32::MAX).expect("load s2s");
+    assert_eq!(
+        ctx.n_gpu_layers(),
+        syllabix_native::llama_n_gpu_layers(),
+        "S2S must use the same GPU placement as cascade LLM and Whisper"
     );
 }

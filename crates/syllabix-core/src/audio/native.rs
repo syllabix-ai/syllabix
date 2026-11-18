@@ -1013,6 +1013,7 @@ pub struct NativePlayback {
     echo_ring: Option<Arc<SampleRing>>,
     jitter: JitterBuffer,
     ring_underruns_seen: u64,
+    underrun_warn_turn: Option<crate::types::TurnId>,
     conv: PcmConverter,
     watch: Option<PlaybackWatch>,
     drain: PlaybackDrain,
@@ -1067,6 +1068,7 @@ impl NativePlayback {
                 device_format,
                 jitter: JitterBuffer::new(device_format.sample_rate_hz, device_format.channels),
                 ring_underruns_seen: opened.ring.underruns(),
+                underrun_warn_turn: None,
                 ring: opened.ring,
                 echo_ring: opened.echo_ring,
                 watch,
@@ -1105,6 +1107,10 @@ impl AudioSink for NativePlayback {
         let underruns = self.ring.underruns();
         if underruns > self.ring_underruns_seen {
             self.jitter.note_underrun();
+            if self.underrun_warn_turn != Some(audio.turn) {
+                eprintln!("speaker underrun: generation slower than playback");
+                self.underrun_warn_turn = Some(audio.turn);
+            }
         }
         self.ring_underruns_seen = underruns;
 
@@ -1379,6 +1385,7 @@ mod tests {
             echo_ring: None,
             jitter: JitterBuffer::new(device_format.sample_rate_hz, device_format.channels),
             ring_underruns_seen: ring.underruns(),
+            underrun_warn_turn: None,
             conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
             watch: None,
             drain: PlaybackDrain::new(),
@@ -1962,6 +1969,7 @@ mod tests {
             echo_ring: None,
             jitter: JitterBuffer::new(device_format.sample_rate_hz, device_format.channels),
             ring_underruns_seen: ring.underruns(),
+            underrun_warn_turn: None,
             conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
             watch: Some(watch.clone()),
             drain: PlaybackDrain::new(),
@@ -2031,6 +2039,7 @@ mod tests {
             echo_ring: None,
             jitter: JitterBuffer::new(device_format.sample_rate_hz, device_format.channels),
             ring_underruns_seen: ring.underruns(),
+            underrun_warn_turn: None,
             conv: PcmConverter::new(PcmFormat::v0(), device_format).expect("v0 converter"),
             watch: None,
             drain: PlaybackDrain::new(),
@@ -2063,6 +2072,36 @@ mod tests {
             started.elapsed()
         );
         assert_eq!(playback.ring.occupancy(), 0);
+    }
+
+    #[test]
+    fn play_reports_speaker_underrun_once_per_turn() {
+        let mut playback = test_playback();
+        let cancel = Cancel::new();
+        let turn0 = crate::types::TurnId(0);
+        let turn1 = crate::types::TurnId(1);
+        let mut sink = [0.0f32; 8];
+        playback.ring.try_pop_slice(&mut sink);
+        assert!(playback.ring.underruns() > playback.ring_underruns_seen);
+
+        let chunk = |turn, index| SynthesizedAudio {
+            turn,
+            generation: cancel.generation(),
+            index,
+            samples: vec![512; 480],
+            is_last: false,
+        };
+
+        playback.play(chunk(turn0, 0), &cancel).expect("play");
+        assert_eq!(playback.underrun_warn_turn, Some(turn0));
+
+        playback.ring.try_pop_slice(&mut sink);
+        playback.play(chunk(turn0, 1), &cancel).expect("play");
+        assert_eq!(playback.underrun_warn_turn, Some(turn0));
+
+        playback.ring.try_pop_slice(&mut sink);
+        playback.play(chunk(turn1, 0), &cancel).expect("play");
+        assert_eq!(playback.underrun_warn_turn, Some(turn1));
     }
 
     // Windows hosted runners can access-violate inside the audio driver while

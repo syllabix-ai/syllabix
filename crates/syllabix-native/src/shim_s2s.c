@@ -2,7 +2,7 @@
  * mtmd_audio_stream_* then mtmd_helper_gen_audio_* on the shared ggml.
  *
  * Mirrors shim_tts.c: abort callbacks between steps and streaming native-rate
- * f32 PCM. CPU-only in this stack (n_gpu_layers = 0).
+ * f32 PCM. GPU placement follows syllabix_llama_n_gpu_layers / whisper_use_gpu.
  */
 
 #include "syllabix_native.h"
@@ -32,6 +32,7 @@ struct syllabix_s2s {
     mtmd_helper_gen_audio *gen;
     int in_rate;
     int out_rate;
+    int n_gpu_layers;
     unsigned int seed;
 };
 
@@ -127,7 +128,8 @@ struct syllabix_s2s *syllabix_s2s_load_unguarded(
     llama_backend_init();
 
     struct llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0;
+    const int n_gpu_layers = syllabix_llama_n_gpu_layers();
+    model_params.n_gpu_layers = n_gpu_layers;
 
     struct llama_model *model = llama_model_load_from_file(model_path, model_params);
     if (model == NULL) {
@@ -141,7 +143,7 @@ struct syllabix_s2s *syllabix_s2s_load_unguarded(
     ctx_params.n_ubatch = SYLLABIX_S2S_N_BATCH;
     ctx_params.n_threads = n_threads;
     ctx_params.n_threads_batch = n_threads;
-    ctx_params.offload_kqv = false;
+    ctx_params.offload_kqv = n_gpu_layers != 0;
 
     struct llama_context *ctx = llama_init_from_model(model, ctx_params);
     if (ctx == NULL) {
@@ -150,7 +152,7 @@ struct syllabix_s2s *syllabix_s2s_load_unguarded(
     }
 
     struct mtmd_context_params mtmd_params = mtmd_context_params_default();
-    mtmd_params.use_gpu = false;
+    mtmd_params.use_gpu = syllabix_whisper_use_gpu() != 0;
     mtmd_params.print_timings = false;
     mtmd_context *mctx = mtmd_init_from_file(mmproj_path, model, mtmd_params);
     if (mctx == NULL) {
@@ -213,6 +215,7 @@ struct syllabix_s2s *syllabix_s2s_load_unguarded(
     s2s->gen = gen;
     s2s->in_rate = in_rate;
     s2s->out_rate = info.sample_rate;
+    s2s->n_gpu_layers = n_gpu_layers;
     s2s->seed = seed;
     return s2s;
 }
@@ -223,6 +226,10 @@ int syllabix_s2s_in_rate(const struct syllabix_s2s *s2s) {
 
 int syllabix_s2s_out_rate(const struct syllabix_s2s *s2s) {
     return s2s != NULL ? s2s->out_rate : 0;
+}
+
+int syllabix_s2s_n_gpu_layers(const struct syllabix_s2s *s2s) {
+    return s2s != NULL ? s2s->n_gpu_layers : 0;
 }
 
 void syllabix_s2s_free(struct syllabix_s2s *s2s) {
