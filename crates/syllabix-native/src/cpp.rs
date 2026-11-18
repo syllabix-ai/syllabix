@@ -228,6 +228,8 @@ mod ffi {
             abort_user: *mut c_void,
             pcm_cb: Option<unsafe extern "C" fn(i32, *const f32, i64, c_int, *mut c_void) -> c_int>,
             pcm_user: *mut c_void,
+            text_cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
+            text_user: *mut c_void,
         ) -> c_int;
     }
 
@@ -841,6 +843,8 @@ mod ffi {
         abort_user: *mut c_void,
         cb: Option<unsafe extern "C" fn(i32, *const f32, i64, c_int, *mut c_void) -> c_int>,
         user: *mut c_void,
+        text_cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
+        text_user: *mut c_void,
     ) -> c_int {
         if pcm.is_null() || n_samples < 1 {
             return -1;
@@ -873,6 +877,18 @@ mod ffi {
                 }
             }
             if cb(pcm_rate, std::ptr::null(), 0, 1, user) != 0 {
+                return 1;
+            }
+        }
+        if let Some(text_cb) = text_cb {
+            const PIECES: &[&str] = &["fake ", "s2s ", "reply"];
+            for piece in PIECES {
+                let c_piece = CString::new(*piece).unwrap();
+                if text_cb(c_piece.as_ptr(), 0, text_user) != 0 {
+                    return 1;
+                }
+            }
+            if text_cb(std::ptr::null(), 1, text_user) != 0 {
                 return 1;
             }
         }
@@ -1940,6 +1956,7 @@ pub enum Lfm3S2sError {
 }
 
 type Lfm3PcmCallback<'a> = dyn FnMut(i32, &[f32], bool) -> Result<(), Lfm3S2sError> + 'a;
+type Lfm3TextCallback<'a> = dyn FnMut(&str, bool) -> Result<(), Lfm3S2sError> + 'a;
 
 /// In-process LFM3-Audio S2S context (backbone + mmproj).
 pub struct Lfm3AudioContext {
@@ -2021,7 +2038,7 @@ impl Lfm3AudioContext {
         unsafe { ffi::syllabix_s2s_n_past(self.raw) }
     }
 
-    /// Text sampled during the last successful `generate_streaming`.
+    /// Text sampled during the last `generate_streaming`, including a cancelled partial turn.
     pub fn last_text(&self) -> &str {
         unsafe {
             let ptr = ffi::syllabix_s2s_last_text(self.raw);
@@ -2043,12 +2060,14 @@ impl Lfm3AudioContext {
         abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
         abort_user: *mut c_void,
         on_pcm: &mut Lfm3PcmCallback<'_>,
+        on_text: &mut Lfm3TextCallback<'_>,
     ) -> Result<(), Lfm3S2sError> {
         if pcm_in.is_empty() {
             return Err(Lfm3S2sError::Failed("empty utterance pcm".into()));
         }
-        let mut stream = Lfm3PcmStream {
+        let mut stream = Lfm3S2sStream {
             on_pcm,
+            on_text,
             error: None,
         };
         let _ggml = ggml_lock();
@@ -2061,7 +2080,9 @@ impl Lfm3AudioContext {
                 abort,
                 abort_user,
                 Some(lfm3_pcm_callback),
-                (&mut stream as *mut Lfm3PcmStream<'_>).cast(),
+                (&mut stream as *mut Lfm3S2sStream<'_>).cast(),
+                Some(lfm3_text_callback),
+                (&mut stream as *mut Lfm3S2sStream<'_>).cast(),
             )
         };
         if let Some(err) = stream.error {
@@ -2087,8 +2108,9 @@ impl Drop for Lfm3AudioContext {
     }
 }
 
-struct Lfm3PcmStream<'a> {
+struct Lfm3S2sStream<'a> {
     on_pcm: &'a mut Lfm3PcmCallback<'a>,
+    on_text: &'a mut Lfm3TextCallback<'a>,
     error: Option<Lfm3S2sError>,
 }
 
@@ -2102,13 +2124,36 @@ unsafe extern "C" fn lfm3_pcm_callback(
     if user.is_null() || n_samples < 0 || (n_samples > 0 && pcm.is_null()) {
         return -1;
     }
-    let stream = unsafe { &mut *(user as *mut Lfm3PcmStream<'_>) };
+    let stream = unsafe { &mut *(user as *mut Lfm3S2sStream<'_>) };
     let samples = if n_samples == 0 {
         &[]
     } else {
         unsafe { std::slice::from_raw_parts(pcm, n_samples as usize) }
     };
     match (stream.on_pcm)(sample_rate, samples, is_last != 0) {
+        Ok(()) => 0,
+        Err(err) => {
+            stream.error = Some(err);
+            1
+        }
+    }
+}
+
+unsafe extern "C" fn lfm3_text_callback(
+    text: *const c_char,
+    is_last: c_int,
+    user: *mut c_void,
+) -> c_int {
+    if user.is_null() {
+        return -1;
+    }
+    let stream = unsafe { &mut *(user as *mut Lfm3S2sStream<'_>) };
+    let piece = if text.is_null() {
+        ""
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(text).to_str().unwrap_or("") }
+    };
+    match (stream.on_text)(piece, is_last != 0) {
         Ok(()) => 0,
         Err(err) => {
             stream.error = Some(err);
@@ -2852,11 +2897,19 @@ mod tests {
         assert_eq!(ctx.in_rate_hz(), 16_000);
         assert_eq!(ctx.out_rate_hz(), 24_000);
         assert!(unsafe {
-            ctx.generate_streaming(&[], 0, None, std::ptr::null_mut(), &mut |_, _, _| Ok(()))
+            ctx.generate_streaming(
+                &[],
+                0,
+                None,
+                std::ptr::null_mut(),
+                &mut |_, _, _| Ok(()),
+                &mut |_, _| Ok(()),
+            )
         }
         .is_err());
         let mut windows = Vec::new();
         unsafe {
+            let mut text_pieces = Vec::new();
             ctx.generate_streaming(
                 &[0.0, 0.1],
                 0,
@@ -2866,8 +2919,15 @@ mod tests {
                     windows.push((rate, pcm.to_vec(), last));
                     Ok(())
                 },
+                &mut |piece, last| {
+                    text_pieces.push((piece.to_string(), last));
+                    Ok(())
+                },
             )
             .unwrap();
+            let joined: String = text_pieces.iter().map(|(s, _)| s.as_str()).collect();
+            assert_eq!(joined, "fake s2s reply");
+            assert!(text_pieces.last().is_some_and(|(_, last)| *last));
         }
         assert_eq!(windows.len(), 2);
         assert!(windows[1].1.is_empty());
@@ -2876,8 +2936,15 @@ mod tests {
         ctx.reset();
         assert_eq!(ctx.n_past(), 0);
         unsafe {
-            ctx.generate_streaming(&[0.0], 0, None, std::ptr::null_mut(), &mut |_, _, _| Ok(()))
-                .unwrap();
+            ctx.generate_streaming(
+                &[0.0],
+                0,
+                None,
+                std::ptr::null_mut(),
+                &mut |_, _, _| Ok(()),
+                &mut |_, _| Ok(()),
+            )
+            .unwrap();
         }
         assert_eq!(ctx.n_past(), 37);
         let cancel = crate::Cancel::new();
@@ -2893,14 +2960,20 @@ mod tests {
                     Some(abort_now),
                     cancel_ptr,
                     &mut |_, _, _| Ok(()),
+                    &mut |_, _| Ok(()),
                 )
             },
             Err(Lfm3S2sError::Cancelled)
         );
         assert!(unsafe {
-            ctx.generate_streaming(&[0.0], 0, None, std::ptr::null_mut(), &mut |_, _, _| {
-                Err(Lfm3S2sError::Failed("pcm callback".into()))
-            })
+            ctx.generate_streaming(
+                &[0.0],
+                0,
+                None,
+                std::ptr::null_mut(),
+                &mut |_, _, _| Err(Lfm3S2sError::Failed("pcm callback".into())),
+                &mut |_, _| Ok(()),
+            )
         }
         .is_err());
         let mut err_ctx = Lfm3AudioContext::load(
@@ -2913,7 +2986,14 @@ mod tests {
         )
         .expect("nativeerr");
         assert!(unsafe {
-            err_ctx.generate_streaming(&[0.0], 0, None, std::ptr::null_mut(), &mut |_, _, _| Ok(()))
+            err_ctx.generate_streaming(
+                &[0.0],
+                0,
+                None,
+                std::ptr::null_mut(),
+                &mut |_, _, _| Ok(()),
+                &mut |_, _| Ok(()),
+            )
         }
         .is_err());
     }

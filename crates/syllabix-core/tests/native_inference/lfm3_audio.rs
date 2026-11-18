@@ -189,12 +189,17 @@ fn lfm3_audio_engine_generate() {
     let t0 = Instant::now();
     let mut engine = shared_engine();
     engine
-        .generate(&utterance, &Cancel::new(), &mut |audio| {
-            if first_audio_at.is_none() && !audio.samples.is_empty() {
-                first_audio_at = Some(Instant::now());
-            }
-            Ok(())
-        })
+        .generate(
+            &utterance,
+            &Cancel::new(),
+            &mut |audio| {
+                if first_audio_at.is_none() && !audio.samples.is_empty() {
+                    first_audio_at = Some(Instant::now());
+                }
+                Ok(())
+            },
+            &mut |_, _| Ok(()),
+        )
         .expect("engine generate");
     let reply_text = engine
         .last_text()
@@ -298,7 +303,12 @@ fn assert_engine_honours_cancel(engine: &mut Lfm3AudioEngine) {
     let already = Cancel::new();
     already.shutdown();
     let pre = engine
-        .generate(&short_fixture_utterance(0.1), &already, &mut |_| Ok(()))
+        .generate(
+            &short_fixture_utterance(0.1),
+            &already,
+            &mut |_| Ok(()),
+            &mut |_, _| Ok(()),
+        )
         .expect_err("pre-shutdown must cancel");
     assert!(
         matches!(pre, syllabix_core::Error::Cancelled),
@@ -323,13 +333,18 @@ fn assert_engine_honours_cancel(engine: &mut Lfm3AudioEngine) {
     let start = Instant::now();
     let cancel_on_pcm = cancel.clone();
     let err = engine
-        .generate(&utterance, &cancel, &mut |audio| {
-            if !audio.samples.is_empty() {
-                saw_pcm.store(true, Ordering::Relaxed);
-                cancel_on_pcm.cancel_generation();
-            }
-            Ok(())
-        })
+        .generate(
+            &utterance,
+            &cancel,
+            &mut |audio| {
+                if !audio.samples.is_empty() {
+                    saw_pcm.store(true, Ordering::Relaxed);
+                    cancel_on_pcm.cancel_generation();
+                }
+                Ok(())
+            },
+            &mut |_, _| Ok(()),
+        )
         .expect_err("cancelled generate must error");
     assert!(
         matches!(err, syllabix_core::Error::Cancelled),
@@ -402,10 +417,15 @@ fn lfm3_audio_reply_whisper() {
     let utterance = fixture_utterance();
     let mut pcm = Vec::new();
     shared_engine()
-        .generate(&utterance, &Cancel::new(), &mut |audio| {
-            pcm.extend_from_slice(&audio.samples);
-            Ok(())
-        })
+        .generate(
+            &utterance,
+            &Cancel::new(),
+            &mut |audio| {
+                pcm.extend_from_slice(&audio.samples);
+                Ok(())
+            },
+            &mut |_, _| Ok(()),
+        )
         .expect("generate");
     assert!(!pcm.is_empty(), "reply must include PCM");
 
@@ -537,12 +557,17 @@ fn lfm3_audio_barge_in_next_reply() {
         cancel_thread.cancel_generation();
     });
     let err = engine
-        .generate(&turn1, &cancel, &mut |audio| {
-            if !audio.samples.is_empty() {
-                saw_pcm.store(true, Ordering::Relaxed);
-            }
-            Ok(())
-        })
+        .generate(
+            &turn1,
+            &cancel,
+            &mut |audio| {
+                if !audio.samples.is_empty() {
+                    saw_pcm.store(true, Ordering::Relaxed);
+                }
+                Ok(())
+            },
+            &mut |_, _| Ok(()),
+        )
         .expect_err("turn 1 must cancel");
     assert!(matches!(err, syllabix_core::Error::Cancelled));
     let past1 = engine.n_past();
@@ -551,10 +576,15 @@ fn lfm3_audio_barge_in_next_reply() {
     let turn2 = short_fixture_utterance(0.5);
     let mut pcm = Vec::new();
     engine
-        .generate(&turn2, &Cancel::new(), &mut |audio| {
-            pcm.extend_from_slice(&audio.samples);
-            Ok(())
-        })
+        .generate(
+            &turn2,
+            &Cancel::new(),
+            &mut |audio| {
+                pcm.extend_from_slice(&audio.samples);
+                Ok(())
+            },
+            &mut |_, _| Ok(()),
+        )
         .expect("turn 2 after barge");
     let turn2_text = engine.last_text().unwrap_or("").to_string();
     eprintln!("turn2 last_text={turn2_text:?}");
@@ -611,13 +641,13 @@ fn lfm3_audio_tiny_ctx_resets() {
             .with_max_out_samples(CAP_OUT_SAMPLES);
     let turn1 = fixture_utterance();
     engine
-        .generate(&turn1, &Cancel::new(), &mut |_| Ok(()))
+        .generate(&turn1, &Cancel::new(), &mut |_| Ok(()), &mut |_, _| Ok(()))
         .expect("turn 1");
     let past1 = engine.n_past();
     assert!(past1 > 0);
     let turn2 = short_fixture_utterance(0.4);
     engine
-        .generate(&turn2, &Cancel::new(), &mut |_| Ok(()))
+        .generate(&turn2, &Cancel::new(), &mut |_| Ok(()), &mut |_, _| Ok(()))
         .expect("turn 2 after context reset");
     let past2 = engine.n_past();
     assert!(
@@ -640,7 +670,7 @@ fn lfm3_audio_multi_turn_memory() {
     let turn1 = wav_fixture_utterance(&jfk, TurnId(0));
     let mut engine = shared_engine();
     engine
-        .generate(&turn1, &Cancel::new(), &mut |_| Ok(()))
+        .generate(&turn1, &Cancel::new(), &mut |_| Ok(()), &mut |_, _| Ok(()))
         .expect("turn 1");
     let past1 = engine.n_past();
     let turn1_text = engine.last_text().unwrap_or("").to_string();
@@ -677,10 +707,15 @@ fn lfm3_audio_multi_turn_memory() {
     };
     let mut reply_pcm = Vec::new();
     engine
-        .generate(&turn2, &Cancel::new(), &mut |audio| {
-            reply_pcm.extend_from_slice(&audio.samples);
-            Ok(())
-        })
+        .generate(
+            &turn2,
+            &Cancel::new(),
+            &mut |audio| {
+                reply_pcm.extend_from_slice(&audio.samples);
+                Ok(())
+            },
+            &mut |_, _| Ok(()),
+        )
         .expect("turn 2");
     let past2 = engine.n_past();
     assert!(

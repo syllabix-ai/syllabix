@@ -53,8 +53,9 @@ impl S2sEngine for DynS2s {
         utterance: &Utterance,
         cancel: &Cancel,
         on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+        on_text: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()> {
-        self.0.generate(utterance, cancel, on_audio)
+        self.0.generate(utterance, cancel, on_audio, on_text)
     }
 
     fn last_text(&self) -> Option<&str> {

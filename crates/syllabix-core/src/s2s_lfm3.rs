@@ -173,6 +173,7 @@ impl S2sEngine for Lfm3AudioEngine {
         utterance: &Utterance,
         cancel: &Cancel,
         on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+        on_text: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
@@ -241,15 +242,21 @@ impl S2sEngine for Lfm3AudioEngine {
                     }
                     Ok(())
                 },
+                &mut |text, is_last| {
+                    if cancel.is_shutdown() || cancel.is_stale(generation) {
+                        return Err(Lfm3S2sError::Cancelled);
+                    }
+                    on_text(text, is_last).map_err(|err| Lfm3S2sError::Failed(err.to_string()))
+                },
             )
         };
         self.last_native_out_samples = native_out_samples;
+        self.last_text = self.ctx.last_text().to_string();
         match result {
             Ok(()) => {
                 if cancel.is_stale(generation) || cancel.is_shutdown() {
                     return Err(Error::Cancelled);
                 }
-                self.last_text = self.ctx.last_text().to_string();
                 Ok(())
             }
             Err(Lfm3S2sError::Cancelled) => Err(Error::Cancelled),
@@ -355,10 +362,15 @@ mod tests {
         let cancel = Cancel::new();
         let mut chunks = Vec::new();
         engine
-            .generate(&utterance, &cancel, &mut |audio| {
-                chunks.push(audio);
-                Ok(())
-            })
+            .generate(
+                &utterance,
+                &cancel,
+                &mut |audio| {
+                    chunks.push(audio);
+                    Ok(())
+                },
+                &mut |_, _| Ok(()),
+            )
             .expect("fake generate");
         assert!(!chunks.is_empty());
         assert!(chunks.iter().any(|c| c.is_last));
@@ -396,7 +408,7 @@ mod tests {
         };
         let cancel = Cancel::new();
         let err = engine
-            .generate(&utterance, &cancel, &mut |_| Ok(()))
+            .generate(&utterance, &cancel, &mut |_| Ok(()), &mut |_, _| Ok(()))
             .unwrap_err();
         assert!(matches!(err, Error::Provider { .. }));
     }
@@ -499,12 +511,17 @@ mod tests {
             frames: scripted_frames(3, 1, 0),
         };
         let err = engine
-            .generate(&utterance, &Cancel::new(), &mut |_| {
-                Err(Error::Provider {
-                    provider: "test",
-                    message: "callback fail".into(),
-                })
-            })
+            .generate(
+                &utterance,
+                &Cancel::new(),
+                &mut |_| {
+                    Err(Error::Provider {
+                        provider: "test",
+                        message: "callback fail".into(),
+                    })
+                },
+                &mut |_, _| Ok(()),
+            )
             .unwrap_err();
         assert!(matches!(err, Error::Provider { .. }));
     }
@@ -535,10 +552,15 @@ mod tests {
         };
         let cancel = Cancel::new();
         let err = engine
-            .generate(&utterance, &cancel, &mut |_| {
-                cancel.cancel_generation();
-                Ok(())
-            })
+            .generate(
+                &utterance,
+                &cancel,
+                &mut |_| {
+                    cancel.cancel_generation();
+                    Ok(())
+                },
+                &mut |_, _| Ok(()),
+            )
             .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
     }
@@ -569,12 +591,17 @@ mod tests {
         };
         let cancel = Cancel::new();
         let err = engine
-            .generate(&utterance, &cancel, &mut |audio| {
-                if audio.is_last {
-                    cancel.cancel_generation();
-                }
-                Ok(())
-            })
+            .generate(
+                &utterance,
+                &cancel,
+                &mut |audio| {
+                    if audio.is_last {
+                        cancel.cancel_generation();
+                    }
+                    Ok(())
+                },
+                &mut |_, _| Ok(()),
+            )
             .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
     }
@@ -604,7 +631,9 @@ mod tests {
             frames: scripted_frames(6, 1, 0),
         };
         let err = engine
-            .generate(&utterance, &Cancel::new(), &mut |_| Ok(()))
+            .generate(&utterance, &Cancel::new(), &mut |_| Ok(()), &mut |_, _| {
+                Ok(())
+            })
             .unwrap_err();
         assert!(matches!(err, Error::Provider { .. }));
     }
@@ -634,7 +663,9 @@ mod tests {
             frames: scripted_frames(7, 2, 0),
         };
         engine
-            .generate(&utterance, &Cancel::new(), &mut |_| Ok(()))
+            .generate(&utterance, &Cancel::new(), &mut |_| Ok(()), &mut |_, _| {
+                Ok(())
+            })
             .expect("resampled generate");
     }
 
@@ -663,7 +694,9 @@ mod tests {
             frames: scripted_frames(8, 1, 0),
         };
         let err = engine
-            .generate(&utterance, &Cancel::new(), &mut |_| Ok(()))
+            .generate(&utterance, &Cancel::new(), &mut |_| Ok(()), &mut |_, _| {
+                Ok(())
+            })
             .unwrap_err();
         assert!(matches!(err, Error::Provider { .. }));
     }
@@ -695,13 +728,18 @@ mod tests {
         let cancel = Cancel::new();
         let mut saw_pcm = false;
         let err = engine
-            .generate(&utterance, &cancel, &mut |_| {
-                if !saw_pcm {
-                    saw_pcm = true;
-                    cancel.cancel_generation();
-                }
-                Ok(())
-            })
+            .generate(
+                &utterance,
+                &cancel,
+                &mut |_| {
+                    if !saw_pcm {
+                        saw_pcm = true;
+                        cancel.cancel_generation();
+                    }
+                    Ok(())
+                },
+                &mut |_, _| Ok(()),
+            )
             .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
     }
@@ -733,7 +771,7 @@ mod tests {
         let cancel = Cancel::new();
         cancel.shutdown();
         let err = engine
-            .generate(&utterance, &cancel, &mut |_| Ok(()))
+            .generate(&utterance, &cancel, &mut |_| Ok(()), &mut |_, _| Ok(()))
             .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
     }
