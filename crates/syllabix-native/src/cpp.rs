@@ -34,6 +34,11 @@ mod ffi {
         _private: [u8; 0],
     }
 
+    #[repr(C)]
+    pub struct S2sHandle {
+        _private: [u8; 0],
+    }
+
     #[cfg(feature = "parakeet")]
     #[repr(C)]
     pub struct ParakeetHandle {
@@ -199,6 +204,25 @@ mod ffi {
             out: *mut c_char,
             out_cap: c_int,
         ) -> c_int;
+        pub fn syllabix_s2s_load(
+            model_path: *const c_char,
+            mmproj_path: *const c_char,
+            n_threads: c_int,
+            seed: u32,
+        ) -> *mut S2sHandle;
+        pub fn syllabix_s2s_free(s2s: *mut S2sHandle);
+        pub fn syllabix_s2s_in_rate(s2s: *const S2sHandle) -> c_int;
+        pub fn syllabix_s2s_out_rate(s2s: *const S2sHandle) -> c_int;
+        pub fn syllabix_s2s_generate(
+            s2s: *mut S2sHandle,
+            pcm_in: *const f32,
+            n_samples: c_int,
+            max_out_samples: c_int,
+            abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+            abort_user: *mut c_void,
+            pcm_cb: Option<unsafe extern "C" fn(i32, *const f32, i64, c_int, *mut c_void) -> c_int>,
+            pcm_user: *mut c_void,
+        ) -> c_int;
     }
 
     #[cfg(all(not(coverage), feature = "parakeet"))]
@@ -254,6 +278,9 @@ mod ffi {
                 .into_owned()
         }
     }
+
+    #[cfg(coverage)]
+    static COVERAGE_S2S_MODEL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
     #[cfg(coverage)]
     fn fail(text: &str, needle: &str) -> bool {
@@ -737,6 +764,93 @@ mod ffi {
         let n = bytes.len().min(out_cap as usize - 1);
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), n);
         *out.add(n) = 0;
+        0
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_s2s_load(
+        model_path: *const c_char,
+        _mmproj_path: *const c_char,
+        _n_threads: c_int,
+        _seed: u32,
+    ) -> *mut S2sHandle {
+        let path = text(model_path);
+        if let Ok(mut model) = COVERAGE_S2S_MODEL.lock() {
+            *model = path.clone();
+        }
+        if fail(&path, "fail") {
+            std::ptr::null_mut()
+        } else {
+            std::ptr::dangling_mut::<S2sHandle>()
+        }
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_s2s_free(_s2s: *mut S2sHandle) {}
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_s2s_in_rate(_s2s: *const S2sHandle) -> c_int {
+        let path = COVERAGE_S2S_MODEL
+            .lock()
+            .map(|m| m.clone())
+            .unwrap_or_default();
+        if path.contains("in24k") {
+            24_000
+        } else {
+            16_000
+        }
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_s2s_out_rate(_s2s: *const S2sHandle) -> c_int {
+        24_000
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_s2s_generate(
+        _s2s: *mut S2sHandle,
+        pcm: *const f32,
+        n_samples: c_int,
+        _max_out_samples: c_int,
+        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        abort_user: *mut c_void,
+        cb: Option<unsafe extern "C" fn(i32, *const f32, i64, c_int, *mut c_void) -> c_int>,
+        user: *mut c_void,
+    ) -> c_int {
+        if pcm.is_null() || n_samples < 1 {
+            return -1;
+        }
+        let path = COVERAGE_S2S_MODEL
+            .lock()
+            .map(|m| m.clone())
+            .unwrap_or_default();
+        if path.contains("nativeerr") {
+            return -1;
+        }
+        if let Some(abort) = abort {
+            if abort(abort_user) {
+                return 1;
+            }
+        }
+        let pcm_rate = if path.contains("badrate") {
+            16_000
+        } else {
+            24_000
+        };
+        let first = [0.05f32, -0.05];
+        if let Some(cb) = cb {
+            if cb(pcm_rate, first.as_ptr(), 2, 0, user) != 0 {
+                return 1;
+            }
+            if let Some(abort) = abort {
+                if abort(abort_user) {
+                    return 1;
+                }
+            }
+            if cb(pcm_rate, std::ptr::null(), 0, 1, user) != 0 {
+                return 1;
+            }
+        }
         0
     }
 
@@ -1778,6 +1892,154 @@ impl Drop for QwenTtsContext {
     }
 }
 
+/// LFM3-Audio S2S generation error from the native shim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lfm3S2sError {
+    Cancelled,
+    Failed(String),
+}
+
+type Lfm3PcmCallback<'a> = dyn FnMut(i32, &[f32], bool) -> Result<(), Lfm3S2sError> + 'a;
+
+/// In-process LFM3-Audio S2S context (backbone + mmproj, CPU-only).
+pub struct Lfm3AudioContext {
+    raw: *mut ffi::S2sHandle,
+    in_rate: i32,
+    out_rate: i32,
+}
+
+unsafe impl Send for Lfm3AudioContext {}
+
+impl Lfm3AudioContext {
+    /// Load backbone GGUF and mmproj. `seed` pins sampling (`u32::MAX` for runtime randomness).
+    pub fn load(
+        model_path: impl AsRef<Path>,
+        mmproj_path: impl AsRef<Path>,
+        n_threads: i32,
+        seed: u32,
+    ) -> Result<Self, String> {
+        hush_logs();
+        unsafe { ffi::syllabix_llama_backend_init() };
+        let to_c = |p: &Path| {
+            let s = p
+                .to_str()
+                .ok_or_else(|| format!("path is not valid UTF-8: {}", p.display()))?;
+            CString::new(s).map_err(|_| "path contains an interior NUL".to_string())
+        };
+        let c_model = to_c(model_path.as_ref())?;
+        let c_mmproj = to_c(mmproj_path.as_ref())?;
+        let _ggml = ggml_lock();
+        let raw =
+            unsafe { ffi::syllabix_s2s_load(c_model.as_ptr(), c_mmproj.as_ptr(), n_threads, seed) };
+        if raw.is_null() {
+            return Err(format!(
+                "failed to load LFM3-Audio S2S at {} (mmproj {})",
+                model_path.as_ref().display(),
+                mmproj_path.as_ref().display()
+            ));
+        }
+        let in_rate = unsafe { ffi::syllabix_s2s_in_rate(raw) };
+        let out_rate = unsafe { ffi::syllabix_s2s_out_rate(raw) };
+        Ok(Self {
+            raw,
+            in_rate,
+            out_rate,
+        })
+    }
+
+    pub fn in_rate_hz(&self) -> i32 {
+        self.in_rate
+    }
+
+    pub fn out_rate_hz(&self) -> i32 {
+        self.out_rate
+    }
+
+    /// Stream one utterance as native-rate f32 windows.
+    ///
+    /// # Safety
+    /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
+    pub unsafe fn generate_streaming(
+        &mut self,
+        pcm_in: &[f32],
+        max_out_samples: i32,
+        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
+        abort_user: *mut c_void,
+        on_pcm: &mut Lfm3PcmCallback<'_>,
+    ) -> Result<(), Lfm3S2sError> {
+        if pcm_in.is_empty() {
+            return Err(Lfm3S2sError::Failed("empty utterance pcm".into()));
+        }
+        let mut stream = Lfm3PcmStream {
+            on_pcm,
+            error: None,
+        };
+        let _ggml = ggml_lock();
+        let rc = unsafe {
+            ffi::syllabix_s2s_generate(
+                self.raw,
+                pcm_in.as_ptr(),
+                pcm_in.len() as c_int,
+                max_out_samples,
+                abort,
+                abort_user,
+                Some(lfm3_pcm_callback),
+                (&mut stream as *mut Lfm3PcmStream<'_>).cast(),
+            )
+        };
+        if let Some(err) = stream.error {
+            return Err(err);
+        }
+        match rc {
+            0 => Ok(()),
+            1 => Err(Lfm3S2sError::Cancelled),
+            _ => Err(Lfm3S2sError::Failed(
+                "LFM3-Audio S2S generation failed".into(),
+            )),
+        }
+    }
+}
+
+impl Drop for Lfm3AudioContext {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let _ggml = ggml_lock();
+            unsafe { ffi::syllabix_s2s_free(self.raw) };
+            self.raw = std::ptr::null_mut();
+        }
+    }
+}
+
+struct Lfm3PcmStream<'a> {
+    on_pcm: &'a mut Lfm3PcmCallback<'a>,
+    error: Option<Lfm3S2sError>,
+}
+
+unsafe extern "C" fn lfm3_pcm_callback(
+    sample_rate: i32,
+    pcm: *const f32,
+    n_samples: i64,
+    is_last: c_int,
+    user: *mut c_void,
+) -> c_int {
+    if user.is_null() || n_samples < 0 || (n_samples > 0 && pcm.is_null()) {
+        return -1;
+    }
+    let stream = unsafe { &mut *(user as *mut Lfm3PcmStream<'_>) };
+    let samples = if n_samples == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(pcm, n_samples as usize) }
+    };
+    match (stream.on_pcm)(sample_rate, samples, is_last != 0) {
+        Ok(()) => 0,
+        Err(err) => {
+            stream.error = Some(err);
+            1
+        }
+    }
+}
+
 /// In-process Qwen3-ASR context: decoder GGUF + qwen3a mmproj through the
 /// shared ggml. One instance transcribes utterances sequentially.
 pub struct QwenAsrContext {
@@ -2267,6 +2529,21 @@ mod tests {
 
     #[test]
     #[cfg(not(coverage))]
+    fn missing_lfm3_s2s_weights_do_not_load() {
+        let err = match Lfm3AudioContext::load(
+            "/no/such/lfm3-audio.gguf",
+            "/no/such/mmproj.gguf",
+            1,
+            0,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("missing LFM3-Audio weights should fail"),
+        };
+        assert!(err.contains("failed to load LFM3-Audio S2S"));
+    }
+
+    #[test]
+    #[cfg(not(coverage))]
     fn missing_qwen_asr_weights_do_not_load() {
         let err = match QwenAsrContext::load(
             "/no/such/qwen3-asr.gguf",
@@ -2481,6 +2758,66 @@ mod tests {
             .parse_output("tool_call", false)
             .expect("template parse");
         assert_eq!(parsed.tool_calls.len(), 1);
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_exercises_lfm3_s2s_wrapper_without_weights() {
+        assert!(Lfm3AudioContext::load("fail-s2s", "fake-mmproj", 1, 0).is_err());
+        let mut ctx =
+            Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0).expect("fake context");
+        assert_eq!(ctx.in_rate_hz(), 16_000);
+        assert_eq!(ctx.out_rate_hz(), 24_000);
+        assert!(unsafe {
+            ctx.generate_streaming(&[], 0, None, std::ptr::null_mut(), &mut |_, _, _| Ok(()))
+        }
+        .is_err());
+        let mut windows = Vec::new();
+        unsafe {
+            ctx.generate_streaming(
+                &[0.0, 0.1],
+                0,
+                None,
+                std::ptr::null_mut(),
+                &mut |rate, pcm, last| {
+                    windows.push((rate, pcm.to_vec(), last));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(windows.len(), 2);
+        assert!(windows[1].1.is_empty());
+        assert!(windows[1].2);
+        let cancel = crate::Cancel::new();
+        let cancel_ptr = &cancel as *const crate::Cancel as *mut c_void;
+        unsafe extern "C" fn abort_now(user: *mut c_void) -> bool {
+            !user.is_null()
+        }
+        assert_eq!(
+            unsafe {
+                ctx.generate_streaming(
+                    &[0.0],
+                    0,
+                    Some(abort_now),
+                    cancel_ptr,
+                    &mut |_, _, _| Ok(()),
+                )
+            },
+            Err(Lfm3S2sError::Cancelled)
+        );
+        assert!(unsafe {
+            ctx.generate_streaming(&[0.0], 0, None, std::ptr::null_mut(), &mut |_, _, _| {
+                Err(Lfm3S2sError::Failed("pcm callback".into()))
+            })
+        }
+        .is_err());
+        let mut err_ctx =
+            Lfm3AudioContext::load("fake-s2s-nativeerr", "fake-mmproj", 1, 0).expect("nativeerr");
+        assert!(unsafe {
+            err_ctx.generate_streaming(&[0.0], 0, None, std::ptr::null_mut(), &mut |_, _, _| Ok(()))
+        }
+        .is_err());
     }
 
     #[cfg(coverage)]

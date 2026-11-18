@@ -34,7 +34,11 @@ cloud = ["syllabix-stt/remote", "syllabix-tts/remote"]
 # Turns on `ggml` plus the slow tests that download and run the real models
 # (both GGUF and ONNX). ONNX support (`ort`) is always built in; this
 # feature does not switch it on.
-native-inference = ["ggml"]
+native-inference = ["ggml", "lfm3-s2s"]
+# LFM3-Audio S2sEngine (libmtmd). Enabled in this workspace only until the next
+# syllabix-native release carries Lfm3AudioContext; left out of `default` so
+# `cargo package` verify against crates.io-native stays green.
+lfm3-s2s = []
 
 [dependencies]
 thiserror.workspace = true

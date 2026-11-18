@@ -208,6 +208,31 @@ int syllabix_qwen_tts_synthesize_streaming(
     void *pcm_user);
 void syllabix_qwen_tts_pcm_free(int16_t *pcm);
 
+/* LFM3-Audio turn-based S2S (CPU-only). */
+struct syllabix_s2s;
+struct syllabix_s2s *syllabix_s2s_load(
+    const char *model_path,
+    const char *mmproj_path,
+    int n_threads,
+    unsigned int seed);
+void syllabix_s2s_free(struct syllabix_s2s *s2s);
+int syllabix_s2s_in_rate(const struct syllabix_s2s *s2s);
+int syllabix_s2s_out_rate(const struct syllabix_s2s *s2s);
+/*
+ * 0=ok, 1=cancelled, -1=error.
+ * pcm_in: f32 mono at in_rate. max_out_samples caps native PCM (0 = default).
+ * pcm_cb: native-rate f32; last call is_last!=0. Return 1 to cancel.
+ */
+int syllabix_s2s_generate(
+    struct syllabix_s2s *s2s,
+    const float *pcm_in,
+    int n_samples,
+    int max_out_samples,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    int (*pcm_cb)(int32_t sample_rate, const float *pcm, int64_t n_samples, int is_last, void *user),
+    void *pcm_user);
+
 /* Qwen3-ASR (mtmd qwen3a encoder + Qwen3 decoder GGUF). Same shared ggml
  * and SYLLABIX_QWEN_BACKEND_* placement as TTS. `language` is an English
  * display name (`English`) or `auto`/NULL/empty for open detection. */
