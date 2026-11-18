@@ -1108,7 +1108,7 @@ impl AudioSink for NativePlayback {
         if underruns > self.ring_underruns_seen {
             self.jitter.note_underrun();
             if self.underrun_warn_turn != Some(audio.turn) {
-                eprintln!("speaker underrun: generation slower than playback");
+                tracing::debug!("speaker underrun: generation slower than playback");
                 self.underrun_warn_turn = Some(audio.turn);
             }
         }

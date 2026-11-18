@@ -356,6 +356,11 @@ pub struct FakeS2sCloseRecord {
 
 type FakeS2sSeenLog = Arc<Mutex<Vec<(TurnId, Vec<TurnId>)>>>;
 
+/// Stable assistant text streamed by [`FakeS2s`].
+pub const FAKE_S2S_REPLY: &str = "hello from fake s2s";
+
+const FAKE_S2S_TEXT_PIECES: &[&str] = &["hello ", "from ", "fake ", "s2s"];
+
 /// Delayed echo S2S: streams the user utterance PCM back as assistant audio.
 pub struct FakeS2s {
     delay: Duration,
@@ -365,6 +370,7 @@ pub struct FakeS2s {
     history: Arc<Mutex<Vec<TurnId>>>,
     seen: FakeS2sSeenLog,
     close_log: Arc<Mutex<Vec<(TurnId, FakeS2sCloseRecord)>>>,
+    last_text: String,
 }
 
 impl FakeS2s {
@@ -378,6 +384,7 @@ impl FakeS2s {
             history: Arc::new(Mutex::new(Vec::new())),
             seen: Arc::new(Mutex::new(Vec::new())),
             close_log: Arc::new(Mutex::new(Vec::new())),
+            last_text: String::new(),
         }
     }
 
@@ -391,6 +398,7 @@ impl FakeS2s {
             history: Arc::new(Mutex::new(Vec::new())),
             seen: Arc::new(Mutex::new(Vec::new())),
             close_log: Arc::new(Mutex::new(Vec::new())),
+            last_text: String::new(),
         }
     }
 
@@ -404,6 +412,7 @@ impl FakeS2s {
             history: Arc::new(Mutex::new(Vec::new())),
             seen: Arc::new(Mutex::new(Vec::new())),
             close_log: Arc::new(Mutex::new(Vec::new())),
+            last_text: String::new(),
         }
     }
 
@@ -449,6 +458,23 @@ impl FakeS2s {
         }
         Ok(())
     }
+
+    fn emit_text_pieces(
+        &mut self,
+        on_text: &mut dyn FnMut(&str, bool) -> Result<()>,
+        from_index: usize,
+        to_index: usize,
+        mark_last: bool,
+    ) -> Result<(), Error> {
+        let pieces = &FAKE_S2S_TEXT_PIECES[from_index..to_index];
+        for (i, piece) in pieces.iter().enumerate() {
+            self.last_text.push_str(piece);
+            let is_last =
+                mark_last && i + 1 == pieces.len() && to_index == FAKE_S2S_TEXT_PIECES.len();
+            on_text(piece, is_last)?;
+        }
+        Ok(())
+    }
 }
 
 impl Default for FakeS2s {
@@ -462,11 +488,20 @@ impl S2sEngine for FakeS2s {
         "fake-s2s"
     }
 
+    fn last_text(&self) -> Option<&str> {
+        if self.last_text.is_empty() {
+            None
+        } else {
+            Some(&self.last_text)
+        }
+    }
+
     fn generate(
         &mut self,
         utterance: &Utterance,
         cancel: &Cancel,
         on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+        on_text: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()> {
         if cancel.is_shutdown() {
             return Err(Error::Cancelled);
@@ -477,6 +512,7 @@ impl S2sEngine for FakeS2s {
                 message: "utterance has no frames".into(),
             });
         }
+        self.last_text.clear();
         let generation = cancel.generation();
         let history_at_start = {
             let history = self.history.lock().expect("s2s history");
@@ -500,10 +536,12 @@ impl S2sEngine for FakeS2s {
         };
 
         if text_first {
+            self.emit_text_pieces(on_text, 0, 1, false)?;
             if let Err(Error::Cancelled) = self.wait_phase(generation, cancel, text_wait) {
                 self.record_close(utterance.turn, FakeAssistPhase::Text);
                 return Err(Error::Cancelled);
             }
+            self.emit_text_pieces(on_text, 1, FAKE_S2S_TEXT_PIECES.len(), true)?;
         } else {
             if let Err(Error::Cancelled) = self.wait_phase(generation, cancel, audio_wait) {
                 return Err(Error::Cancelled);
@@ -533,6 +571,10 @@ impl S2sEngine for FakeS2s {
             }
         }
 
+        if !text_first {
+            self.emit_text_pieces(on_text, 0, FAKE_S2S_TEXT_PIECES.len(), true)?;
+        }
+
         let pcm = utterance.pcm();
 
         if cancel.is_shutdown() || cancel.is_stale(generation) {
@@ -557,6 +599,7 @@ impl S2sEngine for FakeS2s {
             .lock()
             .expect("s2s history")
             .push(utterance.turn);
+        debug_assert_eq!(self.last_text, FAKE_S2S_REPLY);
         Ok(())
     }
 }
@@ -838,6 +881,33 @@ mod tests {
     }
 
     #[test]
+    fn fake_s2s_streams_text_deltas_matching_last_text() {
+        let mut engine = FakeS2s::new();
+        let cancel = Cancel::new();
+        let utterance = Utterance {
+            turn: TurnId(0),
+            frames: scripted_frames(1, 1, 0),
+        };
+        let mut pieces = Vec::new();
+        engine
+            .generate(
+                &utterance,
+                &cancel,
+                &mut |_| Ok(()),
+                &mut |text, is_last| {
+                    pieces.push((text.to_string(), is_last));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        let joined: String = pieces.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(joined, FAKE_S2S_REPLY);
+        assert_eq!(engine.last_text(), Some(FAKE_S2S_REPLY));
+        assert!(pieces.last().is_some_and(|(_, last)| *last));
+        assert_eq!(pieces.iter().filter(|(_, last)| *last).count(), 1);
+    }
+
+    #[test]
     fn fake_s2s_echoes_utterance_pcm_with_last_chunk() {
         let mut engine = FakeS2s::new();
         let cancel = Cancel::new();
@@ -849,10 +919,15 @@ mod tests {
         let expected = utterance.pcm();
         let mut chunks = Vec::new();
         engine
-            .generate(&utterance, &cancel, &mut |audio| {
-                chunks.push(audio);
-                Ok(())
-            })
+            .generate(
+                &utterance,
+                &cancel,
+                &mut |audio| {
+                    chunks.push(audio);
+                    Ok(())
+                },
+                &mut |_, _| Ok(()),
+            )
             .unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].samples, expected);
@@ -878,7 +953,7 @@ mod tests {
             frames: scripted_frames(1, 1, 0),
         };
         let err = engine
-            .generate(&utterance, &cancel, &mut |_| Ok(()))
+            .generate(&utterance, &cancel, &mut |_| Ok(()), &mut |_, _| Ok(()))
             .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
     }
@@ -895,6 +970,7 @@ mod tests {
                 },
                 &cancel,
                 &mut |_| Ok(()),
+                &mut |_, _| Ok(()),
             )
             .unwrap_err();
         assert!(matches!(err, Error::Provider { .. }));
@@ -907,6 +983,7 @@ mod tests {
                 },
                 &cancel,
                 &mut |_| Ok(()),
+                &mut |_, _| Ok(()),
             )
             .unwrap_err();
         assert!(matches!(err, Error::Cancelled));

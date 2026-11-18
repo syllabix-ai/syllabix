@@ -1294,31 +1294,68 @@ fn s2s_engine_loop<E: S2sEngine>(
                 }
                 let queued_at = Instant::now();
                 shared.mark_utterance(utterance.turn, queued_at);
-                match engine.generate(&utterance, cancel, &mut |audio| {
-                    if cancel.is_stale(audio.generation) || shared.is_interrupted(audio.turn) {
-                        return Ok(());
-                    }
-                    if let Some(debug) = &shared.turn_debug {
-                        let now = Instant::now();
-                        debug.note_anchor(audio.turn, TimelineAnchor::TtsFirstPcm, now);
-                        if audio.is_last {
-                            debug.note_last_anchor(audio.turn, TimelineAnchor::TtsLastPcm, now);
+                let generation = cancel.generation();
+                let mut assistant = String::new();
+                let mut token_index = 0u32;
+                let mut saw_text_last = false;
+                match engine.generate(
+                    &utterance,
+                    cancel,
+                    &mut |audio| {
+                        if cancel.is_stale(audio.generation) || shared.is_interrupted(audio.turn) {
+                            return Ok(());
                         }
-                    }
-                    ignore_cancel(tx.send_cancellable(audio, cancel), shared, cancel);
-                    Ok(())
-                }) {
-                    Ok(()) => {
                         if let Some(debug) = &shared.turn_debug {
-                            if let Some(text) = engine.last_text() {
-                                if !text.is_empty() {
-                                    debug.note_llm(utterance.turn, text.to_string());
-                                }
+                            let now = Instant::now();
+                            debug.note_anchor(audio.turn, TimelineAnchor::TtsFirstPcm, now);
+                            if audio.is_last {
+                                debug.note_last_anchor(audio.turn, TimelineAnchor::TtsLastPcm, now);
                             }
+                        }
+                        ignore_cancel(tx.send_cancellable(audio, cancel), shared, cancel);
+                        Ok(())
+                    },
+                    &mut |text, is_last| {
+                        assistant.push_str(text);
+                        if is_last {
+                            saw_text_last = true;
+                        }
+                        let chunk = TokenChunk {
+                            turn: utterance.turn,
+                            generation,
+                            index: token_index,
+                            text: text.to_string(),
+                            is_last,
+                        };
+                        token_index = token_index.saturating_add(1);
+                        shared.note_token(&chunk, Instant::now());
+                        Ok(())
+                    },
+                ) {
+                    Ok(()) => {
+                        if !saw_text_last && !assistant.is_empty() {
+                            let chunk = TokenChunk {
+                                turn: utterance.turn,
+                                generation,
+                                index: token_index,
+                                text: String::new(),
+                                is_last: true,
+                            };
+                            shared.note_token(&chunk, Instant::now());
                         }
                     }
                     Err(Error::Cancelled) => {
                         shared.release_assistant(utterance.turn);
+                        if let Some(debug) = &shared.turn_debug {
+                            let partial = if !assistant.is_empty() {
+                                assistant.clone()
+                            } else {
+                                engine.last_text().unwrap_or("").to_string()
+                            };
+                            if !partial.is_empty() {
+                                debug.note_llm(utterance.turn, partial);
+                            }
+                        }
                         if cancel.is_shutdown() {
                             return;
                         }

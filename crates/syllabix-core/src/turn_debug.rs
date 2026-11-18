@@ -320,7 +320,10 @@ impl TurnDebug {
     /// Full LLM reply (concatenated tokens).
     pub fn note_llm(&self, turn: TurnId, text: String) {
         let mut inner = self.lock();
-        inner.turns.entry(turn.0).or_default().llm_text = text;
+        let dump = inner.turns.entry(turn.0).or_default();
+        dump.llm_text = text;
+        let _ =
+            rewrite_sidecar_if_written(&self.root, turn.0, dump, self.trajectory, &self.redactor);
     }
 
     /// Provider facts for the sidecar (provider, model, endpoint, request id).
@@ -964,6 +967,19 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(wav.samples, vec![1, 2, 3]);
+        debug.finish_open().unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn interrupt_then_note_llm_rewrites_partial_text() {
+        let dir = unique_dir();
+        let debug = TurnDebug::open(&dir).unwrap();
+        debug.start_turn(TurnId(0));
+        debug.interrupt(TurnId(0)).unwrap();
+        debug.note_llm(TurnId(0), "partial reply".into());
+        let json = fs::read_to_string(dir.join("turn-000").join("turn.json")).unwrap();
+        assert!(json.contains("partial reply"), "{json}");
         debug.finish_open().unwrap();
         fs::remove_dir_all(&dir).unwrap();
     }

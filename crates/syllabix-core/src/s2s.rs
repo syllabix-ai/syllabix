@@ -28,15 +28,18 @@ pub trait S2sEngine: Send {
     /// Stream assistant audio for one user utterance.
     ///
     /// `on_audio` is invoked in chunk order. The last invocation must have `is_last = true`.
+    /// `on_text` streams UTF-8 pieces in order during generation; `is_last = true` only when
+    /// the turn's text is finished successfully, not on cancel.
     /// Honor `cancel.is_shutdown()` and `cancel.is_stale(generation)`.
     fn generate(
         &mut self,
         utterance: &Utterance,
         cancel: &Cancel,
         on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+        on_text: &mut dyn FnMut(&str, bool) -> Result<()>,
     ) -> Result<()>;
 
-    /// Text sampled during the last successful `generate`, when the backend exposes it.
+    /// Text sampled during the last `generate`, including a cancelled partial turn, when exposed.
     fn last_text(&self) -> Option<&str> {
         None
     }
@@ -72,10 +75,15 @@ mod tests {
         let expected = utterance.pcm();
         let mut chunks = Vec::new();
         engine
-            .generate(&utterance, &cancel, &mut |audio| {
-                chunks.push(audio);
-                Ok(())
-            })
+            .generate(
+                &utterance,
+                &cancel,
+                &mut |audio| {
+                    chunks.push(audio);
+                    Ok(())
+                },
+                &mut |_, _| Ok(()),
+            )
             .unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].samples, expected);
@@ -99,7 +107,7 @@ mod tests {
             frames: crate::fake::scripted_frames(1, 1, 0),
         };
         let err = engine
-            .generate(&utterance, &cancel, &mut |_| Ok(()))
+            .generate(&utterance, &cancel, &mut |_| Ok(()), &mut |_, _| Ok(()))
             .unwrap_err();
         assert!(matches!(err, crate::error::Error::Cancelled));
         assert!(log.lock().unwrap().contains(&TurnId(0)));

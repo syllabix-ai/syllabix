@@ -1,5 +1,7 @@
 //! Turn-based S2S loop fixtures (no mic, no weights).
 
+use std::fs;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -9,12 +11,13 @@ use syllabix_core::defaults::BuiltinDefaults;
 use syllabix_core::pipeline::LoopMode;
 use syllabix_core::testing::{
     run_s2s_loop, scripted_frames, CollectingSink, FakeAssistPhase, FakeS2s, FakeS2sCloseRecord,
-    FakeVad, S2sStages,
+    FakeVad, S2sStages, FAKE_S2S_REPLY,
 };
+use syllabix_core::turn_debug::TurnDebug;
 use syllabix_core::types::Utterance;
 use syllabix_core::{
-    AudioSink, Cancel, LoopConfig, LoopReport, Result, RuntimeControls, Session, SynthesizedAudio,
-    TurnId,
+    AudioSink, Cancel, LoopConfig, LoopEvent, LoopReport, Result, RuntimeControls, Session,
+    SynthesizedAudio, TurnId,
 };
 
 type FakeS2sCloseLog = Arc<Mutex<Vec<(TurnId, FakeS2sCloseRecord)>>>;
@@ -145,6 +148,46 @@ fn one_turn_echo_completes_with_four_workers() {
     let played = sink.chunks();
     assert_eq!(played.len(), 1);
     assert_eq!(played[0].samples, expected);
+}
+
+#[test]
+fn s2s_loop_emits_ordered_assistant_text_events() {
+    let (tx, rx) = mpsc::channel();
+    let report = run_s2s_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::StopAfterTurns(1),
+            events: Some(tx),
+            turn_debug: None,
+            controls: RuntimeControls::new(false),
+        },
+        S2sStages {
+            vad: FakeVad::new(),
+            engine: FakeS2s::new(),
+            sink: SharedSink::default(),
+        },
+        scripted_frames(1, 2, 1),
+        Cancel::new(),
+    )
+    .expect("one turn with events");
+    assert_eq!(report.turns.len(), 1);
+    let events: Vec<LoopEvent> = rx.try_iter().collect();
+    let assistant: Vec<(String, bool)> = events
+        .into_iter()
+        .filter_map(|event| match event {
+            LoopEvent::Assistant {
+                turn: TurnId(0),
+                text,
+                is_last,
+            } => Some((text, is_last)),
+            _ => None,
+        })
+        .collect();
+    assert!(!assistant.is_empty());
+    let joined: String = assistant.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(joined, FAKE_S2S_REPLY);
+    assert!(assistant.iter().any(|(_, last)| *last));
+    assert_eq!(assistant.iter().filter(|(_, last)| *last).count(), 1);
 }
 
 #[test]
@@ -402,6 +445,74 @@ fn barge_in_mid_text_puts_interrupt_marker() {
         history_at_generate_log(&seen, TurnId(1)).contains(&TurnId(0)),
         "turn 0 must stay in memory for turn 1"
     );
+}
+
+#[test]
+fn barge_in_mid_text_streams_partial_assistant_and_sidecar() {
+    let dir = std::env::temp_dir().join(format!(
+        "syllabix-s2s-mid-text-log-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let debug = TurnDebug::open(&dir).expect("turn debug dir");
+    let (tx, rx) = mpsc::channel();
+    let engine = FakeS2s::with_staged_delay(Duration::ZERO, Duration::from_millis(40));
+    let close_log = engine.close_log();
+    let call_log = engine.call_log();
+    let sink = SharedSink::default();
+    let sink_wait = sink.clone();
+    let cancel = Cancel::new();
+    let cancel_thread = cancel.clone();
+    std::thread::spawn(move || {
+        wait_for_generate_turn(&call_log, TurnId(0));
+        wait_for_assistant_text_without_audio(&sink_wait, TurnId(0));
+        cancel_thread.cancel_generation();
+    });
+    let report = run_s2s_loop(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events: Some(tx),
+            turn_debug: Some(debug),
+            controls: RuntimeControls::new(true),
+        },
+        S2sStages {
+            vad: FakeVad::new(),
+            engine,
+            sink,
+        },
+        scripted_frames(2, 2, 1),
+        cancel,
+    )
+    .expect("mid-text barge with logging");
+    assert!(report.turns.iter().any(|t| t.id.0 == 1));
+    let record = close_record_log(&close_log, TurnId(0));
+    assert_eq!(record.phase, FakeAssistPhase::Text);
+
+    let events: Vec<LoopEvent> = rx.try_iter().collect();
+    let assistant: Vec<(String, bool)> = events
+        .into_iter()
+        .filter_map(|event| match event {
+            LoopEvent::Assistant {
+                turn: TurnId(0),
+                text,
+                is_last,
+            } => Some((text, is_last)),
+            _ => None,
+        })
+        .collect();
+    assert!(!assistant.is_empty());
+    assert!(!assistant.iter().any(|(_, last)| *last));
+    let partial: String = assistant.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(partial, "hello ");
+
+    let json = fs::read_to_string(dir.join("turn-000").join("turn.json")).expect("turn json");
+    assert!(json.contains("hello "), "{json}");
+    assert!(!json.contains(r#""llm_text": """#));
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

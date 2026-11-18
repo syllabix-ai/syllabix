@@ -59,6 +59,8 @@ struct syllabix_s2s {
     llama_pos n_past;
     bool assist_open;
     s2s_assist_phase assist_phase;
+    int (*gen_text_cb)(const char *text, int is_last, void *user);
+    void *gen_text_user;
 };
 
 static void s2s_silent_log(enum ggml_log_level level, const char *text, void *user_data) {
@@ -196,9 +198,13 @@ static int s2s_last_text_append_piece(struct syllabix_s2s *s2s, const char *piec
         s2s->last_text = next;
         s2s->last_text_cap = cap;
     }
-    memcpy(s2s->last_text + s2s->last_text_len, piece, piece_len);
+    const size_t piece_off = s2s->last_text_len;
+    memcpy(s2s->last_text + piece_off, piece, piece_len);
     s2s->last_text_len += piece_len;
     s2s->last_text[s2s->last_text_len] = '\0';
+    if (s2s->gen_text_cb != NULL) {
+        return s2s->gen_text_cb(s2s->last_text + piece_off, 0, s2s->gen_text_user);
+    }
     return 0;
 }
 
@@ -592,6 +598,16 @@ static int s2s_emit_pcm(
     return pcm_cb(rate, pcm, n_samples, is_last, pcm_user);
 }
 
+static int s2s_emit_text(int (*text_cb)(const char *, int, void *),
+                         void *text_user,
+                         const char *text,
+                         int is_last) {
+    if (text_cb == NULL) {
+        return 0;
+    }
+    return text_cb(text != NULL ? text : "", is_last, text_user);
+}
+
 int syllabix_s2s_generate(
     struct syllabix_s2s *s2s,
     const float *pcm_in,
@@ -600,7 +616,9 @@ int syllabix_s2s_generate(
     bool (*abort_cb)(void *user),
     void *abort_user,
     int (*pcm_cb)(int32_t sample_rate, const float *pcm, int64_t n_samples, int is_last, void *user),
-    void *pcm_user) {
+    void *pcm_user,
+    int (*text_cb)(const char *text, int is_last, void *user),
+    void *text_user) {
     if (s2s == NULL || pcm_in == NULL || n_samples < 1 || pcm_cb == NULL) {
         return -1;
     }
@@ -613,6 +631,8 @@ int syllabix_s2s_generate(
     s2s_last_text_clear(s2s);
     s2s->assist_open = false;
     s2s->assist_phase = S2S_ASSIST_IDLE;
+    s2s->gen_text_cb = text_cb;
+    s2s->gen_text_user = text_user;
 
     char *prefix_prompt = NULL;
     char *suffix_prompt = NULL;
@@ -830,8 +850,12 @@ int syllabix_s2s_generate(
             if (sampled == s2s->tok_im_end) {
                 stop = true;
             }
-            if (s2s_maybe_append_sampled_text(s2s, sampled) != 0) {
-                goto finish;
+            {
+                const int text_rc = s2s_maybe_append_sampled_text(s2s, sampled);
+                if (text_rc != 0) {
+                    rc = text_rc > 0 ? 1 : -1;
+                    goto finish;
+                }
             }
         } else {
             sampled = LLAMA_TOKEN_NULL;
@@ -891,9 +915,15 @@ int syllabix_s2s_generate(
             goto finish;
         }
     }
+    if (s2s_emit_text(text_cb, text_user, "", 1) != 0) {
+        rc = 1;
+        goto finish;
+    }
     rc = 0;
 
 finish:
+    s2s->gen_text_cb = NULL;
+    s2s->gen_text_user = NULL;
     syllabix_chat_string_free(prefix_prompt);
     syllabix_chat_string_free(suffix_prompt);
     free(prefix_tokens);

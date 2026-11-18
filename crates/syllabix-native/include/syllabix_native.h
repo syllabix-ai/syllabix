@@ -240,6 +240,7 @@ int syllabix_s2s_voice_chat_render_next(struct llama_model *model, const char *s
  * 0=ok, 1=cancelled, -1=error.
  * pcm_in: f32 mono at in_rate. max_out_samples caps native PCM (0 = default).
  * pcm_cb: native-rate f32; last call is_last!=0. Return 1 to cancel.
+ * text_cb: UTF-8 piece; final success call is is_last!=0 (text may be empty). Return 1 to cancel. May be NULL.
  */
 int syllabix_s2s_generate(
     struct syllabix_s2s *s2s,
@@ -249,7 +250,9 @@ int syllabix_s2s_generate(
     bool (*abort_cb)(void *user),
     void *abort_user,
     int (*pcm_cb)(int32_t sample_rate, const float *pcm, int64_t n_samples, int is_last, void *user),
-    void *pcm_user);
+    void *pcm_user,
+    int (*text_cb)(const char *text, int is_last, void *user),
+    void *text_user);
 
 /* Qwen3-ASR (mtmd qwen3a encoder + Qwen3 decoder GGUF). Same shared ggml
  * and SYLLABIX_QWEN_BACKEND_* placement as TTS. `language` is an English
