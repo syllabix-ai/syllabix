@@ -54,12 +54,66 @@ pub fn run_live_with_controls(
     events: Option<Sender<LoopEvent>>,
     controls: RuntimeControls,
 ) -> Result<LoopReport> {
-    use crate::config::PipelineMode;
+    use crate::config::{PipelineMode, S2sReplyWith};
     use crate::s2s::LFM3_AUDIO_2B;
 
     let lfm3_s2s = config.pipeline_mode == PipelineMode::S2s
         && config.s2s.as_ref().and_then(|s| s.model.as_deref()) == Some(LFM3_AUDIO_2B);
+    let s2s_reply_llm = lfm3_s2s
+        && config
+            .s2s
+            .as_ref()
+            .is_some_and(|s| s.reply_with == S2sReplyWith::Llm);
     config.ensure_pipeline_mode_supported()?;
+    if s2s_reply_llm {
+        crate::session_env::install_from_config(config);
+        #[cfg(all(
+            not(coverage),
+            feature = "ggml",
+            feature = "lfm3-s2s",
+            feature = "device-audio"
+        ))]
+        {
+            let llm_api_key = match (&config.agent, &config.llm) {
+                (crate::defaults::AgentBackend::Goose, _) => None,
+                (_, llm) if llm.is_openai_compatible() => {
+                    Some(crate::openai::resolve_api_key(|name| {
+                        std::env::var(name).ok()
+                    })?)
+                }
+                (_, _) => None,
+            };
+            let turn_debug = TurnDebug::from_config(config)?;
+            return run_live_s2s_llm_inner(
+                config,
+                cancel,
+                events,
+                turn_debug,
+                controls,
+                llm_api_key,
+            );
+        }
+        #[cfg(coverage)]
+        {
+            let turn_debug = TurnDebug::from_config(config)?;
+            return run_live_s2s_llm_inner(config, cancel, events, turn_debug, controls, None);
+        }
+        #[cfg(not(any(
+            coverage,
+            all(
+                not(coverage),
+                feature = "ggml",
+                feature = "lfm3-s2s",
+                feature = "device-audio"
+            )
+        )))]
+        {
+            return Err(crate::Error::Config {
+                field: "pipeline.mode".into(),
+                message: "s2s is not supported yet".into(),
+            });
+        }
+    }
     if lfm3_s2s {
         crate::session_env::install_from_config(config);
         #[cfg(all(
@@ -191,6 +245,137 @@ fn run_live_s2s_inner(
         },
         S2sStages { vad, engine, sink },
         capture,
+        cancel,
+    )
+}
+
+#[cfg(all(
+    not(coverage),
+    feature = "ggml",
+    feature = "lfm3-s2s",
+    feature = "device-audio"
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_live_s2s_llm_inner(
+    config: &AgentConfig,
+    cancel: Cancel,
+    events: Option<Sender<LoopEvent>>,
+    turn_debug: Option<TurnDebug>,
+    controls: RuntimeControls,
+    llm_api_key: Option<Zeroizing<String>>,
+) -> Result<LoopReport> {
+    use std::sync::{Arc, Mutex};
+
+    use crate::audio::{NativeCapture, NativePlayback};
+    use crate::defaults::BuiltinDefaults;
+    use crate::models::{HttpFetcher, ModelCache, StderrProgress};
+    use crate::pipeline::{run_loop_captured, LoopConfig, LoopMode, PipelineStages};
+    use crate::real::build_llm;
+    use crate::real::load_s2s_engine;
+    use crate::s2s_speech::{S2sStt, S2sTts};
+    use crate::turn_debug::PlaybackWatch;
+    use crate::vad::SileroVad;
+
+    let cache = ModelCache::v0();
+    let mut progress = StderrProgress::new();
+    let watch = turn_debug
+        .as_ref()
+        .map(|debug| PlaybackWatch::new(debug.clone()));
+    let wants_wavs = turn_debug
+        .as_ref()
+        .is_some_and(|debug| debug.collects_audio());
+    let (sink, echo_reference) = NativePlayback::open_with_echo_and_watch(watch)?;
+    let mut capture = NativeCapture::open_with_echo_and_events(echo_reference, events.clone())?;
+    let vad = SileroVad::from_cache(&cache, &HttpFetcher, &mut progress, &cancel)?
+        .with_settings(config.vad_settings());
+    let engine = load_s2s_engine(&cache, &HttpFetcher, &mut progress, &cancel, config)?;
+    let llm = build_llm(
+        &cache,
+        &HttpFetcher,
+        &mut progress,
+        &cancel,
+        config,
+        llm_api_key.as_ref(),
+    )?;
+    let s2s_cfg = config.s2s.as_ref().expect("s2s block");
+    let shared: Arc<Mutex<Box<dyn crate::s2s::S2sEngine>>> = Arc::new(Mutex::new(Box::new(engine)));
+    let stt = S2sStt::new(Arc::clone(&shared), s2s_cfg.language.clone());
+    let tts = S2sTts::new(shared, s2s_cfg.language.clone(), s2s_cfg.voice.clone());
+    capture.discard_buffered_audio();
+    if wants_wavs {
+        capture.enable_pcm_tap();
+    }
+    eprintln!(
+        "mic: {}  speaker: {}  agent: {}  mode: s2s  reply_with: llm",
+        capture.device_name, sink.device_name, config.name
+    );
+    if let Some(events) = &events {
+        let _ = events.send(LoopEvent::Ready);
+    }
+    run_loop_captured(
+        LoopConfig {
+            defaults: BuiltinDefaults::v0(),
+            mode: LoopMode::UntilInputEnds,
+            events,
+            turn_debug,
+            controls,
+        },
+        PipelineStages {
+            vad,
+            stt,
+            llm,
+            tts,
+            sink,
+        },
+        capture,
+        cancel,
+    )
+}
+
+#[cfg(coverage)]
+#[allow(clippy::too_many_arguments)]
+fn run_live_s2s_llm_inner(
+    config: &AgentConfig,
+    cancel: Cancel,
+    events: Option<Sender<LoopEvent>>,
+    turn_debug: Option<TurnDebug>,
+    controls: RuntimeControls,
+    llm_api_key: Option<Zeroizing<String>>,
+) -> Result<LoopReport> {
+    use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeS2s, FakeVad};
+    use crate::pipeline::{run_loop, LoopConfig, PipelineStages};
+    use crate::s2s_speech::{S2sStt, S2sTts};
+
+    let _ = llm_api_key;
+    let _ = config.s2s.as_ref().and_then(|s| s.language.clone());
+    let _ = config.s2s.as_ref().and_then(|s| s.voice.clone());
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(
+        Box::new(FakeS2s::new()) as Box<dyn crate::s2s::S2sEngine>
+    ));
+    let stt = S2sStt::new(
+        std::sync::Arc::clone(&shared),
+        config.s2s.as_ref().and_then(|s| s.language.clone()),
+    );
+    let tts = S2sTts::new(
+        shared,
+        config.s2s.as_ref().and_then(|s| s.language.clone()),
+        config.s2s.as_ref().and_then(|s| s.voice.clone()),
+    );
+    run_loop(
+        LoopConfig {
+            events,
+            turn_debug,
+            controls,
+            ..LoopConfig::default()
+        },
+        PipelineStages {
+            vad: FakeVad::new(),
+            stt,
+            llm: FakeLlm::new(),
+            tts,
+            sink: CollectingSink::default(),
+        },
+        scripted_frames(1, 2, 1),
         cancel,
     )
 }
@@ -402,17 +587,27 @@ mod tests {
     #[cfg(coverage)]
     #[test]
     fn coverage_run_live_lfm3_s2s_fails_without_native_stack() {
-        use crate::config::{PipelineMode, S2sConfig};
+        use crate::config::{PipelineMode, S2sConfig, S2sReplyWith};
         use crate::s2s::LFM3_AUDIO_2B;
 
         let mut config = AgentConfig::v0();
         config.pipeline_mode = PipelineMode::S2s;
         config.s2s = Some(S2sConfig {
             model: Some(LFM3_AUDIO_2B.to_string()),
+            ..Default::default()
         });
         let err = super::run_live(&config, crate::Cancel::new(), None, false).unwrap_err();
         assert!(err.to_string().contains("pipeline.mode"), "{err}");
         assert!(err.to_string().contains("not supported yet"), "{err}");
+
+        config.s2s = Some(S2sConfig {
+            model: Some(LFM3_AUDIO_2B.to_string()),
+            reply_with: S2sReplyWith::Llm,
+            ..Default::default()
+        });
+        let report =
+            super::run_live(&config, crate::Cancel::new(), None, false).expect("fake llm s2s live");
+        assert!(report.turns.len() >= 1);
     }
 
     #[cfg(coverage)]
