@@ -29,6 +29,7 @@ pub mod policy;
 pub mod queue;
 #[cfg(any(coverage, feature = "ggml"))]
 pub mod real;
+pub mod s2s;
 pub mod sandbox;
 mod session_env;
 pub mod skills;

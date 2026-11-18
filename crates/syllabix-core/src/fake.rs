@@ -7,6 +7,7 @@ use crate::cancel::Cancel;
 use crate::defaults::BuiltinDefaults;
 use crate::error::{Error, Result};
 use crate::providers::{AudioSink, Llm, Stt, Tts, Vad};
+use crate::s2s::S2sEngine;
 use crate::turn_debug::PlaybackWatch;
 use crate::types::{
     AudioFrame, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId, Utterance, VadEvent,
@@ -339,6 +340,93 @@ impl Llm for FailOnceLlm {
     }
 }
 
+/// Delayed echo S2S: streams the user utterance PCM back as assistant audio.
+pub struct FakeS2s {
+    delay: Duration,
+    call_log: Arc<Mutex<Vec<TurnId>>>,
+}
+
+impl FakeS2s {
+    /// Instant echo after VAD commit.
+    pub fn new() -> Self {
+        Self {
+            delay: Duration::ZERO,
+            call_log: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Slow generation so tests can cancel mid-wait or during playback.
+    pub fn with_delay(delay: Duration) -> Self {
+        Self {
+            delay,
+            call_log: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Shared generate log. Clone the `Arc` before moving the engine into the pipeline.
+    pub fn call_log(&self) -> Arc<Mutex<Vec<TurnId>>> {
+        Arc::clone(&self.call_log)
+    }
+}
+
+impl Default for FakeS2s {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl S2sEngine for FakeS2s {
+    fn name(&self) -> &'static str {
+        "fake-s2s"
+    }
+
+    fn generate(
+        &mut self,
+        utterance: &Utterance,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        if utterance.frames.is_empty() {
+            return Err(Error::Provider {
+                provider: self.name(),
+                message: "utterance has no frames".into(),
+            });
+        }
+        let generation = cancel.generation();
+        {
+            let mut log = self.call_log.lock().expect("s2s call log");
+            log.push(utterance.turn);
+        }
+
+        let pcm = utterance.pcm();
+        let step = Duration::from_millis(1);
+        let mut remaining = self.delay;
+        while remaining > Duration::ZERO {
+            if cancel.is_shutdown() || cancel.is_stale(generation) {
+                return Err(Error::Cancelled);
+            }
+            let slice = step.min(remaining);
+            std::thread::sleep(slice);
+            remaining = remaining.saturating_sub(slice);
+        }
+        if cancel.is_shutdown() || cancel.is_stale(generation) {
+            return Err(Error::Cancelled);
+        }
+
+        on_audio(SynthesizedAudio {
+            turn: utterance.turn,
+            generation,
+            index: 0,
+            samples: pcm,
+            is_last: true,
+        })?;
+        Ok(())
+    }
+}
+
 /// Each token becomes a tiny PCM chunk (UTF-8 bytes as samples).
 pub struct FakeTts;
 
@@ -608,6 +696,86 @@ mod tests {
             )
             .unwrap();
         assert_eq!(second.text, " hello ");
+    }
+
+    #[test]
+    fn fake_s2s_name_is_fake_s2s() {
+        assert_eq!(FakeS2s::new().name(), "fake-s2s");
+    }
+
+    #[test]
+    fn fake_s2s_echoes_utterance_pcm_with_last_chunk() {
+        let mut engine = FakeS2s::new();
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let utterance = Utterance {
+            turn: TurnId(2),
+            frames: scripted_frames(1, 2, 0),
+        };
+        let expected = utterance.pcm();
+        let mut chunks = Vec::new();
+        engine
+            .generate(&utterance, &cancel, &mut |audio| {
+                chunks.push(audio);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].samples, expected);
+        assert!(chunks[0].is_last);
+        assert_eq!(chunks[0].turn, TurnId(2));
+        assert_eq!(chunks[0].generation, generation);
+    }
+
+    #[test]
+    fn fake_s2s_with_delay_cancellable_mid_wait() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cancel = Arc::new(Cancel::new());
+        let cancel_worker = Arc::clone(&cancel);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(15));
+            cancel_worker.cancel_generation();
+        });
+        let mut engine = FakeS2s::with_delay(Duration::from_millis(150));
+        let utterance = Utterance {
+            turn: TurnId(0),
+            frames: scripted_frames(1, 1, 0),
+        };
+        let err = engine
+            .generate(&utterance, &cancel, &mut |_| Ok(()))
+            .unwrap_err();
+        assert!(matches!(err, Error::Cancelled));
+    }
+
+    #[test]
+    fn fake_s2s_rejects_empty_utterance_and_shutdown() {
+        let mut engine = FakeS2s::new();
+        let cancel = Cancel::new();
+        let err = engine
+            .generate(
+                &Utterance {
+                    turn: TurnId(0),
+                    frames: vec![],
+                },
+                &cancel,
+                &mut |_| Ok(()),
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Provider { .. }));
+        cancel.shutdown();
+        let err = engine
+            .generate(
+                &Utterance {
+                    turn: TurnId(1),
+                    frames: scripted_frames(1, 1, 0),
+                },
+                &cancel,
+                &mut |_| Ok(()),
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Cancelled));
     }
 
     #[test]
