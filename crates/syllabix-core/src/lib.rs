@@ -32,6 +32,7 @@ pub mod real;
 pub mod s2s;
 #[cfg(all(feature = "ggml", any(feature = "lfm3-s2s", coverage)))]
 mod s2s_lfm3;
+pub mod s2s_speech;
 pub mod sandbox;
 mod session_env;
 pub mod skills;

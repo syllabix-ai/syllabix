@@ -222,6 +222,8 @@ int syllabix_s2s_in_rate(const struct syllabix_s2s *s2s);
 int syllabix_s2s_out_rate(const struct syllabix_s2s *s2s);
 int syllabix_s2s_n_gpu_layers(const struct syllabix_s2s *s2s);
 const char *syllabix_s2s_last_text(const struct syllabix_s2s *s2s);
+/* Last transcribe/speak failure detail when the call returned non-zero. */
+const char *syllabix_s2s_last_error(const struct syllabix_s2s *s2s);
 /* Clear KV and conversation position (n_past = 0). */
 void syllabix_s2s_reset(struct syllabix_s2s *s2s);
 int syllabix_s2s_n_past(const struct syllabix_s2s *s2s);
@@ -236,6 +238,17 @@ int syllabix_s2s_voice_chat_render(struct llama_model *model, const char *system
 int syllabix_s2s_voice_chat_render_next(struct llama_model *model, const char *system_prompt,
                                         char **prefix_out, char **suffix_out, char *err_out,
                                         size_t err_cap);
+/*
+ * Offline ASR / TTS prompt render from the model chat templates (not voice-chat).
+ * ASR splits on <|audio|>; TTS writes the full prompt to *out. Free outputs with
+ * syllabix_chat_string_free on success.
+ */
+int syllabix_s2s_asr_render(struct llama_model *model, const char *language,
+                            char **prefix_out, char **suffix_out, char *err_out,
+                            size_t err_cap);
+int syllabix_s2s_tts_render(struct llama_model *model, const char *text,
+                            const char *language, const char *voice,
+                            char **out, char *err_out, size_t err_cap);
 /*
  * 0=ok, 1=cancelled, -1=error.
  * pcm_in: f32 mono at in_rate. max_out_samples caps native PCM (0 = default).
@@ -253,6 +266,33 @@ int syllabix_s2s_generate(
     void *pcm_user,
     int (*text_cb)(const char *text, int is_last, void *user),
     void *text_user);
+/*
+ * Offline ASR on one utterance (resets KV before and after). text_cb streams UTF-8 pieces
+ * and ends with is_last!=0.
+ */
+int syllabix_s2s_transcribe(
+    struct syllabix_s2s *s2s,
+    const float *pcm_in,
+    int n_samples,
+    const char *language,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    int (*text_cb)(const char *text, int is_last, void *user),
+    void *text_user);
+/*
+ * TTS for one text prompt (resets KV before and after). pcm_cb streams native-rate f32;
+ * final call has is_last!=0.
+ */
+int syllabix_s2s_speak(
+    struct syllabix_s2s *s2s,
+    const char *text,
+    const char *language,
+    const char *voice,
+    int max_out_samples,
+    bool (*abort_cb)(void *user),
+    void *abort_user,
+    int (*pcm_cb)(int32_t sample_rate, const float *pcm, int64_t n_samples, int is_last, void *user),
+    void *pcm_user);
 
 /* Qwen3-ASR (mtmd qwen3a encoder + Qwen3 decoder GGUF). Same shared ggml
  * and SYLLABIX_QWEN_BACKEND_* placement as TTS. `language` is an English
