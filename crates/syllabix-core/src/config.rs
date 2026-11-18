@@ -219,13 +219,18 @@ impl AgentConfig {
         }
     }
 
-    /// Fail fast when yaml selects s2s before a backend exists.
+    /// Fail fast when yaml selects s2s without a wired backend (`lfm3-audio-2b`).
     pub(crate) fn ensure_pipeline_mode_supported(&self) -> Result<()> {
         if self.pipeline_mode == PipelineMode::S2s {
-            Err(Error::Config {
-                field: "pipeline.mode".into(),
-                message: "s2s is not supported yet".into(),
-            })
+            if self.s2s.as_ref().and_then(|s| s.model.as_deref()) == Some(crate::s2s::LFM3_AUDIO_2B)
+            {
+                Ok(())
+            } else {
+                Err(Error::Config {
+                    field: "pipeline.mode".into(),
+                    message: "s2s is not supported yet".into(),
+                })
+            }
         } else {
             Ok(())
         }
@@ -1708,6 +1713,26 @@ mod tests {
         let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
         assert!(err.to_string().contains("pipeline.s2s.model"), "{err}");
         assert!(err.to_string().contains("non-empty"), "{err}");
+    }
+
+    #[test]
+    fn pipeline_mode_s2s_lfm3_passes_supported_check() {
+        let yaml = AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n",
+            1,
+        );
+        let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+        parsed.ensure_pipeline_mode_supported().unwrap();
+    }
+
+    #[test]
+    fn pipeline_mode_s2s_without_model_still_unsupported() {
+        let mut config = AgentConfig::v0();
+        config.pipeline_mode = PipelineMode::S2s;
+        config.s2s = Some(S2sConfig::default());
+        let err = config.ensure_pipeline_mode_supported().unwrap_err();
+        assert!(err.to_string().contains("not supported yet"), "{err}");
     }
 
     #[test]

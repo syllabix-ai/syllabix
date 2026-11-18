@@ -54,6 +54,17 @@ pub fn build_llm(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Canc
 pub fn build_llm_at(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>, _: Option<std::path::PathBuf>) -> Result<LiveLlm> { Err(unavailable("llm")) }
 pub fn load_real_providers(_: &ModelCache, _: &dyn Fetcher, _: &mut dyn Progress, _: &Cancel, _: &AgentConfig, _: Option<&zeroize::Zeroizing<String>>, _: Option<&zeroize::Zeroizing<String>>, _: Option<&zeroize::Zeroizing<String>>) -> Result<(SileroVad, LiveStt, LiveLlm, LiveTts)> { Err(unavailable("providers")) }
 
+#[cfg(all(feature = "ggml", any(feature = "lfm3-s2s", coverage)))]
+pub fn load_s2s_engine(
+    _: &ModelCache,
+    _: &dyn Fetcher,
+    _: &mut dyn Progress,
+    _: &Cancel,
+    _: &AgentConfig,
+) -> Result<crate::s2s_lfm3::Lfm3AudioEngine> {
+    Err(unavailable("s2s"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +110,15 @@ mod tests {
         assert!(build_tts(&cache, &fetcher, &mut progress, &cancel, &AgentConfig::v0(), None).is_err());
         assert!(build_llm(&cache, &fetcher, &mut progress, &cancel, &AgentConfig::v0(), None).is_err());
         assert!(load_real_providers(&cache, &fetcher, &mut progress, &cancel, &AgentConfig::v0(), None, None, None).is_err());
+        assert!(
+            load_s2s_engine(
+                &cache,
+                &fetcher,
+                &mut progress,
+                &cancel,
+                &AgentConfig::v0(),
+            )
+            .is_err()
+        );
     }
 }

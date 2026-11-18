@@ -361,11 +361,31 @@ impl Session {
             .is_some_and(|debug| debug.collects_audio());
 
         if config.pipeline_mode == PipelineMode::S2s {
-            let Some(s2s) = s2s else {
-                return Err(crate::Error::Config {
-                    field: "pipeline.mode".into(),
-                    message: "s2s is not supported yet".into(),
-                });
+            let s2s_engine: Box<dyn S2sEngine> = match s2s {
+                Some(engine) => engine,
+                None => {
+                    #[cfg(all(not(coverage), feature = "ggml", feature = "lfm3-s2s"))]
+                    {
+                        use crate::models::{HttpFetcher, ModelCache, StderrProgress};
+                        use crate::real::load_s2s_engine;
+                        let cache = ModelCache::v0();
+                        let mut progress = StderrProgress::new();
+                        Box::new(load_s2s_engine(
+                            &cache,
+                            &HttpFetcher,
+                            &mut progress,
+                            &cancel,
+                            &config,
+                        )?)
+                    }
+                    #[cfg(not(all(not(coverage), feature = "ggml", feature = "lfm3-s2s")))]
+                    {
+                        return Err(crate::Error::Config {
+                            field: "pipeline.mode".into(),
+                            message: "s2s is not supported yet".into(),
+                        });
+                    }
+                }
             };
             let (mut input, sink) = resolve_io(&config, &events, turn_debug.as_ref(), input, sink)?;
             if let ResolvedInput::Capture(capture) = &mut input {
@@ -387,7 +407,7 @@ impl Session {
             };
             let stages = S2sStages {
                 vad: DynVad(vad),
-                engine: DynS2s(s2s),
+                engine: DynS2s(s2s_engine),
                 sink: DynSink(sink),
             };
             return match input {
