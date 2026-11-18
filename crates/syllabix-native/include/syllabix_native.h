@@ -208,7 +208,7 @@ int syllabix_qwen_tts_synthesize_streaming(
     void *pcm_user);
 void syllabix_qwen_tts_pcm_free(int16_t *pcm);
 
-/* LFM3-Audio turn-based S2S (CPU-only). */
+/* LFM3-Audio turn-based S2S. */
 struct syllabix_s2s;
 struct syllabix_s2s *syllabix_s2s_load(
     const char *model_path,
@@ -218,6 +218,7 @@ struct syllabix_s2s *syllabix_s2s_load(
 void syllabix_s2s_free(struct syllabix_s2s *s2s);
 int syllabix_s2s_in_rate(const struct syllabix_s2s *s2s);
 int syllabix_s2s_out_rate(const struct syllabix_s2s *s2s);
+int syllabix_s2s_n_gpu_layers(const struct syllabix_s2s *s2s);
 /*
  * 0=ok, 1=cancelled, -1=error.
  * pcm_in: f32 mono at in_rate. max_out_samples caps native PCM (0 = default).

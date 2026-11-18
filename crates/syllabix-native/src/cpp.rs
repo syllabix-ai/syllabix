@@ -213,6 +213,7 @@ mod ffi {
         pub fn syllabix_s2s_free(s2s: *mut S2sHandle);
         pub fn syllabix_s2s_in_rate(s2s: *const S2sHandle) -> c_int;
         pub fn syllabix_s2s_out_rate(s2s: *const S2sHandle) -> c_int;
+        pub fn syllabix_s2s_n_gpu_layers(s2s: *const S2sHandle) -> c_int;
         pub fn syllabix_s2s_generate(
             s2s: *mut S2sHandle,
             pcm_in: *const f32,
@@ -804,6 +805,11 @@ mod ffi {
     #[cfg(coverage)]
     pub unsafe fn syllabix_s2s_out_rate(_s2s: *const S2sHandle) -> c_int {
         24_000
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_s2s_n_gpu_layers(_s2s: *const S2sHandle) -> c_int {
+        syllabix_llama_n_gpu_layers()
     }
 
     #[cfg(coverage)]
@@ -1901,7 +1907,7 @@ pub enum Lfm3S2sError {
 
 type Lfm3PcmCallback<'a> = dyn FnMut(i32, &[f32], bool) -> Result<(), Lfm3S2sError> + 'a;
 
-/// In-process LFM3-Audio S2S context (backbone + mmproj, CPU-only).
+/// In-process LFM3-Audio S2S context (backbone + mmproj).
 pub struct Lfm3AudioContext {
     raw: *mut ffi::S2sHandle,
     in_rate: i32,
@@ -1953,6 +1959,10 @@ impl Lfm3AudioContext {
 
     pub fn out_rate_hz(&self) -> i32 {
         self.out_rate
+    }
+
+    pub fn n_gpu_layers(&self) -> i32 {
+        unsafe { ffi::syllabix_s2s_n_gpu_layers(self.raw) }
     }
 
     /// Stream one utterance as native-rate f32 windows.
