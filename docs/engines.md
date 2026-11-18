@@ -80,4 +80,14 @@ Local menu (unknown ids fail at load):
 
 Hosted endpoints that speak this Audio REST (not OpenAI Realtime): [OpenAI speech-to-text](https://platform.openai.com/docs/guides/speech-to-text) / [text-to-speech](https://platform.openai.com/docs/guides/text-to-speech), [Groq speech-to-text](https://console.groq.com/docs/speech-to-text) / [text-to-speech](https://console.groq.com/docs/text-to-speech), [whisper.cpp whisper-server](https://github.com/ggml-org/whisper.cpp/tree/master/examples/server), [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI). Default `run` stays local. Yaml: [local vs online](syllabix-yaml.md#local-vs-online).
 
+## S2S (speech-to-speech)
+
+Local speech-to-speech is not an STT, LLM, or TTS menu id. Select it with `pipeline.mode: s2s` and `pipeline.s2s.model` — [syllabix.yaml](syllabix-yaml.md#pipeline-mode--cascade-vs-s2s). Default `run` without that yaml stays cascade.
+
+| Yaml `pipeline.s2s.model` | Notes | Source |
+| --- | --- | --- |
+| `lfm3-audio-2b` | English-only experimental voice chat (LFM 1.0). Weights fetch on first s2s run only. Indic / code-switched voice chat remains the cascade path (Hima, Indic-Mio, and related ids). | [model card](https://huggingface.co/LiquidAI/LFM3-Audio-2B), [GGUF repo](https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF), [NOTICE](../NOTICE) |
+
+Silero VAD still commits each user turn. `run --barge-in` still interrupts playback on user speech; this path is turn-based, not full duplex. Loop diagram: [architecture](architecture.md#speech-to-speech-pipelinemode-s2s).
+
 Contributor pins, ggml patches, and llama-bench: [contributing.md](contributing.md#models).

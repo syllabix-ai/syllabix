@@ -18,6 +18,24 @@ mic → Silero VAD → STT → LLM → TTS → speakers
 
 Ids other than the defaults are yaml-selected and fetch on first use — [engines](engines.md), [syllabix.yaml](syllabix-yaml.md).
 
+## Speech-to-speech (`pipeline.mode: s2s`)
+
+Optional yaml replaces the STT → LLM → TTS chain with one in-process engine (`pipeline.s2s.model: lfm3-audio-2b`). Default `run` without that yaml stays cascade.
+
+```text
+mic → Silero VAD → LFM3-Audio S2S → speakers
+              ↑______________ barge-in (interrupt + flush)
+```
+
+| Stage | Default | Role |
+| --- | --- | --- |
+| Capture / playback | `cpal` | Built-in mic and speakers |
+| Echo | WebRTC AEC3 (Sonora), on by default | Same self-reply handling as cascade |
+| VAD | Silero ONNX | Speech start / end — still commits each user turn |
+| S2S | LFM3-Audio 2B (when selected) | Utterance audio → reply audio, in-process |
+
+Turn-based, not full duplex. English-only experimental chat via this id; Indic and code-switched voice remain the cascade stack — [engines S2S](engines.md#s2s-speech-to-speech).
+
 ## Agent harness
 
 Default `run` uses the built-in harness (`agent_harness.agent: syllabix`). The LLM may call a sandboxed shell before the spoken reply goes to TTS:
@@ -33,7 +51,7 @@ Set `agent_harness.agent: none` for plain voice chat with no tools: one STT tran
 
 ## Barge-in
 
-Default `run` finishes the current sentence before listening. `run --barge-in` keeps VAD running during TTS and cancels playback on user speech (queued audio dropped, LLM/TTS cancelled, new turn kept).
+Default `run` finishes the current reply before listening again. `run --barge-in` keeps VAD running during playback and cancels the in-flight generation on user speech (queued audio dropped, S2S or cascade LLM/TTS cancelled, new turn kept).
 
 ## Cache
 

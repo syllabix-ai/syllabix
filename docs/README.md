@@ -7,7 +7,7 @@
 | [Install](install.md) | Download, checksums, cache, Gatekeeper / SmartScreen, compile, `cargo install --git` |
 | [CLI](cli.md) | `run`, `--barge-in`, `init`, `serve`, `--help` |
 | [Engines](engines.md) | Shipped model ids, fetch-on-use, hosted OpenAI Audio STT/TTS, machine needs |
-| [Architecture](architecture.md) | Cascade, AEC, barge-in, network boundary |
+| [Architecture](architecture.md) | Cascade, optional s2s, AEC, barge-in, network boundary |
 | [Embed](embed.md) | Other repos: sidecar binary, `run_live`, or `run_loop`; `cargo add syllabix-core` |
 | [Compare](compare.md) | vs HF S2S, Pipecat / LiveKit, Ollama |
 | [Troubleshooting](troubleshooting.md) | Symptom → fix |
