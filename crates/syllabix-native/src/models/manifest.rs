@@ -13,6 +13,8 @@ pub enum ModelLayer {
     Tts,
     /// Pinned Goose CLI archive (`agent_harness.agent: goose`).
     Agent,
+    /// Native speech-to-speech GGUF pair (`pipeline.mode: s2s`).
+    S2s,
 }
 
 impl ModelLayer {
@@ -24,6 +26,7 @@ impl ModelLayer {
             Self::Llm => "llm",
             Self::Tts => "tts",
             Self::Agent => "agent",
+            Self::S2s => "s2s",
         }
     }
 }
@@ -497,6 +500,26 @@ impl Manifest {
                     "https://huggingface.co/LiquidAI/LFM2.5-230M-GGUF/resolve/main/LFM2.5-230M-QAD-Q4_0.gguf",
                     "e75f83268de11b2a1bcfab5f3b5c5c0c97569ddbbc0990aad88437e45b8ba292",
                     149_081_056,
+                ),
+                // LiquidAI LFM3-Audio-2B Q4_K_M GGUF + Q8_0 mmproj. Pinned HF
+                // commit; SHA-256 matches the LFS object id; lfm1.0 license.
+                // Fetched only when pipeline.mode: s2s and pipeline.s2s.model:
+                // lfm3-audio-2b.
+                asset(
+                    "lfm3-audio-2b",
+                    ModelLayer::S2s,
+                    "LFM3-Audio-2B-Q4_K_M.gguf",
+                    "https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF/resolve/39670cb5c42e9c4bfe046519ba7ffbe47f9552ad/LFM3-Audio-2B-Q4_K_M.gguf",
+                    "9a773289bd321ed879cd3a76545f6aca506e403851a45fb315420aee45625be2",
+                    1_099_626_016,
+                ),
+                asset(
+                    "lfm3-audio-2b-mmproj",
+                    ModelLayer::S2s,
+                    "mmproj-LFM3-Audio-2B-Q8_0.gguf",
+                    "https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF/resolve/39670cb5c42e9c4bfe046519ba7ffbe47f9552ad/mmproj-LFM3-Audio-2B-Q8_0.gguf",
+                    "2b6648b1fd48af16aa0877b0592b144d15070783673e038a379fdbc51d40e365",
+                    303_811_840,
                 ),
             ],
         }

@@ -4,6 +4,12 @@ use crate::cancel::Cancel;
 use crate::error::Result;
 use crate::types::{SynthesizedAudio, Utterance};
 
+/// Manifest / yaml id for LiquidAI LFM3-Audio-2B (`pipeline.s2s.model`).
+pub const LFM3_AUDIO_2B: &str = "lfm3-audio-2b";
+
+/// Manifest id for the LFM3-Audio multimodal projector GGUF.
+pub const LFM3_AUDIO_2B_MMPROJ: &str = "lfm3-audio-2b-mmproj";
+
 /// One VAD-committed user utterance in, streamed assistant PCM out.
 pub trait S2sEngine: Send {
     /// Config / backend name.
