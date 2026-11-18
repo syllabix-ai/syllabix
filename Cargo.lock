@@ -2362,6 +2362,7 @@ dependencies = [
  "realfft",
  "serde_json",
  "sha2",
+ "syllabix-core",
  "thiserror 2.0.17",
  "ureq 2.10.1",
  "walkdir",

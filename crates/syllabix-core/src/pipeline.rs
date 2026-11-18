@@ -1308,7 +1308,15 @@ fn s2s_engine_loop<E: S2sEngine>(
                     ignore_cancel(tx.send_cancellable(audio, cancel), shared, cancel);
                     Ok(())
                 }) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        if let Some(debug) = &shared.turn_debug {
+                            if let Some(text) = engine.last_text() {
+                                if !text.is_empty() {
+                                    debug.note_llm(utterance.turn, text.to_string());
+                                }
+                            }
+                        }
+                    }
                     Err(Error::Cancelled) => {
                         shared.release_assistant(utterance.turn);
                         if cancel.is_shutdown() {

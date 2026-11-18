@@ -209,11 +209,13 @@ mod ffi {
             mmproj_path: *const c_char,
             n_threads: c_int,
             seed: u32,
+            voice_chat_system_prompt: *const c_char,
         ) -> *mut S2sHandle;
         pub fn syllabix_s2s_free(s2s: *mut S2sHandle);
         pub fn syllabix_s2s_in_rate(s2s: *const S2sHandle) -> c_int;
         pub fn syllabix_s2s_out_rate(s2s: *const S2sHandle) -> c_int;
         pub fn syllabix_s2s_n_gpu_layers(s2s: *const S2sHandle) -> c_int;
+        pub fn syllabix_s2s_last_text(s2s: *const S2sHandle) -> *const c_char;
         pub fn syllabix_s2s_generate(
             s2s: *mut S2sHandle,
             pcm_in: *const f32,
@@ -774,6 +776,7 @@ mod ffi {
         _mmproj_path: *const c_char,
         _n_threads: c_int,
         _seed: u32,
+        _voice_chat_system_prompt: *const c_char,
     ) -> *mut S2sHandle {
         let path = text(model_path);
         if let Ok(mut model) = COVERAGE_S2S_MODEL.lock() {
@@ -810,6 +813,12 @@ mod ffi {
     #[cfg(coverage)]
     pub unsafe fn syllabix_s2s_n_gpu_layers(_s2s: *const S2sHandle) -> c_int {
         syllabix_llama_n_gpu_layers()
+    }
+
+    #[cfg(coverage)]
+    pub unsafe fn syllabix_s2s_last_text(_s2s: *const S2sHandle) -> *const c_char {
+        static REPLY: &[u8] = b"fake s2s reply\0";
+        REPLY.as_ptr().cast()
     }
 
     #[cfg(coverage)]
@@ -1923,6 +1932,7 @@ impl Lfm3AudioContext {
         mmproj_path: impl AsRef<Path>,
         n_threads: i32,
         seed: u32,
+        voice_chat_system_prompt: &str,
     ) -> Result<Self, String> {
         hush_logs();
         unsafe { ffi::syllabix_llama_backend_init() };
@@ -1934,9 +1944,18 @@ impl Lfm3AudioContext {
         };
         let c_model = to_c(model_path.as_ref())?;
         let c_mmproj = to_c(mmproj_path.as_ref())?;
+        let c_system = CString::new(voice_chat_system_prompt)
+            .map_err(|_| "voice chat system prompt contains NUL".to_string())?;
         let _ggml = ggml_lock();
-        let raw =
-            unsafe { ffi::syllabix_s2s_load(c_model.as_ptr(), c_mmproj.as_ptr(), n_threads, seed) };
+        let raw = unsafe {
+            ffi::syllabix_s2s_load(
+                c_model.as_ptr(),
+                c_mmproj.as_ptr(),
+                n_threads,
+                seed,
+                c_system.as_ptr(),
+            )
+        };
         if raw.is_null() {
             return Err(format!(
                 "failed to load LFM3-Audio S2S at {} (mmproj {})",
@@ -1963,6 +1982,17 @@ impl Lfm3AudioContext {
 
     pub fn n_gpu_layers(&self) -> i32 {
         unsafe { ffi::syllabix_s2s_n_gpu_layers(self.raw) }
+    }
+
+    /// Text sampled during the last successful `generate_streaming`.
+    pub fn last_text(&self) -> &str {
+        unsafe {
+            let ptr = ffi::syllabix_s2s_last_text(self.raw);
+            if ptr.is_null() {
+                return "";
+            }
+            std::ffi::CStr::from_ptr(ptr).to_str().unwrap_or("")
+        }
     }
 
     /// Stream one utterance as native-rate f32 windows.
@@ -2540,11 +2570,13 @@ mod tests {
     #[test]
     #[cfg(not(coverage))]
     fn missing_lfm3_s2s_weights_do_not_load() {
+        const VOICE_CHAT_SYSTEM: &str = "Respond with interleaved text and audio.";
         let err = match Lfm3AudioContext::load(
             "/no/such/lfm3-audio.gguf",
             "/no/such/mmproj.gguf",
             1,
             0,
+            VOICE_CHAT_SYSTEM,
         ) {
             Err(err) => err,
             Ok(_) => panic!("missing LFM3-Audio weights should fail"),
@@ -2773,9 +2805,12 @@ mod tests {
     #[cfg(coverage)]
     #[test]
     fn coverage_exercises_lfm3_s2s_wrapper_without_weights() {
-        assert!(Lfm3AudioContext::load("fail-s2s", "fake-mmproj", 1, 0).is_err());
-        let mut ctx =
-            Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0).expect("fake context");
+        const VOICE_CHAT_SYSTEM: &str = "Respond with interleaved text and audio.";
+        assert!(
+            Lfm3AudioContext::load("fail-s2s", "fake-mmproj", 1, 0, VOICE_CHAT_SYSTEM).is_err()
+        );
+        let mut ctx = Lfm3AudioContext::load("fake-s2s", "fake-mmproj", 1, 0, VOICE_CHAT_SYSTEM)
+            .expect("fake context");
         assert_eq!(ctx.in_rate_hz(), 16_000);
         assert_eq!(ctx.out_rate_hz(), 24_000);
         assert!(unsafe {
@@ -2822,8 +2857,14 @@ mod tests {
             })
         }
         .is_err());
-        let mut err_ctx =
-            Lfm3AudioContext::load("fake-s2s-nativeerr", "fake-mmproj", 1, 0).expect("nativeerr");
+        let mut err_ctx = Lfm3AudioContext::load(
+            "fake-s2s-nativeerr",
+            "fake-mmproj",
+            1,
+            0,
+            "Respond with interleaved text and audio.",
+        )
+        .expect("nativeerr");
         assert!(unsafe {
             err_ctx.generate_streaming(&[0.0], 0, None, std::ptr::null_mut(), &mut |_, _, _| Ok(()))
         }

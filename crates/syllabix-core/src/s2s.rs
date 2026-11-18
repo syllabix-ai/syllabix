@@ -10,6 +10,10 @@ pub const LFM3_AUDIO_2B: &str = "lfm3-audio-2b";
 /// Manifest id for the LFM3-Audio multimodal projector GGUF.
 pub const LFM3_AUDIO_2B_MMPROJ: &str = "lfm3-audio-2b-mmproj";
 
+/// Voice-chat system prompt from the [LFM3-Audio-2B model card](https://huggingface.co/LiquidAI/LFM3-Audio-2B)
+/// (Voice chat: speech and text responses). It is not stored in the GGUF metadata.
+pub const LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT: &str = "Respond with interleaved text and audio.";
+
 /// One VAD-committed user utterance in, streamed assistant PCM out.
 #[cfg(all(feature = "ggml", any(feature = "lfm3-s2s", coverage)))]
 pub use crate::s2s_lfm3::Lfm3AudioEngine;
@@ -28,6 +32,11 @@ pub trait S2sEngine: Send {
         cancel: &Cancel,
         on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
     ) -> Result<()>;
+
+    /// Text sampled during the last successful `generate`, when the backend exposes it.
+    fn last_text(&self) -> Option<&str> {
+        None
+    }
 }
 
 #[cfg(test)]

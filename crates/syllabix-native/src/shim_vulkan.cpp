@@ -24,7 +24,8 @@ extern "C" struct syllabix_s2s *syllabix_s2s_load_unguarded(
     const char *model_path,
     const char *mmproj_path,
     int n_threads,
-    unsigned int seed);
+    unsigned int seed,
+    const char *voice_chat_system_prompt);
 
 extern "C" struct syllabix_qwen_asr *syllabix_qwen_asr_load_unguarded(
     const char *model_path,
@@ -116,9 +117,11 @@ extern "C" struct syllabix_s2s *syllabix_s2s_load(
     const char *model_path,
     const char *mmproj_path,
     int n_threads,
-    unsigned int seed) {
+    unsigned int seed,
+    const char *voice_chat_system_prompt) {
     try {
-        return syllabix_s2s_load_unguarded(model_path, mmproj_path, n_threads, seed);
+        return syllabix_s2s_load_unguarded(model_path, mmproj_path, n_threads, seed,
+                                           voice_chat_system_prompt);
     } catch (...) {
         return nullptr;
     }
