@@ -5,16 +5,17 @@ use std::sync::mpsc::Sender;
 use zeroize::Zeroizing;
 
 use crate::cancel::Cancel;
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, PipelineMode};
 use crate::defaults::AgentBackend;
 use crate::defaults::BuiltinDefaults;
 use crate::error::Result;
 use crate::openai::resolve_api_key;
 use crate::pipeline::{
-    run_loop, run_loop_captured, LoopConfig, LoopEvent, LoopMode, LoopReport, PipelineStages,
-    RuntimeControls,
+    run_loop, run_loop_captured, run_s2s_loop, run_s2s_loop_captured, LoopConfig, LoopEvent,
+    LoopMode, LoopReport, PipelineStages, RuntimeControls, S2sStages,
 };
 use crate::providers::{AudioCapture, AudioSink, Llm, Stt, Tts, Vad};
+use crate::s2s::S2sEngine;
 use crate::turn_debug::TurnDebug;
 use crate::types::{
     AudioFrame, HistoryTurn, LlmDebugMeta, SynthesizedAudio, TokenChunk, ToolTurnEvent, Transcript,
@@ -40,6 +41,22 @@ struct DynLlm(Box<dyn Llm>);
 struct DynTts(Box<dyn Tts>);
 struct DynSink(Box<dyn AudioSink>);
 struct DynCapture(Box<dyn AudioCapture>);
+struct DynS2s(Box<dyn S2sEngine>);
+
+impl S2sEngine for DynS2s {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+
+    fn generate(
+        &mut self,
+        utterance: &Utterance,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        self.0.generate(utterance, cancel, on_audio)
+    }
+}
 
 impl Vad for DynVad {
     fn name(&self) -> &'static str {
@@ -189,6 +206,7 @@ pub struct Session {
     llm: Option<Box<dyn Llm>>,
     tts: Option<Box<dyn Tts>>,
     sink: Option<Box<dyn AudioSink>>,
+    s2s: Option<Box<dyn S2sEngine>>,
     input: Input,
 }
 
@@ -213,6 +231,7 @@ impl Session {
             llm: None,
             tts: None,
             sink: None,
+            s2s: None,
             input: Input::Default,
         }
     }
@@ -280,6 +299,13 @@ impl Session {
         self
     }
 
+    /// Replace the default turn-based S2S engine for `pipeline.mode: s2s`.
+    #[must_use]
+    pub fn with_s2s(mut self, engine: impl S2sEngine + 'static) -> Self {
+        self.s2s = Some(Box::new(engine));
+        self
+    }
+
     /// Replace the native microphone with `capture`. Last of this and
     /// [`Session::with_frames`] wins.
     #[must_use]
@@ -309,10 +335,69 @@ impl Session {
             llm,
             tts,
             sink,
+            s2s,
             input,
         } = self;
-        config.ensure_pipeline_mode_supported()?;
+        if config.pipeline_mode == PipelineMode::Cascade && s2s.is_some() {
+            return Err(crate::Error::Config {
+                field: "pipeline.mode".into(),
+                message: "s2s engine cannot be set when pipeline.mode is cascade".into(),
+            });
+        }
+        if config.pipeline_mode == PipelineMode::S2s && s2s.is_none() {
+            config.ensure_pipeline_mode_supported()?;
+        }
         crate::session_env::install_from_config(&config);
+        let turn_debug = TurnDebug::from_config(&config)?;
+        let controls = controls.unwrap_or_else(|| {
+            RuntimeControls::with_auto_timeout(
+                barge_in,
+                config.auto_timeout_mic_mute_ms,
+                config.auto_timeout_exit_ms,
+            )
+        });
+        let wants_wavs = turn_debug
+            .as_ref()
+            .is_some_and(|debug| debug.collects_audio());
+
+        if config.pipeline_mode == PipelineMode::S2s {
+            let Some(s2s) = s2s else {
+                return Err(crate::Error::Config {
+                    field: "pipeline.mode".into(),
+                    message: "s2s is not supported yet".into(),
+                });
+            };
+            let (mut input, sink) = resolve_io(&config, &events, turn_debug.as_ref(), input, sink)?;
+            if let ResolvedInput::Capture(capture) = &mut input {
+                capture.discard_buffered_audio();
+                if wants_wavs {
+                    capture.enable_pcm_tap();
+                }
+            }
+            let vad = resolve_s2s_vad(&config, &cancel, vad)?;
+            if let Some(events) = &events {
+                let _ = events.send(LoopEvent::Ready);
+            }
+            let loop_config = LoopConfig {
+                defaults: BuiltinDefaults::v0(),
+                mode,
+                events,
+                turn_debug,
+                controls,
+            };
+            let stages = S2sStages {
+                vad: DynVad(vad),
+                engine: DynS2s(s2s),
+                sink: DynSink(sink),
+            };
+            return match input {
+                ResolvedInput::Frames(frames) => run_s2s_loop(loop_config, stages, frames, cancel),
+                ResolvedInput::Capture(capture) => {
+                    run_s2s_loop_captured(loop_config, stages, DynCapture(capture), cancel)
+                }
+            };
+        }
+
         let llm_api_key = if needs_llm_api_key(&config, llm.is_none()) {
             Some(resolve_api_key(|name| std::env::var(name).ok())?)
         } else {
@@ -346,18 +431,13 @@ impl Session {
         } else {
             None
         };
-        let turn_debug = TurnDebug::from_config(&config)?;
-        let controls = controls.unwrap_or_else(|| {
-            RuntimeControls::with_auto_timeout(
-                barge_in,
-                config.auto_timeout_mic_mute_ms,
-                config.auto_timeout_exit_ms,
-            )
-        });
-        let wants_wavs = turn_debug
-            .as_ref()
-            .is_some_and(|debug| debug.collects_audio());
         let (mut input, sink) = resolve_io(&config, &events, turn_debug.as_ref(), input, sink)?;
+        if let ResolvedInput::Capture(capture) = &mut input {
+            capture.discard_buffered_audio();
+            if wants_wavs {
+                capture.enable_pcm_tap();
+            }
+        }
         let (vad, stt, llm, tts) = resolve_ml(
             &config,
             &cancel,
@@ -369,12 +449,6 @@ impl Session {
             llm,
             tts,
         )?;
-        if let ResolvedInput::Capture(capture) = &mut input {
-            capture.discard_buffered_audio();
-            if wants_wavs {
-                capture.enable_pcm_tap();
-            }
-        }
         if let Some(events) = &events {
             let _ = events.send(LoopEvent::Ready);
         }
@@ -407,6 +481,50 @@ enum ResolvedInput {
 }
 
 type BoxedStages = (Box<dyn Vad>, Box<dyn Stt>, Box<dyn Llm>, Box<dyn Tts>);
+
+#[cfg(all(not(coverage), feature = "ggml"))]
+#[allow(clippy::too_many_arguments)]
+fn resolve_s2s_vad(
+    config: &AgentConfig,
+    cancel: &Cancel,
+    vad: Option<Box<dyn Vad>>,
+) -> Result<Box<dyn Vad>> {
+    use crate::models::{HttpFetcher, ModelCache, StderrProgress};
+    use crate::vad::SileroVad;
+
+    if let Some(vad) = vad {
+        return Ok(vad);
+    }
+    let cache = ModelCache::v0();
+    let fetcher = HttpFetcher;
+    let mut progress = StderrProgress::new();
+    Ok(Box::new(
+        SileroVad::from_cache(&cache, &fetcher, &mut progress, cancel)?
+            .with_settings(config.vad_settings()),
+    ))
+}
+
+#[cfg(all(not(coverage), not(feature = "ggml")))]
+fn resolve_s2s_vad(
+    _config: &AgentConfig,
+    _cancel: &Cancel,
+    vad: Option<Box<dyn Vad>>,
+) -> Result<Box<dyn Vad>> {
+    vad.ok_or_else(|| crate::Error::Config {
+        field: "session".into(),
+        message: "default VAD requires the `ggml` feature; swap VAD or enable `ggml`".into(),
+    })
+}
+
+#[cfg(coverage)]
+fn resolve_s2s_vad(
+    _config: &AgentConfig,
+    _cancel: &Cancel,
+    vad: Option<Box<dyn Vad>>,
+) -> Result<Box<dyn Vad>> {
+    use crate::fake::FakeVad;
+    Ok(vad.unwrap_or_else(|| Box::new(FakeVad::new())))
+}
 
 #[cfg(all(not(coverage), feature = "ggml"))]
 #[allow(clippy::too_many_arguments)]
@@ -682,9 +800,10 @@ fn resolve_io(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PipelineMode;
     use crate::defaults::LlmProvider;
-    use crate::fake::{scripted_frames, CollectingSink, FakeLlm, FakeStt, FakeTts, FakeVad};
+    use crate::fake::{
+        scripted_frames, CollectingSink, FakeLlm, FakeS2s, FakeStt, FakeTts, FakeVad,
+    };
     use crate::Error;
 
     const API_KEY_ENV: &str = "SYLLABIX_LLM_API_KEY";
@@ -730,6 +849,38 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("pipeline.mode"), "{err}");
         assert!(err.to_string().contains("not supported yet"), "{err}");
+    }
+
+    #[test]
+    fn pipeline_mode_s2s_runs_with_swapped_engine() {
+        let mut config = AgentConfig::v0();
+        config.pipeline_mode = PipelineMode::S2s;
+        config.s2s = Some(crate::config::S2sConfig::default());
+        let report = Session::from_config(&config)
+            .with_s2s(FakeS2s::new())
+            .with_vad(FakeVad::new())
+            .with_sink(CollectingSink::default())
+            .with_frames(scripted_frames(1, 2, 1))
+            .with_mode(LoopMode::StopAfterTurns(1))
+            .run(Cancel::new())
+            .expect("s2s session");
+        assert_eq!(report.turns.len(), 1);
+        assert_eq!(report.tasks_exited, 4);
+    }
+
+    #[test]
+    fn cascade_rejects_s2s_engine_slot() {
+        let err = Session::v0()
+            .with_s2s(FakeS2s::new())
+            .with_vad(FakeVad::new())
+            .with_stt(FakeStt)
+            .with_llm(FakeLlm::new())
+            .with_tts(FakeTts)
+            .with_sink(CollectingSink::default())
+            .with_frames(scripted_frames(1, 2, 1))
+            .run(Cancel::new())
+            .unwrap_err();
+        assert!(err.to_string().contains("pipeline.mode"), "{err}");
     }
 
     #[test]
