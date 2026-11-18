@@ -14,6 +14,7 @@ struct syllabix_llama;
 struct syllabix_qwen_tts;
 struct syllabix_qwen_asr;
 struct syllabix_mio;
+struct llama_model;
 
 void syllabix_native_hush_logs(void);
 
@@ -72,7 +73,6 @@ int syllabix_llama_chat_lfm_sampler_preset(
     int *top_k_out,
     float *repeat_penalty_out);
 
-struct llama_model;
 struct llama_model *syllabix_llama_model(struct syllabix_llama *llm);
 
 int syllabix_llama_run_prompt(
@@ -214,11 +214,20 @@ struct syllabix_s2s *syllabix_s2s_load(
     const char *model_path,
     const char *mmproj_path,
     int n_threads,
-    unsigned int seed);
+    unsigned int seed,
+    const char *voice_chat_system_prompt);
 void syllabix_s2s_free(struct syllabix_s2s *s2s);
 int syllabix_s2s_in_rate(const struct syllabix_s2s *s2s);
 int syllabix_s2s_out_rate(const struct syllabix_s2s *s2s);
 int syllabix_s2s_n_gpu_layers(const struct syllabix_s2s *s2s);
+const char *syllabix_s2s_last_text(const struct syllabix_s2s *s2s);
+/*
+ * Voice chat turn prefix/suffix split on <|audio|>. Frees *prefix_out and *suffix_out with
+ * syllabix_chat_string_free on success.
+ */
+int syllabix_s2s_voice_chat_render(struct llama_model *model, const char *system_prompt,
+                                   char **prefix_out, char **suffix_out, char *err_out,
+                                   size_t err_cap);
 /*
  * 0=ok, 1=cancelled, -1=error.
  * pcm_in: f32 mono at in_rate. max_out_samples caps native PCM (0 = default).

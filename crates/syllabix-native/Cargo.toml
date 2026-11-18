@@ -61,6 +61,9 @@ ort = { workspace = true, optional = true }
 ort-sys = { workspace = true, optional = true }
 realfft = { workspace = true, optional = true }
 
+[dev-dependencies]
+syllabix-core = { path = "../syllabix-core", default-features = false }
+
 [build-dependencies]
 cc = { version = "=1.2.46", optional = true }
 cmake = { version = "=0.1.58", optional = true }

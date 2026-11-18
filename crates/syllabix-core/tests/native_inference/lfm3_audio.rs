@@ -11,16 +11,21 @@ use sha2::{Digest, Sha256};
 use syllabix_core::config::{AgentConfig, PipelineMode, S2sConfig};
 use syllabix_core::models::{HttpFetcher, StderrProgress};
 use syllabix_core::pipeline::{LoopEvent, LoopMode};
-use syllabix_core::s2s::{Lfm3AudioEngine, S2sEngine, LFM3_AUDIO_2B, LFM3_AUDIO_2B_MMPROJ};
+use syllabix_core::s2s::{
+    Lfm3AudioEngine, S2sEngine, LFM3_AUDIO_2B, LFM3_AUDIO_2B_MMPROJ,
+    LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
+};
 use syllabix_core::testing::CollectingSink;
 use syllabix_core::types::{SynthesizedAudio, TurnId, FRAME_SAMPLES};
 use syllabix_core::vad::END_SILENCE_FRAMES;
 use syllabix_core::AudioSink;
+use syllabix_core::Stt;
 use syllabix_core::{
-    audio::{read_wav, record_fixture_to_frames},
+    audio::{read_wav, record_fixture_to_frames, write_wav, WavPcm},
     Cancel, ModelCache, Result, Session, Utterance,
 };
 use syllabix_native::Lfm3AudioContext;
+use syllabix_stt::{SttModel, WhisperStt};
 
 use crate::{hex, native, skip_unless_model};
 
@@ -169,8 +174,6 @@ fn lfm3_audio_engine_generate() {
     eprintln!(
         "lfm3-audio-2b: host={host} cpus={cpus} threads={N_THREADS} cap_out_s={CAP_OUT_S:.2} fixture={FIXTURE}"
     );
-    eprintln!("lfm3-audio-2b: phase0_median ttfa_ms=665 gen_rtf=0.95 peak_rss_mib=4034");
-
     let utterance = fixture_utterance();
     let in_s = utterance.pcm().len() as f64 / 16_000.0;
 
@@ -187,6 +190,14 @@ fn lfm3_audio_engine_generate() {
             Ok(())
         })
         .expect("engine generate");
+    let reply_text = engine
+        .last_text()
+        .unwrap_or_else(|| panic!("mixed s2s must expose reply text"));
+    let word_count = reply_text.split_whitespace().count();
+    assert!(
+        word_count >= 3,
+        "mixed reply text too short ({word_count} words): {reply_text:?}"
+    );
     let gen_s = t0.elapsed().as_secs_f64();
     let ttfa_ms = first_audio_at
         .map(|t| (t - t0).as_secs_f64() * 1000.0)
@@ -207,8 +218,12 @@ fn lfm3_audio_engine_generate() {
         0.0
     };
     let peak_rss_mib = peak_rss_mib();
+    assert!(
+        gen_s < 42.0,
+        "generate wall time {gen_s:.1}s exceeded 42 s cap"
+    );
     eprintln!(
-        "lfm3-audio-2b: engine turn=1 in_s={in_s:.3} ttfa_ms={ttfa_ms:.0} gen_after_ttfa_s={after_ttfa_s:.3} out_s={native_out_s:.3} gen_rtf={gen_rtf:.2} headline_rtf={headline_rtf:.2} peak_rss_mib={peak_rss_mib:.0}"
+        "lfm3-audio-2b: engine turn=1 in_s={in_s:.3} ttfa_ms={ttfa_ms:.0} gen_after_ttfa_s={after_ttfa_s:.3} out_s={native_out_s:.3} gen_rtf={gen_rtf:.2} headline_rtf={headline_rtf:.2} reply_words={word_count} gen_wall_s={gen_s:.2} peak_rss_mib={peak_rss_mib:.0} reply_text={reply_text:?}"
     );
 }
 
@@ -353,10 +368,82 @@ fn lfm3_s2s_n_gpu_layers_matches_host() {
             &cancel,
         )
         .expect("mmproj path");
-    let ctx = Lfm3AudioContext::load(&model, &mmproj, N_THREADS, u32::MAX).expect("load s2s");
+    let ctx = Lfm3AudioContext::load(
+        &model,
+        &mmproj,
+        N_THREADS,
+        u32::MAX,
+        LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
+    )
+    .expect("load s2s");
     assert_eq!(
         ctx.n_gpu_layers(),
         syllabix_native::llama_n_gpu_layers(),
         "S2S must use the same GPU placement as cascade LLM and Whisper"
+    );
+}
+
+/// Manual check: write 24 kHz reply WAV and transcribe with whisper-small (not in default CI).
+#[test]
+#[ignore = "manual native: SYLLABIX_NATIVE_MODELS=lfm3-audio-2b,whisper-small cargo test -p syllabix-core --features native-inference --test native_inference lfm3_audio_reply_whisper -- --ignored --nocapture"]
+fn lfm3_audio_reply_whisper() {
+    skip_unless_model!(LFM3_AUDIO_2B);
+    skip_unless_model!("whisper-small");
+    let _native = native();
+
+    let utterance = fixture_utterance();
+    let mut pcm = Vec::new();
+    shared_engine()
+        .generate(&utterance, &Cancel::new(), &mut |audio| {
+            pcm.extend_from_slice(&audio.samples);
+            Ok(())
+        })
+        .expect("generate");
+    assert!(!pcm.is_empty(), "reply must include PCM");
+
+    let wav = WavPcm {
+        format: syllabix_native::audio::PcmFormat {
+            sample_rate_hz: NATIVE_OUT_RATE as u32,
+            channels: 1,
+        },
+        samples: pcm,
+    };
+    let out_path = std::path::Path::new("/opt/cursor/artifacts/lfm3_s2s_reply.wav");
+    if let Some(parent) = out_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    write_wav(fs::File::create(out_path).expect("create wav"), &wav).expect("write wav");
+    eprintln!("wrote {}", out_path.display());
+
+    let cache = ModelCache::v0();
+    let mut progress = StderrProgress::new();
+    let cancel = Cancel::new();
+    let whisper_path = cache
+        .resolve(
+            cache
+                .manifest()
+                .asset("whisper-small")
+                .expect("whisper asset"),
+            &HttpFetcher,
+            &mut progress,
+            &cancel,
+        )
+        .expect("whisper weights");
+    let mut stt = WhisperStt::from_model_path(whisper_path, SttModel::Small).expect("whisper");
+    let frames = record_fixture_to_frames(&wav).expect("reply frames");
+    let transcript = stt
+        .transcribe(
+            &Utterance {
+                turn: TurnId(99),
+                frames,
+            },
+            &Cancel::new(),
+        )
+        .expect("whisper transcript");
+    eprintln!("whisper-small transcript={:?}", transcript.text.trim());
+    assert!(
+        transcript.text.split_whitespace().count() >= 2,
+        "whisper must hear speech: {:?}",
+        transcript.text
     );
 }
