@@ -210,6 +210,10 @@ impl Tts for S2sTts {
                 return Err(Error::Cancelled);
             }
             on_audio(audio)?;
+            if cancel.is_stale(token.generation) || cancel.is_shutdown() {
+                self.state.reset();
+                return Err(Error::Cancelled);
+            }
         }
         if !emitted_final {
             on_audio(self.state.emit(vec![0; 16], token, true))?;
@@ -386,11 +390,6 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
-        let log = ops.lock().expect("ops");
-        assert!(
-            !log.iter().any(|op| matches!(op, FakeS2sOp::Speak { .. })),
-            "stale generation must not invoke speak"
-        );
         let generation = cancel.generation();
         tts.synthesize_chunk_into(
             &TokenChunk {
@@ -409,7 +408,8 @@ mod tests {
             log.iter()
                 .filter(|op| matches!(op, FakeS2sOp::Speak { .. }))
                 .count(),
-            1
+            1,
+            "stale generation must not invoke speak before the fresh turn"
         );
     }
 
