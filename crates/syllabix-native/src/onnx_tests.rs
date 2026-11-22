@@ -1,7 +1,14 @@
 //! Unit tests for the shared ONNX seam. No weights, no devices.
 
+use std::sync::{Mutex, OnceLock};
+
 use super::*;
 use crate::Error;
+
+fn ort_session_load_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn names(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| (*word).to_string()).collect()
@@ -78,6 +85,9 @@ fn failing_mock_reports_the_configured_message() {
 
 #[test]
 fn ort_load_rejects_a_missing_graph() {
+    let _lock = ort_session_load_lock()
+        .lock()
+        .expect("ort session load lock");
     let err = match OrtSession::load(
         Path::new("/no/such/graph.onnx"),
         "mock-provider",
@@ -100,6 +110,9 @@ fn relu_fixture() -> std::path::PathBuf {
 }
 
 fn load_relu() -> OrtSession {
+    let _lock = ort_session_load_lock()
+        .lock()
+        .expect("ort session load lock");
     OrtSession::load(&relu_fixture(), "mock-provider", "relu fixture")
         .expect("checked-in fixture loads")
 }
@@ -145,6 +158,9 @@ fn mixed_fixture() -> std::path::PathBuf {
 
 #[test]
 fn ort_session_reads_every_element_type() {
+    let _lock = ort_session_load_lock()
+        .lock()
+        .expect("ort session load lock");
     let mut session = OrtSession::load(&mixed_fixture(), "mock-provider", "mixed fixture")
         .expect("fixture loads");
     assert_eq!(

@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::s2s::{
     S2sEngine, LFM3_AUDIO_2B, LFM3_AUDIO_2B_MMPROJ, LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
 };
-use crate::types::{GenerationId, SynthesizedAudio, Utterance};
+use crate::types::{GenerationId, SynthesizedAudio, TurnId, Utterance};
 
 /// Default cap on native PCM samples per `generate` (~42 s at 24 kHz).
 pub const LFM3_AUDIO_DEFAULT_MAX_OUT_SAMPLES: i32 = 1_024_000;
@@ -267,6 +267,152 @@ impl S2sEngine for Lfm3AudioEngine {
             }),
         }
     }
+
+    fn transcribe(
+        &mut self,
+        utterance: &Utterance,
+        language: Option<&str>,
+        cancel: &Cancel,
+    ) -> Result<String> {
+        if cancel.is_shutdown() {
+            return Err(Error::Cancelled);
+        }
+        if utterance.frames.is_empty() {
+            return Err(Error::Provider {
+                provider: self.name(),
+                message: "utterance has no frames".into(),
+            });
+        }
+        let generation = cancel.generation();
+        self.last_text.clear();
+        let pcm_in = self.utterance_to_f32_in(utterance)?;
+        let mut abort_check = S2sAbortCheck { cancel, generation };
+        let abort_user = (&mut abort_check as *mut S2sAbortCheck).cast();
+        let result = unsafe {
+            self.ctx.transcribe_streaming(
+                &pcm_in,
+                language,
+                Some(s2s_abort),
+                abort_user,
+                &mut |text, _| {
+                    if cancel.is_shutdown() || cancel.is_stale(generation) {
+                        return Err(Lfm3S2sError::Cancelled);
+                    }
+                    self.last_text.push_str(text);
+                    Ok(())
+                },
+            )
+        };
+        match result {
+            Ok(()) => {
+                if cancel.is_stale(generation) || cancel.is_shutdown() {
+                    return Err(Error::Cancelled);
+                }
+                Ok(self.last_text.clone())
+            }
+            Err(Lfm3S2sError::Cancelled) => Err(Error::Cancelled),
+            Err(Lfm3S2sError::Failed(_)) if cancel.is_shutdown() => Err(Error::Cancelled),
+            Err(Lfm3S2sError::Failed(message)) => Err(Error::Provider {
+                provider: self.name(),
+                message,
+            }),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn speak(
+        &mut self,
+        turn: TurnId,
+        generation: GenerationId,
+        text: &str,
+        language: Option<&str>,
+        voice: Option<&str>,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        if cancel.is_shutdown() || cancel.is_stale(generation) {
+            return Err(Error::Cancelled);
+        }
+        if text.is_empty() {
+            return on_audio(SynthesizedAudio {
+                turn,
+                generation,
+                index: 0,
+                samples: Vec::new(),
+                is_last: true,
+            })
+            .map_err(|err| Error::Provider {
+                provider: self.name(),
+                message: err.to_string(),
+            });
+        }
+        let out_rate = self.ctx.out_rate_hz();
+        let mut conv = PcmConverter::new(
+            PcmFormat {
+                sample_rate_hz: out_rate as u32,
+                channels: 1,
+            },
+            PcmFormat::v0(),
+        )
+        .map_err(|err| Error::Provider {
+            provider: self.name(),
+            message: err.to_string(),
+        })?;
+        let mut index: u32 = 0;
+        let mut abort_check = S2sAbortCheck { cancel, generation };
+        let abort_user = (&mut abort_check as *mut S2sAbortCheck).cast();
+        let result = unsafe {
+            self.ctx.speak_streaming(
+                text,
+                language,
+                voice,
+                self.max_out_samples,
+                Some(s2s_abort),
+                abort_user,
+                &mut |rate, native, is_last| {
+                    if cancel.is_shutdown() || cancel.is_stale(generation) {
+                        return Err(Lfm3S2sError::Cancelled);
+                    }
+                    if rate != out_rate {
+                        return Err(Lfm3S2sError::Failed(format!(
+                            "unexpected native rate {rate} (expected {out_rate})"
+                        )));
+                    }
+                    let mut out = conv.push(native);
+                    if is_last {
+                        out.extend(conv.flush());
+                    }
+                    let pcm16 = f32_to_i16(&out);
+                    if !pcm16.is_empty() || is_last {
+                        on_audio(SynthesizedAudio {
+                            turn,
+                            generation,
+                            index,
+                            samples: pcm16,
+                            is_last,
+                        })
+                        .map_err(|err| Lfm3S2sError::Failed(err.to_string()))?;
+                        index = index.saturating_add(1);
+                    }
+                    Ok(())
+                },
+            )
+        };
+        match result {
+            Ok(()) => {
+                if cancel.is_stale(generation) || cancel.is_shutdown() {
+                    return Err(Error::Cancelled);
+                }
+                Ok(())
+            }
+            Err(Lfm3S2sError::Cancelled) => Err(Error::Cancelled),
+            Err(Lfm3S2sError::Failed(_)) if cancel.is_shutdown() => Err(Error::Cancelled),
+            Err(Lfm3S2sError::Failed(message)) => Err(Error::Provider {
+                provider: self.name(),
+                message,
+            }),
+        }
+    }
 }
 
 fn resolve_asset(
@@ -375,6 +521,60 @@ mod tests {
         assert!(!chunks.is_empty());
         assert!(chunks.iter().any(|c| c.is_last));
         assert!(engine.last_native_out_samples() > 0);
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_transcribe_and_speak_on_fake_context() {
+        use crate::fake::scripted_frames;
+        use crate::s2s::S2sEngine;
+        use crate::types::TurnId;
+        let mut engine = Lfm3AudioEngine {
+            ctx: Lfm3AudioContext::load(
+                "fake-s2s",
+                "fake-mmproj",
+                1,
+                0,
+                0,
+                LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
+            )
+            .expect("coverage ctx"),
+            n_threads: 1,
+            max_out_samples: 0,
+            last_native_out_samples: 0,
+            last_text: String::new(),
+        };
+        let utterance = Utterance {
+            turn: TurnId(2),
+            frames: scripted_frames(2, 1, 0),
+        };
+        let text = engine
+            .transcribe(&utterance, Some("en"), &Cancel::new())
+            .expect("transcribe");
+        assert_eq!(text, "fake s2s transcript");
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        engine
+            .speak(
+                TurnId(2),
+                generation,
+                "hello",
+                Some("en"),
+                Some("female"),
+                &cancel,
+                &mut |_| Ok(()),
+            )
+            .expect("speak");
+        assert_eq!(engine.n_past(), 0);
+        let cancel = Cancel::new();
+        let stale = cancel.generation();
+        cancel.cancel_generation();
+        let err = engine
+            .speak(TurnId(3), stale, "hello", None, None, &cancel, &mut |_| {
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::Cancelled));
     }
 
     #[cfg(coverage)]

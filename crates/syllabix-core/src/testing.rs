@@ -6,7 +6,7 @@
 
 pub use crate::fake::{
     scripted_frames, CollectingSink, FailOnceLlm, FailOnceStt, FailOnceTts, FakeAssistPhase,
-    FakeLlm, FakeS2s, FakeS2sCloseRecord, FakeStt, FakeTts, FakeVad, LlmCall, ScriptedStt,
-    FAKE_S2S_REPLY,
+    FakeLlm, FakeS2s, FakeS2sCloseRecord, FakeS2sOp, FakeStt, FakeTts, FakeVad, LlmCall,
+    ScriptedStt, FAKE_S2S_REPLY, FAKE_S2S_TRANSCRIPT,
 };
 pub use crate::pipeline::{run_s2s_loop, run_s2s_loop_captured, S2sStages};
