@@ -62,6 +62,10 @@ impl S2sEngine for DynS2s {
         self.0.last_text()
     }
 
+    fn speak_sample_cap(&self) -> Option<usize> {
+        self.0.speak_sample_cap()
+    }
+
     fn transcribe(
         &mut self,
         utterance: &Utterance,
