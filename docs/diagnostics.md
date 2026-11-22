@@ -72,7 +72,7 @@ reached render as `null` (a barge-in-interrupted turn, for example, has no
 
 Provider metadata includes `tts_provider`, `tts_model`, and `tts_backend`.
 For Qwen3-TTS, `tts_backend` is the placement confirmed by the startup
-warm-up (`metal` or `cpu`), including an automatic CPU fallback.
+warm-up (`metal`, `vulkan`, or `cpu`), including an automatic CPU fallback.
 
 | Anchor | Captured at |
 |---|---|
