@@ -79,7 +79,7 @@ Windows: Settings → Privacy → Microphone.
 
 ## Compile
 
-Requires Rust 1.91+ (pinned in `rust-toolchain.toml`), CMake, and a C++ compiler. whisper.cpp and llama.cpp share one `ggml` compiled into the binary (Darwin Metal + Accelerate; Linux/Windows portable CPU by default). Vendored trees ship in the repo — no git submodules. Linux also needs ALSA headers (`libasound2-dev`) and `pkg-config`. Other repos that embed `syllabix-core` (Lane 2 / Lane 3) need this same compile toolchain — [embed — Host compile](embed.md#host-compile).
+Requires Rust 1.91+ (pinned in `rust-toolchain.toml`), CMake, and a C++ compiler. whisper.cpp and llama.cpp share one `ggml` compiled into the binary (Darwin Metal + Accelerate; Linux/Windows portable CPU by default). Vendored trees ship in the repo — no git submodules. Linux also needs ALSA headers (`libasound2-dev`) and `pkg-config`. Other repos that embed `syllabix-core` with its default `full` feature (Lane 2, or Lane 3 hosts that keep the default stack) need this same compile toolchain — [embed — Host compile](embed.md#host-compile).
 
 ### Compile dependencies
 
@@ -89,9 +89,9 @@ Requires Rust 1.91+ (pinned in `rust-toolchain.toml`), CMake, and a C++ compiler
 ./scripts/setup-linux.sh
 ```
 
-Installs `build-essential`, `cmake`, `pkg-config`, `libasound2-dev`, `git`, and `bubblewrap`, then rustup if missing. CI Linux jobs run this same script. Optional Vulkan toolchain packages: `./scripts/setup-linux.sh --with-vulkan`, then `SYLLABIX_GGML_VULKAN=1 cargo build -p syllabix --release`. Vulkan details: [`crates/syllabix-native/vendor/README.md`](../crates/syllabix-native/vendor/README.md).
+Installs `build-essential`, `cmake`, `pkg-config`, `libasound2-dev`, `git`, and `bubblewrap`, then rustup if missing. CI Linux jobs that build the native stack run this same script. Optional Vulkan toolchain packages: `./scripts/setup-linux.sh --with-vulkan`, then `SYLLABIX_GGML_VULKAN=1 cargo build -p syllabix --release`. Vulkan details: [`crates/syllabix-native/vendor/README.md`](../crates/syllabix-native/vendor/README.md).
 
-A host crate that only depends on `syllabix-core` needs `build-essential`, `cmake`, `pkg-config`, and `libasound2-dev`. `bubblewrap` is for this repo’s Linux sandbox tests, not for compiling the SDK.
+A host crate that uses `syllabix-core`’s default `full` feature needs `build-essential`, `cmake`, `pkg-config`, and `libasound2-dev`; a Lane 3 host that sets `default-features = false` and supplies every stage does not need CMake or ALSA. `bubblewrap` is not needed to compile the SDK; Linux prefers it for the agent’s sandboxed shell at runtime (falling back to Landlock) and uses it for the sandbox tests.
 
 On Ubuntu 24.04+, if `bwrap --unshare-net` fails during sandbox tests, see [contributing.md](contributing.md) / CI (`kernel.apparmor_restrict_unprivileged_userns=0`).
 
