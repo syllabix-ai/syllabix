@@ -32,7 +32,7 @@ pipeline:
     provider: local
     model: lfm3-1.7b
     thinking: false
-    system_prompt: "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji."
+    system_prompt: "You are a smart assistant. This is a spoken conversation. Reply in spoken {language}, the way a person talks: brief, clear, and natural. Do not use markdown, lists, headings, or emoji. For facts that change over time, use a tool to verify before you answer; do not guess or rely on memory."
   tts:                           # reply → speech
     provider: local
     model: pocket-tts
@@ -161,6 +161,8 @@ Whisper-supported ISO code (`en`, `fr`, `de`, `ja`, …) or `auto`.
 
 Moonshine models are English-only: `language` must be `en`; `auto` and other codes fail at load. Partials show automatically while VAD owns the turn. There is no separate partials key — Silero `end_silence_ms` remains the one turn-end control. Medium uses a larger INT8 ONNX export (~590 MB vs ~360 MB for small) with the same runtime.
 
+Fluid Speech Pro (`fluid-speech-pro-gguf-q8_0`) accepts `auto` or one of its 25 European language codes; other codes fail at load.
+
 Hima-ASR (`hima-asr`) accepts `auto` (omit the language prompt; auto-detect) or one of `as`, `bn`, `en`, `gu`, `hi`, `kn`, `ml`, `mr`, `or`, `pa`, `ta`, `te`. Odia (`or`) is valid only with this model. Hima `auto` does not report a language, so set a language code to get replies in that language.
 
 ### `style`
@@ -207,7 +209,7 @@ Default `false`. Set `true` only with local `qwen3.5-2b`. Rejected for every oth
 
 ### `system_prompt`
 
-Optional spoken persona for `local` and `openai-compatible`. Default: the sample prompt above.
+Optional spoken persona for `local`, `openai-compatible`, and Goose. Default: the sample prompt above.
 
 `{language}` is replaced at generate time with the STT language’s English name (`English`, `French`, …). Empty or non-string values fail at load. `init` writes this key so you can edit it.
 
