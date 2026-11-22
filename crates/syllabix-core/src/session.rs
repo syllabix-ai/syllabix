@@ -5,7 +5,7 @@ use std::sync::mpsc::Sender;
 use zeroize::Zeroizing;
 
 use crate::cancel::Cancel;
-use crate::config::{AgentConfig, PipelineMode, S2sReplyWith};
+use crate::config::{AgentConfig, PipelineMode};
 use crate::defaults::AgentBackend;
 use crate::defaults::BuiltinDefaults;
 use crate::error::Result;
@@ -60,30 +60,6 @@ impl S2sEngine for DynS2s {
 
     fn last_text(&self) -> Option<&str> {
         self.0.last_text()
-    }
-
-    fn transcribe(
-        &mut self,
-        utterance: &Utterance,
-        language: Option<&str>,
-        cancel: &crate::cancel::Cancel,
-    ) -> Result<String> {
-        self.0.transcribe(utterance, language, cancel)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn speak(
-        &mut self,
-        turn: TurnId,
-        generation: crate::types::GenerationId,
-        text: &str,
-        language: Option<&str>,
-        voice: Option<&str>,
-        cancel: &crate::cancel::Cancel,
-        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
-    ) -> Result<()> {
-        self.0
-            .speak(turn, generation, text, language, voice, cancel, on_audio)
     }
 }
 
@@ -390,11 +366,6 @@ impl Session {
             .is_some_and(|debug| debug.collects_audio());
 
         if config.pipeline_mode == PipelineMode::S2s {
-            let reply_with = config
-                .s2s
-                .as_ref()
-                .map(|block| block.reply_with)
-                .unwrap_or(S2sReplyWith::S2s);
             let s2s_engine: Box<dyn S2sEngine> = match s2s {
                 Some(engine) => engine,
                 None => {
@@ -421,72 +392,6 @@ impl Session {
                     }
                 }
             };
-            if reply_with == S2sReplyWith::Llm {
-                use std::sync::{Arc, Mutex};
-
-                use crate::s2s_speech::{S2sStt, S2sTts};
-
-                let s2s_cfg = config.s2s.as_ref().expect("s2s mode requires s2s block");
-                let shared = Arc::new(Mutex::new(s2s_engine));
-                let stt_adapter = Box::new(S2sStt::new(
-                    Arc::clone(&shared),
-                    s2s_cfg.language.clone(),
-                    &config.language,
-                ));
-                let tts_adapter = Box::new(S2sTts::new(
-                    shared,
-                    s2s_cfg.language.clone(),
-                    s2s_cfg.voice.clone(),
-                ));
-                let llm_api_key = if needs_llm_api_key(&config, llm.is_none()) {
-                    Some(resolve_api_key(|name| std::env::var(name).ok())?)
-                } else {
-                    None
-                };
-                let (mut input, sink) =
-                    resolve_io(&config, &events, turn_debug.as_ref(), input, sink)?;
-                if let ResolvedInput::Capture(capture) = &mut input {
-                    capture.discard_buffered_audio();
-                    if wants_wavs {
-                        capture.enable_pcm_tap();
-                    }
-                }
-                let (vad, stt, llm, tts) = resolve_ml(
-                    &config,
-                    &cancel,
-                    llm_api_key.as_ref(),
-                    None,
-                    None,
-                    vad,
-                    Some(stt_adapter),
-                    llm,
-                    Some(tts_adapter),
-                )?;
-                if let Some(events) = &events {
-                    let _ = events.send(LoopEvent::Ready);
-                }
-                let loop_config = LoopConfig {
-                    defaults: BuiltinDefaults::v0(),
-                    mode,
-                    events,
-                    turn_debug,
-                    controls,
-                };
-                let stages = PipelineStages {
-                    vad: DynVad(vad),
-                    stt: DynStt(stt),
-                    llm: DynLlm(llm),
-                    tts: DynTts(tts),
-                    sink: DynSink(sink),
-                };
-                return match input {
-                    ResolvedInput::Frames(frames) => run_loop(loop_config, stages, frames, cancel),
-                    ResolvedInput::Capture(capture) => {
-                        run_loop_captured(loop_config, stages, DynCapture(capture), cancel)
-                    }
-                };
-            }
-
             let (mut input, sink) = resolve_io(&config, &events, turn_debug.as_ref(), input, sink)?;
             if let ResolvedInput::Capture(capture) = &mut input {
                 capture.discard_buffered_audio();

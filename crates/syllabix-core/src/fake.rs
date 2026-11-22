@@ -10,8 +10,8 @@ use crate::providers::{AudioSink, Llm, Stt, Tts, Vad};
 use crate::s2s::S2sEngine;
 use crate::turn_debug::PlaybackWatch;
 use crate::types::{
-    AudioFrame, GenerationId, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId,
-    Utterance, VadEvent, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
+    AudioFrame, HistoryTurn, SynthesizedAudio, TokenChunk, Transcript, TurnId, Utterance, VadEvent,
+    DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ, FRAME_SAMPLES,
 };
 
 /// Recorded LLM invocation for history-order tests.
@@ -359,26 +359,7 @@ type FakeS2sSeenLog = Arc<Mutex<Vec<(TurnId, Vec<TurnId>)>>>;
 /// Stable assistant text streamed by [`FakeS2s`].
 pub const FAKE_S2S_REPLY: &str = "hello from fake s2s";
 
-/// Stable user transcript from [`FakeS2s::transcribe`].
-pub const FAKE_S2S_TRANSCRIPT: &str = "please pass the stew for dinner";
-
 const FAKE_S2S_TEXT_PIECES: &[&str] = &["hello ", "from ", "fake ", "s2s"];
-
-/// Recorded native S2S operations for tests.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FakeS2sOp {
-    Generate(TurnId),
-    Transcribe {
-        turn: TurnId,
-        language: Option<String>,
-    },
-    Speak {
-        turn: TurnId,
-        text: String,
-        language: Option<String>,
-        voice: Option<String>,
-    },
-}
 
 /// Delayed echo S2S: streams the user utterance PCM back as assistant audio.
 pub struct FakeS2s {
@@ -389,7 +370,6 @@ pub struct FakeS2s {
     history: Arc<Mutex<Vec<TurnId>>>,
     seen: FakeS2sSeenLog,
     close_log: Arc<Mutex<Vec<(TurnId, FakeS2sCloseRecord)>>>,
-    ops_log: Arc<Mutex<Vec<FakeS2sOp>>>,
     last_text: String,
 }
 
@@ -404,7 +384,6 @@ impl FakeS2s {
             history: Arc::new(Mutex::new(Vec::new())),
             seen: Arc::new(Mutex::new(Vec::new())),
             close_log: Arc::new(Mutex::new(Vec::new())),
-            ops_log: Arc::new(Mutex::new(Vec::new())),
             last_text: String::new(),
         }
     }
@@ -419,7 +398,6 @@ impl FakeS2s {
             history: Arc::new(Mutex::new(Vec::new())),
             seen: Arc::new(Mutex::new(Vec::new())),
             close_log: Arc::new(Mutex::new(Vec::new())),
-            ops_log: Arc::new(Mutex::new(Vec::new())),
             last_text: String::new(),
         }
     }
@@ -434,7 +412,6 @@ impl FakeS2s {
             history: Arc::new(Mutex::new(Vec::new())),
             seen: Arc::new(Mutex::new(Vec::new())),
             close_log: Arc::new(Mutex::new(Vec::new())),
-            ops_log: Arc::new(Mutex::new(Vec::new())),
             last_text: String::new(),
         }
     }
@@ -450,10 +427,6 @@ impl FakeS2s {
 
     pub fn close_log(&self) -> Arc<Mutex<Vec<(TurnId, FakeS2sCloseRecord)>>> {
         Arc::clone(&self.close_log)
-    }
-
-    pub fn ops_log(&self) -> Arc<Mutex<Vec<FakeS2sOp>>> {
-        Arc::clone(&self.ops_log)
     }
 
     fn record_close(&self, turn: TurnId, phase: FakeAssistPhase) {
@@ -550,10 +523,6 @@ impl S2sEngine for FakeS2s {
             log.push(utterance.turn);
             let mut seen = self.seen.lock().expect("s2s seen log");
             seen.push((utterance.turn, history_at_start));
-            self.ops_log
-                .lock()
-                .expect("s2s ops log")
-                .push(FakeS2sOp::Generate(utterance.turn));
         }
 
         let text_wait = self.text_delay;
@@ -632,85 +601,6 @@ impl S2sEngine for FakeS2s {
             .push(utterance.turn);
         debug_assert_eq!(self.last_text, FAKE_S2S_REPLY);
         Ok(())
-    }
-
-    fn transcribe(
-        &mut self,
-        utterance: &Utterance,
-        language: Option<&str>,
-        cancel: &Cancel,
-    ) -> Result<String> {
-        if cancel.is_shutdown() {
-            return Err(Error::Cancelled);
-        }
-        if utterance.frames.is_empty() {
-            return Err(Error::Provider {
-                provider: self.name(),
-                message: "utterance has no frames".into(),
-            });
-        }
-        let generation = cancel.generation();
-        if cancel.is_stale(generation) {
-            return Err(Error::Cancelled);
-        }
-        self.ops_log
-            .lock()
-            .expect("s2s ops log")
-            .push(FakeS2sOp::Transcribe {
-                turn: utterance.turn,
-                language: language.map(str::to_string),
-            });
-        let asr_wait = if self.text_delay > Duration::ZERO {
-            self.text_delay
-        } else if self.audio_delay > Duration::ZERO {
-            Duration::ZERO
-        } else {
-            self.delay
-        };
-        if asr_wait > Duration::ZERO {
-            self.wait_phase(generation, cancel, asr_wait)?;
-        }
-        if cancel.is_shutdown() || cancel.is_stale(generation) {
-            return Err(Error::Cancelled);
-        }
-        Ok(FAKE_S2S_TRANSCRIPT.into())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn speak(
-        &mut self,
-        turn: TurnId,
-        generation: GenerationId,
-        text: &str,
-        language: Option<&str>,
-        voice: Option<&str>,
-        cancel: &Cancel,
-        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
-    ) -> Result<()> {
-        if cancel.is_shutdown() || cancel.is_stale(generation) {
-            return Err(Error::Cancelled);
-        }
-        self.ops_log
-            .lock()
-            .expect("s2s ops log")
-            .push(FakeS2sOp::Speak {
-                turn,
-                text: text.into(),
-                language: language.map(str::to_string),
-                voice: voice.map(str::to_string),
-            });
-        if self.delay > Duration::ZERO {
-            self.wait_phase(generation, cancel, self.delay)?;
-        }
-        let samples: Vec<i16> = text.bytes().map(i16::from).collect();
-        let pcm = if samples.is_empty() { vec![1] } else { samples };
-        on_audio(SynthesizedAudio {
-            turn,
-            generation,
-            index: 0,
-            samples: pcm,
-            is_last: true,
-        })
     }
 }
 
@@ -1044,26 +934,6 @@ mod tests {
         assert!(chunks[0].is_last);
         assert_eq!(chunks[0].turn, TurnId(2));
         assert_eq!(chunks[0].generation, generation);
-    }
-
-    #[test]
-    fn fake_s2s_transcribe_with_delay_cancellable_mid_wait() {
-        use std::sync::Arc;
-        use std::thread;
-
-        let cancel = Arc::new(Cancel::new());
-        let cancel_worker = Arc::clone(&cancel);
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(15));
-            cancel_worker.cancel_generation();
-        });
-        let mut engine = FakeS2s::with_delay(Duration::from_millis(150));
-        let utterance = Utterance {
-            turn: TurnId(0),
-            frames: scripted_frames(1, 1, 0),
-        };
-        let err = engine.transcribe(&utterance, None, &cancel).unwrap_err();
-        assert!(matches!(err, Error::Cancelled));
     }
 
     #[test]

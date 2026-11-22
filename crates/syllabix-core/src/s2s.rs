@@ -1,8 +1,8 @@
 //! Turn-based speech-to-speech engine trait.
 
 use crate::cancel::Cancel;
-use crate::error::{Error, Result};
-use crate::types::{GenerationId, SynthesizedAudio, TurnId, Utterance};
+use crate::error::Result;
+use crate::types::{SynthesizedAudio, Utterance};
 
 /// Manifest / yaml id for LiquidAI LFM3-Audio-2B (`pipeline.s2s.model`).
 pub const LFM3_AUDIO_2B: &str = "lfm3-audio-2b";
@@ -43,41 +43,6 @@ pub trait S2sEngine: Send {
     fn last_text(&self) -> Option<&str> {
         None
     }
-
-    /// Offline ASR for one utterance ([`crate::config::S2sReplyWith::Llm`]).
-    fn transcribe(
-        &mut self,
-        _utterance: &Utterance,
-        _language: Option<&str>,
-        _cancel: &Cancel,
-    ) -> Result<String> {
-        Err(Error::Provider {
-            provider: self.name(),
-            message: "does not support offline ASR".into(),
-        })
-    }
-
-    /// TTS for one text segment ([`crate::config::S2sReplyWith::Llm`]).
-    ///
-    /// `on_audio` is invoked in chunk order at `PcmFormat::v0()`. The last chunk must have
-    /// `is_last = true` only when the segment finishes successfully, not on cancel (same
-    /// contract as `generate`'s `on_audio`).
-    #[allow(clippy::too_many_arguments)]
-    fn speak(
-        &mut self,
-        _turn: TurnId,
-        _generation: GenerationId,
-        _text: &str,
-        _language: Option<&str>,
-        _voice: Option<&str>,
-        _cancel: &Cancel,
-        _on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
-    ) -> Result<()> {
-        Err(Error::Provider {
-            provider: self.name(),
-            message: "does not support offline TTS".into(),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -87,8 +52,8 @@ mod tests {
     use std::time::Duration;
 
     use crate::cancel::Cancel;
-    use crate::fake::{scripted_frames, FakeS2s};
-    use crate::types::{SynthesizedAudio, TurnId, Utterance};
+    use crate::fake::FakeS2s;
+    use crate::types::{TurnId, Utterance};
 
     use super::S2sEngine;
 
@@ -125,46 +90,6 @@ mod tests {
         assert!(chunks[0].is_last);
         assert_eq!(chunks[0].turn, TurnId(3));
         assert_eq!(chunks[0].generation, generation);
-    }
-
-    #[test]
-    fn default_transcribe_and_speak_are_provider_errors() {
-        struct StubS2s;
-        impl S2sEngine for StubS2s {
-            fn name(&self) -> &'static str {
-                "stub-s2s"
-            }
-            fn generate(
-                &mut self,
-                utterance: &Utterance,
-                cancel: &Cancel,
-                on_audio: &mut dyn FnMut(SynthesizedAudio) -> crate::error::Result<()>,
-                on_text: &mut dyn FnMut(&str, bool) -> crate::error::Result<()>,
-            ) -> crate::error::Result<()> {
-                FakeS2s::new().generate(utterance, cancel, on_audio, on_text)
-            }
-        }
-        let mut engine: Box<dyn S2sEngine> = Box::new(StubS2s);
-        let utterance = Utterance {
-            turn: TurnId(0),
-            frames: scripted_frames(0, 1, 0),
-        };
-        let err = engine
-            .transcribe(&utterance, None, &Cancel::new())
-            .unwrap_err();
-        assert!(matches!(err, crate::error::Error::Provider { .. }));
-        let err = engine
-            .speak(
-                TurnId(0),
-                Cancel::new().generation(),
-                "hi",
-                None,
-                None,
-                &Cancel::new(),
-                &mut |_| Ok(()),
-            )
-            .unwrap_err();
-        assert!(matches!(err, crate::error::Error::Provider { .. }));
     }
 
     #[test]

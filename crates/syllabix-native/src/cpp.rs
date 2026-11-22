@@ -217,7 +217,6 @@ mod ffi {
         pub fn syllabix_s2s_out_rate(s2s: *const S2sHandle) -> c_int;
         pub fn syllabix_s2s_n_gpu_layers(s2s: *const S2sHandle) -> c_int;
         pub fn syllabix_s2s_last_text(s2s: *const S2sHandle) -> *const c_char;
-        pub fn syllabix_s2s_last_error(s2s: *const S2sHandle) -> *const c_char;
         pub fn syllabix_s2s_reset(s2s: *mut S2sHandle);
         pub fn syllabix_s2s_n_past(s2s: *const S2sHandle) -> c_int;
         pub fn syllabix_s2s_generate(
@@ -231,27 +230,6 @@ mod ffi {
             pcm_user: *mut c_void,
             text_cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
             text_user: *mut c_void,
-        ) -> c_int;
-        pub fn syllabix_s2s_transcribe(
-            s2s: *mut S2sHandle,
-            pcm_in: *const f32,
-            n_samples: c_int,
-            language: *const c_char,
-            abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
-            abort_user: *mut c_void,
-            text_cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
-            text_user: *mut c_void,
-        ) -> c_int;
-        pub fn syllabix_s2s_speak(
-            s2s: *mut S2sHandle,
-            text: *const c_char,
-            language: *const c_char,
-            voice: *const c_char,
-            max_out_samples: c_int,
-            abort_cb: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
-            abort_user: *mut c_void,
-            pcm_cb: Option<unsafe extern "C" fn(i32, *const f32, i64, c_int, *mut c_void) -> c_int>,
-            pcm_user: *mut c_void,
         ) -> c_int;
     }
 
@@ -856,11 +834,6 @@ mod ffi {
     }
 
     #[cfg(coverage)]
-    pub unsafe fn syllabix_s2s_last_error(_s2s: *const S2sHandle) -> *const c_char {
-        std::ptr::null()
-    }
-
-    #[cfg(coverage)]
     pub unsafe fn syllabix_s2s_generate(
         _s2s: *mut S2sHandle,
         pcm: *const f32,
@@ -935,114 +908,6 @@ mod ffi {
     #[cfg(coverage)]
     pub unsafe fn syllabix_s2s_n_past(_s2s: *const S2sHandle) -> c_int {
         COVERAGE_S2S_N_PAST.lock().map(|p| *p).unwrap_or(0)
-    }
-
-    #[cfg(coverage)]
-    pub unsafe fn syllabix_s2s_transcribe(
-        _s2s: *mut S2sHandle,
-        pcm: *const f32,
-        n_samples: c_int,
-        language: *const c_char,
-        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
-        abort_user: *mut c_void,
-        text_cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void) -> c_int>,
-        text_user: *mut c_void,
-    ) -> c_int {
-        if pcm.is_null() || n_samples < 1 {
-            return -1;
-        }
-        let path = COVERAGE_S2S_MODEL
-            .lock()
-            .map(|m| m.clone())
-            .unwrap_or_default();
-        if path.contains("nativeerr") {
-            return -1;
-        }
-        if !language.is_null() {
-            let lang = text(language);
-            if lang.contains('\0') {
-                return -1;
-            }
-        }
-        if let Some(abort) = abort {
-            if abort(abort_user) {
-                return 1;
-            }
-        }
-        if let Some(text_cb) = text_cb {
-            const PIECES: &[&str] = &["fake ", "s2s ", "transcript"];
-            for piece in PIECES {
-                let c_piece = CString::new(*piece).unwrap();
-                if text_cb(c_piece.as_ptr(), 0, text_user) != 0 {
-                    return 1;
-                }
-            }
-            if text_cb(std::ptr::null(), 1, text_user) != 0 {
-                return 1;
-            }
-        }
-        if let Ok(mut past) = COVERAGE_S2S_N_PAST.lock() {
-            *past = 0;
-        }
-        0
-    }
-
-    #[cfg(coverage)]
-    pub unsafe fn syllabix_s2s_speak(
-        _s2s: *mut S2sHandle,
-        prompt_ptr: *const c_char,
-        language: *const c_char,
-        voice: *const c_char,
-        _max_out_samples: c_int,
-        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
-        abort_user: *mut c_void,
-        cb: Option<unsafe extern "C" fn(i32, *const f32, i64, c_int, *mut c_void) -> c_int>,
-        user: *mut c_void,
-    ) -> c_int {
-        if prompt_ptr.is_null() || cb.is_none() {
-            return -1;
-        }
-        let spoken = text(prompt_ptr);
-        if spoken.is_empty() || spoken.contains('\0') {
-            return -1;
-        }
-        if !language.is_null() && text(language).contains('\0') {
-            return -1;
-        }
-        if !voice.is_null() && text(voice).contains('\0') {
-            return -1;
-        }
-        let path = COVERAGE_S2S_MODEL
-            .lock()
-            .map(|m| m.clone())
-            .unwrap_or_default();
-        if path.contains("nativeerr") {
-            return -1;
-        }
-        if let Some(abort) = abort {
-            if abort(abort_user) {
-                return 1;
-            }
-        }
-        let _ = (language, voice);
-        let first = [0.12f32, -0.12];
-        if let Some(cb) = cb {
-            if cb(24_000, first.as_ptr(), 2, 0, user) != 0 {
-                return 1;
-            }
-            if let Some(abort) = abort {
-                if abort(abort_user) {
-                    return 1;
-                }
-            }
-            if cb(24_000, std::ptr::null(), 0, 1, user) != 0 {
-                return 1;
-            }
-        }
-        if let Ok(mut past) = COVERAGE_S2S_N_PAST.lock() {
-            *past = 0;
-        }
-        0
     }
 
     #[cfg(all(coverage, feature = "parakeet"))]
@@ -2184,16 +2049,6 @@ impl Lfm3AudioContext {
         }
     }
 
-    pub fn last_error(&self) -> &str {
-        unsafe {
-            let ptr = ffi::syllabix_s2s_last_error(self.raw);
-            if ptr.is_null() {
-                return "";
-            }
-            std::ffi::CStr::from_ptr(ptr).to_str().unwrap_or("")
-        }
-    }
-
     /// Stream one utterance as native-rate f32 windows.
     ///
     /// # Safety
@@ -2241,136 +2096,6 @@ impl Lfm3AudioContext {
             )),
         }
     }
-
-    /// Offline ASR on one utterance (resets KV before and after).
-    ///
-    /// # Safety
-    /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn transcribe_streaming(
-        &mut self,
-        pcm_in: &[f32],
-        language: Option<&str>,
-        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
-        abort_user: *mut c_void,
-        on_text: &mut Lfm3TextCallback<'_>,
-    ) -> Result<(), Lfm3S2sError> {
-        if pcm_in.is_empty() {
-            return Err(Lfm3S2sError::Failed("empty utterance pcm".into()));
-        }
-        let c_lang = language
-            .filter(|lang| !lang.is_empty())
-            .map(|lang| {
-                CString::new(lang).map_err(|_| Lfm3S2sError::Failed("language contains NUL".into()))
-            })
-            .transpose()?;
-        let mut stream = Lfm3TranscribeStream {
-            on_text,
-            error: None,
-        };
-        let _ggml = ggml_lock();
-        let rc = unsafe {
-            ffi::syllabix_s2s_transcribe(
-                self.raw,
-                pcm_in.as_ptr(),
-                pcm_in.len() as c_int,
-                c_lang
-                    .as_ref()
-                    .map(|c| c.as_ptr())
-                    .unwrap_or(std::ptr::null()),
-                abort,
-                abort_user,
-                Some(lfm3_transcribe_text_callback),
-                (&mut stream as *mut Lfm3TranscribeStream<'_>).cast(),
-            )
-        };
-        if let Some(err) = stream.error {
-            return Err(err);
-        }
-        match rc {
-            0 => Ok(()),
-            1 => Err(Lfm3S2sError::Cancelled),
-            _ => {
-                let detail = self.last_error();
-                Err(Lfm3S2sError::Failed(if detail.is_empty() {
-                    "LFM3-Audio ASR transcription failed".into()
-                } else {
-                    detail.to_string()
-                }))
-            }
-        }
-    }
-
-    /// TTS for one text prompt (resets KV before and after).
-    ///
-    /// # Safety
-    /// `abort_user` must remain valid for the duration of the call when `abort` is `Some`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn speak_streaming(
-        &mut self,
-        text: &str,
-        language: Option<&str>,
-        voice: Option<&str>,
-        max_out_samples: i32,
-        abort: Option<unsafe extern "C" fn(*mut c_void) -> bool>,
-        abort_user: *mut c_void,
-        on_pcm: &mut Lfm3PcmCallback<'_>,
-    ) -> Result<(), Lfm3S2sError> {
-        if text.is_empty() {
-            return Err(Lfm3S2sError::Failed("empty speak text".into()));
-        }
-        let c_text =
-            CString::new(text).map_err(|_| Lfm3S2sError::Failed("text contains NUL".into()))?;
-        let c_lang = language
-            .filter(|lang| !lang.is_empty())
-            .map(|lang| {
-                CString::new(lang).map_err(|_| Lfm3S2sError::Failed("language contains NUL".into()))
-            })
-            .transpose()?;
-        let c_voice = voice
-            .filter(|v| !v.is_empty())
-            .map(|v| CString::new(v).map_err(|_| Lfm3S2sError::Failed("voice contains NUL".into())))
-            .transpose()?;
-        let mut stream = Lfm3SpeakStream {
-            on_pcm,
-            error: None,
-        };
-        let _ggml = ggml_lock();
-        let rc = unsafe {
-            ffi::syllabix_s2s_speak(
-                self.raw,
-                c_text.as_ptr(),
-                c_lang
-                    .as_ref()
-                    .map(|c| c.as_ptr())
-                    .unwrap_or(std::ptr::null()),
-                c_voice
-                    .as_ref()
-                    .map(|c| c.as_ptr())
-                    .unwrap_or(std::ptr::null()),
-                max_out_samples,
-                abort,
-                abort_user,
-                Some(lfm3_speak_pcm_callback),
-                (&mut stream as *mut Lfm3SpeakStream<'_>).cast(),
-            )
-        };
-        if let Some(err) = stream.error {
-            return Err(err);
-        }
-        match rc {
-            0 => Ok(()),
-            1 => Err(Lfm3S2sError::Cancelled),
-            _ => {
-                let detail = self.last_error();
-                Err(Lfm3S2sError::Failed(if detail.is_empty() {
-                    "LFM3-Audio TTS speak failed".into()
-                } else {
-                    detail.to_string()
-                }))
-            }
-        }
-    }
 }
 
 impl Drop for Lfm3AudioContext {
@@ -2386,16 +2111,6 @@ impl Drop for Lfm3AudioContext {
 struct Lfm3S2sStream<'a> {
     on_pcm: &'a mut Lfm3PcmCallback<'a>,
     on_text: &'a mut Lfm3TextCallback<'a>,
-    error: Option<Lfm3S2sError>,
-}
-
-struct Lfm3TranscribeStream<'a> {
-    on_text: &'a mut Lfm3TextCallback<'a>,
-    error: Option<Lfm3S2sError>,
-}
-
-struct Lfm3SpeakStream<'a> {
-    on_pcm: &'a mut Lfm3PcmCallback<'a>,
     error: Option<Lfm3S2sError>,
 }
 
@@ -2439,54 +2154,6 @@ unsafe extern "C" fn lfm3_text_callback(
         unsafe { std::ffi::CStr::from_ptr(text).to_str().unwrap_or("") }
     };
     match (stream.on_text)(piece, is_last != 0) {
-        Ok(()) => 0,
-        Err(err) => {
-            stream.error = Some(err);
-            1
-        }
-    }
-}
-
-unsafe extern "C" fn lfm3_transcribe_text_callback(
-    text: *const c_char,
-    is_last: c_int,
-    user: *mut c_void,
-) -> c_int {
-    if user.is_null() {
-        return -1;
-    }
-    let stream = unsafe { &mut *(user as *mut Lfm3TranscribeStream<'_>) };
-    let piece = if text.is_null() {
-        ""
-    } else {
-        unsafe { std::ffi::CStr::from_ptr(text).to_str().unwrap_or("") }
-    };
-    match (stream.on_text)(piece, is_last != 0) {
-        Ok(()) => 0,
-        Err(err) => {
-            stream.error = Some(err);
-            1
-        }
-    }
-}
-
-unsafe extern "C" fn lfm3_speak_pcm_callback(
-    sample_rate: i32,
-    pcm: *const f32,
-    n_samples: i64,
-    is_last: c_int,
-    user: *mut c_void,
-) -> c_int {
-    if user.is_null() || n_samples < 0 || (n_samples > 0 && pcm.is_null()) {
-        return -1;
-    }
-    let stream = unsafe { &mut *(user as *mut Lfm3SpeakStream<'_>) };
-    let samples = if n_samples == 0 {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(pcm, n_samples as usize) }
-    };
-    match (stream.on_pcm)(sample_rate, samples, is_last != 0) {
         Ok(()) => 0,
         Err(err) => {
             stream.error = Some(err);
@@ -3307,112 +2974,6 @@ mod tests {
                 &mut |_, _, _| Err(Lfm3S2sError::Failed("pcm callback".into())),
                 &mut |_, _| Ok(()),
             )
-        }
-        .is_err());
-
-        assert!(unsafe {
-            ctx.transcribe_streaming(&[], None, None, std::ptr::null_mut(), &mut |_, _| Ok(()))
-        }
-        .is_err());
-        let mut asr_pieces = Vec::new();
-        unsafe {
-            ctx.transcribe_streaming(
-                &[0.0, 0.1],
-                Some("en"),
-                None,
-                std::ptr::null_mut(),
-                &mut |piece, last| {
-                    asr_pieces.push((piece.to_string(), last));
-                    Ok(())
-                },
-            )
-            .unwrap();
-        }
-        let asr_joined: String = asr_pieces.iter().map(|(s, _)| s.as_str()).collect();
-        assert_eq!(asr_joined, "fake s2s transcript");
-        assert!(asr_pieces.last().is_some_and(|(_, last)| *last));
-        assert_eq!(ctx.n_past(), 0);
-
-        assert!(unsafe {
-            ctx.speak_streaming(
-                "",
-                None,
-                None,
-                0,
-                None,
-                std::ptr::null_mut(),
-                &mut |_, _, _| Ok(()),
-            )
-        }
-        .is_err());
-        assert!(unsafe {
-            ctx.speak_streaming(
-                "bad\0text",
-                None,
-                None,
-                0,
-                None,
-                std::ptr::null_mut(),
-                &mut |_, _, _| Ok(()),
-            )
-        }
-        .is_err());
-        let mut speak_windows = Vec::new();
-        unsafe {
-            ctx.speak_streaming(
-                "hello",
-                Some("en"),
-                Some("female"),
-                0,
-                None,
-                std::ptr::null_mut(),
-                &mut |rate, pcm, last| {
-                    speak_windows.push((rate, pcm.to_vec(), last));
-                    Ok(())
-                },
-            )
-            .unwrap();
-        }
-        assert_eq!(speak_windows.len(), 2);
-        assert!(speak_windows[1].1.is_empty());
-        assert!(speak_windows[1].2);
-        assert_eq!(ctx.n_past(), 0);
-        assert_eq!(
-            unsafe {
-                ctx.transcribe_streaming(&[0.0], None, Some(abort_now), cancel_ptr, &mut |_, _| {
-                    Ok(())
-                })
-            },
-            Err(Lfm3S2sError::Cancelled)
-        );
-        assert!(unsafe {
-            ctx.speak_streaming(
-                "hello",
-                None,
-                None,
-                0,
-                Some(abort_now),
-                cancel_ptr,
-                &mut |_, _, _| Ok(()),
-            )
-        }
-        .is_err());
-        assert!(unsafe {
-            ctx.speak_streaming(
-                "hello",
-                None,
-                None,
-                0,
-                None,
-                std::ptr::null_mut(),
-                &mut |_, _, _| Err(Lfm3S2sError::Failed("pcm callback".into())),
-            )
-        }
-        .is_err());
-        assert!(unsafe {
-            ctx.transcribe_streaming(&[0.0], None, None, std::ptr::null_mut(), &mut |_, _| {
-                Err(Lfm3S2sError::Failed("text callback".into()))
-            })
         }
         .is_err());
         let mut err_ctx = Lfm3AudioContext::load(
