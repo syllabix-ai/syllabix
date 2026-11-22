@@ -80,7 +80,7 @@ impl S2sReplyWith {
 }
 
 /// Optional `pipeline.s2s` block when [`PipelineMode::S2s`] is selected.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct S2sConfig {
     /// Optional yaml `pipeline.s2s.model`. When present, only `lfm3-audio-2b` is allowed.
     pub model: Option<String>,
@@ -90,6 +90,28 @@ pub struct S2sConfig {
     pub language: Option<String>,
     /// Optional TTS voice hint ([`S2sReplyWith::Llm`] only).
     pub voice: Option<String>,
+    /// Per-sentence LFM3 TTS when `reply_with: llm` (default `true`). `false` speaks the
+    /// whole reply in one call; ignored at runtime when `reply_with` is `s2s`.
+    pub split_sentences: bool,
+}
+
+impl Default for S2sConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            reply_with: S2sReplyWith::S2s,
+            language: None,
+            voice: None,
+            split_sentences: true,
+        }
+    }
+}
+
+/// Logs when `split_sentences: false` is set but `reply_with` is not `llm`.
+pub(crate) fn log_s2s_split_sentences_ignored_if_needed(s2s: &S2sConfig) {
+    if s2s.reply_with == S2sReplyWith::S2s && !s2s.split_sentences {
+        tracing::info!("pipeline.s2s.split_sentences is ignored when reply_with is s2s");
+    }
 }
 
 /// Validated agent configuration with one provider selected for each pipeline stage.
@@ -900,7 +922,13 @@ fn parse_s2s_block(
             deny_unknown(
                 block,
                 "pipeline.s2s",
-                &["model", "reply_with", "language", "voice"],
+                &[
+                    "model",
+                    "reply_with",
+                    "language",
+                    "voice",
+                    "split_sentences",
+                ],
             )?;
             let model = match optional_string(block, "pipeline.s2s", "model")? {
                 None => None,
@@ -953,11 +981,13 @@ fn parse_s2s_block(
                     ),
                 });
             }
+            let split_sentences = optional_bool(block, "pipeline.s2s", "split_sentences", true)?;
             Ok(Some(S2sConfig {
                 model,
                 reply_with,
                 language,
                 voice,
+                split_sentences,
             }))
         }
     }
@@ -1760,6 +1790,67 @@ mod tests {
         assert_eq!(s2s.reply_with, S2sReplyWith::Llm);
         assert_eq!(s2s.language.as_deref(), Some("fr"));
         assert_eq!(s2s.voice.as_deref(), Some("male"));
+        assert!(s2s.split_sentences);
+    }
+
+    #[test]
+    fn pipeline_s2s_split_sentences_defaults_true_without_key() {
+        let yaml = AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n    reply_with: llm\n",
+            1,
+        );
+        let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert!(parsed.s2s.as_ref().unwrap().split_sentences);
+        let yaml_model_only = AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n",
+            1,
+        );
+        let parsed = AgentConfig::parse_yaml(&yaml_model_only).unwrap();
+        assert!(parsed.s2s.as_ref().unwrap().split_sentences);
+    }
+
+    #[test]
+    fn pipeline_s2s_split_sentences_parses_true_and_false_with_llm() {
+        for (value, expected) in [("true", true), ("false", false)] {
+            let yaml = AgentConfig::v0().to_yaml().replacen(
+                "pipeline:\n",
+                &format!(
+                    "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n    reply_with: llm\n    split_sentences: {value}\n"
+                ),
+                1,
+            );
+            let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+            assert_eq!(parsed.s2s.as_ref().unwrap().split_sentences, expected);
+        }
+    }
+
+    #[test]
+    fn pipeline_s2s_split_sentences_false_allowed_with_reply_with_s2s() {
+        let yaml = AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n    reply_with: s2s\n    split_sentences: false\n",
+            1,
+        );
+        let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert!(!parsed.s2s.as_ref().unwrap().split_sentences);
+        assert_eq!(parsed.s2s.as_ref().unwrap().reply_with, S2sReplyWith::S2s);
+    }
+
+    #[test]
+    fn pipeline_s2s_split_sentences_rejects_non_boolean() {
+        let yaml = AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n    reply_with: llm\n    split_sentences: maybe\n",
+            1,
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("pipeline.s2s.split_sentences"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("boolean"), "{err}");
     }
 
     #[test]
