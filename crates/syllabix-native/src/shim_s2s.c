@@ -693,6 +693,7 @@ int syllabix_s2s_generate(
                     "conversation\n",
                     (int)s2s->n_past, (long long)need, n_ctx_seq);
             s2s_conversation_reset(s2s);
+            n_past = 0;
             syllabix_chat_string_free(prefix_prompt);
             syllabix_chat_string_free(suffix_prompt);
             prefix_prompt = NULL;

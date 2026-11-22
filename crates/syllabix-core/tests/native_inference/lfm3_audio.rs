@@ -633,23 +633,38 @@ fn lfm3_audio_tiny_ctx_resets() {
     skip_unless_model!(LFM3_AUDIO_2B);
     let _native = native();
     let (model, mmproj) = resolve_lfm3_paths();
-    let n_ctx: u32 = 2560;
-    eprintln!("lfm3-audio-2b: tiny_ctx n_ctx={n_ctx}");
+    // Raised cap inflates preflight gen_reserve in `syllabix_s2s_generate` so turn 1 + turn 2
+    // cannot share KV; must stay below default so the post-reset turn still fits `n_ctx`.
+    const TINY_CTX_MAX_OUT_SAMPLES: i32 = 600_000;
+    let turn1 = fixture_utterance();
+    let turn2 = short_fixture_utterance(0.4);
+    let mut probe =
+        Lfm3AudioEngine::from_paths_with_n_ctx(&model, &mmproj, N_THREADS, u32::MAX, u32::MAX)
+            .expect("probe engine")
+            .with_max_out_samples(CAP_OUT_SAMPLES);
+    probe
+        .generate(&turn1, &Cancel::new(), &mut |_| Ok(()), &mut |_, _| Ok(()))
+        .expect("probe turn 1");
+    let past1 = probe.n_past();
+    assert!(past1 > 0);
+    // llama pads `n_ctx` to 256; pick a window that fits one turn but not turn-1 KV + turn-2 preflight.
+    let n_ctx = past1 as u32 + 300;
+    eprintln!("lfm3-audio-2b: tiny_ctx n_ctx={n_ctx} past1={past1}");
+    drop(probe);
     let mut engine =
         Lfm3AudioEngine::from_paths_with_n_ctx(&model, &mmproj, N_THREADS, u32::MAX, n_ctx)
             .expect("tiny ctx engine")
-            .with_max_out_samples(CAP_OUT_SAMPLES);
-    let turn1 = fixture_utterance();
+            .with_max_out_samples(TINY_CTX_MAX_OUT_SAMPLES);
     engine
         .generate(&turn1, &Cancel::new(), &mut |_| Ok(()), &mut |_, _| Ok(()))
         .expect("turn 1");
     let past1 = engine.n_past();
     assert!(past1 > 0);
-    let turn2 = short_fixture_utterance(0.4);
     engine
         .generate(&turn2, &Cancel::new(), &mut |_| Ok(()), &mut |_, _| Ok(()))
         .expect("turn 2 after context reset");
     let past2 = engine.n_past();
+    eprintln!("lfm3-audio-2b: tiny_ctx past1={past1} past2={past2} n_ctx={n_ctx}");
     assert!(
         past2 < past1,
         "context-full turn 2 must reset (past1={past1} past2={past2})"
