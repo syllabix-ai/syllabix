@@ -1494,7 +1494,7 @@ mod tests {
         // Defaults are included; the sweep is one axis at a time, never a
         // cross-product of STT × LLM × TTS.
         assert!(SttModel::ALL.contains(&SttModel::Small));
-        assert_eq!(SttModel::ALL.len(), 10);
+        assert_eq!(SttModel::ALL.len(), 11);
         assert_eq!(V0_LLM_MODELS[0], "lfm3-1.7b");
         assert_eq!(V0_LLM_MODELS.len(), 8);
         assert!(TtsModel::ALL.contains(&TtsModel::PocketTts));

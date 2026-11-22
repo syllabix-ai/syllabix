@@ -169,7 +169,7 @@ Hima-ASR only. `native` (default when omitted) or `mixed`.
 
 ### `compute`
 
-Optional and valid only for Qwen3-ASR (`qwen3-asr-0.6`). Values: `auto` (default), `cpu`, `metal`, or `vulkan`.
+Optional and valid only for Qwen3-ASR (`qwen3-asr-0.6`) and Rumble-2-Flash (`rumble-2-flash`). Values: `auto` (default), `cpu`, `metal`, or `vulkan`.
 Same placement rules as TTS `pipeline.tts.compute`: Apple Silicon `auto` tries Metal then CPU; Linux builds with `SYLLABIX_GGML_VULKAN=1` try Vulkan when a device is present, then CPU. Forced `metal` / `vulkan` fail clearly when unavailable. Whisper and Moonshine reject this key.
 
 ```yaml

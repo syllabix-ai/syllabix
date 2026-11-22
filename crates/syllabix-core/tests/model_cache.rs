@@ -186,7 +186,7 @@ fn resolving_one_llm_id_does_not_fetch_the_other() {
 #[test]
 fn v0_manifest_is_complete() {
     let m = Manifest::v0();
-    assert_eq!(m.assets.len(), 52);
+    assert_eq!(m.assets.len(), 54);
     assert!(m.asset("silero").is_some());
     assert!(m.asset("whisper-small").is_some());
     assert!(m.asset("whisper-medium").is_some());
@@ -204,6 +204,17 @@ fn v0_manifest_is_complete() {
     assert!(m.asset("moonshine-medium-tokenizer").is_some());
     assert!(m.asset("qwen3-asr-0.6").is_some());
     assert!(m.asset("qwen3-asr-0.6-mmproj").is_some());
+    // Rumble-2-Flash reuses the Qwen3-ASR mtmd layout: decoder plus mmproj.
+    assert_eq!(
+        m.asset("rumble-2-flash").expect("rumble decoder").layer,
+        ModelLayer::Stt
+    );
+    assert_eq!(
+        m.asset("rumble-2-flash-mmproj")
+            .expect("rumble mmproj")
+            .layer,
+        ModelLayer::Stt
+    );
     assert!(m.asset("hima-encoder").is_some());
     assert!(m.asset("hima-encoder-data").is_some());
     assert!(m.asset("hima-decoder").is_some());

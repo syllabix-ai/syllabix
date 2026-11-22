@@ -42,6 +42,7 @@ Share downloads across the CLI and embed hosts by leaving the variable unset or 
 | `moonshine-streaming-small` | English-only streaming ASR; live partials (~360 MB) | pinned ONNX export; see NOTICE |
 | `moonshine-streaming-medium` | Larger English-only streaming ASR (~590 MB) | pinned ONNX export; see NOTICE |
 | `qwen3-asr-0.6` | Qwen3-ASR 0.6B via llama.cpp mtmd; finalize only (~1.0 GB). Optional `pipeline.stt.compute` (auto/cpu/metal/vulkan), same placement as Qwen TTS. | https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF |
+| `rumble-2-flash` | Rumble-2-Flash 0.5B (Qwen3-ASR fine-tune) via llama.cpp mtmd; finalize only (~0.56 GB). Optional `pipeline.stt.compute`. | https://huggingface.co/AtomicChat/Rumble-2-Flash-GGUF |
 | `hima-asr` | Optional Indic / code-switched finalize-only ONNX. Strongest on Telugu, Tamil, Kannada, and Malayalam; not meant for English. Optional `style` is `native` or `mixed`. Gemma terms apply ([NOTICE](../NOTICE)); see the model card for quality caveats. | https://huggingface.co/Prahaladha/hima-asr |
 | `fluid-speech-pro-gguf-q8_0` | Fluid Speech Pro through parakeet.cpp; finalize only, auto language (25 European languages) (~0.94 GB) | https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-gguf |
 

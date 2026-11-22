@@ -610,13 +610,13 @@ fn parse_value(value: &Value) -> Result<AgentConfig> {
     if stt_provider == SttProvider::Online && stt_compute != TtsCompute::Auto {
         return Err(Error::Config {
             field: "pipeline.stt.compute".into(),
-            message: "is only valid with local qwen3-asr-0.6".into(),
+            message: "is only valid with local qwen3-asr-0.6 or rumble-2-flash".into(),
         });
     }
     if stt_compute != TtsCompute::Auto && !stt_model.is_qwen_asr() {
         return Err(Error::Config {
             field: "pipeline.stt.compute".into(),
-            message: "is only valid with qwen3-asr-0.6".into(),
+            message: "is only valid with qwen3-asr-0.6 or rumble-2-flash".into(),
         });
     }
     let stt_style = match optional_string(stt, "pipeline.stt", "style")? {
@@ -1424,7 +1424,7 @@ fn parse_stt_model(value: &str) -> Result<SttModel> {
         unsupported(
             "pipeline.stt.model",
             value,
-            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small, moonshine-streaming-medium, qwen3-asr-0.6, hima-asr, fluid-speech-pro-gguf-q8_0",
+            "whisper-small, whisper-medium, whisper-large-v3-turbo, whisper-medium-q5_0, whisper-large-v3-turbo-q5_0, moonshine-streaming-small, moonshine-streaming-medium, qwen3-asr-0.6, rumble-2-flash, hima-asr, fluid-speech-pro-gguf-q8_0",
         )
     })
 }
@@ -3129,6 +3129,15 @@ pipeline:
         let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
         assert_eq!(cfg.stt_model, SttModel::QwenAsr06);
         assert_eq!(cfg.language, "fr");
+    }
+
+    #[test]
+    fn rumble_2_flash_parses_as_its_own_model() {
+        let yaml = AgentConfig::v0()
+            .to_yaml()
+            .replace("model: whisper-small", "model: rumble-2-flash");
+        let cfg = AgentConfig::parse_yaml(&yaml).unwrap();
+        assert_eq!(cfg.stt_model, SttModel::Rumble2FlashQ8);
     }
 
     #[test]

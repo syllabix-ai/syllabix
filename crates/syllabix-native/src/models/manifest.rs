@@ -203,6 +203,25 @@ impl Manifest {
                     "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
                     214_392_480,
                 ),
+                // Rumble-2-Flash: Qwen3-ASR fine-tune, same llama.cpp mtmd
+                // layout as qwen3-asr-0.6. Fetched only when yaml selects
+                // rumble-2-flash. Revision pinned, never `main`.
+                asset(
+                    "rumble-2-flash",
+                    ModelLayer::Stt,
+                    "Rumble-2-Flash-Q8_0.gguf",
+                    "https://huggingface.co/AtomicChat/Rumble-2-Flash-GGUF/resolve/d036f2af3cd5229375714d7f1749792cce3c6a88/Rumble-2-Flash-Q8_0.gguf",
+                    "600821d04cd1a7caa42f4622f6ac42b84e6db00f73196ed73493d06c221886bc",
+                    346_355_584,
+                ),
+                asset(
+                    "rumble-2-flash-mmproj",
+                    ModelLayer::Stt,
+                    "mmproj-Rumble-2-Flash-Q8_0.gguf",
+                    "https://huggingface.co/AtomicChat/Rumble-2-Flash-GGUF/resolve/d036f2af3cd5229375714d7f1749792cce3c6a88/mmproj-Rumble-2-Flash-Q8_0.gguf",
+                    "97116d3656cbe4912ac9aee43eb4a887832121e2a2c07c5ee61617052bdd30f8",
+                    214_393_024,
+                ),
                 // Fluid Speech Pro Q8_0 GGUF (parakeet.cpp). Fetched only when
                 // yaml selects fluid-speech-pro-gguf-q8_0.
                 asset(

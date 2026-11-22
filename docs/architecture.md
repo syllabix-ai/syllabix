@@ -73,7 +73,7 @@ First use of each model id downloads pinned weights over HTTPS, checks SHA-256, 
 | --- | --- |
 | `crates/syllabix` | CLI, TUI, `run` / `init` / `serve` |
 | `crates/syllabix-core` | Pipeline, audio I/O, VAD/STT/LLM/TTS, yaml, sandbox |
-| `crates/syllabix-stt` | `Stt` trait + Whisper, Qwen3-ASR, Moonshine, Hima-ASR, remote STT (features `whisper`, `qwen3-asr`, `moonshine`, `hima`, `remote`) |
+| `crates/syllabix-stt` | `Stt` trait + Whisper, Qwen3-ASR, Rumble-2-Flash, Moonshine, Hima-ASR, remote STT (features `whisper`, `qwen3-asr`, `moonshine`, `hima`, `remote`) |
 | `crates/syllabix-tts` | `Tts` trait + Pocket TTS, Kokoro, Qwen3-TTS, remote TTS (features `pocket`, `kokoro`, `qwen3`, `remote`) |
 | `crates/syllabix-native/vendor/` | ggml / llama.cpp / whisper.cpp pins |
 | `docs/` | This documentation tree |
