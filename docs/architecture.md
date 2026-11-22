@@ -20,7 +20,7 @@ Ids other than the defaults are yaml-selected and fetch on first use — [engine
 
 ## Speech-to-speech (`pipeline.mode: s2s`)
 
-Optional yaml replaces the STT → LLM → TTS chain with one in-process engine (`pipeline.s2s.model: lfm3-audio-2b`). Default `run` without that yaml stays cascade.
+Optional yaml with `pipeline.mode: s2s` and `pipeline.s2s.model: lfm3-audio-2b` replaces the STT → LLM → TTS chain with one in-process engine. Default `run` without that yaml stays cascade.
 
 ```text
 mic → Silero VAD → LFM3-Audio S2S → speakers
@@ -40,16 +40,16 @@ Turn-based, not full duplex. English-only experimental chat via this id; Indic a
 
 ## Agent harness
 
-Default `run` uses the built-in harness (`agent_harness.agent: syllabix`). The LLM may call a sandboxed shell before the spoken reply goes to TTS:
+Default `run` uses the built-in harness (`agent_harness.agent: syllabix`). The LLM may call a sandboxed shell or the web tools (`web_fetch`, `web_search`) before the spoken reply goes to TTS:
 
 ```text
-mic → Silero VAD → STT → LLM ⇄ sandboxed shell → … → TTS → speakers
+mic → Silero VAD → STT → LLM ⇄ tools → … → TTS → speakers
               ↑________________________________ barge-in (interrupt + flush)
 ```
 
 Set `agent_harness.agent: none` for plain voice chat with no tools: one STT transcript goes to the LLM, then TTS.
 
-[Skills](syllabix-yaml.md#skills--local-instruction-packages) are optional instruction packages (`SKILL.md` under configured roots). The harness prompt for `syllabix` and `goose` names each skill, summarizes it, and points at the file path (workspace-relative when the skill lives under the project); the model pulls in the body when it uses a skill. They do not run code and do not widen sandbox permissions. Tool policy and ceilings: [agent_harness.agent](syllabix-yaml.md#agent-backend-and-shell-environment-agent_harness).
+[Skills](syllabix-yaml.md#skills--local-instruction-packages) are optional instruction packages (`SKILL.md` under configured roots). The harness prompt for `syllabix` and `goose` names each skill, summarizes it, and points at the file path (workspace-relative when the skill lives under the project); the model pulls in the body when it uses a skill. They do not run code and do not widen sandbox permissions. Tool policy and ceilings: [agent_harness.agent](syllabix-yaml.md#agent-backend-and-shell-environment-agent_harness) and [developer_permissions](syllabix-yaml.md#developer_permissions).
 
 ## Barge-in
 
@@ -57,12 +57,12 @@ Default `run` finishes the current reply before listening again. `run --barge-in
 
 ## Cache
 
-First use of each model id downloads pinned weights over HTTPS, checks SHA-256, and stores them under the cache root (`$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix/models/v1`). Later default `run`s reuse that cache with no network.
+First use of each model id downloads pinned weights over HTTPS, checks SHA-256, and stores them under `models/v1` in the cache root (`$SYLLABIX_CACHE_DIR/models/v1` when set, else `$XDG_CACHE_HOME/syllabix/models/v1`, `%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows, or `~/.cache/syllabix/models/v1`). Later default `run`s reuse that cache without fetching weights again.
 
 ## What leaves the machine
 
-- **Default local stack:** audio and text stay on the machine after the weight cache is filled.
-- **`pipeline.llm.provider: openai-compatible`:** only transcript text is sent to the OpenAI-compatible endpoint. Mic audio is not uploaded. The key comes from `SYLLABIX_LLM_API_KEY`, never from yaml.
+- **Default local stack:** audio stays on the machine after the weight cache is filled. Conversation text stays local unless the default harness uses the network (`web_fetch` / `web_search`, or a shell command that does); set `pipeline.llm.developer_permissions.network: none` to block that traffic.
+- **`pipeline.llm.provider: openai-compatible`:** conversation text and tool results are sent to the OpenAI-compatible endpoint. Mic audio is not uploaded. The key comes from `SYLLABIX_LLM_API_KEY`, never from yaml.
 - **`pipeline.stt.provider: online`:** each finished utterance WAV is posted to `POST /v1/audio/transcriptions`. VAD stays on-device. Key: `SYLLABIX_STT_API_KEY`.
 - **`pipeline.tts.provider: online`:** each finished sentence is posted to `POST /v1/audio/speech`. Key: `SYLLABIX_TTS_API_KEY`.
 - **`syllabix serve`:** weights live on the worker. Endpoints send the same utterance WAV / sentence text as hosted online STT/TTS. Mic capture does not leave the desk. [CLI serve](cli.md#serve).
@@ -73,9 +73,9 @@ First use of each model id downloads pinned weights over HTTPS, checks SHA-256, 
 | --- | --- |
 | `crates/syllabix` | CLI, TUI, `run` / `init` / `serve` |
 | `crates/syllabix-core` | Pipeline, audio I/O, VAD/STT/LLM/TTS, yaml, sandbox |
-| `crates/syllabix-stt` | `Stt` trait + Whisper, Qwen3-ASR, Rumble-2-Flash, Moonshine, Hima-ASR, remote STT (features `whisper`, `qwen3-asr`, `moonshine`, `hima`, `remote`) |
-| `crates/syllabix-tts` | `Tts` trait + Pocket TTS, Kokoro, Qwen3-TTS, remote TTS (features `pocket`, `kokoro`, `qwen3`, `remote`) |
-| `crates/syllabix-native/vendor/` | ggml / llama.cpp / whisper.cpp pins |
+| `crates/syllabix-stt` | `Stt` trait + Whisper, Qwen3-ASR, Rumble-2-Flash, Moonshine, Hima-ASR, Fluid Speech Pro, remote STT (features `whisper`, `qwen3-asr`, `parakeet`, `moonshine`, `hima`, `remote`) |
+| `crates/syllabix-tts` | `Tts` trait + Pocket TTS, Kokoro, Qwen3-TTS, Indic-Mio, remote TTS (features `pocket`, `kokoro`, `qwen3`, `remote`; Indic-Mio needs `qwen3` plus `kokoro` or `pocket`) |
+| `crates/syllabix-native/vendor/` | ggml / llama.cpp / whisper.cpp / parakeet.cpp pins |
 | `docs/` | This documentation tree |
 
 How we measure the loop: [reference profiles](reference-profiles.md).
