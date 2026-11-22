@@ -391,6 +391,7 @@ pub struct FakeS2s {
     close_log: Arc<Mutex<Vec<(TurnId, FakeS2sCloseRecord)>>>,
     ops_log: Arc<Mutex<Vec<FakeS2sOp>>>,
     last_text: String,
+    speak_sample_cap: Option<usize>,
 }
 
 impl FakeS2s {
@@ -406,6 +407,7 @@ impl FakeS2s {
             close_log: Arc::new(Mutex::new(Vec::new())),
             ops_log: Arc::new(Mutex::new(Vec::new())),
             last_text: String::new(),
+            speak_sample_cap: None,
         }
     }
 
@@ -421,6 +423,7 @@ impl FakeS2s {
             close_log: Arc::new(Mutex::new(Vec::new())),
             ops_log: Arc::new(Mutex::new(Vec::new())),
             last_text: String::new(),
+            speak_sample_cap: None,
         }
     }
 
@@ -436,7 +439,14 @@ impl FakeS2s {
             close_log: Arc::new(Mutex::new(Vec::new())),
             ops_log: Arc::new(Mutex::new(Vec::new())),
             last_text: String::new(),
+            speak_sample_cap: None,
         }
+    }
+
+    /// Truncate spoken PCM to `cap` samples, matching a capped native backend.
+    pub fn with_speak_sample_cap(mut self, cap: usize) -> Self {
+        self.speak_sample_cap = Some(cap);
+        self
     }
 
     /// Shared generate log. Clone the `Arc` before moving the engine into the pipeline.
@@ -521,6 +531,10 @@ impl S2sEngine for FakeS2s {
         } else {
             Some(&self.last_text)
         }
+    }
+
+    fn speak_sample_cap(&self) -> Option<usize> {
+        self.speak_sample_cap
     }
 
     fn generate(
@@ -703,7 +717,10 @@ impl S2sEngine for FakeS2s {
             self.wait_phase(generation, cancel, self.delay)?;
         }
         let samples: Vec<i16> = text.bytes().map(i16::from).collect();
-        let pcm = if samples.is_empty() { vec![1] } else { samples };
+        let mut pcm = if samples.is_empty() { vec![1] } else { samples };
+        if let Some(cap) = self.speak_sample_cap {
+            pcm.truncate(cap);
+        }
         on_audio(SynthesizedAudio {
             turn,
             generation,

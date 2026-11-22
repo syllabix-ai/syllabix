@@ -76,6 +76,13 @@ struct ChunkState {
     turn: Option<TurnId>,
     generation: Option<GenerationId>,
     next_index: u32,
+    /// Set when the last `speak` call reached the backend's sample cap, i.e.
+    /// the cap was reached, so the reply may have been cut. A reply that
+    /// legitimately ends exactly on the cap is also flagged, so treat this as
+    /// a heuristic. The cap unit test asserts it; keep it on the state for
+    /// diagnostics.
+    #[cfg_attr(not(test), allow(dead_code))]
+    truncated: bool,
 }
 
 impl ChunkState {
@@ -85,6 +92,7 @@ impl ChunkState {
         self.turn = None;
         self.generation = None;
         self.next_index = 0;
+        self.truncated = false;
     }
 
     fn emit(&mut self, samples: Vec<i16>, token: &TokenChunk, is_last: bool) -> SynthesizedAudio {
@@ -105,6 +113,7 @@ pub struct S2sTts {
     engine: SharedS2s,
     language: Option<String>,
     voice: Option<String>,
+    split_sentences: bool,
     state: ChunkState,
 }
 
@@ -114,8 +123,14 @@ impl S2sTts {
             engine,
             language,
             voice,
+            split_sentences: true,
             state: ChunkState::default(),
         }
+    }
+
+    pub fn with_split_sentences(mut self, split_sentences: bool) -> Self {
+        self.split_sentences = split_sentences;
+        self
     }
 }
 
@@ -160,6 +175,21 @@ impl Tts for S2sTts {
         self.state
             .buffer
             .push_str(&self.state.think.push(&token.text, token.is_last));
+        if self.split_sentences {
+            self.synthesize_split_sentences(token, cancel, on_audio)
+        } else {
+            self.synthesize_whole_reply(token, cancel, on_audio)
+        }
+    }
+}
+
+impl S2sTts {
+    fn synthesize_split_sentences(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
         let sentences = take_sentences(&mut self.state.buffer, token.is_last);
         let spoken: Vec<String> = sentences
             .into_iter()
@@ -219,15 +249,221 @@ impl Tts for S2sTts {
         }
         Ok(())
     }
+
+    fn synthesize_whole_reply(
+        &mut self,
+        token: &TokenChunk,
+        cancel: &Cancel,
+        on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+    ) -> Result<()> {
+        if !token.is_last {
+            return Ok(());
+        }
+
+        let spoken = speak_text_for_tts(&self.state.buffer);
+        self.state.buffer.clear();
+        let mut emitted_final = false;
+        if !spoken.is_empty() {
+            if cancel.is_stale(token.generation) || cancel.is_shutdown() {
+                self.state.reset();
+                return Err(Error::Cancelled);
+            }
+            let lang = self.language.as_deref();
+            let voice = self.voice.as_deref();
+            let mut state = std::mem::take(&mut self.state);
+            let mut index = state.next_index;
+            let mut emitted_samples = 0usize;
+            let mut truncated = false;
+            let result = {
+                let mut engine = self.engine.lock().expect("s2s engine lock");
+                let cap = engine.speak_sample_cap();
+                engine.speak(
+                    token.turn,
+                    token.generation,
+                    &spoken,
+                    lang,
+                    voice,
+                    cancel,
+                    &mut |mut audio| {
+                        if audio.is_last {
+                            emitted_final = true;
+                        }
+                        audio.index = index;
+                        index = index.saturating_add(1);
+                        emitted_samples = emitted_samples.saturating_add(audio.samples.len());
+                        if let Some(cap) = cap {
+                            if !truncated && emitted_samples >= cap {
+                                truncated = true;
+                                tracing::debug!(
+                                    cap_samples = cap,
+                                    emitted_samples,
+                                    "s2s tts reply reached the sample cap; reply may have been cut and the turn ended"
+                                );
+                            }
+                        }
+                        if cancel.is_stale(token.generation) || cancel.is_shutdown() {
+                            return Err(Error::Cancelled);
+                        }
+                        on_audio(audio)
+                    },
+                )
+            };
+            state.next_index = index;
+            state.truncated = truncated;
+            self.state = state;
+            if let Err(err) = result {
+                self.state.reset();
+                return Err(err);
+            }
+        }
+        if !emitted_final {
+            on_audio(self.state.emit(vec![0; 16], token, true))?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::thread;
+    use std::time::Duration;
+
     use super::*;
     use crate::fake::{scripted_frames, FakeS2s, FakeS2sOp};
 
     fn shared_fake() -> SharedS2s {
         Arc::new(Mutex::new(Box::new(FakeS2s::new()) as Box<dyn S2sEngine>))
+    }
+
+    /// Emits `chunks` PCM chunks from `speak`, optionally marking the last one.
+    struct MultiChunkS2s {
+        chunks: usize,
+        mark_last: bool,
+    }
+
+    impl S2sEngine for MultiChunkS2s {
+        fn name(&self) -> &'static str {
+            "multi-chunk-s2s"
+        }
+
+        fn generate(
+            &mut self,
+            _utterance: &Utterance,
+            _cancel: &Cancel,
+            _on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+            _on_text: &mut dyn FnMut(&str, bool) -> Result<()>,
+        ) -> Result<()> {
+            Err(Error::Provider {
+                provider: self.name(),
+                message: "generate is not scripted".into(),
+            })
+        }
+
+        fn speak(
+            &mut self,
+            turn: TurnId,
+            generation: GenerationId,
+            _text: &str,
+            _language: Option<&str>,
+            _voice: Option<&str>,
+            _cancel: &Cancel,
+            on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+        ) -> Result<()> {
+            for index in 0..self.chunks {
+                on_audio(SynthesizedAudio {
+                    turn,
+                    generation,
+                    index: index as u32,
+                    samples: vec![index as i16 + 1],
+                    is_last: self.mark_last && index + 1 == self.chunks,
+                })?;
+            }
+            Ok(())
+        }
+    }
+
+    /// Emits several PCM chunks with a pause after the first so tests can observe
+    /// streaming before `speak` returns.
+    struct DelayedMultiChunkS2s {
+        chunks: usize,
+        delay_after_first: Duration,
+        speak_done: Arc<AtomicBool>,
+    }
+
+    impl S2sEngine for DelayedMultiChunkS2s {
+        fn name(&self) -> &'static str {
+            "delayed-multi-chunk-s2s"
+        }
+
+        fn generate(
+            &mut self,
+            _utterance: &Utterance,
+            _cancel: &Cancel,
+            _on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+            _on_text: &mut dyn FnMut(&str, bool) -> Result<()>,
+        ) -> Result<()> {
+            Err(Error::Provider {
+                provider: self.name(),
+                message: "generate is not scripted".into(),
+            })
+        }
+
+        fn speak(
+            &mut self,
+            turn: TurnId,
+            generation: GenerationId,
+            _text: &str,
+            _language: Option<&str>,
+            _voice: Option<&str>,
+            cancel: &Cancel,
+            on_audio: &mut dyn FnMut(SynthesizedAudio) -> Result<()>,
+        ) -> Result<()> {
+            self.speak_done.store(false, Ordering::SeqCst);
+            for index in 0..self.chunks {
+                if cancel.is_shutdown() || cancel.is_stale(generation) {
+                    return Err(Error::Cancelled);
+                }
+                on_audio(SynthesizedAudio {
+                    turn,
+                    generation,
+                    index: index as u32,
+                    samples: vec![index as i16 + 1],
+                    is_last: index + 1 == self.chunks,
+                })?;
+                if index == 0 && self.delay_after_first > Duration::ZERO {
+                    thread::sleep(self.delay_after_first);
+                }
+            }
+            self.speak_done.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct DebugCounter(Arc<AtomicUsize>);
+
+    impl tracing::Subscriber for DebugCounter {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() <= tracing::Level::DEBUG
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            if *event.metadata().level() == tracing::Level::DEBUG {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
     }
 
     #[test]
@@ -283,6 +519,279 @@ mod tests {
             .collect();
         assert_eq!(speak_ops.len(), 2, "one speak call per sentence");
         assert_eq!(chunks.iter().filter(|c| c.is_last).count(), 1);
+    }
+
+    #[test]
+    fn s2s_tts_missing_split_sentences_yaml_uses_per_sentence_path() {
+        use crate::config::AgentConfig;
+
+        let yaml = AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n    reply_with: llm\n",
+            1,
+        );
+        let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+        let split = parsed.s2s.as_ref().unwrap().split_sentences;
+        assert!(split, "missing key must default to true");
+        let fake = FakeS2s::new();
+        let ops = fake.ops_log();
+        let shared = Arc::new(Mutex::new(Box::new(fake) as Box<dyn S2sEngine>));
+        let mut tts = S2sTts::new(shared, None, None).with_split_sentences(split);
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let tokens = [
+            TokenChunk {
+                turn: TurnId(1),
+                generation,
+                index: 0,
+                text: "Hello there. ".into(),
+                is_last: false,
+            },
+            TokenChunk {
+                turn: TurnId(1),
+                generation,
+                index: 1,
+                text: "How are you?".into(),
+                is_last: true,
+            },
+        ];
+        for token in tokens {
+            tts.synthesize_chunk_into(&token, &cancel, &mut |_| Ok(()))
+                .expect("synthesize");
+        }
+        let log = ops.lock().expect("ops");
+        assert_eq!(
+            log.iter()
+                .filter(|op| matches!(op, FakeS2sOp::Speak { .. }))
+                .count(),
+            2,
+            "default split_sentences uses per-sentence speaks"
+        );
+    }
+
+    #[test]
+    fn s2s_tts_whole_reply_is_one_speak_call() {
+        let fake = FakeS2s::new();
+        let ops = fake.ops_log();
+        let shared = Arc::new(Mutex::new(Box::new(fake) as Box<dyn S2sEngine>));
+        let mut tts = S2sTts::new(shared, None, None).with_split_sentences(false);
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let mut chunks = Vec::new();
+        let first = TokenChunk {
+            turn: TurnId(1),
+            generation,
+            index: 0,
+            text: "Hello there. ".into(),
+            is_last: false,
+        };
+        tts.synthesize_chunk_into(&first, &cancel, &mut |audio| {
+            chunks.push(audio);
+            Ok(())
+        })
+        .expect("buffer first token");
+        assert!(
+            chunks.is_empty(),
+            "no audio before the final token of the reply"
+        );
+        let last = TokenChunk {
+            turn: TurnId(1),
+            generation,
+            index: 1,
+            text: "How are you?".into(),
+            is_last: true,
+        };
+        tts.synthesize_chunk_into(&last, &cancel, &mut |audio| {
+            chunks.push(audio);
+            Ok(())
+        })
+        .expect("synthesize whole reply");
+        let log = ops.lock().expect("ops");
+        let speak_texts: Vec<&str> = log
+            .iter()
+            .filter_map(|op| match op {
+                FakeS2sOp::Speak { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            speak_texts,
+            vec!["Hello there. How are you?"],
+            "the whole reply is one speak call"
+        );
+        assert_eq!(chunks.iter().filter(|c| c.is_last).count(), 1);
+    }
+
+    #[test]
+    fn s2s_tts_whole_reply_streams_chunks_during_speak() {
+        let speak_done = Arc::new(AtomicBool::new(false));
+        let engine = DelayedMultiChunkS2s {
+            chunks: 3,
+            delay_after_first: Duration::from_millis(200),
+            speak_done: Arc::clone(&speak_done),
+        };
+        let shared = Arc::new(Mutex::new(Box::new(engine) as Box<dyn S2sEngine>));
+        let mut tts = S2sTts::new(shared, None, None).with_split_sentences(false);
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let token = TokenChunk {
+            turn: TurnId(7),
+            generation,
+            index: 0,
+            text: "Stream this.".into(),
+            is_last: true,
+        };
+        let saw_mid_speak = Arc::new(AtomicBool::new(false));
+        let mid_flag = Arc::clone(&saw_mid_speak);
+        let done_flag = Arc::clone(&speak_done);
+        let mut chunks = Vec::new();
+        tts.synthesize_chunk_into(&token, &cancel, &mut |audio| {
+            if !done_flag.load(Ordering::SeqCst) {
+                mid_flag.store(true, Ordering::SeqCst);
+            }
+            chunks.push(audio);
+            Ok(())
+        })
+        .expect("streaming whole reply");
+        assert!(
+            saw_mid_speak.load(Ordering::SeqCst),
+            "sink must see PCM before speak returns"
+        );
+        assert!(speak_done.load(Ordering::SeqCst));
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks.iter().filter(|c| c.is_last).count(), 1);
+    }
+
+    #[test]
+    fn s2s_tts_engine_chunk_indices_increase_and_last_is_kept() {
+        let engine = MultiChunkS2s {
+            chunks: 3,
+            mark_last: true,
+        };
+        let shared = Arc::new(Mutex::new(Box::new(engine) as Box<dyn S2sEngine>));
+        let mut tts = S2sTts::new(shared, None, None).with_split_sentences(false);
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let token = TokenChunk {
+            turn: TurnId(8),
+            generation,
+            index: 0,
+            text: "One. Two. Three.".into(),
+            is_last: true,
+        };
+        let chunks = tts
+            .synthesize_chunk(&token, &cancel)
+            .expect("multi-chunk reply");
+        assert_eq!(
+            chunks.iter().map(|c| c.index).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(chunks.iter().filter(|c| c.is_last).count(), 1);
+        assert!(chunks[2].is_last);
+    }
+
+    #[test]
+    fn s2s_tts_missing_engine_last_falls_back_to_silence_at_next_index() {
+        let engine = MultiChunkS2s {
+            chunks: 3,
+            mark_last: false,
+        };
+        let shared = Arc::new(Mutex::new(Box::new(engine) as Box<dyn S2sEngine>));
+        let mut tts = S2sTts::new(shared, None, None).with_split_sentences(false);
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let token = TokenChunk {
+            turn: TurnId(9),
+            generation,
+            index: 0,
+            text: "One. Two. Three.".into(),
+            is_last: true,
+        };
+        let chunks = tts
+            .synthesize_chunk(&token, &cancel)
+            .expect("reply without an engine final chunk");
+        assert_eq!(
+            chunks.iter().map(|c| c.index).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(chunks.iter().filter(|c| c.is_last).count(), 1);
+        assert!(chunks[3].is_last);
+        assert_eq!(chunks[3].samples, vec![0; 16]);
+    }
+
+    #[test]
+    fn s2s_tts_short_reply_under_cap_is_not_truncated() {
+        let cap = 1024usize;
+        let fake = FakeS2s::new().with_speak_sample_cap(cap);
+        let shared = Arc::new(Mutex::new(Box::new(fake) as Box<dyn S2sEngine>));
+        let mut tts = S2sTts::new(shared, None, None).with_split_sentences(false);
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let token = TokenChunk {
+            turn: TurnId(10),
+            generation,
+            index: 0,
+            text: "Hi.".into(),
+            is_last: true,
+        };
+        let debugs = Arc::new(AtomicUsize::new(0));
+        let mut chunks = Vec::new();
+        tracing::subscriber::with_default(DebugCounter(Arc::clone(&debugs)), || {
+            tts.synthesize_chunk_into(&token, &cancel, &mut |audio| {
+                chunks.push(audio);
+                Ok(())
+            })
+            .expect("short reply");
+        });
+        assert!(
+            !tts.state.truncated,
+            "a reply under the cap must not be marked truncated"
+        );
+        assert_eq!(debugs.load(Ordering::SeqCst), 0, "no cap debug log");
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].is_last);
+    }
+
+    #[test]
+    fn s2s_tts_sample_cap_reports_truncation_and_closes_turn() {
+        let cap = 8usize;
+        let fake = FakeS2s::new().with_speak_sample_cap(cap);
+        let ops = fake.ops_log();
+        let shared = Arc::new(Mutex::new(Box::new(fake) as Box<dyn S2sEngine>));
+        let mut tts = S2sTts::new(shared, None, None).with_split_sentences(false);
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let mut chunks = Vec::new();
+        let token = TokenChunk {
+            turn: TurnId(6),
+            generation,
+            index: 0,
+            text: "This reply is much longer than the tiny sample cap.".into(),
+            is_last: true,
+        };
+        let debugs = Arc::new(AtomicUsize::new(0));
+        tracing::subscriber::with_default(DebugCounter(Arc::clone(&debugs)), || {
+            tts.synthesize_chunk_into(&token, &cancel, &mut |audio| {
+                chunks.push(audio);
+                Ok(())
+            })
+            .expect("a capped reply still closes the turn");
+        });
+        let log = ops.lock().expect("ops");
+        assert_eq!(
+            log.iter()
+                .filter(|op| matches!(op, FakeS2sOp::Speak { .. }))
+                .count(),
+            1
+        );
+        assert!(tts.state.truncated, "sample cap hit must be recorded");
+        assert_eq!(debugs.load(Ordering::SeqCst), 1, "cap hit emits debug log");
+        assert_eq!(chunks.iter().filter(|c| c.is_last).count(), 1);
+        assert_eq!(
+            chunks.iter().map(|c| c.samples.len()).sum::<usize>(),
+            cap,
+            "the fake truncates PCM to the reported cap"
+        );
     }
 
     #[test]
@@ -426,5 +935,86 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
+    }
+
+    #[test]
+    fn s2s_tts_cancel_during_delayed_speak_resets_state() {
+        for split_sentences in [true, false] {
+            let fake = FakeS2s::with_delay(Duration::from_millis(1_000));
+            let shared = Arc::new(Mutex::new(Box::new(fake) as Box<dyn S2sEngine>));
+            let mut tts =
+                S2sTts::new(Arc::clone(&shared), None, None).with_split_sentences(split_sentences);
+            let cancel = Cancel::new();
+            let generation = cancel.generation();
+            let text = if split_sentences {
+                "Hello.".into()
+            } else {
+                "One. Two. Three.".into()
+            };
+            let token = TokenChunk {
+                turn: TurnId(5),
+                generation,
+                index: 0,
+                text,
+                is_last: true,
+            };
+            let canceller = {
+                let cancel = cancel.clone();
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(20));
+                    cancel.cancel_generation();
+                })
+            };
+            let err = tts
+                .synthesize_chunk_into(&token, &cancel, &mut |_| Ok(()))
+                .unwrap_err();
+            canceller.join().expect("cancel thread");
+            assert!(
+                matches!(err, Error::Cancelled),
+                "split_sentences={split_sentences}"
+            );
+            assert!(
+                tts.state.generation.is_none(),
+                "split_sentences={split_sentences}"
+            );
+            assert!(
+                tts.state.buffer.is_empty(),
+                "split_sentences={split_sentences}"
+            );
+        }
+    }
+
+    #[test]
+    fn s2s_tts_cancel_during_whole_reply_speak_resets_state() {
+        // A slow speak gives the canceller time to fire mid-call, like a barge-in.
+        let fake = FakeS2s::with_delay(Duration::from_millis(1_000));
+        let shared = Arc::new(Mutex::new(Box::new(fake) as Box<dyn S2sEngine>));
+        let mut tts = S2sTts::new(shared, None, None).with_split_sentences(false);
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        let token = TokenChunk {
+            turn: TurnId(5),
+            generation,
+            index: 0,
+            text: "One. Two. Three.".into(),
+            is_last: true,
+        };
+        let canceller = {
+            let cancel = cancel.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(20));
+                cancel.cancel_generation();
+            })
+        };
+        let err = tts
+            .synthesize_chunk_into(&token, &cancel, &mut |_| Ok(()))
+            .unwrap_err();
+        canceller.join().expect("cancel thread");
+        assert!(matches!(err, Error::Cancelled));
+        assert!(tts.state.generation.is_none(), "cancel resets generation");
+        assert!(
+            tts.state.buffer.is_empty(),
+            "cancel resets the reply buffer"
+        );
     }
 }

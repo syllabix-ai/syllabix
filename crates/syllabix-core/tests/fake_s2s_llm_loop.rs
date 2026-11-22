@@ -205,6 +205,7 @@ fn language_and_voice_pass_through_ops_log() {
         reply_with: S2sReplyWith::Llm,
         language: Some("fr".into()),
         voice: Some("male".into()),
+        split_sentences: true,
     });
     let engine = FakeS2s::new();
     let ops = engine.ops_log();
