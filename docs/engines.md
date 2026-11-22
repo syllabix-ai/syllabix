@@ -88,7 +88,7 @@ Local speech-to-speech is not an STT, LLM, or TTS menu id. Select it with `pipel
 | --- | --- | --- |
 | `lfm3-audio-2b` | English-only experimental voice chat (LFM 1.0). The turn uses the model’s default GGUF chat template in mixed text+audio mode ([Voice chat](https://huggingface.co/LiquidAI/LFM3-Audio-2B#voice-chat-speech-and-text-responses)). Weights fetch on first s2s run only. Indic / code-switched voice chat remains the cascade path (Hima, Indic-Mio, and related ids). | [model card](https://huggingface.co/LiquidAI/LFM3-Audio-2B), [GGUF repo](https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF), [NOTICE](../NOTICE) |
 
-Set `pipeline.s2s.reply_with: llm` to keep LFM3-Audio for listening and speaking while `pipeline.llm` writes the reply (one shared LFM3 context, ASR then TTS with a reset between them). Yaml: [pipeline mode](syllabix-yaml.md#pipeline-mode--cascade-vs-s2s).
+Set `pipeline.s2s.reply_with: llm` to keep LFM3-Audio for listening and speaking while `pipeline.llm` writes the reply (one shared LFM3 context, ASR then TTS with a reset between them). With that reply mode, LFM3 speaks the finished LLM reply in one TTS call; a very long reply ends at the model's output cap. Yaml: [pipeline mode](syllabix-yaml.md#pipeline-mode--cascade-vs-s2s).
 
 Silero VAD still commits each user turn. `run --barge-in` still interrupts playback on user speech; this path is turn-based, not full duplex. Assistant replies stay in the conversation until the context is full; a barged-in reply is closed in-cache so the next user turn can continue. Loop diagram: [architecture](architecture.md#speech-to-speech-pipelinemode-s2s).
 

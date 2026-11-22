@@ -27,7 +27,7 @@ mic → Silero VAD → LFM3-Audio S2S → speakers
               ↑______________ barge-in (interrupt + flush)
 ```
 
-With `pipeline.s2s.reply_with: llm`, the chain is `mic → Silero VAD → LFM3 ASR → LLM → LFM3 TTS → speakers` on one shared LFM3 context (reset between ASR and TTS).
+With `pipeline.s2s.reply_with: llm`, the chain is `mic → Silero VAD → LFM3 ASR → LLM → LFM3 TTS → speakers` on one shared LFM3 context (reset between ASR and TTS). LFM3 TTS runs once per reply on the full LLM text; output longer than the model cap is ended cleanly at that limit.
 
 | Stage | Default | Role |
 | --- | --- | --- |

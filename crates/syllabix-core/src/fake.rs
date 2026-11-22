@@ -391,6 +391,8 @@ pub struct FakeS2s {
     close_log: Arc<Mutex<Vec<(TurnId, FakeS2sCloseRecord)>>>,
     ops_log: Arc<Mutex<Vec<FakeS2sOp>>>,
     last_text: String,
+    max_out_samples: i32,
+    last_output_capped: bool,
 }
 
 impl FakeS2s {
@@ -406,7 +408,15 @@ impl FakeS2s {
             close_log: Arc::new(Mutex::new(Vec::new())),
             ops_log: Arc::new(Mutex::new(Vec::new())),
             last_text: String::new(),
+            max_out_samples: 0,
+            last_output_capped: false,
         }
+    }
+
+    /// Cap PCM output length during `speak` (test-only; `n <= 0` is uncapped).
+    pub fn with_max_out_samples(mut self, n: i32) -> Self {
+        self.max_out_samples = n;
+        self
     }
 
     /// Slow generation so tests can cancel mid-wait or during playback.
@@ -421,6 +431,8 @@ impl FakeS2s {
             close_log: Arc::new(Mutex::new(Vec::new())),
             ops_log: Arc::new(Mutex::new(Vec::new())),
             last_text: String::new(),
+            max_out_samples: 0,
+            last_output_capped: false,
         }
     }
 
@@ -436,6 +448,8 @@ impl FakeS2s {
             close_log: Arc::new(Mutex::new(Vec::new())),
             ops_log: Arc::new(Mutex::new(Vec::new())),
             last_text: String::new(),
+            max_out_samples: 0,
+            last_output_capped: false,
         }
     }
 
@@ -513,6 +527,10 @@ impl Default for FakeS2s {
 impl S2sEngine for FakeS2s {
     fn name(&self) -> &'static str {
         "fake-s2s"
+    }
+
+    fn last_output_capped(&self) -> bool {
+        self.last_output_capped
     }
 
     fn last_text(&self) -> Option<&str> {
@@ -690,6 +708,7 @@ impl S2sEngine for FakeS2s {
         if cancel.is_shutdown() || cancel.is_stale(generation) {
             return Err(Error::Cancelled);
         }
+        self.last_output_capped = false;
         self.ops_log
             .lock()
             .expect("s2s ops log")
@@ -702,7 +721,11 @@ impl S2sEngine for FakeS2s {
         if self.delay > Duration::ZERO {
             self.wait_phase(generation, cancel, self.delay)?;
         }
-        let samples: Vec<i16> = text.bytes().map(i16::from).collect();
+        let mut samples: Vec<i16> = text.bytes().map(i16::from).collect();
+        if self.max_out_samples > 0 && samples.len() > self.max_out_samples as usize {
+            samples.truncate(self.max_out_samples as usize);
+            self.last_output_capped = true;
+        }
         let pcm = if samples.is_empty() { vec![1] } else { samples };
         on_audio(SynthesizedAudio {
             turn,

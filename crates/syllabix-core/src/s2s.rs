@@ -78,6 +78,11 @@ pub trait S2sEngine: Send {
             message: "does not support offline TTS".into(),
         })
     }
+
+    /// Whether the most recent `speak` (or `generate`) hit a native output sample cap.
+    fn last_output_capped(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -144,6 +149,8 @@ mod tests {
                 FakeS2s::new().generate(utterance, cancel, on_audio, on_text)
             }
         }
+        let engine: Box<dyn S2sEngine> = Box::new(FakeS2s::new());
+        assert!(!engine.last_output_capped());
         let mut engine: Box<dyn S2sEngine> = Box::new(StubS2s);
         let utterance = Utterance {
             turn: TurnId(0),

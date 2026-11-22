@@ -14,7 +14,8 @@ use syllabix_core::stt::language::LANGUAGE_AUTO;
 use syllabix_core::testing::{
     scripted_frames, CollectingSink, FakeLlm, FakeS2s, FakeS2sOp, FakeVad, FAKE_S2S_TRANSCRIPT,
 };
-use syllabix_core::{Cancel, LoopEvent, Session, TurnId};
+use syllabix_core::types::{HistoryTurn, TokenChunk, Transcript};
+use syllabix_core::{Cancel, Error, Llm, LoopEvent, Result, Session, TurnId};
 
 fn api_key_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -37,6 +38,39 @@ fn with_cleared_stt_tts_keys<T>(f: impl FnOnce() -> T) -> T {
         None => std::env::remove_var(TTS_API_KEY_ENV),
     }
     out
+}
+
+struct MultiSentenceLlm;
+
+impl Llm for MultiSentenceLlm {
+    fn name(&self) -> &'static str {
+        syllabix_core::defaults::LlmProvider::Local.as_str()
+    }
+
+    fn generate(
+        &mut self,
+        _history: &[HistoryTurn],
+        user: &Transcript,
+        cancel: &Cancel,
+        on_token: &mut dyn FnMut(TokenChunk) -> Result<()>,
+    ) -> Result<()> {
+        let generation = cancel.generation();
+        let chunks = ["Hello there. ", "How are you?"];
+        let last = chunks.len() - 1;
+        for (index, text) in chunks.iter().enumerate() {
+            if cancel.is_stale(generation) {
+                return Err(Error::Cancelled);
+            }
+            on_token(TokenChunk {
+                turn: user.turn,
+                generation,
+                index: index as u32,
+                text: (*text).into(),
+                is_last: index == last,
+            })?;
+        }
+        Ok(())
+    }
 }
 
 fn llm_s2s_config() -> AgentConfig {
@@ -346,6 +380,32 @@ fn barge_in_cancels_slow_speak_and_second_turn_completes() {
         .filter(|op| matches!(op, FakeS2sOp::Speak { .. }))
         .count();
     assert!(speaks >= 1, "at least one speak (second turn may finish)");
+}
+
+#[test]
+fn llm_multi_sentence_reply_invokes_one_speak() {
+    let config = llm_s2s_config();
+    let engine = FakeS2s::new();
+    let ops = engine.ops_log();
+    Session::from_config(&config)
+        .with_s2s(engine)
+        .with_llm(MultiSentenceLlm)
+        .with_vad(FakeVad::new())
+        .with_sink(CollectingSink::default())
+        .with_frames(scripted_frames(1, 2, 1))
+        .with_mode(LoopMode::StopAfterTurns(1))
+        .run(Cancel::new())
+        .expect("multi sentence llm s2s");
+    let log = ops.lock().unwrap();
+    let speak_ops: Vec<_> = log
+        .iter()
+        .filter(|op| matches!(op, FakeS2sOp::Speak { .. }))
+        .collect();
+    assert_eq!(speak_ops.len(), 1, "full reply should be one speak call");
+    if let FakeS2sOp::Speak { text, .. } = speak_ops[0] {
+        assert!(text.contains("Hello there"));
+        assert!(text.contains("How are you"));
+    }
 }
 
 #[test]

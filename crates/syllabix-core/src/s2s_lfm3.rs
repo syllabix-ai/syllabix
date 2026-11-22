@@ -23,6 +23,7 @@ pub struct Lfm3AudioEngine {
     max_out_samples: i32,
     /// Native-rate PCM samples emitted on the last `generate` (24 kHz for LFM3-A).
     last_native_out_samples: u64,
+    last_output_capped: bool,
     last_text: String,
 }
 
@@ -72,6 +73,7 @@ impl Lfm3AudioEngine {
             n_threads,
             max_out_samples: LFM3_AUDIO_DEFAULT_MAX_OUT_SAMPLES,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         })
     }
@@ -158,6 +160,10 @@ impl Lfm3AudioEngine {
 impl S2sEngine for Lfm3AudioEngine {
     fn name(&self) -> &'static str {
         Self::name(self)
+    }
+
+    fn last_output_capped(&self) -> bool {
+        self.last_output_capped
     }
 
     fn last_text(&self) -> Option<&str> {
@@ -333,6 +339,7 @@ impl S2sEngine for Lfm3AudioEngine {
         if cancel.is_shutdown() || cancel.is_stale(generation) {
             return Err(Error::Cancelled);
         }
+        self.last_output_capped = false;
         if text.is_empty() {
             return on_audio(SynthesizedAudio {
                 turn,
@@ -359,6 +366,8 @@ impl S2sEngine for Lfm3AudioEngine {
             message: err.to_string(),
         })?;
         let mut index: u32 = 0;
+        let mut native_out_samples = 0u64;
+        let max_out = self.max_out_samples;
         let mut abort_check = S2sAbortCheck { cancel, generation };
         let abort_user = (&mut abort_check as *mut S2sAbortCheck).cast();
         let result = unsafe {
@@ -378,6 +387,7 @@ impl S2sEngine for Lfm3AudioEngine {
                             "unexpected native rate {rate} (expected {out_rate})"
                         )));
                     }
+                    native_out_samples += native.len() as u64;
                     let mut out = conv.push(native);
                     if is_last {
                         out.extend(conv.flush());
@@ -398,6 +408,9 @@ impl S2sEngine for Lfm3AudioEngine {
                 },
             )
         };
+        if max_out > 0 && native_out_samples >= max_out as u64 {
+            self.last_output_capped = true;
+        }
         match result {
             Ok(()) => {
                 if cancel.is_stale(generation) || cancel.is_shutdown() {
@@ -470,6 +483,7 @@ mod tests {
                 n_threads: 1,
                 max_out_samples: 0,
                 last_native_out_samples: 0,
+                last_output_capped: false,
                 last_text: String::new(),
             };
             assert_eq!(engine.name(), LFM3_AUDIO_2B);
@@ -499,6 +513,7 @@ mod tests {
             n_threads: 1,
             max_out_samples: 0,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         };
         let utterance = Utterance {
@@ -542,6 +557,7 @@ mod tests {
             n_threads: 1,
             max_out_samples: 0,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         };
         let utterance = Utterance {
@@ -600,6 +616,7 @@ mod tests {
             n_threads: 1,
             max_out_samples: 0,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         };
         let utterance = Utterance {
@@ -704,6 +721,7 @@ mod tests {
             n_threads: 1,
             max_out_samples: 0,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         };
         let utterance = Utterance {
@@ -744,6 +762,7 @@ mod tests {
             n_threads: 1,
             max_out_samples: 0,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         };
         let utterance = Utterance {
@@ -783,6 +802,7 @@ mod tests {
             n_threads: 1,
             max_out_samples: 0,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         };
         let utterance = Utterance {
@@ -824,6 +844,7 @@ mod tests {
             n_threads: 1,
             max_out_samples: 0,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         };
         let utterance = Utterance {
@@ -856,6 +877,7 @@ mod tests {
             n_threads: 1,
             max_out_samples: 0,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         };
         let utterance = Utterance {
@@ -887,6 +909,7 @@ mod tests {
             n_threads: 1,
             max_out_samples: 0,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         };
         let utterance = Utterance {
@@ -919,6 +942,7 @@ mod tests {
             n_threads: 1,
             max_out_samples: 0,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         };
         let utterance = Utterance {
@@ -962,6 +986,7 @@ mod tests {
             n_threads: 1,
             max_out_samples: 0,
             last_native_out_samples: 0,
+            last_output_capped: false,
             last_text: String::new(),
         };
         let utterance = Utterance {
