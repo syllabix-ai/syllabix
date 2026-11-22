@@ -59,11 +59,37 @@ impl PipelineMode {
     }
 }
 
+/// Who writes the assistant reply when `pipeline.mode: s2s`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum S2sReplyWith {
+    /// LFM3-Audio mixed voice chat (default).
+    #[default]
+    S2s,
+    /// LFM3-Audio ASR + TTS; [`AgentConfig::llm`] writes the reply.
+    Llm,
+}
+
+impl S2sReplyWith {
+    /// Yaml scalar for this mode.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::S2s => "s2s",
+            Self::Llm => "llm",
+        }
+    }
+}
+
 /// Optional `pipeline.s2s` block when [`PipelineMode::S2s`] is selected.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct S2sConfig {
     /// Optional yaml `pipeline.s2s.model`. When present, only `lfm3-audio-2b` is allowed.
     pub model: Option<String>,
+    /// `s2s` (default) or `llm` — see [`S2sReplyWith`].
+    pub reply_with: S2sReplyWith,
+    /// Optional ASR/TTS language hint ([`S2sReplyWith::Llm`] only).
+    pub language: Option<String>,
+    /// Optional TTS voice hint ([`S2sReplyWith::Llm`] only).
+    pub voice: Option<String>,
 }
 
 /// Validated agent configuration with one provider selected for each pipeline stage.
@@ -871,12 +897,68 @@ fn parse_s2s_block(
         }),
         Some(value) => {
             let block = mapping(value, "pipeline.s2s")?;
-            deny_unknown(block, "pipeline.s2s", &["model"])?;
+            deny_unknown(
+                block,
+                "pipeline.s2s",
+                &["model", "reply_with", "language", "voice"],
+            )?;
             let model = match optional_string(block, "pipeline.s2s", "model")? {
                 None => None,
                 Some(id) => Some(parse_s2s_model_id(&id)?),
             };
-            Ok(Some(S2sConfig { model }))
+            let reply_with = match optional_string(block, "pipeline.s2s", "reply_with")? {
+                None => S2sReplyWith::S2s,
+                Some(v) if v.is_empty() => {
+                    return Err(unsupported("pipeline.s2s.reply_with", &v, "s2s, llm"));
+                }
+                Some(v) => match v.as_str() {
+                    "s2s" => S2sReplyWith::S2s,
+                    "llm" => S2sReplyWith::Llm,
+                    other => {
+                        return Err(unsupported("pipeline.s2s.reply_with", other, "s2s, llm"));
+                    }
+                },
+            };
+            let language = match optional_string(block, "pipeline.s2s", "language")? {
+                None => None,
+                Some(v) if v.trim().is_empty() => {
+                    return Err(Error::Config {
+                        field: "pipeline.s2s.language".into(),
+                        message: "must be a non-empty language code".into(),
+                    });
+                }
+                Some(v) => Some(v),
+            };
+            let voice = match optional_string(block, "pipeline.s2s", "voice")? {
+                None => None,
+                Some(v) if v.trim().is_empty() => {
+                    return Err(Error::Config {
+                        field: "pipeline.s2s.voice".into(),
+                        message: "must be a non-empty voice id".into(),
+                    });
+                }
+                Some(v) => Some(v),
+            };
+            if reply_with == S2sReplyWith::S2s && (language.is_some() || voice.is_some()) {
+                let field = if language.is_some() {
+                    "pipeline.s2s.language"
+                } else {
+                    "pipeline.s2s.voice"
+                };
+                return Err(Error::Config {
+                    field: field.into(),
+                    message: format!(
+                        "is only valid with pipeline.s2s.reply_with: {}",
+                        S2sReplyWith::Llm.as_str()
+                    ),
+                });
+            }
+            Ok(Some(S2sConfig {
+                model,
+                reply_with,
+                language,
+                voice,
+            }))
         }
     }
 }
@@ -1638,7 +1720,13 @@ mod tests {
                 .replacen("pipeline:\n", "pipeline:\n  mode: s2s\n", 1);
         let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
         assert_eq!(parsed.pipeline_mode, PipelineMode::S2s);
-        assert_eq!(parsed.s2s, Some(S2sConfig { model: None }));
+        assert_eq!(
+            parsed.s2s,
+            Some(S2sConfig {
+                model: None,
+                ..Default::default()
+            })
+        );
     }
 
     #[test]
@@ -1654,8 +1742,88 @@ mod tests {
             parsed.s2s,
             Some(S2sConfig {
                 model: Some("lfm3-audio-2b".into()),
+                ..Default::default()
             })
         );
+        assert_eq!(parsed.s2s.as_ref().unwrap().reply_with, S2sReplyWith::S2s);
+    }
+
+    #[test]
+    fn pipeline_s2s_reply_with_llm_parses() {
+        let yaml = AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n    reply_with: llm\n    language: fr\n    voice: male\n",
+            1,
+        );
+        let parsed = AgentConfig::parse_yaml(&yaml).unwrap();
+        let s2s = parsed.s2s.as_ref().unwrap();
+        assert_eq!(s2s.reply_with, S2sReplyWith::Llm);
+        assert_eq!(s2s.language.as_deref(), Some("fr"));
+        assert_eq!(s2s.voice.as_deref(), Some("male"));
+    }
+
+    #[test]
+    fn pipeline_s2s_reply_with_rejects_invalid_values() {
+        for bad in ["cascade", "LLM", "tts"] {
+            let yaml = AgentConfig::v0().to_yaml().replacen(
+                "pipeline:\n",
+                &format!(
+                    "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n    reply_with: {bad}\n"
+                ),
+                1,
+            );
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("pipeline.s2s.reply_with"),
+                "{bad}: {err}"
+            );
+            assert!(err.to_string().contains("s2s, llm"), "{bad}: {err}");
+        }
+        let yaml = AgentConfig::v0().to_yaml().replacen(
+            "pipeline:\n",
+            "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n    reply_with: \"\"\n",
+            1,
+        );
+        let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+        assert!(err.to_string().contains("pipeline.s2s.reply_with"), "{err}");
+        assert!(err.to_string().contains("s2s, llm"), "{err}");
+    }
+
+    #[test]
+    fn pipeline_s2s_language_and_voice_rejected_with_reply_with_s2s() {
+        for (key, value) in [("language", "fr"), ("voice", "male")] {
+            let yaml = AgentConfig::v0().to_yaml().replacen(
+                "pipeline:\n",
+                &format!(
+                    "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n    {key}: {value}\n"
+                ),
+                1,
+            );
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("pipeline.s2s.{key}")),
+                "{key}: {err}"
+            );
+            assert!(err.to_string().contains("reply_with: llm"), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn pipeline_s2s_empty_language_or_voice_fails() {
+        for key in ["language", "voice"] {
+            let yaml = AgentConfig::v0().to_yaml().replacen(
+                "pipeline:\n",
+                &format!(
+                    "pipeline:\n  mode: s2s\n  s2s:\n    model: lfm3-audio-2b\n    reply_with: llm\n    {key}: \"\"\n"
+                ),
+                1,
+            );
+            let err = AgentConfig::parse_yaml(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("pipeline.s2s.{key}")),
+                "{key}: {err}"
+            );
+        }
     }
 
     #[test]

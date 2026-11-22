@@ -64,8 +64,11 @@ Default `run` omits `pipeline.mode` and uses **cascade** (VAD → STT → LLM �
 | --- | --- | --- |
 | `pipeline.mode` | cascade (omit the key) | `cascade` or `s2s` |
 | `pipeline.s2s.model` | none | Required for s2s today: `lfm3-audio-2b` — [engines S2S](engines.md#s2s-speech-to-speech) |
+| `pipeline.s2s.reply_with` | `s2s` | `s2s` = LFM3 mixed voice chat; `llm` = LFM3 [ASR](https://huggingface.co/LiquidAI/LFM3-Audio-2B#asr) + [TTS](https://huggingface.co/LiquidAI/LFM3-Audio-2B#tts) with `pipeline.llm` writing the reply |
+| `pipeline.s2s.language` | model default | Optional ASR/TTS language hint when `reply_with: llm` — see the [model card](https://huggingface.co/LiquidAI/LFM3-Audio-2B) |
+| `pipeline.s2s.voice` | model default | Optional TTS voice when `reply_with: llm` — see the [model card](https://huggingface.co/LiquidAI/LFM3-Audio-2B) |
 
-With `mode: s2s`, `pipeline.stt`, `pipeline.llm`, and `pipeline.tts` stay required by the parser but are unused at runtime. Keep the `init` output and add `mode: s2s` plus `s2s.model` under `pipeline:`. Barge-in remains `run --barge-in`, not yaml.
+With `mode: s2s`, `pipeline.stt`, `pipeline.llm`, and `pipeline.tts` stay required by the parser. With `reply_with: s2s` they are unused at runtime; with `reply_with: llm`, only `pipeline.llm` is used. Keep the `init` output and add `mode: s2s` plus `s2s.model` under `pipeline:`. Barge-in remains `run --barge-in`, not yaml.
 
 ## `name`
 
