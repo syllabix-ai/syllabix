@@ -92,6 +92,8 @@ pub trait Stt: Send {
 /// fp16 siblings (`tiny` / `base` are deliberately not offered).
 /// `MoonshineStreamingSmall` / `MoonshineStreamingMedium` are Moonshine ONNX engine ids.
 /// `QwenAsr06` is Qwen3-ASR 0.6B through llama.cpp mtmd.
+/// `Rumble2FlashQ8` is the Rumble-2-Flash Qwen3-ASR fine-tune through the same
+/// llama.cpp mtmd path (finalize only).
 /// `HimaAsr` is Hima-ASR int8 ONNX (Indic / code-switched, finalize only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SttModel {
@@ -111,6 +113,8 @@ pub enum SttModel {
     MoonshineStreamingMedium,
     /// Qwen3-ASR 0.6B via llama.cpp mtmd (finalize only).
     QwenAsr06,
+    /// Rumble-2-Flash 0.5B Q8_0 GGUF via llama.cpp mtmd (finalize only).
+    Rumble2FlashQ8,
     /// Hima-ASR int8 ONNX (Indic / code-switched, finalize only).
     HimaAsr,
     /// Fluid Speech Pro Q8_0 GGUF via parakeet.cpp (finalize only).
@@ -119,7 +123,7 @@ pub enum SttModel {
 
 impl SttModel {
     /// Every menu id, manifest order.
-    pub const ALL: [SttModel; 10] = [
+    pub const ALL: [SttModel; 11] = [
         SttModel::Small,
         SttModel::Medium,
         SttModel::LargeV3Turbo,
@@ -128,6 +132,7 @@ impl SttModel {
         SttModel::MoonshineStreamingSmall,
         SttModel::MoonshineStreamingMedium,
         SttModel::QwenAsr06,
+        SttModel::Rumble2FlashQ8,
         SttModel::HimaAsr,
         SttModel::FluidSpeechProGgufQ8,
     ];
@@ -143,6 +148,7 @@ impl SttModel {
             Self::MoonshineStreamingSmall => "moonshine-streaming-small",
             Self::MoonshineStreamingMedium => "moonshine-streaming-medium",
             Self::QwenAsr06 => "qwen3-asr-0.6",
+            Self::Rumble2FlashQ8 => "rumble-2-flash",
             Self::HimaAsr => "hima-asr",
             Self::FluidSpeechProGgufQ8 => "fluid-speech-pro-gguf-q8_0",
         }
@@ -162,6 +168,7 @@ impl SttModel {
             Self::MoonshineStreamingSmall => "moonshine-encoder",
             Self::MoonshineStreamingMedium => "moonshine-medium-encoder",
             Self::QwenAsr06 => qwen_asr::ASR_ASSET,
+            Self::Rumble2FlashQ8 => qwen_asr::RUMBLE_ASR_ASSET,
             // Same id as `hima::ENCODER_ASSET`; spelled out so this builds
             // without the `hima` feature.
             Self::HimaAsr => "hima-encoder",
@@ -179,9 +186,9 @@ impl SttModel {
         )
     }
 
-    /// True for the Qwen3-ASR 0.6B mtmd engine.
+    /// True for the Qwen3-ASR / Rumble-2-Flash mtmd engines.
     pub fn is_qwen_asr(self) -> bool {
-        matches!(self, Self::QwenAsr06)
+        matches!(self, Self::QwenAsr06 | Self::Rumble2FlashQ8)
     }
 
     /// True for the Hima-ASR int8 ONNX engine.
@@ -261,6 +268,7 @@ mod tests {
             "moonshine-streaming-small",
             "moonshine-streaming-medium",
             "qwen3-asr-0.6",
+            "rumble-2-flash",
             "hima-asr",
             "fluid-speech-pro-gguf-q8_0",
         ];
@@ -272,6 +280,7 @@ mod tests {
         assert!(SttModel::parse("tiny").is_none());
         assert!(SttModel::parse("base").is_none());
         assert!(SttModel::QwenAsr06.is_qwen_asr());
+        assert!(SttModel::Rumble2FlashQ8.is_qwen_asr());
         assert!(!SttModel::Small.is_qwen_asr());
         assert!(!SttModel::MoonshineStreamingSmall.is_qwen_asr());
         assert!(SttModel::MoonshineStreamingSmall.is_moonshine());

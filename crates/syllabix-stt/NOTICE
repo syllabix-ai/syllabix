@@ -80,6 +80,15 @@ Apache License 2.0. Copyright the Qwen team (Alibaba Cloud). Fetched when the
 selected model id is `qwen3-asr-0.6` (weights and mmproj). Source:
 https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF
 
+### Rumble-2-Flash GGUF Q8_0
+
+Apache License 2.0. Rumble-2-Flash by Reson8, fine-tuned from the Qwen3-ASR
+0.6B base model (https://huggingface.co/Qwen/Qwen3-ASR-0.6B). Source:
+https://huggingface.co/Reson8/Rumble-2-Flash. Pinned decoder and mmproj encoder
+from AtomicChat at revision `d036f2af3cd5229375714d7f1749792cce3c6a88`:
+https://huggingface.co/AtomicChat/Rumble-2-Flash-GGUF
+Fetched when the selected model id is `rumble-2-flash`.
+
 ### Fluid Speech Pro GGUF Q8_0
 
 CC BY 4.0. Fluid Speech Pro by FluidVoice. Built on NVIDIA Parakeet TDT 0.6B v3

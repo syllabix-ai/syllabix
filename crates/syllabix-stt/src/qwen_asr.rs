@@ -24,6 +24,12 @@ pub const PROVIDER_NAME: &str = "qwen-asr";
 pub const ASR_ASSET: &str = "qwen3-asr-0.6";
 /// Audio-encoder mmproj asset id.
 pub const ASR_MMPROJ_ASSET: &str = "qwen3-asr-0.6-mmproj";
+/// Config / log name for the Rumble-2-Flash fine-tune.
+pub const RUMBLE_PROVIDER_NAME: &str = "rumble-asr";
+/// Rumble-2-Flash decoder GGUF asset id.
+pub const RUMBLE_ASR_ASSET: &str = "rumble-2-flash";
+/// Rumble-2-Flash audio-encoder mmproj asset id.
+pub const RUMBLE_ASR_MMPROJ_ASSET: &str = "rumble-2-flash-mmproj";
 
 fn provider(message: impl Into<String>) -> Error {
     Error::Provider {
@@ -32,11 +38,19 @@ fn provider(message: impl Into<String>) -> Error {
     }
 }
 
-/// In-process Qwen3-ASR adapter.
+fn provider_named(provider: &'static str, message: impl Into<String>) -> Error {
+    Error::Provider {
+        provider,
+        message: message.into(),
+    }
+}
+
+/// In-process Qwen3-ASR adapter, shared with its Rumble-2-Flash fine-tune.
 pub struct QwenAsrStt {
     decoder: Arc<Mutex<Box<dyn Decoder>>>,
     language: String,
     backend: Option<&'static str>,
+    provider: &'static str,
 }
 
 impl Clone for QwenAsrStt {
@@ -45,6 +59,7 @@ impl Clone for QwenAsrStt {
             decoder: Arc::clone(&self.decoder),
             language: self.language.clone(),
             backend: self.backend,
+            provider: self.provider,
         }
     }
 }
@@ -63,12 +78,25 @@ impl QwenAsrStt {
         mmproj: impl AsRef<Path>,
         compute: TtsCompute,
     ) -> Result<Self> {
-        let decoder = NativeDecoder::load(model.as_ref(), mmproj.as_ref(), compute)?;
+        Self::from_paths_with_provider(model, mmproj, compute, PROVIDER_NAME)
+    }
+
+    /// Load a decoder family that shares this engine, attributing errors to
+    /// `provider_name` (Rumble-2-Flash vs Qwen3-ASR).
+    #[cfg(all(not(coverage), feature = "qwen3-asr"))]
+    fn from_paths_with_provider(
+        model: impl AsRef<Path>,
+        mmproj: impl AsRef<Path>,
+        compute: TtsCompute,
+        provider_name: &'static str,
+    ) -> Result<Self> {
+        let decoder = NativeDecoder::load(model.as_ref(), mmproj.as_ref(), compute, provider_name)?;
         let backend = Some(decoder.backend.as_str());
         Ok(Self {
             decoder: Arc::new(Mutex::new(Box::new(decoder))),
             language: STT_LANGUAGE.to_string(),
             backend,
+            provider: provider_name,
         })
     }
 
@@ -84,16 +112,29 @@ impl QwenAsrStt {
         mmproj: impl AsRef<Path>,
         compute: TtsCompute,
     ) -> Result<Self> {
-        let _ = (model, mmproj, compute);
-        Err(provider(if cfg!(coverage) {
-            "Qwen3-ASR inference is not loaded in coverage tests."
-        } else {
-            "Qwen3-ASR inference requires the `qwen3-asr` feature"
-        }))
+        Self::from_paths_with_provider(model, mmproj, compute, PROVIDER_NAME)
     }
 
-    /// Resolve the 0.6B pair from the manifest cache, then load. Only these
-    /// two assets are fetched.
+    #[cfg(any(coverage, not(feature = "qwen3-asr")))]
+    fn from_paths_with_provider(
+        model: impl AsRef<Path>,
+        mmproj: impl AsRef<Path>,
+        compute: TtsCompute,
+        provider_name: &'static str,
+    ) -> Result<Self> {
+        let _ = (model, mmproj, compute);
+        Err(provider_named(
+            provider_name,
+            if cfg!(coverage) {
+                "Qwen3-ASR inference is not loaded in coverage tests."
+            } else {
+                "Qwen3-ASR inference requires the `qwen3-asr` feature"
+            },
+        ))
+    }
+
+    /// Resolve the selected model's decoder and mmproj pair from the manifest
+    /// cache, then load. Only those two assets are fetched.
     pub fn from_cache(
         cache: &ModelCache,
         fetcher: &dyn Fetcher,
@@ -102,27 +143,35 @@ impl QwenAsrStt {
         model: SttModel,
         compute: TtsCompute,
     ) -> Result<Self> {
-        if model != SttModel::QwenAsr06 {
-            return Err(provider(format!(
-                "QwenAsrStt::from_cache requires qwen3-asr-0.6, got {}",
-                model.as_str()
-            )));
-        }
+        let (provider_name, asr_asset, mmproj_asset) = match model {
+            SttModel::QwenAsr06 => (PROVIDER_NAME, ASR_ASSET, ASR_MMPROJ_ASSET),
+            SttModel::Rumble2FlashQ8 => (
+                RUMBLE_PROVIDER_NAME,
+                RUMBLE_ASR_ASSET,
+                RUMBLE_ASR_MMPROJ_ASSET,
+            ),
+            _ => {
+                return Err(provider(format!(
+                    "QwenAsrStt::from_cache requires qwen3-asr-0.6 or rumble-2-flash, got {}",
+                    model.as_str()
+                )));
+            }
+        };
         let backbone = cache
             .manifest()
-            .asset(ASR_ASSET)
+            .asset(asr_asset)
             .ok_or_else(|| Error::ModelCache {
-                message: format!("manifest does not contain the {ASR_ASSET} asset"),
+                message: format!("manifest does not contain the {asr_asset} asset"),
             })?;
         let mmproj = cache
             .manifest()
-            .asset(ASR_MMPROJ_ASSET)
+            .asset(mmproj_asset)
             .ok_or_else(|| Error::ModelCache {
-                message: format!("manifest does not contain the {ASR_MMPROJ_ASSET} asset"),
+                message: format!("manifest does not contain the {mmproj_asset} asset"),
             })?;
         let model_path = cache.resolve(backbone, fetcher, progress, cancel)?;
         let mmproj_path = cache.resolve(mmproj, fetcher, progress, cancel)?;
-        Self::from_paths_with_compute(model_path, mmproj_path, compute)
+        Self::from_paths_with_provider(model_path, mmproj_path, compute, provider_name)
     }
 
     /// Download (on first use) and load Qwen3-ASR with automatic compute placement.
@@ -166,13 +215,14 @@ impl QwenAsrStt {
             decoder: Arc::new(Mutex::new(decoder)),
             language: STT_LANGUAGE.to_string(),
             backend: None,
+            provider: PROVIDER_NAME,
         }
     }
 }
 
 impl Stt for QwenAsrStt {
     fn name(&self) -> &'static str {
-        PROVIDER_NAME
+        self.provider
     }
 
     fn transcribe(&mut self, utterance: &Utterance, cancel: &Cancel) -> Result<Transcript> {
@@ -180,11 +230,11 @@ impl Stt for QwenAsrStt {
             return Err(Error::Cancelled);
         }
         if utterance.frames.is_empty() {
-            return Err(provider("utterance has no frames"));
+            return Err(provider_named(self.provider, "utterance has no frames"));
         }
         let pcm = utterance.pcm();
         if pcm.is_empty() {
-            return Err(provider("utterance has no samples"));
+            return Err(provider_named(self.provider, "utterance has no samples"));
         }
         let audio: Vec<f32> = pcm.iter().map(|s| *s as f32 / 32768.0).collect();
         let prompt_lang = prompt_language(&self.language);
@@ -215,24 +265,39 @@ trait Decoder: Send {
 struct NativeDecoder {
     ctx: QwenAsrContext,
     backend: QwenTtsBackend,
+    provider: &'static str,
 }
 
 #[cfg(all(not(coverage), feature = "qwen3-asr"))]
 impl NativeDecoder {
-    fn load(model: &Path, mmproj: &Path, compute: TtsCompute) -> Result<Self> {
+    fn load(
+        model: &Path,
+        mmproj: &Path,
+        compute: TtsCompute,
+        provider: &'static str,
+    ) -> Result<Self> {
         let n_threads = std::thread::available_parallelism()
             .map(|n| n.get().min(4) as i32)
             .unwrap_or(1);
-        let load =
-            |backend| QwenAsrContext::load(model, mmproj, n_threads, backend).map_err(provider);
-        let (ctx, _) = load_first_backend(backend_attempts(compute)?, load)?;
+        let load = |backend| {
+            QwenAsrContext::load(model, mmproj, n_threads, backend)
+                .map_err(|message| provider_named(provider, message))
+        };
+        let (ctx, _) = load_first_backend(backend_attempts(compute, provider)?, load)?;
         let backend = ctx.backend();
-        Ok(Self { ctx, backend })
+        Ok(Self {
+            ctx,
+            backend,
+            provider,
+        })
     }
 }
 
 #[cfg(all(not(coverage), feature = "qwen3-asr"))]
-fn backend_attempts(compute: TtsCompute) -> Result<&'static [QwenTtsBackend]> {
+fn backend_attempts(
+    compute: TtsCompute,
+    provider: &'static str,
+) -> Result<&'static [QwenTtsBackend]> {
     const CPU: &[QwenTtsBackend] = &[QwenTtsBackend::Cpu];
     const METAL: &[QwenTtsBackend] = &[QwenTtsBackend::Metal];
     const METAL_THEN_CPU: &[QwenTtsBackend] = &[QwenTtsBackend::Metal, QwenTtsBackend::Cpu];
@@ -252,16 +317,20 @@ fn backend_attempts(compute: TtsCompute) -> Result<&'static [QwenTtsBackend]> {
         TtsCompute::Auto => CPU,
         TtsCompute::Metal if cfg!(target_os = "macos") => METAL,
         TtsCompute::Metal => {
-            return Err(provider("Metal compute requires macOS"));
+            return Err(provider_named(provider, "Metal compute requires macOS"));
         }
         TtsCompute::Vulkan if !syllabix_native::ggml_vulkan_compiled() => {
-            return Err(provider(
+            return Err(provider_named(
+                provider,
                 "Vulkan compute requires a Linux build with SYLLABIX_GGML_VULKAN=1",
             ));
         }
         TtsCompute::Vulkan if syllabix_native::vulkan_device_count() > 0 => VULKAN,
         TtsCompute::Vulkan => {
-            return Err(provider("Vulkan compute found no usable Vulkan device"));
+            return Err(provider_named(
+                provider,
+                "Vulkan compute found no usable Vulkan device",
+            ));
         }
     })
 }
@@ -299,7 +368,7 @@ impl Decoder for NativeDecoder {
                 Ok(text)
             }
             Err(DecodeError::Cancelled) => Err(Error::Cancelled),
-            Err(DecodeError::Failed(message)) => Err(provider(message)),
+            Err(DecodeError::Failed(message)) => Err(provider_named(self.provider, message)),
         }
     }
 }
@@ -611,6 +680,50 @@ mod tests {
     }
 
     #[test]
+    fn from_cache_requires_rumble_assets() {
+        let root = std::env::temp_dir().join(format!(
+            "syllabix-rumble-asr-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let cache = ModelCache::new(
+            root,
+            syllabix_native::models::Manifest {
+                version: 1,
+                assets: vec![],
+            },
+        );
+        let err = match QwenAsrStt::from_cache(
+            &cache,
+            &syllabix_native::models::BlockedFetcher::default(),
+            &mut syllabix_native::models::NoProgress,
+            &Cancel::new(),
+            SttModel::Rumble2FlashQ8,
+            TtsCompute::Auto,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("empty manifest should fail"),
+        };
+        assert!(matches!(err, Error::ModelCache { .. }));
+        assert!(err.to_string().contains(RUMBLE_ASR_ASSET), "{err}");
+    }
+
+    #[test]
+    fn rumble_engine_reports_its_own_provider_name() {
+        let mut stt = QwenAsrStt::with_decoder(Box::new(ScriptedDecoder::new(&["hello"])));
+        stt.provider = RUMBLE_PROVIDER_NAME;
+        assert_eq!(stt.name(), RUMBLE_PROVIDER_NAME);
+        let transcript = stt
+            .transcribe(&utterance(), &Cancel::new())
+            .expect("scripted");
+        assert_eq!(transcript.text, "hello");
+    }
+
+    #[test]
     fn from_cache_requires_mmproj_asset() {
         let root = std::env::temp_dir().join(format!(
             "syllabix-qwen-asr-mmproj-{}-{}",
@@ -694,6 +807,22 @@ mod tests {
             err,
             Error::Provider {
                 provider: PROVIDER_NAME,
+                ..
+            }
+        ));
+        let err = match QwenAsrStt::from_paths_with_provider(
+            "/no/such/rumble-2-flash.gguf",
+            "/no/such/mmproj.gguf",
+            TtsCompute::Auto,
+            RUMBLE_PROVIDER_NAME,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("missing paths should fail"),
+        };
+        assert!(matches!(
+            err,
+            Error::Provider {
+                provider: RUMBLE_PROVIDER_NAME,
                 ..
             }
         ));

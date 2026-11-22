@@ -114,6 +114,17 @@ Pinned GGUF: https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-gguf at rev
 `fee970d9ac83f6d236632d39b67cbec12f5a9020`.
 Fetched only when `pipeline.stt.model: fluid-speech-pro-gguf-q8_0` is selected.
 
+### Rumble-2-Flash GGUF Q8_0 (optional yaml STT)
+
+Apache License 2.0. Rumble-2-Flash by Reson8:
+https://huggingface.co/Reson8/Rumble-2-Flash
+Fine-tuned from the Qwen3-ASR 0.6B base model:
+https://huggingface.co/Qwen/Qwen3-ASR-0.6B
+Pinned decoder and mmproj encoder from AtomicChat at revision
+`d036f2af3cd5229375714d7f1749792cce3c6a88`:
+https://huggingface.co/AtomicChat/Rumble-2-Flash-GGUF
+Fetched only when `pipeline.stt.model: rumble-2-flash` is selected.
+
 ### LFM3-1.7B Q8_0 (`LFM3-1.7B-Q8_0.gguf`, default)
 
 LiquidAI LFM 1.0 license. Copyright LiquidAI.

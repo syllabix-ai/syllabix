@@ -34,6 +34,8 @@ mod qwen_asr;
 #[cfg(not(coverage))]
 mod real_loop;
 #[cfg(not(coverage))]
+mod rumble;
+#[cfg(not(coverage))]
 mod whisper;
 
 use std::collections::BTreeSet;
@@ -63,13 +65,14 @@ use syllabix_core::{AgentConfig, Cancel, ModelCache};
 const LAUNCH_NATIVE_IDS: [&str; 3] = ["whisper-small", LFM3_1_7B_ASSET, "pocket-tts"];
 
 /// Native-test ids that currently have a suite.
-const SUITED_NATIVE_IDS: [&str; 15] = [
+const SUITED_NATIVE_IDS: [&str; 16] = [
     "whisper-small",
     LLAMA_32_1B_ASSET,
     "kokoro",
     "qwen3-0.6",
     "qwen3-1.7",
     "qwen3-asr-0.6",
+    "rumble-2-flash",
     "fluid-speech-pro-gguf-q8_0",
     QWEN35_08B_ASSET,
     "pocket-tts",

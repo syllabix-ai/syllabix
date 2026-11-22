@@ -21,11 +21,12 @@ mod tests {
         let m = Manifest::v0();
         assert_eq!(m.version, 1);
         // Silero + five whisper ids + eight moonshine assets (small+medium) +
-        // Qwen3-ASR 0.6B decoder/mmproj + nine Hima-ASR files + three GGUFs +
+        // Qwen3-ASR 0.6B decoder/mmproj + Rumble-2-Flash decoder/mmproj +
+        // nine Hima-ASR files + three GGUFs +
         // Kokoro weights + voice + eight internal-only Pocket TTS assets + two
         // Qwen3-TTS backbones, each with its own projector, Indic-Mio GGUF +
         // MioCodec decoder, five LFM LLM assets, and two LFM3-Audio S2s assets.
-        assert_eq!(m.assets.len(), 52);
+        assert_eq!(m.assets.len(), 54);
         for model in SttModel::ALL {
             let asset = m
                 .asset(model.asset_id())
@@ -47,6 +48,10 @@ mod tests {
             }
             if model == SttModel::QwenAsr06 {
                 assert_eq!(asset.file_name, "Qwen3-ASR-0.6B-Q8_0.gguf");
+                continue;
+            }
+            if model == SttModel::Rumble2FlashQ8 {
+                assert_eq!(asset.file_name, "Rumble-2-Flash-Q8_0.gguf");
                 continue;
             }
             if model == SttModel::HimaAsr {

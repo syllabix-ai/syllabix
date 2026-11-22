@@ -233,7 +233,7 @@ mod production {
         Whisper(WhisperStt),
         /// Moonshine streaming ONNX (small or medium; English only, partials always on).
         Moonshine(Box<MoonshineStt>),
-        /// Qwen3-ASR 0.6B through the shared ggml (finalize only).
+        /// Qwen3-ASR 0.6B / Rumble-2-Flash through the shared ggml (finalize only).
         Qwen(Box<crate::qwen_asr::QwenAsrStt>),
         /// Hima-ASR int8 ONNX (finalize only).
         Hima(Box<HimaStt>),
@@ -393,7 +393,8 @@ mod production {
                         config.stt_model,
                     )?)))
                 }
-                crate::defaults::SttModel::QwenAsr06 => Ok(LiveStt::Qwen(Box::new(
+                crate::defaults::SttModel::QwenAsr06
+                | crate::defaults::SttModel::Rumble2FlashQ8 => Ok(LiveStt::Qwen(Box::new(
                     crate::qwen_asr::QwenAsrStt::from_cache(
                         cache,
                         fetcher,
