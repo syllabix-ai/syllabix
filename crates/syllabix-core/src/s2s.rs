@@ -172,6 +172,7 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, crate::error::Error::Provider { .. }));
+        assert!(!engine.last_output_capped());
     }
 
     #[test]

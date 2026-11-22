@@ -591,6 +591,45 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, Error::Cancelled));
+        assert!(!engine.last_output_capped());
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_speak_sets_last_output_capped() {
+        use crate::s2s::S2sEngine;
+        use crate::types::TurnId;
+        let mut engine = Lfm3AudioEngine {
+            ctx: Lfm3AudioContext::load(
+                "fake-s2s",
+                "fake-mmproj",
+                1,
+                0,
+                0,
+                LFM3_AUDIO_VOICE_CHAT_SYSTEM_PROMPT,
+            )
+            .expect("coverage ctx"),
+            n_threads: 1,
+            max_out_samples: 4,
+            last_native_out_samples: 0,
+            last_output_capped: false,
+            last_text: String::new(),
+        };
+        let cancel = Cancel::new();
+        let generation = cancel.generation();
+        engine
+            .speak(
+                TurnId(4),
+                generation,
+                "abcdefgh",
+                None,
+                None,
+                &cancel,
+                &mut |_| Ok(()),
+            )
+            .expect("capped speak");
+        assert!(engine.last_output_capped());
+        assert!(S2sEngine::last_output_capped(&engine));
     }
 
     #[cfg(coverage)]
