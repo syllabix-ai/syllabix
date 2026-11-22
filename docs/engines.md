@@ -21,7 +21,7 @@ Share downloads across the CLI and embed hosts by leaving the variable unset or 
 | **Release artifacts** | Linux x64, macOS Apple Silicon, Windows x64. Intel Macs are not supported. |
 | **Default cache** | ~2.5 GB on first `run` |
 | **Compute** | Darwin: Metal + Accelerate for STT/LLM. Linux/Windows: portable CPU by default. Opt-in Linux Vulkan builds (`SYLLABIX_GGML_VULKAN=1`) offload whisper/llama/Qwen when a device is present. Qwen TTS/ASR stay CPU unless `compute` selects Metal/Vulkan (or Auto probes them). |
-| **RAM** | Not a published gate. The default stack is the combination measured for an Apple M4 / 16 GiB class machine; see [reference profiles](reference-profiles.md). |
+| **RAM** | Not a published gate. The default stack is the combination chosen for an Apple M4 / 16 GiB class machine; see [reference profiles](reference-profiles.md). |
 | **Network** | First fetch of each id needs HTTPS. After the cache is full, default `run` needs none. |
 
 ## VAD
