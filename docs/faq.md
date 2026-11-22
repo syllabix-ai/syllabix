@@ -4,11 +4,11 @@ Symptom fixes (won't verify, Gatekeeper, no mic, self-interrupt): [troubleshooti
 
 ## Why is the first `run` so large / slow?
 
-Default `run` fetches Silero, Whisper `small`, LFM3-1.7B, and Pocket TTS (~2.5 GB), then checks SHA-256. How long that takes depends on network bandwidth. Later runs reuse the cache offline. `--help` and `init` download nothing.
+Default `run` fetches Silero, Whisper `small`, LFM3-1.7B, and Pocket TTS (~2.5 GB), then checks SHA-256. How long that takes depends on network bandwidth. Later runs reuse the cache without downloading again. `--help` and `init` download nothing.
 
 ## Memory is tight. Can I use a smaller model?
 
-Yes. `syllabix init`, then either set `pipeline.llm.model` to `lfm2.5-350m` or `lfm2.5-230m`, or set `pipeline.llm.provider: openai-compatible` with `base_url` and `SYLLABIX_LLM_API_KEY` so the LLM runs in the cloud (transcript text only; mic audio stays local). Catalogue and keys: [engines](engines.md), [syllabix.yaml](syllabix-yaml.md).
+Yes. `syllabix init`, then either set `pipeline.llm.model` to `lfm2.5-350m` or `lfm2.5-230m`, or set `pipeline.llm.provider: openai-compatible` with `base_url` and `SYLLABIX_LLM_API_KEY` so the LLM runs in the cloud (conversation text and tool results; mic audio stays local). Catalogue and keys: [engines](engines.md), [syllabix.yaml](syllabix-yaml.md).
 
 ## Why is barge-in off by default?
 
@@ -32,4 +32,4 @@ Yes. `syllabix init`, edit `pipeline.*.model` in `syllabix.yaml`. Catalogue: [en
 
 ## Does audio leave the machine?
 
-No, not for a normal local `run` after the models are already downloaded. An online LLM sends only the transcript text. Online STT sends each finished clip as a WAV file; online TTS sends each finished sentence. The live microphone stays on this computer. `syllabix serve` puts the models on a shared worker; each desk still sends only those clips or sentences, not the live mic. Details: [architecture](architecture.md#what-leaves-the-machine), [CLI serve](cli.md#serve), [engines](engines.md#tts).
+No, microphone audio does not leave the machine for a normal local `run` after the models are downloaded. Text can: the default harness can call `web_fetch` / `web_search`, or run a shell command that reaches the network, and those requests can include conversation text. Set `pipeline.llm.developer_permissions.network: none` to block that traffic. An online LLM sends conversation text and tool results, not audio. Online STT sends each finished clip as a WAV file; online TTS sends each finished sentence. The live microphone stays on this computer. `syllabix serve` puts the models on a shared worker; each desk still sends only those clips or sentences, not the live mic. Details: [architecture](architecture.md#what-leaves-the-machine), [CLI serve](cli.md#serve), [engines](engines.md#tts).
