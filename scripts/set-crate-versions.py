@@ -103,7 +103,7 @@ def rewrite(root: pathlib.Path, version: str) -> None:
     text = "".join(out)
     text, n = re.subn(
         r'syllabix-native = \{ path = "crates/syllabix-native", version = "[^"]+", default-features = false \}',
-        f'syllabix-native = {{ path = "crates/syllabix-native", version = "{version}", default-features = false }}',
+        f'syllabix-native = {{ path = "crates/syllabix-native", version = "={version}", default-features = false }}',
         text,
         count=1,
     )
@@ -111,7 +111,7 @@ def rewrite(root: pathlib.Path, version: str) -> None:
         sys.exit("could not find syllabix-native version requirement")
     text, n = re.subn(
         r'syllabix-stt = \{ path = "crates/syllabix-stt", version = "[^"]+", default-features = false \}',
-        f'syllabix-stt = {{ path = "crates/syllabix-stt", version = "{version}", default-features = false }}',
+        f'syllabix-stt = {{ path = "crates/syllabix-stt", version = "={version}", default-features = false }}',
         text,
         count=1,
     )
@@ -119,7 +119,7 @@ def rewrite(root: pathlib.Path, version: str) -> None:
         sys.exit("could not find syllabix-stt version requirement")
     text, n = re.subn(
         r'syllabix-tts = \{ path = "crates/syllabix-tts", version = "[^"]+", default-features = false \}',
-        f'syllabix-tts = {{ path = "crates/syllabix-tts", version = "{version}", default-features = false }}',
+        f'syllabix-tts = {{ path = "crates/syllabix-tts", version = "={version}", default-features = false }}',
         text,
         count=1,
     )
