@@ -15,14 +15,14 @@ Check [troubleshooting](troubleshooting.md) and [FAQ](faq.md) first — mic, ech
 Include in every report:
 
 - Syllabix version or git SHA, and OS (macOS Apple Silicon, Linux x64, Windows x64). Intel Macs are not supported.
-- Artifact or how you installed (Release file name, or `cargo run`).
+- Artifact or how you installed (Release file name, or `cargo run -p syllabix -- run`).
 - Exact command and full error text.
-- `syllabix.yaml` when used. Never paste API keys — `SYLLABIX_LLM_API_KEY` is environment-only.
+- `syllabix.yaml` when used. Never paste API keys — `SYLLABIX_LLM_API_KEY`, `SYLLABIX_STT_API_KEY`, and `SYLLABIX_TTS_API_KEY` are environment-only.
 - For audio reports: mic and speaker names from the startup line, barge-in on/off, and diagnostics (`turn.json` plus `utterance.wav` / `clean.wav` / `tts.wav` when not private) — see [diagnostics](diagnostics.md).
 
 ## Security
 
-Syllabix is a local voice agent. The default `run` path keeps microphone audio on the machine after the model cache is filled. Optional online stages send only what that stage needs (LLM: transcript text; STT: utterance WAV; TTS: sentence text). Keys stay in the environment (`SYLLABIX_LLM_API_KEY` / `SYLLABIX_STT_API_KEY` / `SYLLABIX_TTS_API_KEY`), never yaml or a `.env` file.
+Syllabix is a local voice agent. The default `run` path keeps microphone audio on the machine after the model cache is filled. Conversation text stays local unless the default harness uses the network (`web_fetch` / `web_search`, or a shell command that does); set `pipeline.llm.developer_permissions.network: none` to block that traffic. Optional online stages send only what that stage needs (LLM: conversation text and tool results; STT: utterance WAV; TTS: sentence text). Keys stay in the environment (`SYLLABIX_LLM_API_KEY` / `SYLLABIX_STT_API_KEY` / `SYLLABIX_TTS_API_KEY`), never yaml or a `.env` file.
 
 Do **not** open a public GitHub issue for a security bug, a leaked key, or a sandbox escape.
 
