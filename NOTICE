@@ -3,7 +3,10 @@ Copyright 2026 Syllabix contributors
 
 This product includes software and model assets developed by third parties.
 Each entry lists what ships inside the executable or what the binary fetches
-into its first-run cache (`$SYLLABIX_CACHE_DIR` or `~/.cache/syllabix`).
+into its first-run cache. Files land in `models/v1` under the cache root:
+`$SYLLABIX_CACHE_DIR`, else `$XDG_CACHE_HOME/syllabix`, else
+`%LOCALAPPDATA%\syllabix\cache` on Windows, else `~/.cache/syllabix`, else
+`.syllabix-cache` in the current directory.
 
 ## Vendored source (compiled into the executable)
 
@@ -51,25 +54,41 @@ contributors. Full text: `crates/syllabix-native/vendor/llama.cpp/LICENSE`.
 MIT License. Copyright (c) 2023-2026 The ggml authors, Georgi Gerganov, and
 contributors. Full text: `crates/syllabix-native/vendor/whisper.cpp/LICENSE`.
 
-Whisper and llama.cpp share one ggml build; see
+Whisper, llama.cpp, and parakeet.cpp share one ggml build; see
 `crates/syllabix-native/vendor/README.md` for pins.
+
+### parakeet.cpp (`crates/syllabix-native/vendor/parakeet.cpp`)
+
+MIT License. Copyright (c) 2026 the parakeet.cpp authors. Full text:
+`crates/syllabix-native/vendor/parakeet.cpp/LICENSE`.
 
 ### ONNX Runtime
 
 This product uses ONNX Runtime (via the Rust `ort` bindings), MIT License,
 Copyright (c) Microsoft Corporation. All rights reserved.
 
-## Model assets (downloaded into the local cache on first run)
+## Model assets (downloaded into the local cache on first use)
 
 ### Silero VAD (`silero_vad.onnx`, v6.2.1)
 
 MIT License. Copyright (c) 2020-present Silero Team.
 Source: https://github.com/snakers4/silero-vad
 
-### Whisper `small` (`ggml-small.bin`)
+### Whisper GGML weights (`ggml-*.bin`)
 
-MIT License. Whisper models and code are Copyright (c) OpenAI.
-GGML conversion: https://huggingface.co/ggerganov/whisper.cpp
+MIT License. Whisper models and code are Copyright (c) OpenAI. GGML
+conversions from whisper.cpp cover the menu ids `whisper-small`,
+`whisper-medium`, `whisper-large-v3-turbo`, `whisper-medium-q5_0`, and
+`whisper-large-v3-turbo-q5_0`.
+Source: https://huggingface.co/ggerganov/whisper.cpp
+
+### Qwen3-ASR 0.6B GGUF (optional STT)
+
+Apache License 2.0. Copyright the Qwen team (Alibaba Cloud). Fetched only
+when `pipeline.stt.provider: local` and `pipeline.stt.model: qwen3-asr-0.6`
+are selected, or when `syllabix serve stt --model qwen3-asr-0.6` loads it
+(weights and mmproj). Source:
+https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF
 
 ### Moonshine Streaming Small ONNX INT8 (optional yaml STT)
 
@@ -189,6 +208,17 @@ the default zero-config run.
 Apache License 2.0. Copyright (c) 2024 hexgrad.
 Source: https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
 
+### Qwen3-TTS 0.6B and 1.7B GGUF (optional TTS)
+
+Apache License 2.0. Copyright the Qwen team (Alibaba Cloud). Selected only
+when `pipeline.tts.provider: local` and `syllabix.yaml` sets
+`pipeline.tts.model: qwen3-0.6` or `qwen3-1.7`, or when
+`syllabix serve tts --model` selects either id (weights and
+speech-tokenizer mmproj); not fetched by the default zero-config run.
+Sources:
+https://huggingface.co/mradermacher/Qwen3-TTS-12Hz-0.6B-Base-GGUF
+https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF
+
 ### Pocket TTS English ONNX assets
 
 Creative Commons Attribution 4.0 International (CC BY 4.0). Model weights
@@ -225,7 +255,7 @@ its model card lists Emilia-YODAS (CC BY 4.0).
 ### Goose CLI (optional, `agent_harness.agent: goose`)
 
 Apache License 2.0. Copyright Block / AAIF Goose authors.
-Fetched only when yaml selects `agent_harness.agent: goose` (online LLM).
+Fetched only when yaml selects `agent_harness.agent: goose` (Goose reply backend).
 Pinned release `v1.54.0` from https://github.com/aaif-goose/goose/releases/tag/v1.54.0
 
 ## Data
