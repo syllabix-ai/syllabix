@@ -8,7 +8,7 @@ Only need speech-to-text? Depend on [`syllabix-stt`](../crates/syllabix-stt/READ
 
 Only need text-to-speech? Depend on [`syllabix-tts`](../crates/syllabix-tts/README.md) instead. Its features pick the engines, and `remote` alone builds without C++.
 
-Most apps use the defaults (same as `syllabix run`). The first build compiles the bundled whisper.cpp / llama.cpp with CMake and a C++ compiler ([Host compile](#host-compile)). Nothing is downloaded at build time. Models still download on first run ([Cache](#cache)).
+Most apps use the defaults (the same cascade stack as `syllabix run`). The first build compiles the bundled whisper.cpp / llama.cpp with CMake and a C++ compiler ([Host compile](#host-compile)); the `ort` crate may download a prebuilt ONNX Runtime. Model weights are not downloaded at build time; they still download on first run ([Cache](#cache)).
 
 ```bash
 cargo add syllabix-core
@@ -70,15 +70,16 @@ Ready = used by the CLI. Preview = less proven. Depend from crates.io ([Compatib
 
 ## Cargo features
 
-`syllabix-core` defaults to the same build as `syllabix run`: local speech engines, microphone and speakers, and the online LLM adapter. With `default-features = false` you get `run_loop`, the provider traits, `Session`, and the in-memory stages under `syllabix_core::testing` if you supply every stage yourself. That path does not run CMake and does not compile whisper.cpp / llama.cpp.
+`syllabix-core` defaults to the same cascade build as `syllabix run`: local speech engines, microphone and speakers, and the online LLM adapter. The CLI also enables `lfm3-s2s`; see below. With `default-features = false` you get `run_loop`, the provider traits, `Session`, and the in-memory stages under `syllabix_core::testing` if you supply every stage yourself. That path does not run CMake and does not compile whisper.cpp / llama.cpp.
 
 | Feature | On by default? | Who should enable it | What it turns on |
 | --- | --- | --- | --- |
 | `full` | yes (`default`) | Lane 2, and Lane 3 hosts that still use shipped engines or the real mic/speakers | `ggml` + `device-audio` + `cloud`. `run_live`, `load_real_providers`, and `Session` defaults. |
-| `ggml` | via `full` | Lane 3 that still loads this crate’s Whisper / local LLM / Qwen engines | Optional `syllabix-native` (CMake + C++). |
+| `ggml` | via `full` | Lane 3 that still loads this crate’s Whisper / local LLM / Qwen / Fluid engines | `syllabix-native`’s `cpp` feature (CMake + C++). |
 | `device-audio` | via `full` | Lane 3 that still uses the real microphone and speakers | Device I/O and echo cancellation (`NativeCapture` / `NativePlayback`). |
 | `cloud` | via `full` | Hosts whose yaml uses `pipeline.llm.provider: openai-compatible`, `pipeline.stt.provider: online`, or `pipeline.tts.provider: online` with `load_real_providers` | `LiveLlm::Cloud`, `LiveStt::Remote`, and `LiveTts::Remote` in the real loader. `openai::OpenAiLlm` always compiles; `remote_stt::RemoteStt` and `remote_tts::RemoteTts` need this feature. |
-| `native-inference` | no | Contributors running the slow model tests (`native_inference`) | Turns on `ggml` plus the tests that download and run the real models (GGUF and ONNX). ONNX (`ort`) is always built in; this feature does not switch it on. |
+| `lfm3-s2s` | no (the CLI enables it) | Hosts whose yaml uses `pipeline.mode: s2s` with the built-in `lfm3-audio-2b` engine | LFM3-Audio S2S for `run_live` and `Session` defaults. Also needs `ggml`, and `device-audio` for the default mic/speakers. Without the feature, `run_live` returns a config error. |
+| `native-inference` | no | Contributors running the slow model tests (`native_inference`) | Turns on `ggml` and `lfm3-s2s` plus the tests that download and run the real models (GGUF and ONNX). ONNX (`ort`) is always built in; this feature does not switch it on. |
 
 **Lane 3 that implements every stage** (see `examples/custom-llm.rs`): `default-features = false`.  
 **Lane 3 that swaps only the LLM and keeps the other defaults:** keep `full` (or at least `ggml` + `device-audio`). That still compiles whisper.cpp.  
@@ -233,7 +234,7 @@ Do not fork `pipeline.rs`. Swap a trait impl instead.
 
 ## Host compile
 
-If you embed Syllabix in your own Rust app (Lane 2 or Lane 3), your machine compiles the C++ speech libraries that ship with Syllabix (whisper.cpp / llama.cpp). The source is bundled in the crate; nothing is downloaded at build time. You need CMake and a C++ compiler. The first compile takes several minutes. Lane 3 hosts that set `default-features = false` and supply every stage themselves skip that compile. If you only run a downloaded Syllabix binary (Lane 1), skip this section. A Lane 1 `cargo install --git` build compiles the CLI, so it needs the same packages ([install — Install from git](install.md#install-from-git)).
+If you embed Syllabix in your own Rust app (Lane 2 or Lane 3), your machine compiles the C++ speech libraries that ship with Syllabix (whisper.cpp / llama.cpp). Their source is bundled in the crate and is not downloaded at build time; the `ort` crate may download a prebuilt ONNX Runtime. You need CMake and a C++ compiler. The first compile takes several minutes. Lane 3 hosts that set `default-features = false` and supply every stage themselves skip that compile. If you only run a downloaded Syllabix binary (Lane 1), skip this section. A Lane 1 `cargo install --git` build compiles the CLI, so it needs the same packages ([install — Install from git](install.md#install-from-git)).
 
 Same packages as [install — Compile](install.md#compile). This repo’s Linux setup script also installs extra tools used only in our tests; those are called out below.
 
