@@ -7,7 +7,7 @@ Requires Rust 1.91+, CMake, and a C++ compiler. whisper.cpp and llama.cpp share 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace   # launch-stack native inference (small / lfm3-1.7b / pocket-tts)
+cargo test --workspace   # unit and integration suites; native inference is opt-in (below)
 ./scripts/ci-local.sh    # Linux stand-in for GitHub Actions (fmt through tests, then Linux dist + smoke)
 ./scripts/check-repro.sh # two dist builds; run when the dist profile or packaging script changes
 ```
@@ -46,7 +46,7 @@ Weights download on first use of each id: HTTPS from the URL pinned in the binar
 | | LFM3-1.7B Q8_0 | https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF |
 | | Pocket TTS English ONNX/tokenizer/fixed voice | https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts |
 | `pipeline.tts.model` `kokoro` | Kokoro + default voice | https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX |
-| `pipeline.stt.model` other than `small` | Matching `ggml-*.bin` | https://huggingface.co/ggerganov/whisper.cpp |
+| `pipeline.stt.model` other than `whisper-small` | Matching weights for that id (Whisper `ggml-*.bin`; Moonshine/Hima ONNX; Qwen3-ASR/Rumble GGUF+mmproj; Fluid GGUF) | Per-id URLs in [`engines.md`](engines.md#stt) |
 | `pipeline.llm.model` `lfm2.5-2.6b` | QAD Q4_0 GGUF | https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF |
 | `pipeline.llm.model` `lfm3-1.7b-bf16` | BF16 GGUF | https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF |
 | `pipeline.llm.model` `lfm2.5-350m` | QAD Q4_0 GGUF | https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF |
@@ -58,8 +58,9 @@ Weights download on first use of each id: HTTPS from the URL pinned in the binar
 | `pipeline.tts.model` `qwen3-1.7` | Backbone GGUF + speech-tokenizer mmproj | https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF |
 | `pipeline.tts.model` `indic-mio` | Q8 GGUF + MioCodec ONNX decoder | https://huggingface.co/bytepass0/indic-mio-q8-gguf |
 | `pipeline.tts.model` `pocket-tts` | Eight pinned English ONNX/tokenizer/fixed-voice assets (~150 MB) | https://huggingface.co/OpenVoiceOS/phoonnx-pocket-tts |
+| `pipeline.mode: s2s` with `pipeline.s2s.model` `lfm3-audio-2b` | Q4_K_M GGUF + Q8_0 mmproj | https://huggingface.co/LiquidAI/LFM3-Audio-2B-GGUF |
 
-CPU vs Metal tok/s for the three default GGUFs: [`crates/syllabix-native/vendor/llama-bench.md`](../crates/syllabix-native/vendor/llama-bench.md). ggml vendor pins and local patches: [`crates/syllabix-native/vendor/README.md`](../crates/syllabix-native/vendor/README.md). Measurement protocols: [`reference-profiles.md`](reference-profiles.md).
+CPU vs Metal tok/s for the three GGUFs benchmarked there: [`crates/syllabix-native/vendor/llama-bench.md`](../crates/syllabix-native/vendor/llama-bench.md). ggml vendor pins and local patches: [`crates/syllabix-native/vendor/README.md`](../crates/syllabix-native/vendor/README.md). Measurement protocols: [`reference-profiles.md`](reference-profiles.md).
 
 ## Contribute component-performance evidence
 
@@ -69,7 +70,7 @@ You do not need Rust, CMake, or a microphone to contribute a component benchmark
 ./scripts/contribute-performance.sh
 ```
 
-The script uses an in-tree release binary or `syllabix` on your `PATH`; otherwise it downloads and checksum-verifies the matching GitHub Release. It fills the cache for every supported local STT, LLM, and TTS id (one axis at a time — no STT×LLM×TTS cross-product), runs the isolated fixtures for each, and writes one immutable `docs/eval/runs/<fingerprint>.jsonl` submission. The fingerprint includes OS/arch/CPU/cores/RAM plus the ggml compute backend (`cpu` / `metal` / `vulkan`) and, when known, GPU name and VRAM — so a CPU run and a Vulkan run on the same host do not collide. It does not run the voice loop, open a device, measure AEC or barge-in, or make a live-latency claim.
+The script uses an in-tree release or debug binary, or `syllabix` on your `PATH`; otherwise it downloads and checksum-verifies the matching GitHub Release. It fills the cache for every supported local STT, LLM, and TTS id (one axis at a time — no STT×LLM×TTS cross-product), runs the isolated fixtures for each, and writes one immutable `docs/eval/runs/<fingerprint>.jsonl` submission. The fingerprint includes OS/arch/CPU/cores/RAM plus the ggml compute backend (`cpu` / `metal` / `vulkan`) and, when known, GPU name and VRAM — so a CPU run and a Vulkan run on the same host do not collide. It does not run the voice loop, open a device, measure AEC or barge-in, or make a live-latency claim.
 
 If `gh` is authenticated, the script creates a branch, commits only that JSONL file, and opens a PR. Without it, the JSONL remains in place and the script prints the exact commands to finish. Developers changing the harness can instead use the explicit toolchain fallback:
 
@@ -81,11 +82,11 @@ If a previous run preserved an uncommitted JSONL for the same fingerprint, a lat
 
 `docs/workload_benchmark/*.csv` (one statistics file per model, rows split by machine) and `docs/workload_benchmark/workload_benchmark.md` (tables split by machine configuration) are generated locally via `python3 scripts/summarize-benchmarks.py` after a run lands; no CI publishes them. Do not hand-edit those files — re-run the script. A failed correctness verdict is still valid evidence and stays in its JSONL record.
 
-`scripts/make-stt-manifest.py` builds a local 16 kHz WAV+TSV corpus for `syllabix bench-asr-worker --manifest`. Mix noise with `--noise` / `--snr`. `scripts/stt-bench-report.py` prints WER and latency across JSONL files for one machine fingerprint.
+`scripts/make-stt-manifest.py` builds a local 16 kHz WAV+TSV corpus for `syllabix bench-asr-worker --manifest`; that worker mixes noise with `--noise` / `--snr`. `scripts/stt-bench-report.py` prints WER and latency across JSONL files for one machine fingerprint.
 
 ## VAD endpointing lab
 
-`syllabix vad-lab` is a hidden, contributor-only command that checks whether the turn detector (Silero VAD) splits two spoken clips correctly. It joins two speech fixtures with a pause, mixes noise at a target signal-to-noise ratio (SNR), and counts the turns the detector closes across a grid of noise and pause lengths. It prints accuracy (`ok / total`) plus two failure counts — `false_split` (a turn closes too early) and `missed` (a pause swallows a turn) — and an energy probe for the echo canceller (AEC) and noise suppression (NS) stages.
+`syllabix vad-lab` is a hidden, contributor-only command that checks whether the turn detector (Silero VAD) splits two spoken clips correctly. It joins two speech fixtures with a pause, mixes noise at a target signal-to-noise ratio (SNR), and counts the turns the detector closes across a grid of noise and pause lengths. It prints accuracy (`ok / total`) plus failure counts — `false_split` (a turn closes too early), `missed` (a pause swallows a turn), and `no_detect` (no turn closes) — and an energy probe for the echo canceller (AEC) and noise suppression (NS) stages.
 
 ```bash
 cargo run -p syllabix -- vad-lab
@@ -143,7 +144,7 @@ Quality scoring allows careful refusals and spoken URLs; it does not re-test
 sandbox policy. The combined test always exits successfully even when a pair is
 below 0.90 (for example `pair=goose-local completion=0/4`). Use the legacy entry
 points below when you need a hard gate on one pair. The PR evidence workflow only
-requires a `pair=` line (or `skipped, no key`) per pair you ran, not a passing ratio.
+requires at least one `pair=` line (or `skipped, no key`), not a passing ratio.
 
 **Gated at 0.90 on a single pair:** `harness_quality_live_admission` (syllabix +
 online), `harness_quality_live_admission_goose` (goose + online yaml),
@@ -170,15 +171,16 @@ Online pairs need `SYLLABIX_LLM_API_KEY`, `SYLLABIX_HARNESS_BASE_URL`, and
 already in the model cache; evaluation never silently downloads weights.
 
 Model-quality fixture `current-date` checks realtime facts.
-`current-date` accepts the run machine's local calendar day plus one day
-before or after (timezone and midnight edges) in the spoken reply; a tool
-call is optional (strong models may already know the date).
+`current-date` accepts the run machine's local calendar day in the spoken
+reply (plus one day before or after on Linux and macOS, for timezone and
+midnight edges); a tool call is optional (strong models may already know the
+date).
 
 Host `web_fetch` / `web_search` use bounded public HTTP (15s read deadline per
 page) — not the model-cache `BlockedFetcher`.
 
 The built-in agent harness is on by default (`agent_harness.agent: syllabix`);
-set `agent: none` for plain voice chat with no sandboxed tools. Goose local
+set `agent_harness.agent: none` for plain voice chat with no sandboxed tools. Goose local
 (`goose-local`) uses Goose's own llama.cpp stack, not Syllabix's vendored LFM3
 build; a low score there is a known Goose×local-LFM seam, not a missing cache file.
 
@@ -239,7 +241,7 @@ workflow, Run workflow, pick the existing tag as the branch/tag, and fill
 under the new name at the same commit. Leave `release_name` empty to
 package artifacts without publishing.
 
-GitHub Release files are the four artifact names plus `SHA256SUMS`. `.github/workflows/release.yml` publishes them on `v*` tags. Pull requests do not package dist binaries. If Actions cannot run, build each target with `scripts/package-release.sh` and attach with `scripts/publish-release.sh v0.1.0`.
+GitHub Release files are the three platform artifacts plus `SHA256SUMS`, with one `.repro.json` sidecar per artifact. `.github/workflows/release.yml` publishes them on `v*` tags. Pull requests do not package dist binaries. If Actions cannot run, build each target with `scripts/package-release.sh` and attach with `scripts/publish-release.sh v0.1.0`.
 
 ```bash
 ./scripts/package-release.sh                         # host triple
@@ -298,13 +300,13 @@ It fails if the native `.crate` is over 10 MB. PR template and
 harness-evidence checks also run on hosted Linux.
 
 The **git-consumer** workflow (`git-consumer.yml`) pretends to be another repo.
-It depends on `syllabix-core` from git: a `v*` tag when one exists, otherwise
+It depends on `syllabix-core` from git: a `v*` tag on a tag push, otherwise
 the commit under test. It then compiles
 `crates/syllabix-core/examples/embed-loop.rs` and `custom-llm.rs`. Locally, run
 `./scripts/ci-git-consumer.sh`.
 
-Weekly CI runs `cargo test --workspace` on Linux / Windows (hosted) and macOS
-(self-hosted Apple Silicon), including launch-stack native inference.
+Weekly CI runs `cargo test --workspace` on Linux and Windows (hosted) and macOS
+(hosted Apple Silicon by default; manual dispatch can select the self-hosted pool).
 
 The native inference check runs those weights under
 `cargo llvm-cov --no-cfg-coverage --release` with
