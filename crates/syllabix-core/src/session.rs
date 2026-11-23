@@ -62,6 +62,10 @@ impl S2sEngine for DynS2s {
         self.0.last_text()
     }
 
+    fn speak_sample_cap(&self) -> Option<usize> {
+        self.0.speak_sample_cap()
+    }
+
     fn transcribe(
         &mut self,
         utterance: &Utterance,
@@ -390,11 +394,9 @@ impl Session {
             .is_some_and(|debug| debug.collects_audio());
 
         if config.pipeline_mode == PipelineMode::S2s {
-            let reply_with = config
-                .s2s
-                .as_ref()
-                .map(|block| block.reply_with)
-                .unwrap_or(S2sReplyWith::S2s);
+            let s2s_block = config.s2s.as_ref().cloned().unwrap_or_default();
+            crate::config::log_s2s_split_sentences_ignored_if_needed(&s2s_block);
+            let reply_with = s2s_block.reply_with;
             let s2s_engine: Box<dyn S2sEngine> = match s2s {
                 Some(engine) => engine,
                 None => {
@@ -433,11 +435,10 @@ impl Session {
                     s2s_cfg.language.clone(),
                     &config.language,
                 ));
-                let tts_adapter = Box::new(S2sTts::new(
-                    shared,
-                    s2s_cfg.language.clone(),
-                    s2s_cfg.voice.clone(),
-                ));
+                let tts_adapter = Box::new(
+                    S2sTts::new(shared, s2s_cfg.language.clone(), s2s_cfg.voice.clone())
+                        .with_split_sentences(s2s_cfg.split_sentences),
+                );
                 let llm_api_key = if needs_llm_api_key(&config, llm.is_none()) {
                     Some(resolve_api_key(|name| std::env::var(name).ok())?)
                 } else {

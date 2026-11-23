@@ -78,6 +78,13 @@ pub trait S2sEngine: Send {
             message: "does not support offline TTS".into(),
         })
     }
+
+    /// PCM sample cap one `speak` call enforces, in `PcmFormat::v0()` samples
+    /// as delivered to `on_audio` (not native model-rate samples), when the
+    /// backend has one.
+    fn speak_sample_cap(&self) -> Option<usize> {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -211,6 +211,9 @@ fn run_live_s2s_inner(
     use crate::turn_debug::PlaybackWatch;
     use crate::vad::SileroVad;
 
+    if let Some(s2s) = &config.s2s {
+        crate::config::log_s2s_split_sentences_ignored_if_needed(s2s);
+    }
     let cache = ModelCache::v0();
     let mut progress = StderrProgress::new();
     let watch = turn_debug
@@ -304,7 +307,8 @@ fn run_live_s2s_llm_inner(
         s2s_cfg.language.clone(),
         &config.language,
     );
-    let tts = S2sTts::new(shared, s2s_cfg.language.clone(), s2s_cfg.voice.clone());
+    let tts = S2sTts::new(shared, s2s_cfg.language.clone(), s2s_cfg.voice.clone())
+        .with_split_sentences(s2s_cfg.split_sentences);
     capture.discard_buffered_audio();
     if wants_wavs {
         capture.enable_pcm_tap();
@@ -365,6 +369,13 @@ fn run_live_s2s_llm_inner(
         shared,
         config.s2s.as_ref().and_then(|s| s.language.clone()),
         config.s2s.as_ref().and_then(|s| s.voice.clone()),
+    )
+    .with_split_sentences(
+        config
+            .s2s
+            .as_ref()
+            .map(|s| s.split_sentences)
+            .unwrap_or(true),
     );
     run_loop(
         LoopConfig {

@@ -155,6 +155,24 @@ impl Lfm3AudioEngine {
     }
 }
 
+/// Convert a native-rate `max_out_samples` cap to `PcmFormat::v0()` samples as
+/// delivered to `on_audio`.
+///
+/// `max_out_samples <= 0` means "use the shim default", not "no cap"
+/// (`shim_s2s.c:1242`), so it must be reported like any other cap. The native
+/// loop caps at the model rate (24 kHz for LFM3-A), but `speak` delivers
+/// resampled 16 kHz PCM, so callers counting delivered samples need the floor.
+fn delivered_sample_cap(max_out_samples: i32, out_rate_hz: i32) -> usize {
+    let native_cap = if max_out_samples > 0 {
+        max_out_samples as u64
+    } else {
+        u64::from(LFM3_AUDIO_DEFAULT_MAX_OUT_SAMPLES as u32)
+    };
+    let out_hz = out_rate_hz.max(1) as u64;
+    let delivered_hz = u64::from(PcmFormat::v0().sample_rate_hz);
+    (native_cap.saturating_mul(delivered_hz) / out_hz) as usize
+}
+
 impl S2sEngine for Lfm3AudioEngine {
     fn name(&self) -> &'static str {
         Self::name(self)
@@ -166,6 +184,13 @@ impl S2sEngine for Lfm3AudioEngine {
         } else {
             Some(&self.last_text)
         }
+    }
+
+    fn speak_sample_cap(&self) -> Option<usize> {
+        Some(delivered_sample_cap(
+            self.max_out_samples,
+            self.ctx.out_rate_hz(),
+        ))
     }
 
     fn generate(
@@ -649,6 +674,38 @@ mod tests {
             .expect("from_paths_with_seed")
             .with_max_out_samples(512);
         assert_eq!(engine.n_threads(), 3);
+    }
+
+    #[test]
+    fn speak_sample_cap_converts_to_delivered_samples() {
+        assert_eq!(delivered_sample_cap(24_000, 24_000), 16_000);
+        assert_eq!(
+            delivered_sample_cap(LFM3_AUDIO_DEFAULT_MAX_OUT_SAMPLES, 24_000),
+            682_666
+        );
+        // The C shim substitutes the default for `<= 0`, so 0 is not "no cap".
+        assert_eq!(delivered_sample_cap(0, 24_000), 682_666);
+        assert_eq!(delivered_sample_cap(24_000, 16_000), 24_000);
+        assert_eq!(delivered_sample_cap(1, 0), 16_000);
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_speak_sample_cap_reports_delivered_samples() {
+        use crate::s2s::S2sEngine;
+        let mut engine =
+            Lfm3AudioEngine::from_paths("fake-s2s", "fake-mmproj", 1).expect("from_paths");
+        let hz = u64::from(engine.ctx.out_rate_hz() as u32);
+        engine.max_out_samples = 24_000; // 1 s at the native rate
+        assert_eq!(
+            engine.speak_sample_cap(),
+            Some((24_000 * 16_000 / hz) as usize)
+        );
+        engine.max_out_samples = 0; // C shim default
+        assert_eq!(
+            engine.speak_sample_cap(),
+            Some((u64::from(LFM3_AUDIO_DEFAULT_MAX_OUT_SAMPLES as u32) * 16_000 / hz) as usize)
+        );
     }
 
     #[cfg(coverage)]
