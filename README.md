@@ -68,7 +68,7 @@ Those GitHub Release files are the usual install. Building from git is optional:
 cargo install --git https://github.com/syllabix-ai/syllabix.git --tag v0.1.3 syllabix
 ```
 
-Always pass `--tag vX.Y.Z`. Do not install from `main`. You need CMake, a C++ compiler, and on Linux ALSA — see [Compile](docs/install.md#compile). Full notes: [install from git](docs/install.md#install-from-git).
+Always pass `--tag vX.Y.Z`. Do not install from `main`. You need CMake, a C++ compiler, and, on Linux, ALSA headers and `pkg-config` — see [Compile](docs/install.md#compile). Full notes: [install from git](docs/install.md#install-from-git).
 
 ## Run
 
@@ -80,13 +80,13 @@ No API key. Default `run` uses on-device Whisper, LFM3-1.7B, and Pocket TTS.
 ./syllabix run
 ```
 
-The first local run downloads the models (Silero, Whisper `small`, LFM3-1.7B, and Pocket TTS — about 2.5 GB) into `~/.cache/syllabix/models/v1` (or `%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows). You can change that folder with `$SYLLABIX_CACHE_DIR`. Once cached, it needs no internet.
+The first local run downloads the models (Silero, Whisper `small`, LFM3-1.7B, and Pocket TTS — about 2.5 GB) into `~/.cache/syllabix/models/v1` (or `%LOCALAPPDATA%\syllabix\cache\models\v1` on Windows). You can change the cache root with `$SYLLABIX_CACHE_DIR`; files stay under `models/v1`. Once cached, it needs no internet.
 
 ![Fully local `syllabix run` terminal UI](docs/assets/tui-run.png)
 
 ### OpenAI LLM
 
-Uses OpenAI `gpt-5.4` with the agent harness on. Needs `SYLLABIX_LLM_API_KEY`. STT and TTS stay local; only transcript text goes to OpenAI. Set [agent_harness.agent: syllabix](docs/syllabix-yaml.md#agent-backend-and-shell-environment-agent_harness) for a local model with tools; accuracy can be poor and the model can be slow.
+Uses OpenAI `gpt-5.4` with the agent harness on. Needs `SYLLABIX_LLM_API_KEY`. STT and TTS stay local; your prompts, conversation text, and tool calls and results go to OpenAI, but mic audio does not. The default [agent_harness.agent: syllabix](docs/syllabix-yaml.md#agent-backend-and-shell-environment-agent_harness) also works with a local model with tools; accuracy can be poor and the model can be slow.
 
 ```bash
 curl -L https://raw.githubusercontent.com/syllabix-ai/syllabix/main/examples/demo-open-ai-llm-voice-agent.yaml -o syllabix.yaml
@@ -137,7 +137,7 @@ Or in `Cargo.toml`:
 syllabix-core = "0.1"
 ```
 
-The first build compiles the bundled whisper.cpp / llama.cpp with CMake and a C++ compiler. Nothing is downloaded at build time. Host packages: [embed — Host compile](docs/embed.md#host-compile). Lanes and features: [embed](docs/embed.md).
+The first build compiles the bundled whisper.cpp / llama.cpp with CMake and a C++ compiler. Model weights are not downloaded at build time (the `ort` crate may download a prebuilt ONNX Runtime). Host packages: [embed — Host compile](docs/embed.md#host-compile). Lanes and features: [embed](docs/embed.md).
 
 The `syllabix` CLI is not on crates.io. Use a [GitHub Release](https://github.com/syllabix-ai/syllabix/releases) or `cargo install --git` above.
 
@@ -153,7 +153,7 @@ A starter file is in [`examples/demo-fully-self-hosted-voice-agents.yaml`](examp
 | --- | --- |
 | [Docs index](docs/README.md) | User and config map |
 | [Install](docs/install.md) | Checksums, cache, Gatekeeper, SmartScreen, building, `cargo install --git` |
-| [CLI](docs/cli.md) | `run`, `--barge-in`, `init`, `--help` |
+| [CLI](docs/cli.md) | `run`, `--barge-in`, `init`, `serve`, `--help` |
 | [Engines](docs/engines.md) | VAD / STT / LLM / TTS ids and machine needs |
 | [Architecture](docs/architecture.md) | How the pipeline works, barge-in, what leaves your machine |
 | [Embed](docs/embed.md) | Other repos: sidecar binary, `run_live`, or `run_loop`; `cargo add syllabix-core` |
